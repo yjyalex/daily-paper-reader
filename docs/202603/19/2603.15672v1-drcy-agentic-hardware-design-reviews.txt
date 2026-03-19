@@ -1,0 +1,145 @@
+Title: DRCY: Agentic Hardware Design Reviews
+
+URL Source: https://arxiv.org/pdf/2603.15672v1
+
+Published Time: Wed, 18 Mar 2026 00:08:21 GMT
+
+Number of Pages: 5
+
+Markdown Content:
+# DRCY: Agentic Hardware Design Reviews 
+
+# Kyle Dumont Nicholas Herbert Hayder Tirmazi ∗ Shrikanth Upadhayaya 
+
+AllSpice Inc. 
+
+## Abstract 
+
+Hardware design errors discovered after fabrication require costly physical respins that can delay products by months. Existing elec-tronic design automation (EDA) tools enforce structural connectiv-ity rules. However, they cannot verify that connections are seman-tically correct with respect to component datasheets. For example, that a symbol’s pinout matches the manufacturer’s specification, or that a voltage regulator’s feedback resistors produce the intended output. We present DRCY, the first production-ready multi-agent LLM system that automates first-pass schematic connection re-view by autonomously fetching component datasheets, performing pin-by-pin analysis against extracted specifications, and posting findings as inline comments on design reviews. DRCY is deployed in production on AllSpice Hub, a collaborative hardware design platform, where it runs as a CI/CD action triggered on design review submissions. DRCY is used regularly by major hardware compa-nies for use-cases ranging from multi-agent vehicle design to space exploration. We describe DRCY’s five-agent pipeline architecture, its agentic datasheet retrieval system with self-evaluation, and its multi-run consensus mechanism for improving reliability on safety-critical analyses. 
+
+## CCS Concepts 
+
+• Computing methodologies → Artificial intelligence ; Natural language processing ; • Hardware → Electronic design automation .
+
+## Keywords 
+
+LLM agents, hardware design review, schematic analysis, PCB veri-fication, agentic systems 
+
+## 1 Introduction 
+
+Printed circuit board (PCB) design review is the last line of defense before a design is sent for fabrication. PCB designs may have con-nection errors such as a swapped pin pair, a misrouted power rail, or a violated voltage specification. If these errors are missed in a review, it results in a board respin costing weeks to months of schedule and tens of thousands of dollars per iteration. Currently, most reviews are done manually. Manual review is thorough but labor-intensive. For example, a reviewer must cross-reference every connection against the relevant component datasheet, verify pin assignments, check signal polarity conventions, and confirm com-pliance with electrical specifications. A moderately complex board may have hundreds of components across dozens of schematic pages, each backed by a datasheet that can exceed 100 pages. EDA tools provide two classes of automated checks. Electrical rule checks (ERC) verify structural properties such as floating pins, shorted nets, and unidirectional conflicts. Design rule checks (DRC) 
+
+> *Corresponding author is hayder@allspice.io. Authors are listed in alphabetical order by last name.
+
+verify physical layout constraints including trace widths, clear-ances, and drill sizes. Circuit simulation offers a third avenue, but requires hardware engineers to build detailed component models and specify all input stimuli. This is a time-consuming process that scales poorly with design complexity. Crucially, all three ap-proaches share a fundamental limitation: They only catch issues that the engineer has already anticipated . Prior to an error being detected, an engineer has to write an ERC rule, specify a DRC constraint, or configure a complicated simulation testbench. In ad-dition, none of these methods can determine whether a connection is semantically correct . By semantic correctness, we mean checking whether the schematic faithfully implements the component man-ufacturer’s recommended connections. For example, an ERC will confirm that a microcontroller’s nRESET pin is connected, but not that it is connected to the correct reset circuit as specified in the datasheet. In this paper we present DRCY 1, a multi-agent LLM system that fills this gap. DRCY is the first agent built for hardware design reviews. It integrates with AllSpice Hub [ 1] which is a collaborative platform for hardware design with native EDA file support. DRCY runs as a CI/CD action triggered when a hardware engineer submits a design review. DRCY is in production use by hardware teams at Fortune 500 enterprises and growth-stage startups, analyzing designs spanning consumer audio, robotics, autonomous vehicles, and space exploration. 
+
+## 2 Background 
+
+This section introduces the hardware design concepts that DRCY operates on, aimed at readers more familiar with software engi-neering workflows. 
+
+Schematics and Netlists. A PCB design begins as a schematic, i.e., a diagram that specifies which electronic components are used and how their pins are electrically connected [ 12 ]. Pins are the physical terminals of a component such as power input, data output, and ground. A net is a named electrical connection that links two or more pins together. The complete set of nets forms the netlist [ 19 ], which is analogous to a call graph in software. The netlist describes the connectivity structure of the design without specifying physical geometry. A moderately complex board may contain hundreds of components, thousands of pins, and dozens of schematic pages. 
+
+Components and Datasheets. Each component on a schematic, such as a microcontroller, voltage regulator, sensor, or passive el-ement, is identified by a manufacturer part number (MPN). The component manufacturer publishes a datasheet. The datasheet is a document, which can range from a couple of pages to hundreds of pages, that specifies pin functions, absolute maximum ratings, recommended operating conditions, and application circuits that show how the component should be connected [ 12 ]. Datasheets are the ground truth for the correctness of a design. A connection     
+
+> 1DRCY (pronounced “DAR-SEE”) is a proper name, not an acronym.
+> arXiv:2603.15672v1 [cs.AR] 13 Mar 2026 Conference’17, July 2017, Washington, DC, USA Kyle Dumont Nicholas Herbert Hayder Tirmazi 2Shrikanth Upadhayaya
+
+that violates a datasheet specification, for example, driving a 1.8 V input with a 3.3 V signal, can cause component damage or a silent malfunction. 
+
+Design Reviews. Before a PCB is sent for fabrication, the de-sign undergoes a design review [ 13 ]. The design review process is analogous to code review in software. A reviewer examines the schematic and cross-references each connection against the rele-vant datasheets to verify correctness. Unlike software, where a bug can often be patched after deployment, a hardware error discovered after fabrication requires a physical board respin. A board respin is a new manufacturing run that typically costs tens of thousands of dollars and delays the project by weeks to months. 
+
+EDA Format. Schematics are authored in electronic design automa-tion (EDA) tools [ 19 ], also referred to as electronic computer-aided design (ECAD) tools. Unlike software, where source code is pre-dominantly plain text, EDA vendors often use a proprietary binary or structured format. For example, Altium [ 2] uses .SchDoc , Ca-dence OrCAD [ 6 ] uses .dsn , KiCad [ 14 ] uses .kicad_sch , and so on. This format fragmentation means that any tool operating on schematics must support multiple parsers. AllSpice Hub parses all these formats, and DRCY builds on this platform capability. 
+
+## 3 Design 
+
+This section describes the agent architecture of DRCY’s end to end pipeline from a design schematic to a design review. When a design review is submitted on AllSpice Hub, the AllSpice Hub first parses the ECAD source files for a diverse array of common formats includ-ing Altium, OrCAD, KiCad, System Capture, Xpedition, or DE-HDL. After parsing these ECAD source files, the AllSpice Hub outputs a structured JSON representation containing components, pins, nets, and graphical annotations. This structured JSON representation is what DRCY takes as its input representation. For each schematic page in this JSON representation, DRCY then proceeds through a pipeline of five main agents. 
+
+## 3.1 Netlist Augmentation 
+
+When DRCY receives structured schematic information from the AllSpice Hub Platform, it first augments schematic data with netlist information to provide a complete picture of electrical connectivity. The system supports three strategies, one of which is selected au-tomatically based on the EDA format. For formats with embedded net data such as KiCad, Altium, and OrCAD, nets are extracted directly from the schematic JSON. For Cadence DE-HDL designs, a pstxnet.dat file is parsed. The augmented representation is serialized as XML for consumption by downstream agents. 
+
+## 3.2 Selection 
+
+Analyzing all components on a page in a single LLM call would exceed context limits and dilute focus. Instead, DRCY uses a Se-lection Agent that takes the components in a design schematic and partitions them into functional groups. Examples of functional groups include a voltage regulator with its feedback network and decoupling capacitors which forms a power stage, a microcontroller with its clock source and bypass capacitors which forms a core com-pute group, or an interface transceiver with its termination resistors which forms an I/O group. For each group, the agent extracts a man-ufacturer part number (MPN) or an internal part number (IPN) for every unique component, along with any datasheet URLs present in the schematic. 
+
+## 3.3 Agentic Datasheet Retrieval 
+
+A distinguishing capability of DRCY is its fully autonomous datasheet processing pipeline. Given a part number from the selec-tion stage, DRCY first uses a custom Datasheet Locator system. The Datasheet Locator queries a configurable set of component libraries including an API for datasheet information provided by DigiKey, custom JSON template APIs provided by clients, custom CSV lookup tables, or files uploaded by clients directly on AllSpice Hub. Multiple libraries can be configured per deployment to support both standard and proprietary components. After a datasheet is located, the location is sent to a Datasheet Ex-tractor, a Playwright-based browser automation layer that fetches distributor pages. Downloads are deduplicated so that concurrent requests for the same part number share a single in-flight fetch. A Head Analysis Agent examines extracted datasheets including the PDF’s table of contents or page thumbnails to select pages con-taining pin descriptions, electrical specifications, and application circuits. This head analysis reduces the token cost of the subsequent steps in the agentic pipeline. After head analysis, DRCY uses an Extraction Agent to process the selected pages and produce a compact XML representation of the datasheet. This compact representation typically contains pin functions with relevant metadata, absolute maximum ratings, recommended operating conditions, internal block descriptions, and application circuit guidance. Finally, DRCY uses a Critic Agent to score each datasheet extrac-tion on a 10 point scale across four weighted dimensions: feature completeness (25%), pin function coverage (40%), application in-formation (20%), and typical application circuits (15%). If the score falls below a configurable threshold and alternative URLs remain in the queue, the datasheet retrieval pipeline retries with a different source. The datasheet retrieval pipeline makes up to five attempts for each datasheet. The best-scoring extraction out of these attempts is returned. Extracted specifications are cached with a 7-day TTL on persistent cloud storage keyed by part number and source URL. Cache hits bypass the entire datasheet pipeline. 
+
+## 3.4 Group Review and Multi-Run Consensus 
+
+Group Review Agents perform the core analysis for DRCY’s design review. LLM outputs are nondeterministic, so the same prompt may yield different findings across invocations. Rather than treating this as a liability, DRCY exploits it as a reliability mechanism. 𝑘 separate instances of a Group Review Agent are invoked for each functional group identified by the Selection Agent (Section 3.2). All 𝑘 runs exe-cute concurrently so latency scales sub-linearly with 𝑘 . The Group Review Agent receives 1) the netlist-augmented schematic, 2) the extracted datasheet specifications for all components in the group, and 3) a checklist for the group review. Each Group Review Agent outputs structured JSON, mapping each component designator to a Component Analysis containing per-pin correctness verdicts. Pins sharing a root cause (e.g., a swapped pin pair) can be grouped under DRCY: Agentic Hardware Design Reviews Conference’17, July 2017, Washington, DC, USA DRCY  
+
+> AllSpice Hub
+> Netlist Augmentation
+> Selection Agent
+> Schematic Group 1
+> Group 2
+> Group N
+> Group Review Agent 1
+> Group Review Agent 2
+> Group Review Agent K
+> Consensus
+> Agent
+> Error
+> Grouping
+> Agent
+> Datasheet
+> Locator
+> Datasheet
+> Extractor
+> Head Analysis
+> Agent
+> Extraction
+> Agent
+> Critic
+> Agent
+> Datasheet Retrieval Pipeline
+> Unique Parts
+> Datasheet Context
+
+Design Review 
+
+Figure 1: An overview of DRCY’s architecture. A schematic received from AllSpice Hub flows through netlist augmentation, component selection and grouping, parallel datasheet retrieval, per-group review agents, consensus combination, and error grouping. The results from DRCY are posted back to AllSpice Hub as design review comments. 
+
+a single analysis entry keyed by multiple pin designators (e.g., “1, 3”). The 𝑘 Group Review Agents that ran for each Component Group are consolidated by a separate Multi-Run Consensus Agent. A sep-arate Multi-Run Consensus Agent is invoked for each Component Group. The Multi-Run Consensus Agent reconciles the results by 1) retaining findings present in multiple runs with higher confi-dence, 2) critically evaluating findings from a single run against the schematic and the datasheets before including it, and 3) re-examining contradictory results with full context. The Multi-Run Consensus Agent uses a dedicated model which is configurable sep-arately from the model used by the Group Review agents. Note that the Multi-Run Consensus Agent has access to the same schematic and datasheet context as the individual Group Review Agents. 
+
+## 3.5 Error Grouping 
+
+A single root cause often manifests across multiple pins and com-ponents. For instance, a swapped pin pair on an IC affects both the IC’s pins and any downstream components connected to the af-fected nets. The Error Grouping agent identifies these relationships and assigns them deterministic group identifiers. These identifiers drive the comment generation for DRCY’s design review. DRCY consolidates related errors into a single review comment with per-component detail, instead of scattering them across multiple com-ments, which would imply they are independent findings. 
+
+## 4 Deployment 
+
+DRCY is deployed as a Docker container that runs as a CI/CD action on AllSpice Hub. When a design review is submitted, the AllSpice Hub triggers the action, which fetches the schematic data, runs the analysis pipeline, and posts results back as inline review comments with Markdown-formatted tables showing per-pin verdicts. Each comment includes a link to the datasheet consulted, and schematic snippets are rendered as SVG overlays highlighting the relevant portion of the page. The system supports two operational modes. In design review mode only modified schematic pages are analyzed, reducing cost and latency for iterative reviews. In full analysis mode , all pages are analyzed. This is useful for initial design review or comprehensive audits. A configurable time limit allows operators to cap execution for cost control, with the system posting partial results for any pages completed before the deadline. DRCY uses a tiered model strategy to balance quality and cost. A strong model handles the review and combination agents, where reasoning quality directly affects accuracy. A weak model handles datasheet extraction and head analysis, where the task is more mechanical. By default, DRCY uses Anthropic models of differ-ent strengths as its strong and weak models. However, custom OpenAI-compatible providers can be configured for on-premises or alternative model deployments. DRCY is in production use by hardware design teams at mul-tiple Fortune 500 enterprises, a leading autonomous vehicle tech-nology company, a commercial space exploration company, and several growth-stage hardware startups. The system analyzes de-signs across Altium, OrCAD, KiCad, System Capture, Xpedition, and DE-HDL. The system operates within a SOC 2 Type II cer-tified environment with GDPR compliance. Note that customer design data is not used for model training. Customers requiring full data sovereignty can deploy DRCY on-premises with their own LLM infrastructure. A typical 10-page schematic with 50 to 100 unique components completes analysis in less than 20 minutes. OpenTelemetry tracing is also integrated throughout the pipeline, providing per-agent latency, token consumption, and datasheet cache hit rates for operational monitoring. Conference’17, July 2017, Washington, DC, USA Kyle Dumont Nicholas Herbert Hayder Tirmazi 4 Shrikanth Upadhayaya 
+
+## 5 Demonstration 
+
+The live demonstration gives attendees a hands-on look at DRCY’s end-to-end workflow on a real hardware design containing in-tentionally introduced connection errors. The presenter opens a schematic design on AllSpice Hub with DRCY enabled. On the schematic design, the presenter submits a new design review, which automatically triggers DRCY as a CI/CD action 3.
+
+Pipeline Walkthrough. After the presenter submits the design review, the attendees can observe DRCY’s progress in real time through status updates on the design review. The status updates for DRCY’s progress include a progress bar and per-page status indicators. As the pipeline for the DRCY design review executes, the presenter narrates each stage. The stages include, as discussed in Section 3, 1) the Selection Agent partitioning components into func-tional groups, 2) the Datasheet Retrieval pipeline autonomously locating and extracting specifications from many datasheets with variable page counts, 3) the parallel Group Review Agents ana-lyzing each functional group, 4) the Multi-Run Consensus Agent combining the individual reviews of the Group Review Agents for each group, and finally 5) the Error Grouping Agent deciding the granularity with which to report the errors detected and analyzed from DRCY’s design review. 
+
+DRCY Review Results. After the entire pipeline for DRCY’s design review completes, DRCY posts inline comments directly on the design review. The presenter shows these inline comments which include an identification of each error that DRCY found along with DRCY’s reasoning. More concretely, each DRCY comment includes a table of per-pin verdicts, a detailed reasoning chain referencing specific datasheet pins and schematic nets, a link to the consulted datasheet, and an SVG overlay highlighting the affected region of the schematic page. 
+
+## 6 Related Work 
+
+Commercial EDA suites including Cadence OrCAD [ 7 , 8 ] and Al-tium [ 3, 4 ] provide ERC and DRC but are limited to structural and physical constraints. They cannot verify datasheet-level semantic correctness, which is DRCY’s focus. Startup tools have begun to address datasheet-level verification. Cady Solutions [ 10 ] uses NLP to parse datasheets into a formal rule database and checks uploaded netlist and component list files against it. Cadstrom [ 9 ] combines first-principles physics simula-tion with generative AI to validate schematics and PCB layouts. Both are standalone tools with no version control, collaboration, or CI/CD integration. DRCY differs in that it operates directly on na-tive schematic representations within an integrated version control and collaboration platform, uses agentic LLM reasoning with au-tonomous datasheet retrieval, and is embedded in a CI/CD pipeline that triggers automatically on design review submissions. Recent work has also investigated applying LLMs to hardware 
+
+generation . Chip-Chat [ 5] and RTLCoder [ 16 ] target Verilog synthe-sis, while surveys [ 11 , 19 ] map the broader LLM-for-EDA landscape. DRCY addresses the complementary problem of hardware verifica-tion , operating on completed designs rather than generating new ones. 
+
+> 3Demo video: https://www.loom.com/share/9dff06ea27b2413cbd5e50c542a08ff3
+
+DRCY’s architecture draws on the compound AI systems para-digm [ 18 ], where multiple LLM calls are composed with tool use and self-evaluation. The multi-run consensus mechanism relates to self-consistency prompting [ 17 ], adapted here for structured engineering analysis rather than chain-of-thought reasoning. LLM-based code review tools [ 15 ] for software are conceptually related, but hardware review requires domain-specific capabilities such as datasheet retrieval, pin-level analysis, and netlist reasoning that have no direct software analog. To our knowledge, DRCY is the first system to combine au-tonomous datasheet retrieval with LLM-based connection analysis in a production CI/CD environment for PCB design review. 
+
+## 7 Conclusion 
+
+In this paper, we introduced the design of DRCY, the first production-deployed multi-agent LLM system for automated hardware design reviews. DRCY decomposes a design review task into a compre-hensive multi-agent pipeline in a way that increases accuracy and prevents context degradation. It takes advantage of AllSpice Hub, which is a platform already built for collaborative hardware design. By using a custom agent architecture built specifically for the needs of schematic designs, DRCY provides hardware design teams with actionable, evidence-based feedback integrated directly into their design review workflow. The system is in active production use and available as a CI/CD action on AllSpice Hub, where it is actively used by hardware teams across multiple industries. 
+
+## References                               
+
+> [1] AllSpice. 2026. Allspice Platform. https://www.allspice.io/product [2] Altium. 2026. Altium Designer. https://www.altium.com/altium-designer [3] Altium. 2026. Altium Designer Design Rules Check. https://www.altium.com/ documentation/altium-designer/pcb/drc [4] Altium. 2026. Altium Designer Electrical Rules Check. https://www.altium.com/ documentation/altium-circuitmaker/electrical-rules-check [5] Jason Blocklove, Siddharth Garg, Ramesh Karri, and Hammond Pearce. 2023. Chip-Chat: Challenges and Opportunities in Conversational Hardware Design. In Proceedings of the 2023 ACM/IEEE 5th Workshop on Machine Learning for CAD (MLCAD) . doi:10.1109/MLCAD58807.2023.10299874 [6] Cadence Design Systems. 2026. Cadence OrCAD. https://www.cadence.com/ en_US/home/tools/pcb-design-and-analysis/orcad.html [7] Cadence Design Systems. 2026. OrCAD Design Rule Check. https://www.ema-eda.com/courses/orcad-capture-17-4-2021-walk-through/lessons/capture-walk-through-9-design-rule-check-2/ [8] Cadence Design Systems. 2026. OrCAD Electrical Rules Check. https://www.ema-eda.com/products/cadence-orcad/orcad-sigrity-erc [9] Cadstrom. 2026. Cadstrom: Catch PCB Errors Before They Cost You Weeks. https://www.cadstrom.io/ [10] CADY. 2026. CADY: Automatic AI Analysis for Eletrical Schematics. https: //cadysolutions.com/ [11] Zhuolun He, Yuan Pu, Haoyuan Wu, Tairu Qiu, and Bei Yu. 2025. Large Language Models for EDA: Future or Mirage? ACM Transactions on Design Automation of Electronic Systems 30, 6 (2025). doi:10.1145/3736167 [12] Paul Horowitz and Winfield Hill. 2015. The Art of Electronics (3rd ed.). Cambridge University Press. [13] IPC. 2012. IPC-2221B: Generic Standard on Printed Board Design . Technical Report. IPC — Association Connecting Electronics Industries. [14] KiCad. 2026. KiCad. https://www.kicad.org/ [15] Zhiyu Li, Shuai Lu, Daya Guo, Nan Duan, Shailesh Jannu, Grant Jenks, Deep Majumder, Jared Green, Alexey Svyatkovskiy, Shengyu Fu, and Neel Sundaresan. 2022. Automating code review activities by large-scale pre-training. In Proceedings of the 30th ACM Joint European Software Engineering Conference and Symposium on the Foundations of Software Engineering . doi:10.1145/3540250.3549081 [16] Shang Liu, Wenji Fang, Yao Lu, Qijun Zhang, Hongce Zhang, and Zhiyao Xie. 2024. RTLCoder: Outperforming GPT-3.5 in Design RTL Generation with Our Open-Source Dataset and Lightweight Solution. IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems (2024). doi:10.1109/TCAD.2024.3431278
+
+DRCY: Agentic Hardware Design Reviews Conference’17, July 2017, Washington, DC, USA 
+
+[17] Xuezhi Wang, Jason Wei, Dale Schuurmans, Quoc Le, Ed Chi, Sharan Narang, Aakanksha Chowdhery, and Denny Zhou. 2023. Self-Consistency Improves Chain of Thought Reasoning in Language Models. In Proceedings of the 11th International Conference on Learning Representations (ICLR) .[18] Matei Zaharia, Omar Khattab, Lingjiao Chen, Jared Goldstein, Percy Liang, Alex Beutel, Ion Stoica, Christopher Re, et al . 2024. The Shift from Models to Compound AI Systems. Berkeley AI Research Blog (2024). https://bair.berkeley.edu/blog/ 2024/02/18/compound-ai-systems/ [19] Ruizhe Zhong, Xingbo Du, Shixiong Kai, Zhentao Tang, Siyuan Xu, Hui-Ling Zhen, Jianye Hao, Qiang Xu, Mingxuan Yuan, and Junchi Yan. 2023. Llm4eda: Emerging progress in large language models for electronic design automation. 
+
+arXiv preprint arXiv:2401.12224 (2023).
