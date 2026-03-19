@@ -1,0 +1,828 @@
+Title: Draft-and-Prune: Improving the Reliability of Auto-formalization for Logical Reasoning
+
+URL Source: https://arxiv.org/pdf/2603.17233v1
+
+Published Time: Thu, 19 Mar 2026 00:32:01 GMT
+
+Number of Pages: 16
+
+Markdown Content:
+# Draft-and-Prune: Improving the Reliability of Auto-formalization for Logical Reasoning 
+
+Zhiyu Ni 1*, Zheng Liang 1*, Liangcheng Song 3*, Chenrui Cao 3, Xian Zhang 3,Alberto Sangiovanni-Vincentelli 1, Pierluigi Nuzzo 11University of California, Berkeley 3Microsoft 
+
+> {zhiyuni, zhliang, alberto, nuzzo}@berkeley.edu, {v-liasong, v-chenruicao, zhxian}@microsoft.com
+
+Abstract 
+
+Auto-formalization (AF) translates natural-language reasoning problems into solver-executable programs, enabling symbolic solvers to perform sound logical deduction. In practice, however, AF pipelines are currently brittle: programs may fail to execute, or ex-ecute but encode incorrect semantics. While prior work largely mitigates syntactic failures via repairs based on solver feedback, reduc-ing semantics failures remains a major bottle-neck. We propose Draft-and-Prune (D&P), an inference-time framework that improves AF-based logical reasoning via diversity and ver-ification . D&P first drafts multiple natural-language plans and conditions program genera-tion on them. It further prunes executable but contradictory or ambiguous formalizations, and aggregates predictions from surviving paths via majority voting. Across four representative benchmarks (AR-LSAT, ProofWriter, PrOn-toQA, LogicalDeduction), D&P substantially strengthens AF-based reasoning without extra supervision. On AR-LSAT, in the AF-only set-ting, D&P achieves 78.43% accuracy with GPT-4 and 78.00% accuracy with GPT-4o, signifi-cantly outperforming the strongest AF base-lines MAD-LOGIC and CLOVER. D&P then attains near-ceiling performance on the other benchmarks, including 100% on PrOntoQA and LogicalDeduction. 1
+
+1 Introduction 
+
+Large language models (LLMs) achieve strong per-formance on many language tasks (Achiam et al., 2023; Hurst et al., 2024), yet they remain unreliable on deductive logical reasoning (Zhong et al., 2022; Srivastava et al., 2023). Symbolic solvers provide sound deductive inference, but they require inputs written in precise formal languages (e.g., logic   
+
+> *Equal contribution.
+> 1Code repository: https://github.com/zyni2001/ draft-and-prune
+
+programs) rather than natural language. Neuro-symbolic methods (Zhang et al., 2023) aim to com-bine the flexibility of LLMs with the rigor of sym-bolic reasoning. Among them, auto-formalization 
+
+(AF) translates a natural-language problem into an executable formalization that a solver can run, thereby offloading deduction to a sound back-end (Wu et al., 2022; Pan et al., 2023). In practice, however, existing AF pipelines are brittle and often fail in two ways: (i) due to syn-tactic failures , when the generated formalization cannot be parsed or executed, and (ii) due to se-mantic unfaithfulness , where the program can be executed but does not capture the original intent. Prior systems (Pan et al., 2023) largely mitigate syntactic failures by using the solver feedback (e.g., error messages) to repair the syntax, but semantic failures remain common. We indeed observe that current AF frameworks tend to under-utilize the reasoning capabilities of the symbolic solver. By generating only a narrow set of candidate formal-izations (often one plus a few repaired versions), they end up insufficiently exploring the space of possible formalizations. Increasing the number of sampled candidates can help raise the chance of discovering a correct formalization. However, naïve sampling, if not appropriately biased, may not be sufficient to significantly improve semantic faithfulness. We address these limitations by proposing Draft-and-Prune (D&P), an inference-time framework that: (i) drafts multiple high-level plans and condi-tions program generation on them; (ii) prunes exe-cutable candidates that are not well-defined (e.g., contradictory or ambiguous); and (iii) aggregates the answers from the remaining candidates. D&P improves the performance by over 30% on AR-LSAT (Zhong et al., 2022), a benchmark where existing auto-formalization baselines per-form poorly. On other datasets, including PrOn-toQA (Saparov and He, 2023) and LogicalDeduc-1 
+
+> arXiv:2603.17233v1 [cs.AI] 18 Mar 2026 AR-LSAT
+> ProofWriter
+> PrOntoQA
+> LogicalDeduction
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Accuracy (%)
+> GPT-4
+> CoT
+> Logic-LM
+> SymbCoT
+> D&P
+> AR-LSAT
+> ProofWriter
+> PrOntoQA
+> LogicalDeduction
+> NR NR
+> GPT-4o
+> CoT
+> SymbCoT
+> CLOVER
+> D&P
+
+Figure 1: End-to-end accuracy ( Acc ) on four logical reasoning benchmarks. Left: GPT-4 results comparing CoT, Logic-LM, SymbCoT, and D&P. Right: GPT-4o results comparing CoT, SymbCoT, CLOVER, and D&P. “NR” denotes not reported results. 
+
+tion (Srivastava et al., 2023), D&P achieves near-ceiling accuracy. Overall, these results suggest that auto-formalization-based reasoning can be a reli-able approach when combined with inference-time diversity and pruning. 
+
+Contributions. (i) We analyze the brittleness of existing AF pipelines and characterize key failure modes. (ii) We propose Draft-and-Prune (D&P), an inference-time framework that improves rea-soning accuracy via draft-induced diversity and verification-based pruning. (iii) We evaluate D&P on multiple deductive reasoning benchmarks, by reporting the end-to-end accuracy and other diag-nostic metrics, and providing in-depth ablations and error analysis. 
+
+2 Background 
+
+2.1 Deductive logical reasoning 
+
+Deductive logical reasoning derives conclusions that follow necessarily from a given set of premises. Typical tasks include checking argument validity, proving theorems, and solving constraint problems. Such tasks demand both syntactic precision and semantic consistency, and differ from inductive predictions, where machine learning algorithms dominate and statistical generalization is the focus. Formally, a set of premises P is given together with one or more candidate hypotheses Qi. The goal is to determine the logical relationship be-tween P and each Qi, such as entailment ( P |=
+
+Qi), contradiction ( P |= ¬Qi), or consistency (i.e., 
+
+P ∧ Qi is satisfiable). 
+
+2.2 Reasoning with LLM and prompting 
+
+Benchmarking studies in natural-language reason-ing suggest that direct generation by LLMs can produce outputs that are fluent yet logically in-valid (Srivastava et al., 2023; Tafjord et al., 2021). Prompting-based methods provide procedural scaf-folding to improve accuracy and reliability. Chain-of-Thought (CoT) prompting encourages interme-diate reasoning steps (Wei et al., 2022), while self-ensembling (e.g., self-consistency) samples multi-ple reasoning traces and aggregates answers to im-prove accuracy and robustness (Wang et al., 2022). More recent methods explicitly structure the rea-soning process with decomposition and planning, such as least-to-most prompting (Zhou et al., 2023) and plan-and-solve prompting (Wang et al., 2023). These ideas motivate our use of drafted plans as lightweight scaffolding to diversify candidates. 
+
+2.3 Reasoning based on symbolic solvers 
+
+Despite increasingly sophisticated prompting strategies, LLMs can be unreliable on tasks that require strict logical validity, since their training objective provides no guarantee of sound deduc-tion. This has motivated neuro-symbolic meth-ods that integrate neural generation with symbolic solvers (Zhang et al., 2023). A primary paradigm in this space is auto-formalization (AF), which translates natural-language problem statements into solver-executable formalizations (e.g., logic pro-grams illustrated in Figure 3), that can be executed by symbolic solvers (Pan et al., 2023). In AF pipelines, failures can arise either from non-executable outputs (syntactic issues) or from executable but semantically incorrect encodings. Prior work typically reports diagnostic metrics that separate (i) whether a generated solver program is executable ( execution rate ) from (ii) whether exe-cutable programs yield the correct answer ( accu-racy among executable formalizations ) to disentan-gle syntactic/tooling failures from semantic unfaith-fulness. We follow this convention in our analysis; formal definitions are given in Section 4.3. 2Generate and   
+
+> Repair
+> Answer
+> 1
+> Draft Logical
+> Program 1
+> Solver
+> (Execute )
+
+Reasoning Path 1
+
+Reasoning Path k  
+
+> Auto -formalization
+> w/ Self -refinement
+> Answer
+> 2
+> Draft Sketched
+> Plan 2
+> Logical
+> Program 2 Solver
+
+Reasoning Path 2 
+
+> Final
+> Answer
+
+…
+
+Majority 
+
+Vote                           
+
+> Generate and
+> Repair
+> Draft Drafted
+> Plan k
+> Logical
+> Program k
+> Answer
+> k
+> Solver
+> (Execute )
+> 𝑃 :𝑎 ∧𝑎 →𝑏 ∧(𝑎 →¬𝑏 )
+> …
+> 𝑄 !: …
+> 𝑄 ": …
+> …Existence?
+> Contradiction found!
+> Uniqueness?
+> 𝑃 :𝑎 !∧𝑏 "∧𝑎 !→𝑏 !∧⋯
+> …
+> 𝑄 !:𝑏 !
+> 𝑄 ":𝑏 #
+> …
+> Question in
+> Natural
+> Language
+> Plan 1
+> 1. List the eight students and create a Boolean variable for each student
+> and each of the six report slots (morning and afternoon for each day).
+> 2. Olivia and Robert cannot give afternoon reports: Set `Olivia_2 = False`,
+> `Olivia_4 = False`, `Olivia_6 = False`, `Robert_2 = False`, `Robert_4 =
+> False`, `Robert_6 = False`.
+> …
+> Drafted
+> Plan 1
+> Aggregate
+> Prune
+
+Figure 2: The algorithmic pipeline of Draft-and-Prune 
+
+Correct formulation: 
+
+# Olivia and Robert cannot give afternoon reports for student in [" Olivia " , " Robert " ]: for i in [2 , 4, 6]: s. add ( slot_map [f"{ student }_{i}"] == False ) # Nina 's condition affecting Helen and Irving for i , next_day in [(1 , 3) , (3 , 5) ]: s. add ( Implies ( slot_map [f" Nina_ {i}"], And ( slot_map [f" Helen_ { next_day }"], slot_map [f" Irving_ { next_day }" ]) )) ... # omit other codes for brevity 
+
+Output: [D] 
+
+Figure 3: A correct Z3Py program corresponds to an input question in AR-LSAT 
+
+3 Draft-and-Prune 
+
+Our framework targets first-order logic (FOL) as the reasoning formalism. D&P performs inference-time ensemble over k independent AF paths . Each path i is a complete AF pipeline: (1) Draft a plan 
+
+pi in natural language given an input instance x;(2) Generate a formalization (e.g., a Z3Py program for AR-LSAT) zi conditioned on pi; (3) Repair zi
+
+using standard solver-feedback fixes until it exe-cutes or reaches a fixed repair limit; (4) Execute 
+
+zi to derive feasible hypothesis set Si; (5) Prune 
+
+ill-defined paths; and (6) Aggregate answers from surviving paths by majority vote. Both plan draft-ing and formalization generation are performed by an LLM via fixed prompts with in-context learning (ICL). Figure 2 illustrates the pipeline. All paths are independent samples; we do not perform tree search or branching within a path. Our design is motivated by a common brittle-ness pattern we have observed in existing auto-formalization (AF) pipelines. Even when feedback 
+
+Contradictory Formulation: 
+
+# Formulate " Kyle and Lenore do not report " s. add ( days [" Kyle "] == 0) s. add ( days [" Lenore "] == 0) # Formulate predicates : each student reports exactly once # But forgot to exclude Kyle and Lenore here for student in students : s. add ( days [ student ] >= 1, days [ student ] <= 3) s. add ( sessions [ student ] >= 0, sessions [ student ] <= 1) 
+
+Output: [] (Non-existence, should be pruned) 
+
+Ambiguous Formulation: 
+
+# only specifies there should be 2 reports each day for d in range ( len ( days )): s. add ( Sum ([ If ( rep [i ][ d ][ s], 1, 0) for i in range ( len ( students )) for s in range ( len ( slots )) ]) == 2) # forgets to constrain that each student reports exactly # once , and produces a vague formulation . 
+
+Output: [A, B, D, E] (Non-uniqueness, should be pruned) 
+
+Figure 4: Two typical types of ill-defined logical pro-grams which can be detected during inference 
+
+from a solver is used to repair the syntax, AF sys-tems can fail either because the generated solver program cannot be executed due to syntactic fail-ures, or because it can be executed but encodes incorrect semantics, a failure denoted by semantic unfaithfulness . To disentangle these failure modes, we follow a common practice in the AF literature and use the execution rate and the accuracy among executable formalizations as complementary diag-nostics that localize errors due to executability ver-sus incorrect semantics. The formal definitions are provided in Section 4.3. Prior AF baselines ex-hibit both types of failures on challenging inputs, suggesting that improving executability alone is insufficient and that searching over semantically faithful encodings remains a key bottleneck. 3This diagnosis directly motivates the two com-ponents of D&P. Drafting encourages a form of controlled semantic diversity by first generating an explicit natural-language plan and then condi-tioning program generation on that plan. This de-sign introduces stochasticity at the planning stage while keeping program generation deterministic via greedy decoding, which preserves syntactic cor-rectness while increasing the chance of producing a faithful encoding. Pruning improves the reliability of the result by filtering executable but ill-defined programs using solver-verifiable well-definedness checks before selecting an answer. As further dis-cussed below, we call ill-defined a program that is contradictory or amenable to ambiguous encod-ings. Predictions from surviving paths are finally aggregated by majority voting. 
+
+3.1 Drafting plans to induce semantic diversity 
+
+A key challenge in AF is that many distinct sym-bolic encodings can appear plausible from the same natural-language input, while only a small subset is semantically faithful. Uniformly sampling pro-grams directly from the LLM can significantly in-crease syntax and runtime errors. We therefore introduce stochasticity at the plan level. As illus-trated in the middle of Figure 2, a plan pi is a struc-tured natural-language checklist that specifies: (i) the problem entities and the variables representing their properties or assignments, (ii) the domains of the entities and variables and the key relations among them; and (iii) how each textual constraint maps to solver assertions. For each path i, we first draft a plan 
+
+pi ∼ π(p | x),
+
+and then generate a formalization that is compati-ble with the solver 
+
+zi ∼ π(z | (x, p i)) .
+
+The formalization is subject to a repair step, if it is not executable. π(·) denotes the distribution induced by the LLM under the specified decod-ing strategy. In practice, a plan is sampled with temperature TDRAFT , while program generation is performed with temperature 0 for stability. 
+
+3.2 Pruning paths to improve faithfulness 
+
+Executing a path program zi produces a feasible hypothesis set 
+
+Si = S(zi) ⊆ A ,
+
+where A = {Q1, . . . , Q m} denotes the set of can-didate hypotheses, and S(·) maps zi to the set of hypotheses Si got from solver execution. Opera-tionally, Si is obtained by issuing queries for each hypothesis Qj in the execution process. Depending on the input context, these queries may test differ-ent logical relations, as mentioned in Section 2.1. However, executable programs may still encode the problem incorrectly due to semantic unfaithful-ness, which is revealed during solver execution. If the solver returns no feasible hypothesis or multi-ple feasible hypotheses, the induced formalization violates the assumption that the task admits a single correct hypothesis. We therefore introduce well-definedness criteria to prune such paths. 
+
+Well-definedness criteria. We retain path i if and only if |Si| = 1 . Equivalently, we define 
+
+gi = 1(|Si|=1) . If |Si| = 0 , the formalization is contradictory, producing a failing existence check; if |Si| > 1, it is deemed as ambiguous, producing a failing uniqueness check. In either case, exempli-fied in Figure 4, the path will be pruned at inference time after verification using the solver. 
+
+3.3 Majority voting over surviving paths 
+
+Let I = {i : gi = 1 } denote the set of surviving paths. For each i ∈ I , the feasible set is a singleton. We then predict 
+
+ˆy = arg max  
+
+> Qj∈A
+
+X
+
+> i∈I
+
+1(Si={Qj }).
+
+If all paths are pruned or unexecutable, the an-swer will be labeled as incorrect. We aggregate over multiple sampled reasoning paths, but each path corresponds to a formalization-and-execution pipeline that could be found invalid. 
+
+Probabilistic interpretation. Overall, the D&P procedure can be viewed as sampling-based marginalization over latent plans and latent for-malizations with validation gating, i.e., 
+
+M C (Qj | x) = X
+
+> p
+
+X
+
+> z
+
+1(|S(z)|=1 ,S (z)= {Qj })
+
+· π(z | (x, p )) π(p | x).
+
+D&P approximates 
+
+ˆy ≈ arg max   
+
+> Qj∈A
+
+M C (Qj | x)
+
+by sampling k independent (pi, z i) pairs and aggre-gating answers from verifier-approved paths. 44 Experiments 
+
+4.1 Datasets 
+
+We evaluate our approach on four representative reasoning benchmarks, which jointly cover both natural and synthetic settings and assess different aspects of logical and deductive reasoning: 
+
+AR-LSAT is derived from analytical reasoning questions in the Law School Admission Test (LSAT) (Zhong et al., 2022). Each instance pro-vides a set of natural-language premises P together with multiple candidate hypotheses {Q1, . . . , Q m}.Each question specifies a target logical relation, in-cluding “must be true” (P |= Qi), “must be false” 
+
+(P |= ¬Qi), “could be true” (P ∧Qi is satisfiable), and “could be false” (P ∧ ¬ Qi is satisfiable). This benchmark is widely regarded as challenging, with existing methods still far from perfect accuracy. We report our main results on the original public AR-LSAT test set for comparability with prior work. We additionally identified annotation issues in this benchmark and constructed a corrected 229-sample test split in Appendix A.13. 
+
+ProofWriter evaluates multi-step deductive rea-soning over natural-language rules and facts. Each instance consists of premises P and a single hy-pothesis Q, which must be classified as entailed (P |= Q), contradicted ( P |= ¬Q), or unknown (neither holds) (Tafjord et al., 2021). 
+
+PrOntoQA is a synthetic benchmark designed to test systematic deductive reasoning (Saparov and He, 2023). It follows the same single-hypothesis formulation as ProofWriter, but restricts labels to binary outcomes, where each hypothesis is either entailed or contradicted by the premises. 
+
+LogicalDeduction , from BigBench (Srivastava et al., 2023), also presents multiple candidate hy-potheses under the same premises P , but each ques-tion asks for the unique hypothesis Qi that is log-ically entailed by the premises, that is, the option satisfying P |= Qi. Problems typically involve inferring object orderings or relations from a small set of constraints. 
+
+4.2 Baselines 
+
+To compare our method against existing LLM-based reasoning approaches, we consider a di-verse set of baselines spanning prompting-based and AF-based methods: (1) Direct prompting and 
+
+CoT (Wei et al., 2022); (2) CoT-SC (Wang et al., 2022), an enhanced decoding approach that sam-ples multiple reasoning paths and aggregates their outputs to improve robustness and accuracy; (3) 
+
+Logic-LM (Pan et al., 2023), which first trans-lates the natural language problem into a symbolic form and then delegates reasoning to a symbolic solver, with syntax repair based on solver feed-back over the translation process; (4) LINC (Olaus-son et al., 2023), which follows a similar way as Logic-LM but uses majority voting to aggregate multiple formalizations; (5) DetermLR (Sun et al., 2024), which transitions uncertain premises into determinate conclusions through iterative control and, potentially, external modules (e.g., memory); (6) SymbCoT (Xu et al., 2024), which injects symbolic reasoning operations into the chain-of-thought framework; (7) Logic-LM++ (Kirtania et al., 2024), which extends Logic-LM by intro-ducing multi-step refinement and pairwise com-parisons; (8) CLOVER (Ryu et al., 2025), which introduces a compositional translation of natural language into first-order logic via logical depen-dency structures, coupled with verification through symbolic solvers to ensure semantic correctness. (9) MAD-LOGIC (Yang et al., 2026), a multi-agent debate framework that improves symbolic translation and reasoning through debate among symbolic and natural-language agents, with final answers selected by majority vote. 
+
+4.3 Evaluation Metrics 
+
+We report end-to-end accuracy (Acc ), defined as the fraction of instances whose final predicted answer matches the ground truth. Let N be the number of instances, and let cj ∈ { 0, 1} indicate whether the final output for instance j is correct. 
+
+Acc = 1
+
+N
+
+> N
+
+X
+
+> j=1
+
+cj (1) To diagnose brittleness of AF-only methods (i.e., without fallback via prompting), we additionally report execution rate (ExecRate ) and accuracy among executable formalizations (Acc @Exec ). For an AF-only method, the system attempts to generate solver programs and derive an answer through execution and, when applicable, pruning. If no valid AF path is available for an instance, the system abstains and the instance is counted as incorrect. 
+
+ExecRate = 1
+
+N
+
+> N
+
+X
+
+> j=1
+
+ej , (2) 5Table 1: End-to-end accuracy ( Acc ) on four deductive reasoning benchmarks. We compare prompting-based methods and auto-formalization (AF) methods, without fallback (abstention) and with CoT fallback. “–” indicates that the corresponding setting is not supported by the baseline.                                                                                              
+
+> Paradigm Method Fallback LLM End-to-end Accuracy (%) Policy AR-LSAT ProofWriter PrOntoQA LogicalDeduction Prompting Direct N/A GPT-4 33.30 52.67 77.40 71.33 CoT 35.06 68.11 91.00 74.67 CoT-SC –69.33 93.40 74.67 DetermLR –79.17 98.60 85.00 SymbCoT 43.91 82.50 99.60 93.00 Direct GPT-4o 30.30 53.70 –84.70 CoT 36.09 72.67 99.00 91.33 CoT-SC 38.37 –––SymbCoT 34.20 80.20 –90.70 AF Logic-LM Abstention (None) GPT-4 19.56 79.00 83.00 88.00 Logic-LM++ 21.18 78.80 ––LINC 37.83 98.30 ––MAD-LOGIC 53.25 92.00 100.00 94.33
+> D&P 78.43 98.33 99.32 99.50 CLOVER GPT-4o 46.80 96.50 –99.00 LINC 44.65 99.50 ––
+> D&P 78.00 99.67 100.00 100.00 Logic-LM CoT GPT-4 43.04 79.66 83.20 87.63 Logic-LM++ 46.32 79.66 ––
+> D&P 80.65 98.33 99.36 99.50 CLOVER GPT-4o 62.80 96.70 –99.30
+> D&P 82.83 99.67 100.00 100.00
+
+Acc @Exec =
+
+PNj=1 ej cAF 
+
+> j
+
+PNj=1 ej
+
+. (3) Let ej ∈ { 0, 1} indicate whether the AF pro-cedure for instance j yields at least one valid AF path. A path is considered valid if its solver pro-gram executes successfully (i.e., without errors/ex-ceptions within a fixed timeout) and, when prun-ing is enabled, passes the pruning criteria. Let 
+
+cAF  
+
+> j
+
+∈ { 0, 1} indicate whether the final AF predic-tion for instance j is correct, defined only when 
+
+ej = 1 .For hybrid systems (e.g., Logic-LM with CoT fallback), the final answer may come from either the AF component or a fallback when AF fails; we report end-to-end accuracy without diagnostics. 
+
+4.4 Experimental Setup Experimental setup. We conduct our experi-ments using GPT-4 and GPT-4o, consistent with baselines. For all LLM API calls, the maximum output length is set to 2,048 tokens, with nucleus sampling parameter p = 1 .0. Plan drafting uses temperature TDRAFT = 1 .0, while program genera-tion uses greedy decoding ( TGEN = 0 ). Each path allows at most R = 2 rounds of solver-feedback repair. Plan and program generation use three-shot in-context learning (ICL) from training data, while syntax repair is zero-shot. Prompt templates are provided in Appendix A.17. If there is a tie (no strict majority), we choose the first-appearing an-swer for determinism. All experiments are repeated over 10 runs. We report mean (and standard devia-tion when applicable). 
+
+4.5 Main Results 
+
+Table 1 reports end-to-end accuracy ( Acc ) on four deductive reasoning benchmarks, covering both prompting-based methods and auto-formalization (AF) methods. For AF, we evaluate two settings: 
+
+AF-only (no fallback) and AF with CoT fallback ,where CoT is used only when AF fails. This sepa-ration allows us to distinguish improvements to the AF itself from gains due to CoT fallbacks. We first compare under the AF-only setting. On AR-LSAT, the strongest AF baselines in our ta-ble are MAD-LOGIC (GPT-4), which achieves 53.25%, and CLOVER (GPT-4o), which achieves 46.8%. In contrast, D&P reaches 78.43% with 6GPT-4 and 78.00% with GPT-4o, improving over the strongest baselines by 25.2 and 31.2 absolute points, respectively. Notably, MAD-LOGIC relies on a multi-agent debate framework, whereas D&P uses a single-model inference-time pipeline. AF baselines also use CoT fallbacks for failed formalization. To make fair comparisons, we also report in the same setting. With this setting, D&P remains strong: on AR-LSAT, it achieves 80.65% (GPT-4) and 82.83% (GPT-4o), and it still saturates ProofWriter, PrOntoQA, and LogicalDeduction. Finally, we compare to prompting-based meth-ods. Among the baselines where results are avail-able, SymbCoT is typically the strongest. On AR-LSAT, it achieves 43.91% with GPT-4 and 34.20% with GPT-4o. Meanwhile, D&P attains 78.43% (AF-only) and 80.65% (with CoT fallback) un-der GPT-4, and 78.00% (AF-only) and 82.83% (with CoT fallback) under GPT-4o. Additional experiments on newer model families such as GPT-5.2 (OpenAI, 2025) and Gemini-3.0 (Google, 2025) are reported in Appendix A.4–A.6. 
+
+4.6 In-depth Analysis 
+
+Table 2: Decomposed AF diagnostic metrics on AR-LSAT. k denotes the number of sampled AF paths.                          
+
+> Method LLM Acc (%) Exec Rate (%)
+> Acc (%)
+> @Exec
+> Logic-LM GPT-4 19.6 32.6 60.0 D&P ( k= 1 )36.4 43.3 84.1 D&P ( k= 20 )78.4 91.7 85.5 CLOVER GPT-4o 46.8 59.7 78.3 D&P ( k= 1 )39.9 44.6 89.4 D&P ( k= 20 )78.0 89.6 87.1
+
+Table 2 shows that D&P surpasses the baselines in both ExecRate and Acc @Exec when using a larger number of sampled paths ( k=20 ). At k=1 ,D&P trails CLOVER in ExecRate because lim-ited sampling reduces the chance of producing a valid formalization that survives pruning. To test our hypothesis that a few AF attempts are unlikely to yield a faithful formalization on hard problems, we examine how performance changes as we sample more candidate paths. We define a diagnostic metric, cover@ k, which marks an in-stance as solved if any of the k sampled AF paths yields the correct answer. This metric character-izes the potential of AF under broader exploration: higher cover@ k indicates a greater likelihood that at least one correct formalization appears among the k sampled paths. 1 5 10 15 20 
+
+> Number of Paths ( k)
+> 30%
+> 40%
+> 50%
+> 60%
+> 70%
+> 80%
+> 90%
+> 100%
+> coverage@k
+> AR-LSAT
+> ProofWriter
+> PrOntoQA
+> LogicalDeduction
+
+Figure 5: Coverage ( cover@ k) as a function of the num-ber of sampled AF paths k across four benchmarks. 
+
+Figure 5 shows that cover@ k increases mono-tonically with k, indicating that the chance of ob-taining a correct answer grows as we explore more candidates. Moreover, the gap between cover@ k
+
+and realized AF accuracy at small k suggests that many failures are due to under-exploration of the formalization space rather than the absence of faith-ful formalizations. In other words, many instances are solvable by AF, but not reliably within a single or a few attempts. Cost-normalized comparisons with CoT-SC are reported in Appendix A.14. 
+
+4.7 Effectiveness of drafting plans 
+
+Table 3: Accuracy with a naive AF path w/ and w/o drafted plans (on GPT-4, w/o pruning). 
+
+Acc AF (%) AF w/o draft AF w/ draft AR-LSAT 36.35 ± 1.22 41.78 ± 2.46 ProofWriter 97.69 ± 0.18 98.33 ± 0.22 PrOntoQA 94.92 ± 0.84 99.56 ± 0.18 LogicalDeduction 98.60 ± 0.58 98.23 ± 0.32 
+
+Table 3 studies the effect of drafting a plan be-fore formalization generation in a single-path AF setting without pruning. On AR-LSAT, adding drafted plans improves Acc AF by over 5%, in-dicating that explicit planning helps AF improve performance even without path selection or ag-gregation. On PrOntoQA, although plain AF al-ready achieves high accuracy, drafted plans further reduce occasional failures and push performance closer to saturation. On ProofWriter and Logi-calDeduction, both variants achieve near-ceiling performance, and drafting plans neither degrades accuracy nor introduces instability. 
+
+4.8 Sensitivity to Number of Paths 
+
+We first study the effect of sampling multiple AF paths with drafted plans on ProofWriter. As shown 71 5 10 15 20 
+
+> Number of Paths ( k)
+> 95%
+> 96%
+> 97%
+> 98%
+> 99%
+> 100%
+> Execution Rate  ProofWriter
+
+(a) ExecRate 1 5 10 15 20  
+
+> Number of Paths ( k)
+> 95.0%
+> 96.0%
+> 97.0%
+> 98.0%
+> 99.0%
+> Acc@Exec
+> ProofWriter
+
+(b) Acc@Exec 
+
+Figure 6: Diagnostic metrics on ProofWriter across different numbers of paths ( k). 
+
+in Figure 6, increasing the number of paths k
+
+leads to a rapid increase in both ExecRate and 
+
+Acc @Exec . This behavior indicates that, when semantic ambiguity is limited, drafted plans com-bined with multi-path aggregation can reliably in-crease AF accuracy without introducing instability. 1 5 10 15 20 
+
+> Number of Paths ( k)
+> 20%
+> 40%
+> 60%
+> 80%
+> Accuracy (AF-Only)
+> w/o Pruning
+> w/ Pruning
+
+Figure 7: Acc AF on AR-LSAT w/o vs. w/ pruning across different numbers of paths ( k). Without pruning, the Acc AF plateaus around 45% quickly, while pruning enables further accuracy boost to around 78% .
+
+We examine on more challenging benchmarks like AR-LSAT. Figure 7 shows that accuracy on AR-LSAT increases almost monotonically with larger k. Without pruning, accuracy improves by about 9% when increasing the number of paths from k = 1 to k = 10 , but gains less than 1% when further increasing k to 20 .This plateau suggests that simply increasing the number of AF paths is insufficient. Many additional paths are executable but semantically ill-defined, producing contradictory or answer-ambiguous paths that cannot be resolved by aggre-gation alone. This observation motivates a closer examination of pruning. 
+
+4.9 Effectiveness of Pruning 
+
+Table 4 shows that well-definedness pruning is crit-ical on AR-LSAT, improving Acc AF from 45 .13% 
+
+to 78 .43% (+33.30%). In contrast, pruning has negligible effect on ProofWriter, PrOntoQA, and LogicalDeduction, where accuracy is already near ceiling, and differences are within variation. Over-all, pruning mainly helps harder problems by filter-ing ill-defined AF candidates before aggregation, while remaining safe on easier benchmarks. 
+
+Table 4: The Acc AF (%) of D&P w/o vs. w/ pruning on four benchmarks. There are twenty paths ( k = 20 ), and every path uses drafted plans. 
+
+Acc AF (%) w/o Pruning w/ Pruning AR-LSAT 45.13 ± 0.34 78.43 ± 0.55 ProofWriter 98.33 ± 0.00 98.33 ± 0.00 PrOntoQA 99.34 ± 0.10 99.32 ± 0.10 LogicalDeduction 99.33 ± 0.00 99.50 ± 0.18 1 5 10 15 20 
+
+> Number of Paths ( k)
+> 40%
+> 60%
+> 80%
+> 100%
+> Execution Rate  AR-LSAT
+> w/o Pruning
+> w/ Pruning
+
+(a) ExecRate 1 5 10 15 20  
+
+> Number of Paths ( k)
+> 10%
+> 20%
+> 30%
+> 40%
+> 50%
+> 60%
+> 70%
+> 80%
+> 90%
+> Acc@Exec
+> AR-LSAT
+> w/o Pruning
+> w/ Pruning
+
+(b) Acc @Exec 
+
+Figure 8: Diagnostic metrics on AR-LSAT w/o vs. w/ pruning across different numbers of paths ( k). 
+
+Figure 8 further clarifies this effect using diag-nostic metrics on AR-LSAT. As shown in Figure 8a, pruning substantially reduces ExecRate , since many sampled paths are discarded because they are contradictory or answer-ambiguous. However, Figure 8b shows that pruning yields a large and con-sistent increase in Acc @Exec across all values of 
+
+k. This suggests that pruning removes semantically ill-defined formalizations while retaining paths that are more likely to be faithful. Consequently, al-though fewer paths survive, the remaining ones are substantially more reliable, which improves over-all Acc AF after aggregation. A detailed failure analysis is provided in Appendix A.12. 
+
+5 Conclusion 
+
+We present Draft-and-Prune, an inference-time framework that improves auto-formalization via plan-conditioned generation, solver-based pruning, and aggregation. Across four benchmarks, it im-proves end-to-end accuracy and reduces reliance on fallback prompting. Our analysis suggests that, once executability is addressed, performance is mainly limited by searching for semantically cor-rect formalizations, motivating stronger validation and more efficient exploration. 86 Limitations 
+
+Our work improves AF through inference-time en-sembling, verification-guided pruning, and aggre-gation. We note several limitations. 
+
+Inference-time cost. Our approach samples mul-tiple candidate formalizations and executes solver checks, which increases inference-time compute, latency, and API cost relative to single-pass AF. While it is lightweight, the overall system cost grows with the number of candidates and solver invocations. How to achieve an accuracy-cost trade-off under strict budgets remains important. 
+
+No adaptation of the base generator. We treat the foundation model as a black box and do not im-prove the AF generator via fine-tuning, reinforce-ment learning, or distillation. As a result, system-atic translation errors of the base model may persist. Combining our framework with model adaptation is a promising direction. 
+
+Aggregation with equivalence awareness. We aggregate predictions at the answer level and do not cluster or de-duplicate candidates by symbolic equivalence. This may overweight redundant for-malizations and miss opportunities for more princi-pled equivalence-aware aggregation. Developing equivalence-aware or diversity-aware aggregation is an interesting direction for future work. 
+
+7 Ethical Considerations 
+
+This work studies auto-formalization for deductive reasoning on standard academic benchmarks that contain no personal, sensitive, or user-generated data, so privacy and consent issues do not arise. A key risk of auto-formalization is producing exe-cutable but semantically incorrect programs, which could be harmful if applied in high-stakes do-mains; our method mitigates this risk by using solver-verified checks to remove contradictory or answer-ambiguous formalizations before aggrega-tion, though it does not guarantee full semantic correctness. The approach relies on external large language models and therefore inherits their limi-tations and biases, and it increases inference-time cost due to multi-path sampling and solver calls. As a result, the method should be viewed as a re-search system for controlled settings rather than a drop-in replacement for human-verified reasoning in real-world applications. 
+
+References 
+
+Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Florencia Leoni Aleman, Diogo Almeida, Janko Altenschmidt, Sam Altman, Shyamal Anadkat, and 1 others. 2023. Gpt-4 techni-cal report. arXiv preprint arXiv:2303.08774 .Jon Barwise. 1977. An introduction to first-order logic. In Studies in Logic and the Foundations of Mathe-matics , volume 90, pages 5–46. Elsevier. Melvin Fitting. 2012. First-order logic and automated theorem proving . Springer Science & Business Me-dia. Google. 2025. Gemini 3. https://blog.google/ products-and-platforms/products/gemini/ gemini-3/ .Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Peiyi Wang, Qihao Zhu, Runxin Xu, Ruoyu Zhang, Shirong Ma, Xiao Bi, and 1 others. 2025. Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement learning. arXiv preprint arXiv:2501.12948 .Aaron Hurst, Adam Lerer, Adam P Goucher, Adam Perelman, Aditya Ramesh, Aidan Clark, AJ Ostrow, Akila Welihinda, Alan Hayes, Alec Radford, and 1 others. 2024. Gpt-4o system card. arXiv preprint arXiv:2410.21276 .Albert Qiaochu Jiang, Sean Welleck, Jin Peng Zhou, Timothée Lacroix, Jiacheng Liu, Wenda Li, Mateja Jamnik, Guillaume Lample, and Yuhuai Wu. 2023. Draft, sketch, and prove: Guiding formal theorem provers with informal proofs. In The Eleventh Inter-national Conference on Learning Representations .Shashank Kirtania, Priyanshu Gupta, and Arjun Rad-hakrishna. 2024. LOGIC-LM++: Multi-step refine-ment for symbolic formulations. In Proceedings of the 2nd Workshop on Natural Language Reasoning and Structured Explanations (@ACL 2024) , pages 56–63, Bangkok, Thailand. Association for Compu-tational Linguistics. William Calvert Kneale and Martha Kneale. 1984. The development of logic . Oxford university press. Abhinav Lalwani, Tasha Kim, Lovish Chopra, Christo-pher Hahn, Zhijing Jin, and Mrinmaya Sachan. 2024. Autoformalizing natural language to first-order logic: A case study in logical fallacy detection. arXiv preprint arXiv:2405.02318 .Theo X Olausson, Alex Gu, Benjamin Lipkin, Cede-gao E Zhang, Armando Solar-Lezama, Joshua B Tenenbaum, and Roger Levy. 2023. Linc: A neu-rosymbolic approach for logical reasoning by com-bining language models with first-order logic provers. 
+
+arXiv preprint arXiv:2310.15164 .OpenAI. 2025. Introducing gpt-5.2. 
+
+9Liangming Pan, Alon Albalak, Xinyi Wang, and William Wang. 2023. Logic-lm: Empowering large language models with symbolic solvers for faithful logical reasoning. In Findings of the Association for Computational Linguistics: EMNLP 2023 , pages 3806–3824. Hyun Ryu, Gyeongman Kim, Hyemin S. Lee, and Eunho Yang. 2025. Divide and translate: Composi-tional first-order logic translation and verification for complex logical reasoning. In The Thirteenth Inter-national Conference on Learning Representations .Abulhair Saparov and He He. 2023. Language models are greedy reasoners: A systematic formal analysis of chain-of-thought. In The Eleventh International Conference on Learning Representations .Aarohi Srivastava, Abhinav Rastogi, Abhishek Rao, Abu Awal Md Shoeb, Abubakar Abid, Adam Fisch, Adam R Brown, Adam Santoro, Aditya Gupta, Adrià Garriga-Alonso, and 1 others. 2023. Beyond the imitation game: Quantifying and extrapolating the capabilities of language models. Transactions on machine learning research .Hongda Sun, Weikai Xu, Wei Liu, Jian Luan, Bin Wang, Shuo Shang, Ji-Rong Wen, and Rui Yan. 2024. Determlr: Augmenting llm-based logical reasoning from indeterminacy to determinacy. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) ,pages 9828–9862. Oyvind Tafjord, Bhavana Dalvi Dalvi, and Peter Clark. 2021. ProofWriter: Generating implications, proofs, and abductive statements over natural language. In 
+
+Findings of the Association for Computational Lin-guistics: ACL-IJCNLP 2021 , pages 3621–3634. Kimi Team, Tongtong Bai, Yifan Bai, Yiping Bao, SH Cai, Yuan Cao, Y Charles, HS Che, Cheng Chen, Guanduo Chen, and 1 others. 2026. Kimi k2. 5: Visual agentic intelligence. arXiv preprint arXiv:2602.02276 .Lei Wang, Wanyu Xu, Yihuai Lan, Zhiqiang Hu, Yunshi Lan, Roy Ka-Wei Lee, and Ee-Peng Lim. 2023. Plan-and-solve prompting: Improving zero-shot chain-of-thought reasoning by large language models. In Pro-ceedings of the 61st Annual Meeting of the Associa-tion for Computational Linguistics (Volume 1: Long Papers) , pages 2609–2634, Toronto, Canada. Associ-ation for Computational Linguistics. Ruida Wang, Jipeng Zhang, Yizhen Jia, Rui Pan, Shizhe Diao, Renjie Pi, and Tong Zhang. 2024. Theoreml-lama: Transforming general-purpose llms into lean4 experts. In Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing ,pages 11953–11974. Xuezhi Wang, Jason Wei, Dale Schuurmans, Quoc Le, Ed Chi, Sharan Narang, Aakanksha Chowdhery, and Denny Zhou. 2022. Self-consistency improves chain of thought reasoning in language models. arXiv preprint arXiv:2203.11171 .Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Fei Xia, Ed Chi, Quoc V Le, Denny Zhou, and 1 others. 2022. Chain-of-thought prompting elic-its reasoning in large language models. Advances in Neural Information Processing Systems , 35:24824– 24837. Yuhuai Wu, Albert Qiaochu Jiang, Wenda Li, Markus N Rabe, Charles Staats, Mateja Jamnik, and Christian Szegedy. 2022. Autoformalization with large lan-guage models. In Advances in Neural Information Processing Systems .Jundong Xu, Hao Fei, Liangming Pan, Qian Liu, Mong-Li Lee, and Wynne Hsu. 2024. Faithful logical rea-soning via symbolic chain-of-thought. arXiv preprint arXiv:2405.18357 .Haocheng Yang, Fengxiang Cheng, Tianjun Yao, Jiajun Chai, Xiaohan Wang, Guojun Yin, Wei Lin, Mengyue Yang, Yisen Wang, Fenrong Liu, Haoxuan Li, and Soummya Kar. 2026. Enhancing complex symbolic logical reasoning of large language models via sparse multi-agent debate. In The Fourteenth International Conference on Learning Representations .Yuan Yang, Siheng Xiong, Ali Payani, Ehsan Shareghi, and Faramarz Fekri. 2023. Harnessing the power of large language models for natural language to first-order logic translation. arXiv preprint arXiv:2305.15541 .Hanlin Zhang, Jiani Huang, Ziyang Li, Mayur Naik, and Eric Xing. 2023. Improved logical reasoning of language models via differentiable symbolic pro-gramming. In Findings of the Association for Com-putational Linguistics: ACL 2023 , pages 3062–3077, Toronto, Canada. Association for Computational Lin-guistics. Wanjun Zhong, Siyuan Wang, Duyu Tang, Zenan Xu, Daya Guo, Yining Chen, Jiahai Wang, Jian Yin, Ming Zhou, and Nan Duan. 2022. Analytical reasoning of text. In Findings of the Association for Computa-tional Linguistics: NAACL 2022 , pages 2306–2319. Denny Zhou, Nathanael Schärli, Le Hou, Jason Wei, Nathan Scales, Xuezhi Wang, Dale Schuurmans, Claire Cui, Olivier Bousquet, Quoc V Le, and Ed H. Chi. 2023. Least-to-most prompting enables com-plex reasoning in large language models. In The Eleventh International Conference on Learning Rep-resentations (ICLR) .
+
+A Appendix 
+
+A.1 Propositional and First-Order Logic 
+
+Propositional logic represents knowledge using 
+
+atomic statements (propositions), which are the simplest units of truth—statements that can be ei-ther true or false, such as “it is raining” or “the light is on.” These statements can be combined with logical connectives such as “and,” “or,” “not,” 10 and “if-then” to form more complex expressions. While powerful in its simplicity, propositional logic is limited in scope: it treats entire statements as in-divisible units and cannot represent relationships between objects or quantify over them (Kneale and Kneale, 1984). First-Order Logic (FOL) (Barwise, 1977) ex-tends propositional logic with two key features: 
+
+predicates , which describe properties of objects and relations among them (e.g., Loves (x, y ): “ x
+
+loves y”), and quantifiers , which enable state-ments about all or some objects in a domain (e.g., 
+
+∀x ∃y Loves (x, y ): “every person loves someone”; 
+
+∃y ∀x Loves (x, y ): “someone is loved by every-one”). While propositional logic is best for straight-forward true/false combinations, First-Order Logic is much more expressive and can model complex systems involving multiple entities and their rela-tionships (Barwise, 1977; Fitting, 2012). FOL’s clear syntax and powerful expressiveness underpin formal verification by enabling precise definitions and guaranteed logical inference (Fitting, 2012). 
+
+A.2 NL to First-Order Logic 
+
+Recent papers (Yang et al., 2023; Lalwani et al., 2024) propose using LLMs to translate natural lan-guage reasoning problems into First-Order Logic (FOL). 
+
+Logical modeling in AF. The AF process intro-duces a number of entities, representing objects in a problem (e.g., people, items, or time slots). A set of variables is used to represent properties or relations of these entities, and each variable ranges over a domain of possible values (e.g., Boolean, integers, or symbolic identifiers). Natural-language con-straints are then translated into logical constraints over these variables and implemented as solver as-sertions in the generated program. Translation begins by specifying the domain of discourse, the set of objects under consideration (e.g., persons, numbers, graph nodes), and any ba-sic assumptions about them. Next, one chooses a predicate vocabulary to describe properties and relations, along with symbols for specific objects and functions. The process varies slightly across different benchmarks. In AR-LSAT (Zhong et al., 2022), nat-ural language arguments are rephrased into struc-tured predicates that capture assumptions and log-ical consequences. In ProofWriter (Tafjord et al., 2021), Stepwise inference is expressed with ex-plicit predicates, quantifiers, and logical rules, al-lowing derivations to be precisely traced from facts. In PrOntoQA (Saparov and He, 2023), questions that involve multi-hop reasoning over short state-ments are mapped into predicates and quantifiers that explicitly represent each reasoning step. Fi-nally, in LogicalDeduction (Srivastava et al., 2023), the focus is on converting abstract puzzles or con-ditional rules into quantified statements that ensure correct logical inference. Across these tasks, the central challenge is faith-fully capturing natural-language semantics, particu-larly ambiguity of reference, quantifier scope, nega-tion, modality, and implicit background knowledge, within FOL’s framework. 
+
+A.3 Auto-formalization in interactive theorem provers 
+
+A parallel line of work studies translating informal mathematical reasoning into formal proofs within interactive theorem provers (ITPs). Draft, Sketch, and Prove (DSP) (Jiang et al., 2023) guides the-orem provers such as Isabelle by first generating informal proof sketches and then refining them into formal proofs. TheoremLlama (Wang et al., 2024) fine-tunes large language models to generate Lean4 proofs directly. These works operate in a substantially different setting from ours. DSP and TheoremLlama target full proof synthesis within higher-order logic proof assistants, where correctness is verified through interactive proof checking. In contrast, our setting focuses on closed-end logical reasoning tasks with a determinate answer, where correctness is validated via solver execution. Methodologically, DSP follows a single-path re-finement loop within an ITP environment, whereas our framework performs independent multi-path drafting followed by solver-based pruning and an-swer aggregation. Furthermore, TheoremLlama relies on supervised fine-tuning for Lean4 proof generation, while our approach operates purely at inference time. 
+
+A.4 Pruning Effects on Newer Model Families 
+
+Figure 9 compares AF-only accuracy as the path budget k increases for GPT-5.2 and Gemini-3-flash under D&P with and without pruning. In both cases, pruning improves the efficiency-accuracy tradeoff: the pruned variant rises more quickly 11 at small k and remains consistently above the un-pruned variant across the path budget range. 1 5 10 15 20 
+
+> Number of Paths ( k)
+> 55%
+> 60%
+> 65%
+> 70%
+> 75%
+> 80%
+> 85%
+> 90%
+> 95%
+> Accuracy (AF-Only)
+> w/o Pruning
+> w/ Pruning
+
+(a) GPT-5.2 1 5 10 15 20  
+
+> Number of Paths ( k)
+> 92%
+> 93%
+> 94%
+> 95%
+> 96%
+> Accuracy (AF-Only)
+> w/o Pruning
+> w/ Pruning
+
+(b) Gemini-3-flash 
+
+Figure 9: AF-only accuracy versus k for D&P without pruning and D&P with pruning on AR-LSAT. 
+
+A.5 CoT-SC vs. D&P on Newer Model Families 
+
+Figure 10 compares CoT self-consistency (CoT-SC) and D&P as the path budget k increases for GPT-5.2 and Gemini-3-flash on AR-LSAT. The trend is consistent across both model families. CoT-SC improves as more paths are aggregated, but D&P reaches a substantially higher accuracy at the same path budget. This indicates that the gains from D&P do not come only from sampling multi-ple attempts; they come from combining multi-path search with explicit formalization and pruning. 1 5 10 
+
+> Number of Paths ( k)
+> 60%
+> 70%
+> 80%
+> 90%
+> Accuracy (AF-Only)
+> CoT-SC
+> D&P (w/ pruning)
+
+(a) GPT-5.2 1 5 10  
+
+> Number of Paths ( k)
+> 85%
+> 90%
+> 95%
+> Accuracy (AF-Only)
+> CoT-SC
+> D&P (w/ pruning)
+
+(b) Gemini-3-flash 
+
+Figure 10: AF-only accuracy versus path budget k for CoT-SC and D&P on on AR-LSAT. 
+
+A.6 Generalization Across Model Families 
+
+Table 5: Generalization to additional backbones on AR-LSAT ( k = 10 used for D&P, and 3-shot used for CoT).                                    
+
+> Model Method Acc (%) ExecRate (%) Acc@Exec (%) Coverage@k (%) DeepSeek-R1 CoT 83.04 100.00 83.04 83.04 DeepSeek-R1 D&P 93.83 99.52 94.28 95.96 GLM-4-plus CoT 49.13 100.00 49.13 49.13 GLM-4-plus D&P 80.00 93.04 85.98 86.96 Kimi-K2.5 CoT 95.65 100.00 95.65 95.65 Kimi-K2.5 D&P 95.43 99.13 96.27 95.65
+
+We further evaluate D&P on DeepSeek-R1 (Guo et al., 2025), GLM-4-plus, and Kimi-K2.5 (Team et al., 2026) shown in Table 5. D&P provides substantial improvements on DeepSeek-R1 and GLM-4-plus. On Kimi-K2.5, 3-shot CoT already achieves near-ceiling perfor-mance (95.65%), leaving limited headroom for fur-ther gains. In this regime, D&P maintains compa-rable accuracy while preserving solver-based exe-cution validation. Overall, these results suggest that the benefits of draft-and-prune are not restricted to a specific model family. More broadly, AF-based reason-ing and token-based reasoning represent comple-mentary directions, and improving AF robustness makes it competitive with strong reasoning models while enabling solver-based execution validation. 
+
+A.7 Comparison with LINC-Style Aggregation 
+
+LINC (Olausson et al., 2023) combines LLM-based formalization with majority voting over solver-validated outputs and achieves near-ceiling perfor-mance on ProofWriter. We will clarify the relation-ship between LINC and D&P below. 
+
+LINC-style proxy on AR-LSAT. Since the re-leased LINC codebase does not include AR-LSAT, we construct a LINC-style proxy that performs ma-jority voting on multi-paths. Table 6 reports results under both low and high temperature settings. 
+
+Table 6: LINC-style proxy vs. D&P on AR-LSAT (GPT-4o). 
+
+k LINC ( T = 0 ) LINC ( T = 1 ) D&P 1 38.22 38.17 39.87 5 39.30 44.09 64.04 10 39.65 44.65 72.17 15 40.30 44.52 75.91 20 40.61 44.57 78.00 
+
+The LINC-style proxy quickly plateaus around 40–45%, whereas D&P continues to improve as k
+
+increases. 
+
+Fidelity validation on ProofWriter. To validate that our proxy faithfully reproduces LINC-style be-havior, we evaluate it on ProofWriter in Table 7. Original LINC paper reports near-ceiling perfor-mance on this benchmark. 
+
+Table 7: LINC-style proxy vs. D&P on ProofWriter (GPT-4o). 
+
+k LINC D&P 1 98.92 98.60 5 99.92 99.43 10 100.00 99.50 15 100.00 99.63 20 100.00 99.67 
+
+12 The proxy reaches 100% accuracy by k = 10 ,exhibiting the same ceiling behavior reported for LINC. This confirms that our implementation faith-fully captures LINC-style majority-voting reason-ing. 
+
+A.8 Solver-weighted Aggregation Strategy 
+
+In the main experiments, we adopt majority vot-ing over pruned paths as the aggregation strategy. To examine whether alternative selection mecha-nism, we conduct a lightweight post-hoc aggrega-tion study using solver-feedback-weighted voting. 
+
+Solver-weighted aggregation. After both prun-ing, each path is assigned a weight based on solver feedback: • Paths passing both existence and uniqueness checks receive weight 1.0. • Paths passing only one check (but producing a non-empty answer set) receive weight 0.5. • Empty-answer paths contribute zero vote mass. For multi-answer paths, the path weight is evenly distributed across candidate labels. Final prediction is obtained by summing vote mass per label and selecting the maximum. 
+
+Table 8: Majority vs. solver-weighted aggregation on AR-LSAT ( k = 20 ).         
+
+> Model Majority vote (%) Solver-weighted vote (%) GPT-4o 78.00 81.74 GPT-5.2 93.91 94.35 Gemini-3-flash 95.65 95.65
+
+The results are shown in Table 8. Solver-weighted aggregation yields additional gains on some backbones (notably +3.74% on GPT-4o), while remaining comparable on near-ceiling mod-els. This indicates that solver feedback provides useful confidence signals beyond plain majority voting. Anyway, D&P is modular with respect to aggregation. 
+
+A.9 Ablation study on TDRAF T 
+
+We ran a drafting-temperature ablation on AR-LSAT with GPT-4o. Accuracy peaks at TDRAFT =1.0 and degrades as temperature increases further, indicating that moderate stochasticity improves di-versity while excessive randomness harms faithful-ness and stability. These results empirically justify our default choice of TDRAFT = 1 .0.
+
+Table 9: Drafting temperature ablation on AR-LSAT with GPT-4o (Acc@k20).             
+
+> TDRAFT 0.0 0.5 1.0 1.1 1.2 1.3 Acc@k20 (%) 60.17 71.87 78.00 75.83 75.65 70.87
+
+A.10 Ablation study on ICL Demonstration Count 
+
+We analyze the effect of the number of in-context learning (ICL) demonstrations on AR-LSAT using GPT-4o with k = 20 . We evaluate 0-shot, 1-shot, 3-shot, and 5-shot settings for plan drafting and program generation. Table 10 reports accuracy and average token us-age per path. Token counts are decomposed into average input and output tokens. 
+
+Table 10: ICL shot ablation on AR-LSAT (GPT-4o, 
+
+k = 20 ).                   
+
+> ICL Acc@k20 Avg input tokens/path Avg output tokens/path Avg total tokens/path 055.30 1,555 1,574 3,129 165.65 2,684 1,199 3,883 378.00 5,200 1,057 6,257 578.61 8,817 1,078 9,895
+
+Accuracy improves monotonically with addi-tional demonstrations and peaks at 5-shot (78.61%). However, the gain over 3-shot (78.00%) is marginal (+0.61 absolute) while total token usage increases substantially. The additional cost beyond 3-shot is primarily driven by increased input tokens due to longer ICL context, whereas output length remains relatively stable. This indicates diminishing returns in accu-racy relative to prompt length expansion. Based on this trade-off, we adopt 3-shot as the default configuration. 
+
+A.11 Ablation on Maximum Repair Depth 
+
+We study the effect of repair depth in the single-path setting ( k = 1) on AR-LSAT with GPT-4o. Here, max_repairs ∈ { 0, 1, 2, 3} denotes the maximum number of syntax repair rounds allowed after the initial code generation attempt. 
+
+Table 11: Effect of maximum repair rounds on AR-LSAT (GPT-4o, k = 1 ).                
+
+> max_repairs Acc (%) ExecRate (%) Acc@Exec (%) 036.09 87.83 41.09 140.00 96.52 41.44 245.65 97.39 46.88 336.52 97.83 37.33
+
+Table 11 shows that allowing a small number 13 of repair rounds substantially improves solver ex-ecutability: ExecRate rises from 87.83% with no repair to 97.39% with two repair rounds, and re-mains high at 97.83% with three rounds. How-ever, end-to-end accuracy is non-monotonic. Ac-curacy improves from 36.09% to 45.65% when increasing max_repairs from 0 to 2, but drops to 36.52% at max_repairs = 3 . A similar pattern is reflected in Acc@Exec , which peaks at 46.88% for 
+
+max_repairs = 2 and then declines to 37.33%. These results suggest that additional repair rounds can improve executability without nec-essarily improving the semantic correctness of the resulting formalization. We therefore use 
+
+max_repairs = 2 as the default setting. 
+
+A.12 Failure Analysis 
+
+Although pruning substantially improves perfor-mance, a portion of AR-LSAT instances remains incorrect under k = 20 sampling. To better un-derstand the source of these residual errors, we conduct a structured failure analysis under the set-ting k = 20 with pruning. Recall that Coverage@k measures whether at least one correct path appears among k, provid-ing a quantitative signal of drafting-stage coverage. To further diagnose failure modes, we categorize the incorrect instances into two top-level groups: • Coverage failure: – (A) Empty candidate set after pruning: 
+
+All sampled paths are filtered by pruning. 
+
+– (B) Non-empty candidate set, but no cor-rect candidate: At least one path sur-vives pruning, but none is correct. • Aggregation failure: At least one correct can-didate survives pruning, but majority voting selects an incorrect answer. Table 12 and Table 13 summarizes the distribu-tion of failure categories for GPT-4 and GPT-4o.  
+
+> Table 12: Failure taxonomy on AR-LSAT ( k= 20 , with pruning, GPT-4).
+
+Category Count % Fail % All Coverage failure A 19 37.25 8.26 Coverage failure B 16 31.37 6.96 Aggregation failure 16 31.37 6.96 
+
+Across both models, the majority of residual errors arise from coverage limitations. Aggrega-tion failures constitute a smaller portion of errors.  
+
+> Table 13: Failure taxonomy on AR-LSAT ( k= 20 , with pruning, GPT-4o).
+
+Category Count % Fail % All Coverage failure A 24 48.00 10.43 Coverage failure B 13 26.00 5.65 Aggregation failure 13 26.00 5.65 
+
+These results suggest that further gains are likely to come from improving drafting diversity and cov-erage. 
+
+A.13 Corrected AR-LSAT Test Split 
+
+We found annotation issues in the public test set of AR-LSAT and manually audited the incorrect labels. Starting from the original 230-sample test file, we remove one mismatched sample, 
+
+201510_3-G_3_19 , whose question does not match the context. We also relabel the following eight samples: • 201310_3-G_3_14 
+
+• 201612_3-G_1_3 
+
+• 201612_3-G_1_4 
+
+• 201612_3-G_1_5 
+
+• 201612_3-G_2_6 
+
+• 201612_3-G_2_8 
+
+• 201612_3-G_3_12 
+
+• 201612_3-G_3_17 
+
+The resulting corrected benchmark contains 229 samples. For anonymous review, we provide an anonymous Hugging Face dataset link: 
+
+https://huggingface.co/datasets/ anonymous-ar-lsat/ar-lsat-fixed-229 
+
+A.14 Cost-Normalized Comparison Across Sampling Budgets 
+
+To analyze whether the performance gains of D&P are attributable merely to larger sampling budgets, we compare for CoT-SC (Wang et al., 2022) and D&P accuracy as a function of k on AR-LSAT with GPT-4o. For each method, the total token budget per in-stance is computed as Tokens per sample = k × Avg tokens per path .
+
+14 Table 14: Cost-normalized comparison on AR-LSAT (GPT-4o). 
+
+CoT-SC D&P 
+
+k Acc@k Tokens Acc@k Tokens 1 34.09 2,008 39.87 6,257 5 36.78 10,040 64.04 31,283 10 37.70 20,081 72.17 62,567 15 38.52 30,121 75.91 93,850 20 38.35 40,162 78.00 125,134 Table 14 reports accuracy and total tokens per sample for k ∈ { 1, 5, 10 , 15 , 20 }.Across all sampling budgets, D&P consumes approximately 3× more tokens per instance than CoT-SC. However, the accuracy gap persists across the entire k range. Notably, even at k = 20 , where CoT-SC uses over 40k tokens per sample, its ac-curacy remains below 39%, whereas D&P reaches 78%. This suggests that the improvements are not explained solely by larger sampling budgets. 
+
+A.15 Solver Timeout Configuration and Analysis 
+
+We clarify the timeout configuration used for solver execution and analyze its impact. Timeouts are backend-dependent: • Z3Py (AR-LSAT): 30s subprocess timeout per program. • PythonConstraint/CSP (LogicalDeduction): 20s subprocess timeout per program. • PyKe (ProofWriter, PrOntoQA): in-process execution with no external subprocess timeout configured. 
+
+Observed timeout frequency. We measure path-level timeout events under k = 20 . The denomi-nator corresponds to the total number of generated paths (i.e., #instances ×k). 
+
+Table 15: Path-level timeout statistics under k = 20 .               
+
+> Benchmark Solver GPT-4o GPT-4 AR-LSAT Z3Py 1 / 4600 2 / 4600 ProofWriter PyKe 0 / 12000 0 / 12000 PrOntoQA PyKe 0 / 10000 0 / 10000 LogicalDeduction CSP 0 / 6000 4 / 6000
+
+Timeout events are extremely rare across all benchmarks. Given the near-zero frequency rel-ative to the total number of evaluated paths, their aggregate impact on ExecRate, Acc@Exec, and final accuracy is negligible. 
+
+A.16 Diversity Measurement via Normalized Answer Entropy 
+
+Beyond final accuracy, we report ExecRate ,
+
+Acc@Exec , and Coverage@k in the main paper, which quantify executability and drafting-stage coverage. To characterize the dispersion of draft an-swers, we introduce an answer-level entropy statis-tic computed over valid single-label parsed outputs. 
+
+Definition of Hnorm avg . For each instance i, we col-lect the parsed answers from k draft paths and re-tain only valid single-label outputs (i.e., exactly one option in C). Let ni,c denote the number of retained paths whose parsed answer equals option 
+
+c. Define 
+
+pi,c = ni,c 
+
+P 
+
+> c′∈C
+
+ni,c ′
+
+.
+
+The instance-level entropy is 
+
+Hi = − X
+
+> c∈C
+
+pi,c log pi,c ,
+
+with normalized entropy 
+
+Hnorm  
+
+> i
+
+= Hi
+
+log |C| .
+
+We report the dataset average 
+
+Hnorm avg = 1
+
+N
+
+> N
+
+X
+
+> i=1
+
+Hnorm  
+
+> i
+
+.
+
+Under our current implementation on AR-LSAT, pruning enforces the same single-label constraint (existence/uniqueness), and therefore Hnorm avg is identical whether computed before or after pruning. 
+
+Results across drafting temperature. Table 16 reports Acc@k20 , PathAcc (the correct paths over all paths), HitRate@k20 , and Hnorm avg for different drafting temperatures TDRAFT .
+
+Table 16: Answer distribution statistics vs. drafting tem-perature on AR-LSAT (GPT-4o, k = 20 ; entropy com-puted on valid single-label paths).                             
+
+> TDRAFT Acc@k20 (%) PathAcc (%) HitRate@k20 (%) Hnorm avg
+> 0.0 60.17 39.43 61.30 0.026 0.5 71.87 39.17 75.65 0.049 1.0 78.00 39.13 83.91 0.068 1.1 75.83 38.30 82.17 0.076 1.2 75.65 36.96 80.43 0.096 1.3 70.87 34.10 76.42 0.102
+
+As TDRAFT increases, Hnorm avg increases mono-tonically, indicating greater dispersion of answers. Meanwhile, PathAcc decreases, showing that indi-vidual paths become less reliable at higher tempera-tures. In contrast, HitRate@k20 first increases and 15 peaks at TDRAFT = 1 .0, closely aligning with the peak of Acc@k20 . This pattern suggests that mod-erate stochasticity improves coverage. When tem-perature becomes too high, big dispersion reduces 
+
+HitRate@k20 and consequently lowers Acc@k20 .
+
+A.17 Normalized Prompt Schema 
+
+Before presenting the full executable prompts in Appendix A.3, we describe a normalized prompt schema shared across benchmarks. This abstrac-tion clarifies that performance depends on a fixed structural interface rather than benchmark-specific phrasing. 
+
+Unified slot interface. All prompts are instanti-ated from the same slot schema: 
+
+ROLE solver-aware assistant specification. 
+
+TASK reasoning objective (plan, code-from-plan, or syntax repair). 
+
+OUTPUT_FORMAT strict output format (answer-only, plan-only or code-only). 
+
+ICL_BLOCK fixed 3-shot demonstrations. 
+
+INSTANCE {context }, { question }, { answers }. 
+
+DRAFT {plan }. 
+
+REPAIR_INPUT {code }, { syntax_error }. 
+
+Prompt families. Each method corresponds to a deterministic composition of these slots: • CoT: 
+
+ROLE + TASK + OUTPUT_FORMAT(answer-only) + ICL_BLOCK + INSTANCE 
+
+• D&P Draft Generation: 
+
+ROLE + TASK(plan) + OUTPUT_FORMAT(plan-only) + ICL_BLOCK + INSTANCE 
+
+• D&P Code Generation: 
+
+ROLE + TASK(code-from-plan) + OUTPUT_FORMAT(code-only) + ICL_BLOCK + INSTANCE + DRAFT 
+
+• D&P Syntax Repair: 
+
+ROLE + TASK(repair) + OUTPUT_FORMAT(code-only) + REPAIR_INPUT 
+
+Backend adapter. Benchmark differences are isolated to the solver layer: AR-LSAT uses Python + Z3; LogicalDeduction uses Python + 
+
+python-constraint ; PrOntoQA and ProofWriter use Python + PyKe. All other structural slots are shared. 16

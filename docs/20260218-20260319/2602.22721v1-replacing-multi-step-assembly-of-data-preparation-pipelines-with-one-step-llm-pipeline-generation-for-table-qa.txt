@@ -1,0 +1,654 @@
+Title: Replacing Multi-Step Assembly of Data Preparation Pipelines with One-Step LLM Pipeline Generation for Table QA
+
+URL Source: https://arxiv.org/pdf/2602.22721v1
+
+Published Time: Fri, 27 Feb 2026 01:35:29 GMT
+
+Number of Pages: 13
+
+Markdown Content:
+# Replacing Multi-Step Assembly of Data Preparation Pipelines with One-Step LLM Pipeline Generation for Table QA 
+
+# Fengyu Li 
+
+Zhejiang University Hangzhou, China fengyuli@zju.edu.cn 
+
+# Junhao Zhu 
+
+Zhejiang University Hangzhou, China zhujunhao@zju.edu.cn 
+
+# Kaishi Song 
+
+Zhejiang University Hangzhou, China sks@zju.edu.cn 
+
+# Lu Chen 
+
+Zhejiang University Hangzhou, China luchen@zju.edu.cn 
+
+# Zhongming Yao 
+
+Northeastern University Shenyang, China yaozming@stumail.neu.edu.cn 
+
+# Tianyi Li 
+
+Aalborg University Aalborg, Denmark tianyi@cs.aau.dk 
+
+# Christian S. Jensen 
+
+Aalborg University Aalborg, Denmark csj@cs.aau.dk 
+
+## ABSTRACT 
+
+Table Question Answering (TQA) aims to answer natural language questions over structured tables. Large Language Models (LLMs) enable promising solutions to this problem, with operator-centric solutions that generate table manipulation pipelines in a multi-step manner offering state-of-the-art performance. However, these solu-tions rely on multiple LLM calls, resulting in prohibitive latencies and computational costs. We propose Operation-R1 , the first framework that trains light-weight LLMs (e.g., Qwen-4B/1.7B) via a novel variant of reinforce-ment learning with verifiable rewards to produce high-quality data-preparation pipelines for TQA in a single inference step. To train such an LLM, we first introduce a self-supervised rewarding mecha-nism to automatically obtain fine-grained pipeline-wise supervision signals for LLM training. We also propose variance-aware group resampling to mitigate training instability. To further enhance ro-bustness of pipeline generation, we develop two complementary mechanisms: operation merge, which filters spurious operations through multi-candidate consensus, and adaptive rollback, which offers runtime protection against information loss in data transfor-mation. Experiments on two benchmark datasets show that, with the same LLM backbone, Operation-R1 achieves average absolute accuracy gains of 9.55 and 6.08 percentage points over multi-step preparation baselines, with 79% table compression and a 2.2 × re-duction in monetary cost. 
+
+PVLDB Reference Format: 
+
+Fengyu Li, Junhao Zhu, Kaishi Song, Lu Chen, Zhongming Yao, Tianyi Li, and Christian S. Jensen. Replacing Multi-Step Assembly of Data Preparation Pipelines with One-Step LLM Pipeline Generation for Table QA. PVLDB, 14(1): XXX-XXX, 2020. doi:XX.XX/XXX.XX 
+
+PVLDB Artifact Availability: 
+
+The source code, data, and/or other artifacts have been made available at https://github.com/ZJU-DAILY/Operation-R1.git. 
+
+> This work is licensed under the Creative Commons BY-NC-ND 4.0 International License. Visit https://creativecommons.org/licenses/by-nc-nd/4.0/ to view a copy of this license. For any use beyond those covered by this license, obtain permission by emailing info@vldb.org. Copyright is held by the owner/author(s). Publication rights licensed to the VLDB Endowment. Proceedings of the VLDB Endowment, Vol. 14, No. 1 ISSN 2150-8097. doi:XX.XX/XXX.XX
+
+## 1 INTRODUCTION 
+
+Table Question Answering (TQA) aims to answer natural language (NL) queries over (semi-)structured tables, spanning spreadsheets, databases, web tables. It empowers non-technical users to explore and extract insights without writing formal query languages such as SQL, enhances analytical productivity, and enables applications in finance [ 36 ], healthcare [ 1], and scientific research [ 18 ]. For example, TQA for business intelligence enables users to query sales, customer, and financial tables using natural language (e.g., “Which product had the highest growth in Q3?”), lowering the technical barrier to data analytics. Given their semantic understanding and instruction-following capabilities Large Language Models (LLMs) have advanced TQA substantially. As illustrated in Fig.1, one line of LLM-based TQA methods employ direct text-based reasoning [28 , 32 ]. These methods serialize tables into plain text and answer NL queries in a single step by reasoning directly over the text. However, they scale poorly to large tables because LLMs struggle to reliably identify relevant information within long contexts. Studies show that text-based reasoning deteriorates sharply as table size grows [7]. Another line of methods rely on Text-to-SQL/code generation [ 6,19 , 32 , 34 ]. These methods translate NL queries into compositional executable programs (e.g., SQL or Python) and derive answers through program execution. Although often effective, they are fragile: LLMs easily introduce subtle errors into long, compound programs, causing executions to fail or produce corrupted results. Motivated by limitations of above reasoning approaches, recent methods adopt operator-centric approaches [ 7 , 26 ], where an LLM assembles a sequence of table manipulation operators (e.g., select, sort_by) to restructure input tables into more compact, question-relevant tables that facilitate the TQA the most. To discover effective table manipulation operations, these methods employ multi-step reasoning, where table manipulation operations are generated step-by-step in the context of input questions, tables, and intermediate orchestration results. This operator-centric approach facilitates more transparent, interpretable reasoning and enables methods that achieve state-of-the-art performance. Despite their accuracy and interpretability advantages, operator-centric pipelines incur substantially higher latency and computa-tional cost due to their repeated LLM invocations. This overhead, which is avoided by one-step approaches, is the primary barrier to 
+
+> arXiv:2602.22721v1 [cs.DB] 26 Feb 2026
+
+Figure 1: (a) Direct text-based reasoning, (b) Program-based reasoning, (c) Operation-based multi-agent framwork, and (d) Pipeline-specific model. 
+
+practical deployment of these otherwise desirable operator-specific methods. To enable the practical deployment of these methods, we intro-duce Operation-R1 , a framework that trains a lightweight LLM to generate a high-quality data preparation pipeline for TQA in a single inference step . Inspired by the success of DeepSeek-R1 [ 9 ] and TableR1 [ 30 ], we employ Reinforcement Learning with Verifiable Rewards (RLVR) to teach compact models (e.g., Qwen3-4B, Qwen-1.7B) to orchestrate well-structured data preparation tailored to each question–table pair. However, building such a one-step orchestrator introduces sev-eral unique challenges not addressed by prior work. Below, we outline these challenges and how they motivate the key design components of Operation-R1 .
+
+Challenge I: Designing a data-preparation–aware reward mechanism for pipeline generation. Training a lightweight LLM to generate effective data preparation pipelines requires reliable supervision signals that reflect pipeline quality. However, obtaining such signals is difficult because no ground-truth—–or “golden”– —preprocessing pipelines exist for TQA. The only available super-vision in typical TQA datasets is the gold answer to each question, which is insufficient for directly supervising pipeline construction. A natural surrogate is to evaluate a generated pipeline using an LLM-as-Judge [ 21 ]: execute the pipeline, present the transformed table to an LLM, and check whether it can infer the correct answer. Yet this approach has three critical drawbacks: (i) Low accuracy. As shown in our experiments (Table 1, Sec-tion 4), even strong LLMs (e.g., Qwen3-8B) achieve under 80 (ii) Sparse feedback. The evaluation yields only a binary reward per pipeline, providing little insight into which operations are help-ful or harmful. (iii) High computational cost. Invoking an LLM-as-Judge for every pipeline drastically increases training cost. Thus, a verifiable, fine-grained, and low-cost reward mechanism is essential. To address this challenge, we introduce a self-supervised reward mechanism tailored to data preparation. We focus on Cell-Focused QA , a setting where the answer appears verbatim as a table cell. This property allows us to verify each operation by checking whether it removes or preserves the answer-critical cell. Pipeline quality is then evaluated operation by operation , enabling detailed attribution of failures and successes. To complement semantic correctness, we further incorporate an efficiency metric that measures how effectively the pipeline reduces table size. The combined reward provides fine-grained, stepwise feedback that directly reflects each operation’s utility, yielding informative and stable supervision for training the pipeline generator. 
+
+Challenge II: Maintaining training stability under fine-grained reward supervision. Although our approach introduces finer-grained supervision, integrating it with existing RLVR algo-rithms leads to training instability. In standard RLVR workflows, models are trained not with raw reward values but with normalized relative advantages , which are computed by comparing a group of model responses for the same input. This normalization, while effec-tive for coarse rewards, inevitably distorts the underlying learning signal. With our more granular pipeline rewards, this distortion 
+
+> 2
+
+becomes even more pronounced, ultimately misleading model opti-mization. Our early analysis reveals two fundamental sources of distortion: (a) Intra-group low-variance amplification. When reward variance within a sampled group is small, even noise-level differences are artificially amplified by the advantage normalization, causing the model to overfit to random fluctuations rather than meaningful reward differences. (b) Inter-group reward distortion. Conversely, large and informative reward gaps across different groups are flat-tened after normalization, suppressing important learning signals that should guide the policy toward better pipelines. To alleviate these issues, we propose a variance-aware group resampling strategy that replaces the static grouping used in stan-dard RLVR with a dynamic, variance-sensitive sampling process. The method imposes two constraints—each derived from the two distortion phenomena above—on sampled response groups. If any constraint is violated, the group is discarded and resampled. This ensures that each accepted group provides diverse, high-fidelity supervision signals. By enforcing variance-aware resampling, our method preserves meaningful reward structure, prevents noise amplification, and stabilizes RLVR training under fine-grained supervision. 
+
+Challenge III: Ensuring robustness during preprocessing. 
+
+Even with a carefully finetuned LLM designed to generate high-quality pipelines, failures are inevitable when the model encoun-ters unusual or previously unseen NL questions. A single faulty operation—such as overly aggressive filtering or an incorrect ag-gregation—can permanently remove question-critical information and make downstream reasoning impossible. This reveals a core tension between compression efficiency and information preserva-tion : while aggressive table compression helps reduce reasoning complexity, any loss of essential data invalidates the entire prepro-cessing pipeline. The challenge, therefore, is to design a robustness mechanism that mitigates generation errors without compromising too much on efficiency and interpretability. To address this, Operation-R1 incorporates two complementary mechanisms: Operation Merge and Adaptive Rollback . Operation Merge tackles the nondeterminism inherent in pipeline generation by producing multiple candidate pipelines in parallel and construct-ing a final, more reliable pipeline through a consensus-based voting algorithm over an operation trie. This filters out spurious or unsta-ble operations that may appear in single-pass outputs. Adaptive Rollback provides runtime safeguards against infor-mation loss. When the downstream QA model signals that the processed table lacks sufficient information, the system incremen-tally reverts to earlier states—i.e., tables resulting from fewer pre-processing operations—ultimately reverting to the original table if necessary. Together, these mechanisms strike a balance between the effi-ciency of single-pass preprocessing and the robustness required for real-world TQA. They enable our lightweight framework to reliably handle diverse questions and edge cases without relying on multi-agent coordination or iterative refinement. The key contributions are summarized as below: 
+
+• To our knowledge, we present the first RLVR-based LLM post-training framework that enables lightweight LLMs to generate data preparation pipelines for TQA in a single inference step .
+
+• We introduce a self-supervised pipeline reward mechanism based on Cell-Focused QA that provides fine-grained, stepwise feed-back for RLVR training. We further propose a variance-aware group resampling strategy to ensure stable optimization under such fine-grained rewards. 
+
+• We develop two complementary mechanisms to balance compres-sion efficiency with information preservation: Operation Merge ,which filters spurious operations through multi-candidate con-sensus, and Adaptive Rollback , which offers runtime protection against information loss. 
+
+• Extensive experiments on WikiTQ and TabFact show that Operation-R1 achieves absolute accuracy improvements of 9.62% and 6.05% over non-preprocessed baselines, respectively, while reducing ta-ble size by 79% on average and requiring only a single lightweight model inference. 
+
+## 2 PRELIMINARIES 2.1 Task Formulation 
+
+Tabular Question Answering (TQA). Let 𝑞 be an NL question and 𝑇 a table with columns (attributes) C = 𝐶 1, 𝐶 2, 𝐶 3, . . . and rows 
+
+R = 𝑅 1, 𝑅 2, 𝑅 3, . . . , where the cell at row 𝑖 and column 𝑗 is denoted by 𝑐 𝑖,𝑗 . The goal of TQA is to generate a correct answer 𝑎 to question 
+
+𝑞 based on the content of table 𝑇 .Depending on the purpose of the question, TQA typically in-cludes two problem types: (i) Table-based Question Answering : Given 
+
+𝑞 and 𝑇 , the task is to generate a natural language answer 𝑎 or ex-tract relevant cell values from 𝑇 . (ii) Table-based Fact Verification :Given a statement 𝑞 and a table 𝑇 , the task is to determine whether the statement is supported , refuted , or unverifiable given the table. 
+
+Question-Aware Data Preparation. Answering NL questions directly over an uncurated table is often ineffective and inefficient. The reasons are twofold: (i) many table entries are irrelevant to the question, forcing the model to sift through large amounts of unnec-essary information—the classic “needle in a haystack” problem; and (ii) answers frequently require transformations or computations over the table rather than direct lookup, necessitating intermediate data preparation steps. Thus, before generating answers, it is beneficial to apply a series of table transformation operations (data preparation operations, or simply operations ). Formally, let op be an operation that transforms a table 𝑇 into a table 𝑇 ′, i.e., 𝑇 ′ = op (𝑇 ). Given a pipeline 𝑃 =
+
+[op 1, op 2, . . . , op 𝑘 ], a curated table used for TQA is produced as follows: 
+
+𝑇 ′ = op 𝑘 (op 𝑘 −1 (. . . (op 2 (op 1 (𝑇 ))) . . . )) 
+
+We consider five data preparation operators. Based on prior studies [ 7] and our analysis of benchmark and real-world tables, these operators cover most table manipulation needs in TQA. Below, we describe each operator and its parameters. 
+
+Select. The select operator removes columns from an input table. Formally, given an input table 𝑇 and a set of column names 𝐶 ,select 𝐶 (𝑇 ) = 𝑇 [𝐶 ] denotes a processed table from 𝑇 by retaining the only columns in 𝐶 . This operator is useful when many columns are irrelevant to a question and may distract answering. 
+
+Filter. The filter operator selects rows that satisfy a given predicate. Given an input table 𝑇 , a column name 𝑐 , a comparison operator 𝑜𝑝 ∈ { == , >, <, . . . }, and a threshold value 𝑣 , we denote the 
+
+> 3
+
+result by filter 𝑐,𝑜𝑝,𝑣 (𝑇 ). For example, filter ‘Country’ ,== ,‘USA’ (𝑇 ) retains rows where the country column cell equals ‘USA’. This operation en-ables eliminating irrelevant tuples and retaining only those related to a question. 
+
+Sort_by. The sort_by operator sorts rows based on a specific column and optionally retains the top-𝑘 rows. Given an input table 
+
+𝑇 , a column name 𝑐 , an order 𝑜 ∈ { asc , desc }, and an optional parameter 𝑘 , we denote the result by sort_by 𝑐,𝑜,𝑘 (𝑇 ). By default, when 𝑘 is omitted, all rows are returned, which we denote by sort_by 𝑐,𝑜 (𝑇 ). This operation supports reasoning about ranking, extrema, and comparisons. 
+
+Group_by. The group_by operator groups rows by a specific column and counts the occurrences of each distinct value. Given an input table 𝑇 and a column name 𝑐 , we denote the result by group_by 𝑐 (𝑇 ), which produces a table with distinct values in col-umn 𝑐 and their corresponding counts. This operation is especially helpful for counting tasks that LLMs often struggle with. 
+
+Add_column. The add_column operator adds a new column inferred from existing columns according to a natural language description. Given an input table 𝑇 , a new column name 𝑐 ′ and a description 𝑑 , we denote the result by add_column 𝑐 ′,𝑑 (𝑇 ). For example, add_column ‘Gender’ ,‘infer genders from the column Name’ (𝑇 ) adds a Gender column based on column Name. This operator relies on semantic understanding and is implemented by invoking an LLM. Operator add_column differs fundamentally from the other op-erators. We thus categorize the data preparation operators into two groups: structured operators, whose logic can be implemented by built-in or user-defined functions; and semantic operators that require reasoning over the data. 
+
+## 2.2 RL with Verifiable Rewards 
+
+Reinforcement Learning with Verifiable Rewards (RLVR). 
+
+RLVR [ 13 ] is a family of LLM post-training methods in which an LLM is optimized through RL using automatically verifiable feedback as the reward signal. Unlike preference-model-based or human-rated rewards, RLVR rewards are computed by a verifier—an automated, deterministic, and programmatically checkable function that evaluates whether an output satisfies a well-defined success criterion. The verifier may check logical or syntactic constraints, unit-test outcomes, exact or semantic equivalence to reference solutions, or it may use other rule-based correctness conditions. Concretely, given a prompt or input 𝑥 and a policy model (i.e., an LLM) 𝜋 𝜃 producing an output 𝑜 (which may include a reasoning trace, or a chain-of-thought, and a final answer), a verifier computes a reward 𝑟 (𝑜 ; 𝑥 ) (that is either a binary value {0, 1} or a continuous value in range [0, 1]). RLVR uses an RL algorithm to update the pol-icy model 𝜋 𝜃 to maximize expected rewards. A typical optimization objective is formulated as follows: 
+
+max 
+
+> 𝜋 𝜃
+
+E𝑥 ∼D ,𝑜 ∼𝜋 𝜃 (· | 𝑥 )
+
+𝑟 (𝑜 ; 𝑥 ) − 𝛽 KL [𝜋 𝜃 (· | 𝑥 )∥ 𝜋 ref (· | 𝑥 )]  , (1) where 𝜋 ref is a reference policy (e.g. a pre-trained LLM) and 𝛽 >
+
+0 controls the strength of the regularization. RLVR is applicable most straightforwardly in domains where outputs can be verified unambiguously, such as arithmetic reasoning, code synthesis, QA with known gold answers [5, 9, 10]. 
+
+Group Relative Policy Optimization (GRPO). A member of the RLVR family, GRPO [ 9, 20 ] has gained in prominence following the emergence of DeepSeek-R1. GRPO is a policy gradient algorithm designed to train an LLM in settings, where one can sample multiple candidate outputs per input and assign verifiable rewards to each candidate. Instead of relying on a learned value function or critic, GRPO uses within-group relative comparisons across the sampled outputs for the same input to compute advantages and update the policy. The use of the contrastive reward signal helps stabilize training when faced with sparse or binary rewards. Formally, given an input 𝑥 , GRPO samples a group 𝐺 of candidate outputs from the current (or “old”) policy model 𝜋 old , i.e., 𝐺 =
+
+{𝑜 𝑖 }|𝐺 | 
+
+> 𝑖 =1
+
+. Each output 𝑜 𝑖 is then scored by a verifier to produce a reward 𝑅 𝑖 = 𝑟 (𝑜 𝑖 ; 𝑥 ). Each output’s advantage is defined as the normalized difference from the group’s mean reward: 
+
+𝐴 𝑖 = 𝑅 𝑖 − 𝜇 𝐺 
+
+𝜎 𝐺 
+
+, (2) where 𝜇 𝐺 = 1 
+
+> |𝐺 |
+
+Í|𝐺 | 
+
+> 𝑖 =1
+
+𝑅 𝑖 is the group mean reward, and 𝜎 𝐺 =√︃  
+
+> 1
+> |𝐺 |
+
+Í|𝐺 | 
+
+> 𝑖 =1
+
+(𝑅 𝑖 − 𝜇 𝐺 )2 is the group standard deviation. GRPO optimizes the policy model 𝜋 𝜃 (i.e., an LLM) by maximizing the following token-level objective: 
+
+max 
+
+> 𝜋 𝜃
+
+E𝑥 ∼D ,{𝑜 𝑖 }|𝐺 |  
+
+> 𝑖 =1∼𝜋 𝜃 (· | 𝑥 )
+
+ 1
+
+|𝐺 |∑︁ 𝐺 
+
+1
+
+|𝑜 𝑖 |∑︁ 𝑜 𝑖 
+
+n
+
+min 𝜌 𝜃 
+
+> i,t
+
+𝐴 i,t, clip (𝜌 𝜃 
+
+> i,t
+
+, 1 − 𝜖, 1 + 𝜖 )𝐴 i,t
+
+ − 𝛽 KL (𝜋 𝜃 ∥𝜋 ref )
+
+o
+
+,
+
+(3) where 𝜌 𝜃  
+
+> i,t
+
+= 𝜋 𝜃 (𝑜 𝑖,𝑡 |𝑥,𝑜 𝑖, <𝑡 )    
+
+> 𝜋 𝜃 old (𝑜 𝑖,𝑡 |𝑥,𝑜 𝑖, <𝑡 )
+
+is the probability ratio at token position 
+
+𝑡 , and 𝜖 is the clipping parameter that constrains policy updates. Although RLVR methods are prevalent for LLM post-training, they face problems, including a lack of verifiable rewards and unstable training, as discussed in the introduction, when they are applied to generate a high-quality data preparation pipeline, motivating the 
+
+Operation-R1 approach. 
+
+## 3 OPERATION-R1 
+
+## 3.1 Framework Overview 
+
+To bridge the gap between TQA and data preparation, we propose 
+
+Operation-R1 , a question-oriented data-preparation orchestration framework designed to enable high-quality tabular question answer-ing. Figure 2 provides an overview of its architecture. Operation-R1 
+
+frames data preparation as a model-driven orchestration process that, given a question and a table, automatically composes and executes a tailored sequence of transformations that reshape the table to better expose the answer. As shown in Fig. 2, the offline stage of Operation-R1 aims to pro-duce a TQA-oriented data preparation pipeline generator, built using open-sourced LLMs. To finetune an LLM for the task of QA-oriented data preparation, we propose ORPO ( O peration-wise Group Relative Policy Optimization), a novel RVRL algorithm. ORPO 
+
+features two designs that aim to make the post-training process more effective, efficient, and robust: (i) a self-supervised pipeline reward mechanism, providing finer-grained supervision signals tailored to TQA for model training; and (ii) a variance-aware group resampling strategy, enhancing the stability of the LLM training in case of reward collapse. 
+
+> 4
+
+Figure 2: Overview of Operation-R1 , including ORPO-based offline training, parallel operator generation, operation-tree merging, and adaptive rollback for reliable tabular QA. 
+
+During the online stage, once receiving a natural language ques-tion 𝑞 over a table 𝑇 , Operation-R1 leverages the data preparation pipeline generator derived from the offline stage to produce a se-quence of operators. Each operator is organized as a JSON object containing the operator name, parameters, and an explanation (in-dicating the usages of the operation). Due to hallucinations and nondeterminism in LLM inference, the Operation-R1 generator builds 𝑁 data preparation pipelines concurrently and then pro-duces a consistent pipeline from these using an operation merging algorithm. The JSON-represented operators are eventually interpreted as physical operators and then executed in the underlying execution environment ( e.g. , Python). Recalling the characteristics of opera-tors as discussed in Section 2.1, structured operators ( e.g. , select ,
+
+filter ), will be converted into corresponding code snippets and exe-cuted by the executor; and semantic operators ( e.g. , add_column ), will be executed by invoking an LLM based on the instruction (like 
+
+description as for add_column ). This hybrid execution extends the capabilities of data preparation, expanding the scope of ques-tions that TQA can address. Eventually, the processed table 𝑇 ′
+
+together with natural language question 𝑞 are be fed into a QA model to obtain the desired answer. To avoid the “over-processing” problem where key information is lost in the processing of data preparation, Operation-R1 also supports an adaptive rollback mechanism: When the QA model cannot identify relevant information from the table, the system will revert to the earlier table that contains more information. In the following, we detail the post-training algorithm of ORPO 
+
+and then the online question answering process. 
+
+## 3.2 ORPO: Operation-wise Group Relative Policy Optimization 
+
+As discussed earlier, there are numerous benefits to using a cus-tomized LLM to generate a QA-oriented data preparation pipeline, and GRPO performs well at customizing an LLM for a specific task [ 9, 33 ]. The challenge however, is that as for data preparation operation generation requires assessing the correctness of final answers as well as quantifying the quality of generate intermediate operations. We thus propose a low-cost surrogate operation reward mechanism to quantify the quality of generated operations in terms of both correctness and efficiency, forming the foundation for our 
+
+ORPO training strategy. 
+
+3.2.1 Self-supervised Pipeline Reward Mechanism. We first intro-duce the reward designs for operations in a generated data prepa-ration pipeline in terms of correctness and efficiency. 
+
+Operation correctness rewarding. We first consider the evaluation of the correctness of generated operations. If given an ideal curated ground truth table that is the most compact and most pertinent for a given answer, an ideal approach to evaluating a generated data preparation operation is to compare the result it produces to the ground truth table. However, it is impossible to obtain the ground truth table beforehand. We thus instead propose a surrogate opera-tion rewarding mechanism that performs intermediate operation evaluations in a self-supervised manner on a “cell-focused QA task”. 
+
+Definition 1 (Cell-focused QA Task). Given a table 𝑇 con-taining a set of cell values {𝑐 ij }, a question 𝑞 over 𝑇 is a cell-focused QA task if every value of the set A ( 𝑞 ) of question answers comes from table 𝑇 . Thus, the answer set A ( 𝑞 ) formally satisfies ∀𝑎 𝑘 ∈
+
+𝐴 (𝑞 ) (∃ 𝑐 𝑖 𝑗 ∈ 𝑇 (𝑎 𝑘 = 𝑐 𝑖 𝑗 )) , where "=" denotes exact string match. 
+
+On cell-focused QA tasks, we regard the operation evaluation as a judgment of whether the produced intermediate table contains the answers, which is a proxy for the comparison between the intermediate result and the virtual ground truth. Given a cell-focused QA task 𝑞 over an initial table 𝑇 and its answer set A ( 𝑞 ), an LLM generates a sequence of operations 𝑃 =
+
+[op 1, op 2, . . . , op 𝑛 ]. The produced table of an intermediate operation 
+
+op 𝑘 ∈ 𝑃 is denoted by 𝑇 𝑘 . The correctness of the operation op 𝑘 is defined as follows. 
+
+cr (op k,𝑇 𝑘 ; A ( 𝑞 )) = 1(𝑎 = 𝑐, ∀𝑎 ∈ A ( 𝑞 ), ∃𝑐 ∈ 𝑇 𝑘 ), (4) where 1 is an indicator function. For simplicity, we omit A ( 𝑞 ) from the notation of the operation correctness. Based on the definition of correctness of a single operation, we propose a cumulative reward function to rate the correctness of a generated pipeline. Given a pipeline with 𝑛 data preparation operators, the accumulative accuracy reward assigned to the first 
+
+> 5
+
+𝑘 (𝑘 ≤ 𝑛 ) steps in the pipeline is defined as follows. 
+
+𝑟 acc (𝑘 ) =
+
+Í𝑖 ≤𝑘 cr (op 𝑖 ,𝑇 𝑖 )
+
+𝑛 (5) This accumulative accuracy reward function assigns higher scores to pipelines where every data preparation operation can retain answers to the question. While it encourages LLMs to generate pipelines, lengthy pipelines are also encouraged, which is not what users want. 
+
+Operation efficiency rewarding. To avoid generating excessive data preparation pipelines, in addition to correctness, efficiency is consid-ered as a reward to punish LLM generations that include redundant, useless operations in a pipeline. Since one of the goals of data preparation is to eliminate irrele-vant, noisy data from a given table, we define operator efficiency in terms of a compression ratio that measures reductions in the column and row sizes of the given table by an operation. Without loss of generality, given an operator op 𝑘 from a gener-ated pipeline and its input table 𝑇 𝑘 −1 with columns C𝑘 −1 and rows 
+
+R𝑘 −1, the table produced by op 𝑘 is denoted by 𝑇 𝑘 and has columns 
+
+C𝑘 and rows R𝑘 . The row-level and column-level compression ratio of operator op 𝑘 is defined as | R 𝑘 || R 𝑘 −1 | and | C 𝑘 || C 𝑘 −1 | , respectively. Similar to the accumulative operator accuracy reward function, we define an accumulative operator efficiency reward function based on the compression ratio. As for an initial table 𝑇 with columns C and rows R, the accumulative efficiency reward as-signed to the first 𝑘 (𝑘 ≤ 𝑛 ) operations in the pipeline is defined as follows. 
+
+𝑟 compress (𝑘 ) = 0.5 · |R 𝑘 ||R| + 0.5 · |C 𝑘 ||C| (6) 
+
+Overall reward function. In addition to the operation correctness and operation efficiency rewards, we adopt a length reward from DAPO [ 33 ] to constrain LLMs from generating overlong responses, alleviating “over thinking” [ 23 ] as well as reducing latency and cost. Formally, let 𝑜 denote an LLM response that contain a data prepa-ration pipeline, and let |𝑜 | be its token length. The length reward function on 𝑜 is defined as follows. 
+
+𝑟 length (𝑜 ) =
+
+
+
+0 |𝑜 | ≤ 𝐿 max − 𝐿 cache     
+
+> (𝐿 max −𝐿 cache ) − | 𝑜 |
+> 𝐿 cache
+
+𝐿 max − 𝐿 cache < |𝑜 | ≤ 𝐿 max 
+
+−1 |𝑜 | > 𝐿 max ,
+
+(7) where 𝐿 max is a predefined maximum token length, and 𝐿 cache is a slack token budget that controls the width of the soft tolerance band before strong penalties apply. The overall reward function integrates the previous components with tunable weights: 
+
+𝑟 (𝑜, 𝑛 ) = 𝑟 acc (𝑛 ) + 𝜆 1 · 𝑟 compress (𝑛 ) + 𝜆 2 · 𝑟 length (𝑜 ), (8) where the weights ( 𝜆 1 and 𝜆 2) balance operation correctness, oper-ation and output efficiency, each of which are tuned according to performance on each datasets. Here we set 𝜆 1 = 𝜆 2 = 0.5.
+
+3.2.2 LLM Post-training by ORPO. We integrate the self-supervised pipeline rewarding mechanism into the LLM post-training GRPO method to achieve the operation-wise group relative policy opti-mization method, ORPO . Given a question 𝑞 and a table 𝑇 from the training dataset, ORPO samples a group 𝐺 of LLM outputs from the current LLM 𝜋 old , i.e. , 𝐺 = {𝑜 𝑖 }|𝐺 | 
+
+> 𝑖 =1
+
+. Each output 𝑜 𝑖 contains a data preparation pipeline 𝑃 𝑖 = [op 1, op 2, . . . , op 𝑛 𝑖 ] and each out-put is then scored by the pipeline reward function 𝑅 𝑖 = 𝑟 (𝑜 𝑖 , 𝑛 𝑖 ).
+
+ORPO optimizes the LLM by maximizing the following token-level objective: 
+
+max 
+
+> 𝜋 𝜃
+
+E(𝑞,𝑇 )∼D , {𝑜 𝑖 }|𝐺 |  
+
+> 𝑖 =1∼𝜋 𝜃 (· | 𝑞,𝑇 )
+
+ 1
+
+|𝐺 |∑︁ 𝐺 
+
+1
+
+|𝑜 𝑖 |∑︁ 𝑜 𝑖 
+
+n
+
+min 𝜌 𝜃 𝑖,𝑡 𝐴 ORPO  
+
+> 𝑖,𝑡
+
+, clip (𝜌 𝜃 𝑖,𝑡 , 1 − 𝜖, 1 + 𝜖 )𝐴 ORPO 
+
+> 𝑖,𝑡
+
+ − 𝛽 KL (𝜋 𝜃 ∥𝜋 ref )
+
+o
+
+,
+
+(9) where 𝜌 𝜃  
+
+> i,t
+
+= 𝜋 𝜃 (𝑜 𝑖,𝑡 |𝑞,𝑇 ,𝑜 𝑖, <𝑡 )    
+
+> 𝜋 𝜃 old (𝑜 𝑖,𝑡 |𝑞,𝑇 ,𝑜 𝑖, <𝑡 )
+
+, and 𝐴 ORPO  
+
+> 𝑖,𝑡
+
+represents a normalized difference from the group mean operation reward, defined as: 
+
+𝐴 GRPO  
+
+> 𝑖,𝑡
+
+= 𝑅 𝑖 − 𝜇 𝑟 
+
+𝜎 𝑟 + 𝜖 , (10) where 𝜇 𝑟 and 𝜎 𝑟 are the mean and standard deviation of rewards among the sampled completions 𝑜 𝑖 in the same batch, and 𝜖 is a small constant that ensures numerical stability. 
+
+Variance-aware group resampling strategy (VGR strategy). Although 
+
+ORPO introduces finer-grained supervision signals, it also causes more instability in the LLM training, which manifests itself in two forms. The first is low-variance amplification : when rewards as-signed to different LLM responses in a group are very similar ( i.e. ,the reward variance is close to zero), the group-wise normalization in ORPO amplifies tiny, often noise-level differences into large pos-itive and negative advantages, causing the optimizer to overreact to spurious contrasts between almost indistinguishable trajecto-ries and leading to unstable gradient updates. Second, we observe a reward distortion problem : in ORPO , the raw rewards {𝑅 𝑖 } are transformed into group-wise normalized advantages 𝐴 ORPO  
+
+> 𝑖
+
+(Eq. 10), and the policy update is driven purely by such relative differences instead of by absolute reward values. This means that the model training does not receive real supervision signals. For instance, two vastly different groups of absolute reward scores [0.9, 0.5, 0.5] and 
+
+[0.3, 0.1, 0.1] will be normalized to the nearly identical advantages 
+
+[1.41 , −0.70 , −0.70 ] and [1.43 , −0.72 , −0.72 ]. Here training samples with a high reward of 0.9 and with a low reward of 0.3 across two groups will have the same effect (both are regarded as positive signals), consequently misleading the LLM training. This creates a critical vulnerability as highlighted in recent relative optimization studies [ 24 ]: the optimization process inadvertently reinforces the “least bad” sample in a sub-optimal group (e.g., the 0.3 reward case) simply because it outperforms its peers locally, while failing to distinguish between relative superiority and absolute correctness. These two issues are pronounced in our approach, as our pipeline rewarding provides fine-grained supervision signals and ORPO 
+
+is performed on an immutable group of samples that is produced ahead of training. To address these challenges, we propose a variance-aware group resampling strategy , which yields dynamic groups that provide diverse, informative training samples based on two group con-straints. Consider a group 𝐺 of LLM outputs containing various data preparation pipelines 𝐺 = {𝑜 𝑖 }|𝐺 | 
+
+> 𝑖 =1
+
+. Each LLM output is assigned with a reward by the reward function, forming a group of rewards 
+
+R = {𝑅 1, 𝑅 2, . . . , 𝑅 |𝐺 | }. The group mean reward 𝜇 𝐺 is computed by 𝜇 𝐺 = 1 
+
+> |𝐺 |
+
+Í|𝐺 | 
+
+> 𝑖 =1
+
+𝑅 𝑖 , and the reward variance 𝜎 𝐺 is calculated by 
+
+> 6
+
+𝜎 𝐺 = 1 
+
+> |𝐺 |
+
+Í|𝐺 | 
+
+> 𝑖 =1
+
+(𝑅 𝑖 − 𝜇 𝐺 )2. To overcome the two dilemmas discussed above, we have following two constraints to the group 𝐺 :
+
+• Variance constraint : the reward variance of the group has to satisfy 𝜎 𝐺 ≥ 𝜖 . This constraint avoids the signal collapse effect .
+
+• Quality constraint : the maximum reward value 𝑅 max within the group has to satisfy 𝑅 max ≥ 𝜏 , which guarantees that at least one output provides a high-quality data preparation pipeline. This constraint overcomes the reward distortion problem .Once a group violates any of the constraints, it triggers group resampling, discarding the current group and generating more can-didate outputs to form a new group. Our variance-aware group resampling contributes to collecting a more diverse and higher-quality data preparation pipeline reasoning trajectories as the train-ing data, and our empirical studies in Section 4.4 validates that the resampling strategy enhances stability of LLM training under fine-grained reward regimes and mitigates early-stage reward collapse. 
+
+## 3.3 Operation Merge 
+
+In the online phase, the pipeline generator trained by ORPO is used to generate a sequence of data preparation operators tailored to the specific question and given table. To enhance the robustness and consistency of pipeline generation, inspired by [ 2 ], Operation-R1 
+
+asks the generator producing 𝑁 pipeline candidates and then re-turns one of them with the most “votes” as the final data preparation pipeline. The vote for an operator represents how many pipeline candidates include that operator. The more votes a pipeline candi-date has, the more reliable operators it contains. We propose an operation merge algorithm to count the votes and find the most trustworthy pipeline among all candidates efficiently. The core data structure in operation merge is an operation trie built upon all pipeline candidates. In the operation trie, each branch rep-resents a candidate pipeline, and each node in a branch represents an operator in the pipeline. If two candidate pipelines share the same operator sub-sequence, they share the same sub-branch in the operation trie. Each node in the trie has a weight recording how many candidate pipelines contain the operator ( i.e. , the number of votes). With an operation trie, the problem of searching a pipeline that most LLM orchestrations advocate can be solved by identifying a branch of a trie with the maximum sum of node weights. In case of multiple branches having same node weights, a longer branch is preferred as the final pipeline. When applying operation merge, we take a different action to the semantic operator add_column from other structured operators whose parameters distinguish each operator. To avoid wrongly distinguishing the same add_column operators that possess the semantically same but literally different NL description, we retain all add_column s in the final pipeline. In addition, we aggregate all 
+
+select operators in candidates into a new select operator whose the parameter column name is a union of all column names. The complete merging procedure is in Algorithm 1. This merg-ing strategy strikes a balance between inclusivity and precision: it captures all potentially informative schema modifications (via union and retention) while enforcing consensus for other transfor-mations. Empirically, this approach has been shown to improve the consistency of downstream QA performance by mitigating the 
+
+Algorithm 1: Operation Merge 
+
+Input : Candidate pipelines L = {𝐿 1, 𝐿 2, . . . , 𝐿 𝑁 }
+
+Output : The merged pipeline 𝐿 ∗
+
+𝐿 ∗ ← ∅ 
+
+// Step 1: Aggregate all select operations 
+
+𝐶 sel ← Ð𝐿 𝑖 ∈ L {columns in select (·) operators of 𝐿 𝑖 }
+
+append select (𝐶 sel ) to 𝐿 ∗
+
+// Step 2: Retain all add_column operations 
+
+A ← all add_column() ops from all 𝐿 𝑖 ∈ L 
+
+append all operators in A to 𝐿 ∗
+
+// Step 3: Build an operation trie over the remaining operators 
+
+L′ ← { 𝐿 𝑖 \ { select() , add_column() } | 𝐿 𝑖 ∈ L} 
+
+initialize an empty trie T with root node 𝑟 
+
+initialize the node weight 𝑤 (𝑣 ) ← 0 for all nodes 𝑣 ∈ 𝑉 (T ) 
+
+foreach pipeline 𝐿 ′ 
+
+> 𝑖
+
+∈ L ′ do 
+
+insert 𝐿 ′ 
+
+> 𝑖
+
+into T as a branch starting from 𝑟 
+
+foreach node 𝑣 along the insertion path do 
+
+𝑤 (𝑣 ) ← 𝑤 (𝑣 ) + 1
+
+// Return a path with maximum node weights 
+
+P ← { 𝑃 | 𝑃 is a root-to-leaf path in T } 
+
+𝑃 ∗ ← arg max 𝑃 ∈ P 
+
+Í 𝑣 ∈𝑃 𝑤 (𝑣 )
+
+append all operators from 𝑃 ∗ to 𝐿 ∗
+
+return 𝐿 ∗
+
+effects of noisy or unstable operator predictions from individual generations. 
+
+## 3.4 Adaptive Rollback 
+
+Although we design lots of strategies and techniques to avoid gen-erating incorrect data preparation pipelines, it still remains risks of over-processing and information loss. I.e, essential information may be inadvertently removed from the table. To address this chal-lenge, we design an adaptive rollback mechanism that enables self-correction when information loss is detected. The rollback process is triggered when the QA model detects that the processed table 𝑇 ′
+
+loses the necessary information to answer the question and it outputs “ No data available ”. This output serves as a self-diagnostic signal indicating the model’s uncertainty under missing data conditions. To facilitate the rollback, given a table 𝑇 and a produced data preparation pipeline 𝑃 = [op 1, op 2, . . . , op 𝑛 ], we define three states: 
+
+𝑇 rollback =
+
+
+
+op 𝑛 (. . . op 2 (op 1 (𝑇 )) . . . ) State 1: Full pipeline applied 
+
+op 1 (𝑇 ) State 2: Only the first op applied 
+
+𝑇 State 3: No operator applied (11) Initially, we have a full generated pipeline applying on the given table, and arrive at State 1. If the system emits “ No data available ”in State 1, it recovers State 2, where only the first operator op 1 is applied to the table. In State 2, most critical information is suppos-edly preserved because the most likely problematic operations are not performed. When the processed table still fails to assist QA, 
+
+> 7
+
+the system recover Stage 3, where the original table 𝑇 is recovered. State recovery enables resubmission of the recovered table to the QA model. The process terminates once a valid answer is obtained or when the original table is restored (reaching State 3). 
+
+## 4 EXPERIMENTS 4.1 Experiments Setup 
+
+Datasets. We evaluate Operation-R1 using two datasets, Wik-iTQ [17] and TabFact [4]. 
+
+• WikiTQ is a dataset for table question answering, consisting of complex natural language questions over diverse Wikipedia tables, with 17,689 training and 4,344, test pairs covering wide variations in table structures and reasoning types. 
+
+• TabFact is a table-based fact verification dataset built from Wikipedia, where each statement–table pair is labeled as True or 
+
+False , emphasizing logical reasoning and consistency checking over tabular evidence. 
+
+Training protocol. Our training for the operation generator is conducted only on the Cell-Focused subset of WikiTQ, while Tab-Fact is reserved purely as an out-of-domain evaluation benchmark to assess the transferability of the learned data-preparation policies. 
+
+Baselines. We evaluate Operation-R1 against 10 baselines. 
+
+• No-Prep performs direct table QA without preprocessing, using the prompting template from Table-R1 (Yang et al.) [30]. 
+
+• DATER [ 32 ] is an LLM-driven decomposer that splits a large evidence table into salient sub-tables and factorizes complex questions into executable sub-questions via a parsing-execution-filling pipeline. 
+
+• Binder [ 6] is a program-centric approach that binds language models to symbolic execution (e.g., SQL/code), compiling model outputs into interpretable, executable programs. 
+
+• ReAcTable [34 ] is a ReAct-style TQA system that incrementally constructs intermediate table representations and invokes exter-nal SQL/Python executors for progressive data transformation and answer derivation. 
+
+• CoTable (Chain-of-Table) [ 26 ] is a tabular reasoning system that treats an evolving table as the chain of thought, iteratively generating operations to update the table and expose verifiable intermediate results before producing a final answer. 
+
+• AutoPrep [7] is a question-aware data preparation multi-agent framework that decomposes complex table reasoning tasks into structured data preparation subtasks through collaborative agents, including a planner, a preprocessor, and an executor. 
+
+• GRPO [ 9 ] is an RL algorithm that trains LLMs via self-comparison within a batch of generated responses, eliminating explicit value functions. We apply accuracy rewards to fine-tune the base model under the same setting as our ORPO, using the full WikiTQ dataset ( ∼11k). 
+
+• DAPO [ 33 ] extends GRPO with token-level policy gradients, dynamic sample allocation, and length-aware clipping to stabi-lize LLM RL training. We apply accuracy rewards to fine-tune the base model under the same setting as ORPO, using the full WikiTQ dataset ( ∼11k). 
+
+• Table-R1 (Yang et al.) [ 30 ] introduces two independently trained variants for table reasoning. Table-R1-SFT is a supervised fine-tuning model trained on ∼48.5k carefully filtered reasoning traces generated by DeepSeek-R1 across three task types (TQA, TFV, FF-TQA), employing full-parameter fine-tuning. Table-R1-Zero ,instead of being initialized from the SFT checkpoint, is trained directly from the same base model using ∼69k verifiable samples with the GRPO algorithm. 
+
+• Table-R1 (Wu et al.) [29 ] proposes a region-based reinforce-ment learning framework built on the Table Instruct-RE dataset (derived from TableBench ∼20k), where table regions are auto-matically generated by DeepSeek-R1 to capture the minimal evidence areas necessary for solving each problem. It adopts two-stage training that first guides LLMs with SFT and then optimizes via Table-Aware Group Relative Policy Optimization (TARPO) with a mixed reward balancing region precision and correctness. 
+
+Evaluation Metrics. We use accuracy to evaluate model perfor-mance on both datasets. For WikiTQ, accuracy is computed as the percentage of questions where the predicted answer matches the ground truth. Following the evaluator from Binder [ 6 ], we apply answer normalization to handle unit variations and list-based an-swers. For TabFact, accuracy measures the percentage of statements correctly classified as True or False. 
+
+Experiment Settings. All experiments are conducted on a server equipped with 256 GB RAM, an Intel Xeon Silver 4314 CPU operat-ing at 2.40 GHz, and an NVIDIA A40 GPU with 46 GB memory. The software environment includes PyTorch 2.4.0, Transformers 4.46.1, and the vLLM serving engine (version 0.6.2). To ensure reproducibil-ity, we fix the random seeds across all frameworks. Due to GPU memory limitations, all vLLM-based experiments use half-precision (FP16) inference. 
+
+Backbone inference modes. Qwen3-series models support the default non-thinking mode and the thinking mode. For Table 1, we use the non-thinking variants to stay comparable with prior baselines on standard instruction-tuned models. For Table 2, all Qwen3-based methods run in the thinking mode with the same backbone and inference configuration. 
+
+Implementation Details. We develop Operation-R1 models using Qwen3 series backbones: Operation-R1-1.7B on Qwen3-1.7B and Operation-R1-4B on Qwen3-4B. For ORPO training described in Section 4.1, we apply Cell-Focused QA filtering to WikiTQ and keep only instances shorter than 2,800 tokens, yielding 5,403 ex-amples from the original training set. For fair comparison, the GRPO and DAPO baselines in Table 2 are trained on an 11K sub-set from the same split, filtered only using the same 2,800-token length constraint. We adopt a 19:1 train-validation split and uti-lize the ms-swift framework with the following hyperparameters: maximum sequence length of 5,632 tokens, rollout parameter of 12, total batch size of 144, and learning rate of 7 × 10 −7. For the length-aware reward, we set 𝐿 max = 2,560 and 𝐿 cache = 512 . In the VGR strategy, we use a variance threshold of 0.1 and a quality threshold of 0.5. The LoRA rank is set to 32, and we enable Liger kernel optimization along with Flash Attention for efficient train-ing. DAPO-related parameters follow the configuration specified in 
+
+> 8
+
+Table 1: Comparison of Table Understanding Methods under Unified Model Settings. Qwen3 results are reported in non-thinking mode for fair comparision. Model Llama3.1-8B-Instruct Qwen2.5-7B-Instruct Qwen3-4B Qwen3-8B GPT-4.1 mini WikiTQ TabFact WikiTQ TabFact WikiTQ TabFact WikiTQ TabFact WikiTQ TabFact 
+
+No-Prep 49.10 77.08 50.69 71.99 46.20 74.95 46.87 76.58 67.84 88.41 Dater 29.66 72.63 46.87 66.45 49.85 82.07 53.27 68.13 53.91 64.52 Binder 50.44 74.87 36.34 77.83 50.14 79.13 55.31 81.93 60.00 83.02 ReAcTable 42.94 - 47.33 - 53.38 - 52.30 - 59.22 -CoTable 40.56 75.59 46.20 80.43 57.50 81.72 52.21 91.25 75.04 88.69 AutoPrep 17.05 49.52 55.64 71.84 59.68 53.36 63.53 78.28 72.81 88.24 Operation-R1-1.7B 60.30 79.80 65.67 84.52 68.16 90.46 68.39 90.42 76.05 92.16 Operation-R1-4B 64.27 84.24 69.26 88.34 70.72 91.35 71.06 92.14 76.77 93.87 
+
+the literature [ 33 ]. Operation-R1-1.7B training uses two A40 GPUs, while Operation-R1-4B training uses four A40 GPUs. 
+
+## 4.2 Overall Performance 
+
+We conduct experiments on WikiTQ and TabFact across multiple backbones. As shown in Table 1, Operation-R1 consistently outper-forms all compared baselines under each backbone setting. Operation-R1-4B improves over baselines by 9.55% on WikiTQ and 6.08% on TabFact on average. The smaller Operation-R1-1.7B variant surpasses baselines by 6.85% and 3.57% respectively, demon-strating efficient table reasoning with limited capacity. Traditional program-based methods (Dater, Binder) suffer from execution brit-tleness and poor generalization to complex questions. These meth-ods yield no clear advantage over the simple No-Prep baseline due to execution brittleness. Operation-based methods (CoTable, Auto-Prep) exhibit strong backbone dependency: on weaker or small-size llms (Llama3.1-8B-Instruct, Qwen2.5-7B-Instruct, Qwen3-4B), , they show no clear advantage over the No-Prep baseline and occasionally underperform it. Especially, AutoPrep suffers catastrophic degra-dation (e.g., Qwen3-4B/TabFact ( 53 .36% vs. 74 .95% No-Prep)), as smaller models generate buggy code that traps the system in futile self-debugging loops. Even in comparison with best baseline per-formance, Operation-R1 maintains consistent advantages (WikiTQ: 75.04 vs. 76.77, TabFact: 91.25 vs. 93.87). Operation-R1’s stable performance stems from transforming ta-ble preprocessing from either multi-agent coordination or program synthesis into a trainable operator orchestration task. By learning to compose operator sequences through ORPO with cell-level veri-fication, we achieve robust results across backbones without the brittleness of code execution or the overhead of iterative agent collaboration. This paradigm—optimizing operator composition policies rather than prompt engineering or code generation—offers a more scalable path for future table understanding systems. Table 2 compares Operation-R1 against state-of-the-art end-to-end training approaches. Despite using only 4B parameters and 5K training samples, Operation-R1 achieves competitive WikiTQ accu-racy (81.62%) and state-of-the-art TabFact performance (93.47%). 
+
+Operator Generation vs. Natural Language Reasoning. Against large-scale supervised methods, Operation-R1 outperforms TableGPT2 (72B, 2.36M samples) by 10.12 points on WikiTQ and 10.97 points on TabFact, demonstrating the superiority of targeted operator-based preprocessing over massive generic pre-training. Table-R1-SFT with Llama-3.1-8B achieves the highest WikiTQ score (83.8%) but re-quires 34K curated reasoning traces from DeepSeek-R1. Operation-R1 maintains robust performance with 6.8 × less training data while surpassing all SFT variants on TabFact (+2.37 points). This provide empirical evidence that structured operator composition can be easier to learn than free-form textual reasoning in our setting. 
+
+Preprocessing-then-QA vs. End-to-End RL. Among RL-based meth-ods, Table-R1-ZERO trains directly from base models using GRPO with 49K samples, achieving 81.2%/87.6% on Llama-3.1-8B. Our controlled comparison with GRPO and DAPO—which train end-to-end QA on the same Qwen3-4B backbone with 11K full-dataset samples—reveals their limited effectiveness (78.78%/91.97% and 79.08%/92.24%). Remarkably, Operation-R1 outperforms both by 2.54/1.23 points with only 5K samples, despite being trained solely on operator generation rather than the QA task itself . This counterintu-itive result demonstrates that learning operator-based preprocess-ing is fundamentally simpler and more impactful than end-to-end reasoning. End-to-end QA conflates table understanding, infor-mation selection, and multi-step reasoning into a single objective where binary accuracy rewards provide sparse, ambiguous credit assignment. Our two-stage paradigm decouples these challenges: fine-grained Cell-Focused QA verification delivers deterministic, step-wise feedback at every transformation, enabling precise credit assignment that makes operator learning tractable for small models without the supervision complexity of monolithic approaches. 
+
+## 4.3 Efficiency Analysis 
+
+To ensure fair comparison, we evaluate efficiency on the full test sets under controlled settings: for latency, due to API stability concerns, we uniformly deploy Qwen2.5-7B-Instruct for latency measurement across all baselines; for cost, we report the actual API spending incurred by GPT-4.1-mini, while Operation-R1 is costed using the Qwen3 API pricing on the DashScope platform. Fig. 3 presents a comprehensive efficiency-accuracy-cost analysis across both WikiTQ and TabFact datasets. On TabFact, Operation-R1 achieves the best accuracy while simultaneously maintaining the lowest cost and latency: Operation-R1-4B reaches highest accuracy with only 6,666s inference time at $1.85 cost, while Operation-R1-1.7B achieves second-best with even lower resource consump-tion. On WikiTQ, Operation-R1-4B achieves 69.26% accuracy with 
+
+> 9
+
+Table 2: Comparison of End2End Training-based QA Methods. ( †: results from the original studies due to unavailable model releases or GPU limits). Method Base Model Train Data Size Finetuning Method WikiTQ TabFact 
+
+No-Prep Qwen3-4B (Thinking mode) N/A - 78.48 92.91 TableGPT2 † Qwen2.5-72B 2.36M Full-Parameter 71.5 82.5 Table-R1-SFT (Yang et al.) † Llama-3.1-8B-Instruct 34K Full-Parameter 83.8 91.1 Table-R1-SFT (Yang et al.) † Qwen2.5-7B-Instruct 34K Full-Parameter 81.9 89.9 Table-R1-ZERO (Yang et al.) † Llama-3.1-8B-Instruct 49K Full-Parameter 81.2 87.6 Table-R1-ZERO (Yang et al.) † Qwen2.5-7B-Instruct 49K Full-Parameter 79.8 87.6 Table-R1 (Wu et al.) † Qwen3-8B (Thinking mode) 20K Full-Parameter 73.87 -GRPO Qwen3-4B (Thinking mode) 11K LoRA 78.78 91.97 DAPO Qwen3-4B (Thinking mode) 11K LoRA 79.08 92.24 Operation-R1 Qwen3-4B (Thinking mode) 5K LoRA 81.62 93.47 
+
+Figure 3: Efficiency-Accuracy-Cost Trade-off Comparison 
+
+12,631s inference time at $3.91 cost, substantially outperforming Au-toPrep (55.64%, 15,873s, $11.2) and CoTable (46.20%, 10,078s, $5.51). Traditional program-based methods such as Binder and Dater clus-ter in the low-accuracy region (36-50%) despite moderate compu-tational costs. Notably, Operation-R1-1.7B maintains competitive performance despite using the smallest model capacity, demonstrat-ing robust efficiency scaling. These results validate that our compact operator space enables lightweight models to perform effective ta-ble preprocessing in a single-stage pipeline, achieving simultaneous improvements in accuracy, latency (up to 51% reduction), and cost (up to 3.0 × lower)—making Operation-R1 particularly suitable for resource-constrained, production-scale TQA deployments. 
+
+## 4.4 Ablation Studies 
+
+To validate the effectiveness of each core component in Operation-R1, we conduct systematic ablation experiments using Qwen2.5-7B-Instruct as the base model. The results are presented in Table 3. Completely removing the ORPO training method, namely the origin Qwen3 model, leads to a significant performance drop to 63.49% on WikiTQ (5.77-point decrease), demonstrating that the absence of ORPO training results in unstable operator generation quality. Disabling Operation Merge results in a substantial perfor-mance drop to 61.90% on WikiTQ (7.36-point decrease), confirming that consensus-based operator aggregation significantly improves single-inference robustness. Similarly, removing Adaptive Rollback decreases WikiTQ performance to 64.24% (5.02-point drop), demon-strating its critical role in handling over-filtering scenarios. 
+
+Table 3: Ablation Studies 
+
+Method WikiTQ TabFact No-Prep 50.69 71.99 Operation-R1 69.26 88.34 
+
+− ORPO & VGR strategy 63.49 85.66 
+
+− VGR strategy 68.67 86.35 
+
+− Operation Merge 61.90 85.67 
+
+− Adaptive Rollback 64.24 85.11 When only VGR strategy is removed, we keep the ORPO objec-tive but disable the resampling so that training proceeds on the original static rollout groups, under which accuracy both decreases by 0.59/1.99 points, indicating its importance in maintaining train-ing stability. As shown in Fig. 4, removing VGR leads to a sharp early decline in the reward curves and only gradual recovery afterwards, while with VGR the rewards increase more smoothly and reach a higher level in later stages, indicating that our variance-aware (variance and quality) constraints effectively prevent early reward collapse and stabilize optimization under fine-grained rewards. 
+
+## 4.5 In-depth Analysis 
+
+To gain deeper insights into how Operation-R1 achieves its perfor-mance improvements, we analyze the distribution and effectiveness of operator sequences across the WikiTQ and TabFact datasets. 
+
+Impact of Operator Sequence Length. Fig. 5 shows a clear trend across both datasets. As the operator sequence length increases, the per-formance gain of Operation R1 over the baseline also grows. This phenomenon reveals two critical insights. F First, since longer op-erator sequences typically correspond to more complex questions requiring deeper table restructuring, the widening performance gap demonstrates Operation-R1’s superior capability in achiev-ing semantic alignment—precisely transforming raw tables into question-oriented representations that facilitate downstream rea-soning. Second, this trend validates the effectiveness of our ORPO training: despite longer sequences reflecting increasingly challeng-ing analytical demands, Operation-R1’s improvements actually am-plify rather than plateau, indicating that our model has successfully acquired robust capabilities in complex question decomposition 
+
+> 10
+
+Figure 4: Training curves of Operation-R1-1.7B with and without VGR strategy. Removing VGR causes a pronounced early drop in reward and slower subsequent improvement, whereas the full VGR strategy yields smoother, steadily increasing curves and higher final rewards. 
+
+Figure 5: Impact of Operator Sequence Length on WikiTQ and TabFact. 
+
+Figure 6: Accuracy by Operator Type on WikiTQ and TabFact. 
+
+and operator composition. This stands in stark contrast to the base-line’s direct natural language reasoning approach, which struggles disproportionately as question complexity escalates. 
+
+Operator Type Distribution and Effectiveness. Fig. 6 reveals that the performance improvements on questions involving different opera-tor types reveal nuanced yet instructive patterns that align closely with task characteristics. For each operator type, we bucket all ques-tions whose predicted pipeline contains that operator (allowing one question to appear in multiple buckets). Notably, questions requiring filter and select_columns exhibit the most substan-tial accuracy gains (22.1%/ 19.0% and 18.1%/ 17.1%), demonstrating Operation-R1’s capability to effectively address the "needle in a haystack" challenge by systematically eliminating irrelevant infor-mation along both row and column dimensions. Questions involv-ing sort_by show moderate yet consistent improvements (12.4%/ 13.6%) for comparison-intensive queries, while group_by exhibits higher variance (22.8%/ 11.9%) reflecting the specialized and often more challenging demands of aggregation tasks. Cross-dataset anal-ysis further validates our framework’s adaptability: TabFact shows stronger gains with filter for evidence locating, whereas WikiTQ benefits more uniformly across operator types due to its diverse reasoning demands. This task-adaptive performance pattern shows that our model learns to generate operator sequences semantically aligned with the underlying question intent and table structure. 
+
+## 4.6 Scalability to an Extended Operator Space 
+
+To explicitly test the scalability of our framework beyond the five operators seen during training, we add a new clean operator only at inference time: 
+
+Clean_column. The clean_column operator performs simple value normalization such as fixing date formats or standardizing numeric units. The target column 𝑐 and cleaning description 𝑑 are treated as parameters of the operator, denoted clean_column 𝑐,𝑑 .The operator takes only a table 𝑇 as input: clean_column 𝑐,𝑑 (𝑇 ),
+
+and returns a table where column 𝑐 has been normalized according to 𝑑 . For example, clean_column Date , ‘standardize date format’ (𝑇 ) normal-izes date values in the Date column. This operator requires semantic understanding and is implemented by invoking an LLM. We analyze the subset of examples where the model chooses to invoke clean_column. Table 4 reports the accuracy on this subset for both datasets. Despite the operator is triggered in only 12–14% of the data, adding the clean_column operator yields consistent im-provements within this subset. For WikiTQ, accuracy increases from 52.36% to 56.93% (+4.57). For TabFact, we observe a +1.8% absolute gain. These results demonstrates the scalability of Operation-R1 to 
+
+> 11
+
+Table 4: Accuracy comparison on the subset of examples where the clean_column operator is triggered. 
+
+Dataset Usage (%) Accuracy No Prep Operation-R1 Operation-R1 + 𝑜𝑝 clean 
+
+WikiTQ 13.63 45.43 52.36 56.93 (+4.57) 
+
+TabFact 17.98 82.14 84.61 86.81 (+2.20) 
+
+an expanded operator space. The framework maintains robustness when new operators are introduced and leverages them appropri-ately in scenarios where they provide meaningful benefits, without requiring any additional optimization or retraining. 
+
+## 5 RELATED WORK 5.1 Table Reasoning Paradigms 
+
+Text-based methods. These methods serialize tables into natural language and apply in-context learning [ 3 ] or chain-of-thought reasoning [ 27 , 38 ]. Beyond generic prompting, extensions include decomposition over large tables [ 8, 31 , 32 ] and structured lineariza-tion of complex headers [ 35 , 38 ]. These methods struggle with row-column structure encoding, incur high token overhead, and lack guarantees on numerical operations (e.g., sorting, aggregation). 
+
+Program-based methods. These methods prompt LLMs to pro-duce executable SQL or Python code to guarantee numerical cor-rectness. This paradigm offers strong guarantees on numerical cor-rectness. Early work such as Binder [ 6] adapts Program-of-Thought by binding LLM-generated symbolic programs to external veri-fiers. ReAct-style systems [ 34 ] iteratively construct and execute partial programs with tool augmentation. Decomposition-based pipelines [ 16 , 25 , 32 ] split complex queries into structured sub-programs before execution, while multi-step planning approaches [ 37 ]coordinate SQL generation across multiple reasoning stages and retrieval-augmented methods [ 11 ] integrate external knowledge for program synthesis. Despite their strengths, these methods are brittle to syntax and runtime errors, depend on external execution environments (databases or interpreters), and often degrade on smaller backbones in Table 1. 
+
+Operator-centric methods. These methods mediate between the two extremes by manipulating tables through a compact space of composable operations, preserving structural reasoning while re-maining simpler to generate than full programs. CoTable [ 26 ] treats iterative table transformation itself as the reasoning chain, while AutoPrep [ 7 ] organizes a multi-agent (planner/programmer/execu-tor) pipeline to produce a question-aware preprocessed table passed to a separate QA model. Although effective, these frameworks typi-cally require multiple LLM calls (up to 10) and often rely on very large models (>70B parameters), which raises latency and cost con-cerns for real-time use, and the operator-pipeline panel. Our work retains the benefits of structured operators but generates them in a single step with small models. 
+
+## 5.2 Learning Paradigms for Table Reasoning 
+
+Supervised End-to-End Training. SFT-based methods optimize end-to-end table QA/fact verification with large curated traces or synthetic data. Representative lines include TableGPT2 [ 22 ] and Table-R1-SFT [ 30 ], which report strong accuracy but typically re-quire full-parameter training and tens of thousands to millions of training signals. Table 2 collates settings and outcomes across end-to-end backbones, illustrating the data/compute intensity of this route. By shifting learning from unconstrained NL reasoning to fi-nite operator generation, our method achieves competitive accuracy with small backbones and modest data, reducing the dependence on large-scale SFT. 
+
+RLVR for Table Reasoning. RLVR methods [ 15 , 20 ] optimize LLMs using automatically verifiable rewards. In the table domain, three Table-R1 threads exemplify different reward placements: (i) Yang et al. [ 30 ] applied GRPO to diverse table reasoning tasks includ-ing short-form QA, fact verification, and free-form QA, proposing task-specific verifiable reward functions that evaluate both output format adherence and answer correctness, enabling inference-time scaling without human annotations. (ii) Wu et al. [ 29 ] and Lei et al. [14 ] introduced region-based reward mechanisms that compute the Intersection over Union (IoU) between predicted and ground-truth table regions (cells/columns/rows), using GRPO to optimize both evidence localization accuracy and final answer correctness. (iii) Jin et al. [ 12 ] proposed a hybrid GRPO variant that dynamically switches between program-based and text-based reasoning using reasoning-type-specific rewards. However, current RLVR approaches either rely on sparse, binary correctness signals for end-to-end reasoning [ 30 ] or—like region-based methods [ 14 , 29 ]—require manually annotated ground-truth regions and evaluate reasoning quality only indirectly by checking whether models mention the correct areas in natural language. This explicit articulation of table regions effectively patches text-domain GRPO onto structured table tasks, where high IoU does not nec-essarily imply sound operational reasoning. Operation-R1 is the first to apply GRPO to table preprocessing operator generation, de-coupling structural transformation from semantic reasoning. Our Cell-Focused QA proxy offers annotation-free, step-wise verifica-tion by testing answer-cell accessibility after each operator, yielding direct reward signals tightly aligned with operator correctness. By constraining the action space to a finite operator vocabulary, we en-able lightweight models to learn reliable preprocessing policies in a single inference step, with training fully isolated from downstream QA model choices. 
+
+## 6 CONCLUSION 
+
+In this work, we present Operation-R1 , enabling replacing multi-step data preparation pipeline assembly with one-step pipeline generation with a lightweight LLM (e.g., Qwen-1.7B/4B). To ad-vance LLM’s capability in pipeline generation, we propose ORPO, a LLM post-training algorithm with a novel self-supervised pipeline rewarding mechanism and a dynamic variance-aware group resam-pling strategy. Moreover, we introduce inference-time operation merge and adaptive rollback modules in Operation-R1 to enhance its robustness. Extensive experiments on WikiTQ and out-of-training-domain TabFact show that Operation-R1 improves TQA accuracy by 9.55% and 6.08% over multi-step preparation baselines with only 5K RL training examples, while reducing table size by 79%, inference la-tency by up to 51%, and 2.2 × monetary cost, demonstrating the superiority of Operation-R1 in both TQA accuracy and efficiency. 
+
+> 12
+
+## REFERENCES 
+
+[1] Jayetri Bardhan, Anthony Colas, Kirk Roberts, and Daisy Zhe Wang. 2022. DrugEHRQA: A question answering dataset on structured and unstructured elec-tronic health records for medicine related queries. arXiv preprint arXiv:2205.01290 
+
+(2022). [2] Bradley Brown, Jordan Juravsky, Ryan Ehrlich, Ronald Clark, Quoc V Le, Christo-pher Ré, and Azalia Mirhoseini. 2024. Large language monkeys: Scaling inference compute with repeated sampling. arXiv preprint arXiv:2407.21787 (2024). [3] Wenhu Chen. 2023. Large language models are few (1)-shot table reasoners. In 
+
+Findings of the association for computational linguistics: EACL 2023 . 1120–1130. [4] Wenhu Chen, Hongmin Wang, Jianshu Chen, Yunkai Zhang, Hong Wang, Shiyang Li, Xiyou Zhou, and William Yang Wang. 2019. TabFact: A large-scale dataset for table-based fact verification. arXiv preprint arXiv:1909.02164 (2019). [5] Yang Chen, Zhuolin Yang, Zihan Liu, Chankyu Lee, Peng Xu, Mohammad Shoeybi, Bryan Catanzaro, and Wei Ping. 2025. AceReason-Nemotron: Advanc-ing math and code reasoning through reinforcement learning. arXiv preprint arXiv:2505.16400 (2025). [6] Zhoujun Cheng, Tianbao Xie, Peng Shi, Chengzu Li, Rahul Nadkarni, Yushi Hu, Caiming Xiong, Dragomir Radev, Mari Ostendorf, Luke Zettlemoyer, et al . 2022. Binding language models in symbolic languages. arXiv preprint arXiv:2210.02875 
+
+(2022). [7] Meihao Fan, Ju Fan, Nan Tang, Lei Cao, Guoliang Li, and Xiaoyong Du. 2025. AutoPrep: Natural language question-aware data preparation with a multi-agent framework. Proceedings of the VLDB Endowment 18, 10 (2025), 3504–3517. [8] Che Guan, Mengyu Huang, and Peng Zhang. 2024. MFORT-QA: Multi-hop few-shot open rich table question answering. In Proceedings of the International Conference on Computing and Artificial Intelligence . 434–442. [9] Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Ruoyu Zhang, Runxin Xu, Qihao Zhu, Shirong Ma, Peiyi Wang, Xiao Bi, et al . 2025. DeepSeek-R1: Incentivizing reasoning capability in LLMs via reinforcement learning. arXiv preprint arXiv:2501.12948 (2025). [10] Jujie He, Jiacai Liu, Chris Yuhao Liu, Rui Yan, Chaojie Wang, Peng Cheng, Xiaoyu Zhang, Fuxiang Zhang, Jiacheng Xu, Wei Shen, et al . 2025. Skywork open reasoner 1 technical report. arXiv preprint arXiv:2505.22312 (2025). [11] Ruochun Jin, Xiyue Wang, Dong Wang, Haoqi Zheng, Yunpeng Qi, Silin Yang, and Meng Zhang. 2025. TALON: A multi-agent framework for long-table exploration and question answering. In Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing . 27385–27401. [12] Rihui Jin, Zheyu Xin, Xing Xie, Zuoyi Li, Guilin Qi, Yongrui Chen, Xinbang Dai, Tongtong Wu, and Gholamreza Haffari. 2025. Table-R1: Self-supervised and reinforcement learning for program-based table reasoning in small language models. arXiv preprint arXiv:2506.06137 (2025). [13] Nathan Lambert, Jacob Morrison, Valentina Pyatkin, Shengyi Huang, Hamish Ivison, Faeze Brahman, Lester James V Miranda, Alisa Liu, Nouha Dziri, Shane Lyu, et al . 2024. Tulu 3: Pushing frontiers in open language model post-training. 
+
+arXiv preprint arXiv:2411.15124 (2024). [14] Fangyu Lei, Jinxiang Meng, Yiming Huang, Tinghong Chen, Yun Zhang, Shizhu He, Jun Zhao, and Kang Liu. 2025. Reasoning-Table: Exploring reinforcement learning for table reasoning. arXiv preprint arXiv:2506.01710 (2025). [15] Youssef Mroueh. 2025. Reinforcement Learning with Verifiable Rewards: GRPO’s Effective Loss, Dynamics, and Success Amplification. arXiv preprint arXiv:2503.06639 (2025). [16] Giang Nguyen, Ivan Brugere, Shubham Sharma, Sanjay Kariyappa, Anh Totti Nguyen, and Freddy Lecue. 2025. Interpretable LLM-based table question an-swering. arXiv preprint arXiv:2412.12386 (2025). [17] Panupong Pasupat and Percy Liang. 2015. Compositional semantic parsing on semi-structured tables. arXiv preprint arXiv:1508.00305 (2015). [18] Shraman Pramanick, Rama Chellappa, and Subhashini Venugopalan. 2024. SPIQA: A dataset for multimodal question answering on scientific papers. Advances in Neural Information Processing Systems 37 (2024), 118807–118833. [19] Nitarshan Rajkumar, Raymond Li, and Dzmitry Bahdanau. 2022. Evaluating the text-to-SQL capabilities of large language models. arXiv preprint arXiv:2204.00498 
+
+(2022). [20] Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan Zhang, YK Li, Yang Wu, et al . 2024. DeepSeekMath: Pushing the limits of mathematical reasoning in open language models. arXiv preprint arXiv:2402.03300 (2024). [21] Guijin Son, Hyunwoo Ko, Hoyoung Lee, Yewon Kim, and Seunghyeok Hong. 2024. LLM-as-a-judge & reward model: What they can and cannot do. arXiv preprint arXiv:2409.11239 (2024). [22] Aofeng Su, Aowen Wang, Chao Ye, Chen Zhou, Ga Zhang, Gang Chen, Guangcheng Zhu, Haobo Wang, Haokai Xu, Hao Chen, et al . 2024. TableGPT2: A large multimodal model with tabular data integration. arXiv preprint arXiv:2411.02059 (2024). [23] Yang Sui, Yu-Neng Chuang, Guanchu Wang, Jiamu Zhang, Tianyi Zhang, Jiayi Yuan, Hongyi Liu, Andrew Wen, Shaochen Zhong, Na Zou, et al . 2025. Stop overthinking: A survey on efficient reasoning for large language models. arXiv preprint arXiv:2503.16419 (2025). [24] Wenqing Wang, Muhammad Asif Ali, Ali Shoker, Ruohan Yang, Junyang Chen, Ying Sha, and Huan Wang. 2025. A-IPO: Adaptive intent-driven preference optimization. arXiv preprint arXiv:2510.10077 (2025). [25] Yuxiang Wang, Junhao Gan, and Jianzhong Qi. 2025. TabSD: Large free-form table question answering with SQL-based table decomposition. arXiv preprint arXiv:2502.13422 (2025). [26] Zilong Wang, Hao Zhang, Chun-Liang Li, Julian Martin Eisenschlos, Vincent Perot, Zifeng Wang, Lesly Miculicich, Yasuhisa Fujii, Jingbo Shang, Chen-Yu Lee, et al . 2024. Chain-of-Table: Evolving tables in the reasoning chain for table understanding. arXiv preprint arXiv:2401.04398 (2024). [27] Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Fei Xia, Ed Chi, Quoc V Le, Denny Zhou, et al . 2022. Chain-of-thought prompting elicits reason-ing in large language models. Advances in neural information processing systems 
+
+35 (2022), 24824–24837. [28] Xianjie Wu, Jian Yang, Linzheng Chai, Ge Zhang, Jiaheng Liu, Xeron Du, Di Liang, Daixin Shu, Xianfu Cheng, Tianzhen Sun, et al . 2025. TableBench: A com-prehensive and complex benchmark for table question answering. In Proceedings of the AAAI Conference on Artificial Intelligence , Vol. 39. 25497–25506. [29] Zhenhe Wu, Jian Yang, Jiaheng Liu, Xianjie Wu, Changzai Pan, Jie Zhang, Yu Zhao, Shuangyong Song, Yongxiang Li, and Zhoujun Li. 2025. Table-R1: Region-based reinforcement learning for table understanding. arXiv preprint arXiv:2505.12415 (2025). [30] Zheyuan Yang, Lyuhao Chen, Arman Cohan, and Yilun Zhao. 2025. Table-R1: Inference-time scaling for table reasoning. arXiv preprint arXiv:2505.23621 (2025). [31] Zhen Yang, Ziwei Du, Minghan Zhang, Wei Du, Jie Chen, Zhen Duan, and Shu Zhao. 2025. Triples as the Key: Structuring makes decomposition and verification easier in LLM-based TableQA. In International Conference on Learning Representations .[32] Yunhu Ye, Binyuan Hui, Min Yang, Binhua Li, Fei Huang, and Yongbin Li. 2023. Large language models are versatile decomposers: Decomposing evidence and questions for table-based reasoning. In Proceedings of the international ACM SIGIR conference on research and development in information retrieval . 174–184. [33] Qiying Yu, Zheng Zhang, Ruofei Zhu, Yufeng Yuan, Xiaochen Zuo, Yu Yue, Weinan Dai, Tiantian Fan, Gaohong Liu, Lingjun Liu, et al . 2025. DAPO: An open-source LLM reinforcement learning system at scale. arXiv preprint arXiv:2503.14476 (2025). [34] Yunjia Zhang, Jordan Henkel, Avrilia Floratou, Joyce Cahoon, Shaleen Deep, and Jignesh M. Patel. 2024. ReAcTable: Enhancing ReAct for Table Question Answering. Proceedings of the VLDB Endowment 17, 8 (2024), 1981–1994. [35] Bowen Zhao, Changkai Ji, Yuejie Zhang, Wen He, Yingwen Wang, Qing Wang, Rui Feng, and Xiaobo Zhang. 2023. Large language models are complex table parsers. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing . 14786–14802. [36] Junnan Zhu, Jingyi Wang, Bohan Yu, Xiaoyu Wu, Junbo Li, Lei Wang, and Nan Xu. 2025. TableEval: A Real-World Benchmark for Complex, Multilingual, and Multi-Structured Table Question Answering. arXiv preprint arXiv:2506.03949 
+
+(2025). [37] Jun-Peng Zhu, Peng Cai, Kai Xu, Li Li, Yishen Sun, Shuai Zhou, Haihuang Su, Liu Tang, and Qi Liu. 2024. AutoTQA: Towards Autonomous Tabular Question Answering through Multi-Agent Large Language Models. Proceedings of the VLDB Endowment 17, 12 (2024), 3920–3933. [38] Jin Ziqi and Wei Lu. 2023. Tab-CoT: Zero-shot tabular chain of thought. In 
+
+Findings of the Association for Computational Linguistics: ACL 2023 . 10259–10277.

@@ -1,0 +1,588 @@
+Title: Test-Time Scaling with Diffusion Language Models via Reward-Guided Stitching
+
+URL Source: https://arxiv.org/pdf/2602.22871v1
+
+Published Time: Fri, 27 Feb 2026 01:46:23 GMT
+
+Number of Pages: 15
+
+Markdown Content:
+# Test-Time Scaling with Diffusion Language Models via Reward-Guided Stitching 
+
+Roy Miles 1 Aysim Toker 1 Andreea-Maria Oncescu 1 Songcen Xu 1 Jiankang Deng 2 Ismail Elezi 1
+
+Abstract 
+
+Reasoning with large language models often ben-efits from generating multiple chains-of-thought, but existing aggregation strategies are typically trajectory-level (e.g., selecting the best trace or voting on the final answer), discarding useful in-termediate work from partial or “nearly correct” attempts. We propose Stitching Noisy Diffusion Thoughts, a self-consistency framework that turns cheap diffusion-sampled reasoning into a reusable pool of step-level candidates. Given a problem, we (i) sample many diverse, low-cost reasoning trajectories using a masked diffusion language model, (ii) score every intermediate step with an off-the-shelf process reward model (PRM), and (iii) stitch these highest-quality steps across trajec-tories into a composite rationale. This rationale then conditions an autoregressive (AR) model (solver) to recompute only the final answer. This modular pipeline separates exploration (diffusion) from evaluation and solution synthesis, avoiding monolithic unified hybrids while preserving broad search. Across math reasoning benchmarks, we find that step-level recombination is most ben-eficial on harder problems, and ablations high-light the importance of the final AR solver in converting stitched but imperfect rationales into accurate answers. Using low-confidence diffu-sion sampling with parallel, independent rollouts, our training-free framework improves average ac-curacy by up to 23.8% across six math and cod-ing tasks. At the same time, it achieves up to a 1.8× latency reduction relative to both traditional diffusion models (e.g., Dream, LLaDA) and uni-fied architectures (e.g., TiDAR). Code is avail-able at https://github.com/roymiles/ diffusion-stitching .
+
+> 1
+
+Huawei London Research Center 2MVP Lab. Correspondence to: Jiankang Deng <jiankangdeng@gmail.com >.
+
+Preprint. February 27, 2026. 2 4 8 16 32 64 128 Wall clock latency (s) 
+
+> 30
+> 40
+> 50
+> 60
+> 70
+> 80
+> Accuracy (%)
+> Qwen-Math-Instruct Dream (512) LLaDA (256) LLaDA 2.0 (1024) (16k) + KV Caching Ours (gen=256) Ours (gen=512) Autoregressive Diffusion baselines + Parallel Sampling + Parallel Sampling
+
+Figure 1. Accuracy vs. wall-clock latency on M ATH 500 compar-ing autoregressive baselines ( ) using early stopping, diffusion baselines ( ◦), and our stitching pipeline ( ■, •) using 4 reasoning traces. All models are 7B in size, except for LLaDA 2.0. All diffu-sion models are run without KV caching, so enabling caching (Wu et al., 2025) would likely provide additional practical speedups. 
+
+1. Introduction 
+
+Large language models have become strong general-purpose reasoners, but reliable reasoning at test time is still expen-sive. On hard problems, accuracy often scales with the amount of computation devoted to search and naive scaling quickly becomes impractical. A core difficulty is that rea-soning traces are noisy: a single incorrect intermediate step can derail an otherwise promising derivation, so allocating all compute to one long trajectory is risky. This motivates approaches that trade a single high-fidelity rationale for a broader exploration under a fixed latency budget. A common strategy is to sample multiple reasoning paths and aggregate them, e.g., via self-consistency or verifier-based selection (Zhang et al., 2025a). However, most aggre-gation methods operate at the trajectory level: they choose one full chain (or vote over final answers), effectively dis-carding partial work from runs that contain useful interme-diate results but fail later. In parallel, diffusion language models offer an appealing mechanism for broad exploration because they can refine partially masked sequences with par-allel denoising, producing many diverse, low-cost reasoning trajectories. Recent unified hybrid models (Liu et al., 2025) that combine diffusion-style refinement with autoregressive (AR) decoding can be effective, but they couple the explo-ration, scoring, and final generation stages together in a 1
+
+> arXiv:2602.22871v1 [cs.CL] 26 Feb 2026 Stitching Noisy Diffusion Thoughts for Better Reasoning
+
+way that limits flexibility and makes targeted improvements harder. In practice, they also see a big drop in reasoning accuracy compared to the strong AR models. In this work, we propose Stitching Noisy Diffusion Thoughts, a self-consistency framework that turns diffu-sion sampling into a reusable pool of intermediate reasoning steps rather than a set of complete candidate solutions. Our key observation is that cheap diffusion-sampled chains can contain many locally correct sub-results. If we can identify these high-utility steps across trajectories and recombine them, we can recover much of the benefit of a broad search without paying for a single long derivation from scratch. Concretely, we advocate a specialist pipeline: a diffusion model for inexpensive exploration, a step-level evaluator to score intermediate reasoning, and a lightweight autoregres-sive model to produce the final answer conditioned on the stitched rationale. Our method has three components. (i) Explore: given an in-put problem, we sample N diverse chains-of-thought using a masked diffusion language model with a confidence-based sampling procedure that encourages diversity while preserv-ing high-confidence content. (ii) Evaluate: we score every intermediate step in every trajectory using an off-the-shelf process reward model (PRM), yielding a global pool of can-didate steps with quality estimates. This step-level view is crucial: it allows us to retain useful intermediate results even when an overall trajectory later derails. (iii) Stitch + Recom-pute: rather than selecting a single “best” trajectory (e.g., by maximizing the geometric mean of step scores), we collect the highest-quality steps across paths and concatenate them into a composite rationale. A small autoregressive model then conditions on the original problem and this stitched rationale and recomputes the final answer. Empirically, this separation of roles makes the system both modular and effective. The diffusion component supplies breadth; the PRM provides a fine-grained notion of step qual-ity; and the AR solver converts a partially redundant set of high-quality steps into a more accurate final response. This design also cleanly exposes ablations: we can quantify the value of (a) diffusion exploration alone, (b) trajectory-level selection, and (c) step-level stitching plus AR recomputation. In summary, our contributions are given as follows: 1. We introduce a step-level self-consistency framework for reasoning that replaces trajectory-level selection with PRM-scored step selection and stitching over diffusion-sampled chains-of-thought. 2. We analyze key stitching choices: generation count, diffusion diversity (e.g., temperature), PRM threshold-ing/anchoring, and a lightweight AR solver. In doing so we show how each component improves robustness and test-time scaling. 3. We demonstrate strong reasoning under tight latency budgets, improving the accuracy–latency Pareto fron-tier over state-of-the-art AR and diffusion baselines (see Figure 1 and 4), with up to 9.85 × fewer sequen-tial forward passes / 1.8 × lower end-to-end latency at matched accuracy, and up to +30.6% absolute accuracy points over vanilla diffusion decoding. 
+
+2. Related Work 
+
+Diffusion Language Models. Masked diffusion language models (dLLMs) (Nie et al., 2025) formulate generation as iterative denoising of a partially masked sequence. This view connects discrete diffusion and masked modeling by leveraging bidirectional Transformers for parallel refine-ment (Devlin et al., 2019; Austin et al., 2025; Hoogeboom et al., 2021; Ghazvininejad et al., 2019). In the text domain, diffusion has been investigated for controllable and condi-tional generation (Li et al., 2022; Gong et al., 2023; Lou et al., 2024). More recent scaling studies demonstrate that diffusion pretraining can be competitive with autoregressive (AR) approaches: LLaDA (Nie et al., 2025) trains an 8B masked dLLM from scratch, and Dream 7B (Ye et al., 2025) improves general capabilities, including mathematics, code, and planning. On the inference side, Fast-dLLM (Wu et al., 2025) accelerates diffusion decoding by enabling block-wise approximate KV caching and confidence-aware paral-lel decoding. For reasoning, diffusion sampling can produce diverse chain-of-thought (CoT) trajectories, which can be aggregated using self-consistency-style methods (Ye et al., 2024; Wang et al., 2023; Shao et al., 2025). While LLaDA 2.0 (Bie et al., 2025) demonstrated that discrete diffusion can be stably trained up to tens of billions of parameters, other recent works focus on hybrid architectures. Block Diffusion (Arriola et al., 2025) alternates diffusion-style refinement with autoregressive decoding, while TiDAR (Liu et al., 2025) unifies both autoregressive and diffusion gen-eration within a single network. In contrast, we advocate for a decoupled pipeline: diffusion provides inexpensive, broad exploration, and a lightweight AR model performs step selection and final answer generation. 
+
+Speculative Decoding. Speculative decoding (and closely related speculative sampling) accelerates autoregressive (AR) generation via a draft-and-verify procedure: alightweight draft model proposes multi-token continuations, and the large target AR model verifies them in parallel us-ing rejection-style correction to ensure the accepted output matches the target distribution (Leviathan et al., 2023; Chen et al., 2023). Recent hybrid frameworks, including SpecD-iff (Christopher et al., 2025), SpecDiff-2 (Sandler et al., 2025), DiffuSpec (Li et al., 2025), and DEER (Cheng et al., 2025), mitigate the token-level sequential drafting bottle-neck by replacing the AR drafter with a discrete diffusion model. Alternatively, the autospeculation paradigm repre-2Stitching Noisy Diffusion Thoughts for Better Reasoning 
+
+sented by Spiffy (Agrawal et al., 2026) and SSD (Gao et al., 2025) enables diffusion models to act as their own drafters. These approaches take advantage of the multi-step nature of the diffusion process by predicting unmasked token states multiple timesteps ahead. Then, the resulting state trajecto-ries are verified in parallel, enforcing consistency with the model’s own generative distribution. Overall, these specula-tive decoding and autospeculation methods are designed to accelerate next-token generation by maximizing token ac-ceptance between a drafter and a verifier, and thus focusing on token-level alignment and verification. In contrast, our method targets test-time reasoning quality and efficiency by using diffusion sampling for broad trajectory-level explo-ration, scoring intermediate reasoning steps with a PRM, and stitching high-quality steps into a compact evidence trace that conditions an AR solver to recompute the final answer, rather than verifying and accepting/rejecting drafted tokens. 
+
+Test-Time Reasoning. Large language models can im-prove their performance on complex tasks by leveraging additional compute at inference time. For example, chain-of-thought prompting (Wei et al., 2022) elicits intermediate reasoning steps that substantially improve performance on multi-step problems, and self-consistency decoding (Wang et al., 2023) generates multiple diverse chain-of-thought (CoT) solutions and selects the most frequent answer via majority vote, greatly improving reasoning accuracy. Re-lated prompting approaches, such as least-to-most prompt-ing (Zhou et al., 2022), explicitly decompose problems into simpler subproblems to improve generalization. More structured search strategies like Tree-of-Thought (Yao et al., 2023a) further expand the reasoning space by exploring a branching set of possible solution paths rather than a single linear chain. Complementary to sampling-based exploration, verifier-based methods generate many candidates and use a learned verifier to select the best solution, achieving strong gains on math reasoning (Cobbe et al., 2021). More interac-tive paradigms such as ReAct (Yao et al., 2023b) interleave reasoning with action/feedback at test time, enabling itera-tive correction but typically increasing inference cost. While effective, such test-time reasoning techniques incur substan-tial overhead (Feng et al., 2025). In this work, we instead pursue an efficient test-time exploration approach: by using a diffusion model to generate candidate reasoning trajecto-ries in parallel, we obtain broad exploration with no latency overhead. In fact, through step-wise stitching across multi-ple trajectories we can use a much lower confidence score for sampling, thus significantly reducing attainable latency. 
+
+3. Method 
+
+Improved reasoning often scales with heavy test-time com-pute, making it impractical for low-latency applications. This issue stems from treating each reasoning trace as an all-or-nothing object, which both wastes useful partial progress and makes aggregation high-variance. In this section, we propose a framework that addresses this problem by refram-ing reasoning as a modular pipeline using both efficient search and robust step evaluation (see Figure 2). Our ap-proach first decouples exploration from synthesis: we first generate a diverse pool of low-cost thoughts via a diffu-sion model (Section 3.2), evaluate their utility at the step level using a process reward model (Section 3.3), and finally employ a stitching mechanism (Section 3.4) to recombine high-confidence steps into a coherent rationale that guides an AR solver to recompute the final answer (Section 3.5). 
+
+3.1. Preliminaries: Masked Diffusion Language Models. 
+
+LLaDA (Nie et al., 2025) produces an L-token sequence via iterative refinement, progressively replacing mask tokens in an initially fully-masked template with predicted tokens, rather than generating tokens one-by-one left-to-right as in autoregressive models. Let V be the vocabulary, M denote the mask token, and initialize the input sequence x(0) =[prompt , M, . . . , M ] ∈ (V ∪ { M })L. For diffusion steps 
+
+k = 1 , . . . , K , the bidirectional mask predictor outputs logits ℓ(k) 
+
+> i
+
+∈ R|V| for each masked position i, which we convert to a sampling distribution with temperature τ > 0:
+
+p(k) 
+
+> i
+
+= softmax 
+
+
+
+ℓ(k) 
+
+> i
+
+/τ 
+
+
+
+, ˆx(k) 
+
+> i
+
+∼ p(k) 
+
+> i
+
+. (1) We define a per-position confidence score as c(k) 
+
+> i
+
+=max j p(k) 
+
+> i,j
+
+. LLaDA then performs low-confidence remask-ing : after proposing ˆx(k) 
+
+> i
+
+for masked positions, it keeps high-confidence predictions fixed while remasking uncer-tain ones, e.g. remask all positions with c(k) 
+
+> i
+
+< γ (or equiv-alently, remask the lowest-confidence tokens to match a target mask budget), where γ ∈ [0 , 1] is a tunable confi-dence threshold. Repeating this refine–(re)mask process until no masks remain yields the final completion. This iterative process is unlike autoregressive decoding, which commits to a left-to-right prefix. 
+
+3.2. Reasoning Path Exploration. 
+
+Masked diffusion language models are well suited to broad exploration: starting from a partially-masked sequence, they iteratively denoise tokens in parallel, rather than generat-ing tokens in a strict chronological order. Given an input problem x, we run N independent diffusion generations to obtain diverse reasoning traces. Each trace n ∈ { 1, . . . , N }
+
+is then deterministically segmented into human-readable steps: 
+
+τ (n) =  s(n)1 , . . . , s (n)
+
+> Tn
+
+, s(n) 
+
+> t
+
+∈ V ∗. (2) We segment each generated rationale into a sequence of 3Stitching Noisy Diffusion Thoughts for Better Reasoning Masked Diffusion Language Model Autoregressive Model (Solver) Process Reward Model (PRM) Stitched Composite Rationale 1. Sampling multiple paths ... 2. Step Scores The sum of three .. M M M MStep A1 Step A1 Step A2 Step A3 Step B1 Step B1 Step B1 Step B2 Step B2 Step B3 Step C1 Step C2 Step C2 Step C2 Step C3 Step C3 3. Condition on Stitched Rationale Step A1 Recompute Final Answer Final Answer = 42 
+
+> Reasoning: Step A1 Step B1 Step C2 Step B2 Step C3
+
+Figure 2. Diffusion Stitching pipeline . We first use a diffusion model to efficiently explore diverse reasoning paths, then score each intermediate step with a PRM, and finally stitch the highest-quality steps into a single rationale that conditions an AR solver to recompute the final answer. 
+
+steps using task-appropriate boundaries. For example, for the math problems, we split into sentence-level steps. 
+
+3.3. Evaluating the quality of each reasoning step. 
+
+Given the segmented reasoning traces {τ (n)}Nn=1 , we assign a quality score to every step using an off-the-shelf process reward model (PRM) (Zhang et al., 2025b; Zeng et al., 2025). For each trace n and step index t, the PRM outputs a scalar confidence: 
+
+r(n) 
+
+> t
+
+= PRM ϕ
+
+ x, s (n)1: t
+
+ ∈ [0 , 1] , (3) where the score is conditioned on the problem x and the partial solution history s(n)1: t . This step-level view allows us to retain useful intermediate derivations even when a reasoning path later derails. 
+
+Single-pass scoring via marker tokens. In practice, we score all steps in a trace using one forward pass by inserting a special marker token ⟨m⟩ (e.g., <extra 0> ) after each step boundary and reading the model’s predicted probability of the marker: 
+
+r(n) 
+
+> t
+
+= pϕ
+
+
+
+⟨m⟩ x, s (n)1: t
+
+
+
+. (4) Collecting scores over all traces yields a global pool of scored steps, 
+
+P = (n, t, s (n) 
+
+> t
+
+, r (n) 
+
+> t
+
+) : n ∈ [N ], t ∈ [Tn] , (5) which forms the candidate set for the stitching process in Section 3.4. 
+
+3.4. Stitching the reasoning steps together. 
+
+From the global pool of scored steps in Equation (5), we build a stitched evidence list E by selecting reliable steps across all reasoning traces. We score each trace by the geometric mean of its step-level PRM scores. Let n⋆ de-note the trace with the highest geometric-mean score. We always keep the final step of this best trace as an answer anchor. Given a confidence threshold δ ∈ [0 , 1] , we retain all steps in P with a PRM score at least δ, and we also include every step from the best full trace (to serve as an anchor). We construct the stitched rationale as a sequence of (step , confidence ) pairs, i.e., by prefixing each retained step with its score ( [c=0.93] ... ), which allows the downstream solver to condition jointly on the content and its confidence score (see Figure 5). To maintain coherence, we then concatenate selected steps in chronological order based on their original positions. This preserves local depen-dencies while still allowing complementary sub-derivations from different reasoning traces to co-exist in a single ratio-nale. Finally, we utilize the resulting confidence-annotated evidence list E to recompute the final answer (Section 3.5). 
+
+3.5. Recomputing the final answer. 
+
+The stitched evidence list E is not guaranteed to form a complete and perfectly consistent chain-of-thought: it may contain redundancy, small gaps, or occasional contradictions from mixing reasoning paths. Instead of directly returning the endpoint of any diffusion trace, we use a lightweight autoregressive (AR) solver to recompute the final answer. 
+
+Evidence-conditioned decoding. We construct a solver prompt by concatenating the problem x with the confidence-annotated evidence list E. We explicitly instruct the solver to treat these steps as evidence, prioritizing high-confidence entries while ignoring conflicts. We then obtain the final answer ˆy by maximizing the likelihood: 
+
+ˆy = arg max  
+
+> y
+
+pψ (y | x, E ),
+
+4Stitching Noisy Diffusion Thoughts for Better Reasoning GSM8K MATH500 HumanEval MBPP      
+
+> 0
+> 50
+> 100
+> 150
+> 200
+> 250
+> Forward passes
+> 80
+> 127
+> 209
+> 87
+> 67
+> 107
+> 70
+> 4444
+> Diffusion (LLaDA 8B)
+> Solver (AR 7B)
+> PRM (AR 7B)
+> Figure 3. Parallisable inference cost (gen length 512) . We report the number of parallelisable diffusion steps and the number of AR solver decoding steps for math and coding tasks.
+
+implemented via greedy or low-temperature decoding with a strict stopping rule (e.g., stop after producing a complete 
+
+\boxed {... } answer) with ψ denoting the parameters of the AR solver. In effect, this AR stage acts as a reconcil-iation step: it selects a consistent subset of evidence, fills in missing links, and produces a coherent final solution. In practice, we implement this via greedy or low-temperature decoding with a strict stopping rule. 
+
+3.6. Extending to coding tasks. 
+
+The same pipeline extends to code generation by redefining steps and using code-aware evaluators. We use different step definitions for MBPP and HumanEval: MBPP solutions are short and benefit from local code-line reuse, whereas Hu-manEval often requires more global planning, for which natural-language rationales are more robust. For MBPP, we treat each line in the code as a step. The diffusion model then proposes candidate code, a code PRM assigns a con-fidence score to each line, and we stitch high-confidence lines together. An autoregressive solver then generates the final program conditioned on this stitched evidence, cor-recting inconsistencies and filling in missing details. As shown in Figure 3, this conditioning yields concise solu-tions with 3.21× fewer forward passes than the baseline. For HumanEval, we instead stitch a natural-language rationale and condition the solver on this reasoning before generating code, which avoids spending compute on re-generating the rationale and allows the solver to just generate the code implementation. 
+
+4. Experiments 
+
+Implementation details. We distribute the batch of N
+
+independent diffusion generations over G GPUs, assigning [N/G ] traces per device and accumulating step-level PRM scores locally. Following this local evaluation, we perform a single all gather operation to synchronize the scores and content, thereby forming the global pool of candidate steps. Since the trajectories are generated independently, our method scales linearly with the available compute, requiring synchronization only for the final aggregation. 
+
+Evaluation Benchmarks. We evaluate diffusion stitching on a mix of mathematical reasoning and program synthesis tasks under a strictly zero-shot setting. For math, we report accuracy on GSM8K-CoT (Cobbe et al., 2021), M ATH 500 (a 500-problem subset of MATH (Lightman et al., 2024)), and Countdown 1 (target-number arithmetic) (see Supple-mentary). For code, we report pass@1 on HumanEval (Chen et al., 2021), HumanEval+ (Liu et al., 2023), MBPP (Austin et al., 2021), and MBPP+ (Liu et al., 2023). Unless stated otherwise, we use a fixed generation budget ( N =4 ) with generation lengths in the range 256–512, and we follow each benchmark’s standard answer normalization and scor-ing protocol (strict/exact match for math; unit-test execution for code). Finally, we evaluate all models in the zero-shot setting. 
+
+Models used. Unless stated otherwise, we use LL ADA as the masked diffusion backbone for generating candidate reasoning trajectories. We score intermediate steps with an off-the-shelf process reward model, and produce the final answer using an autoregressive solver conditioned on the stitched rationale. 
+
+Process reward models (PRMs). 
+
+• QWEN -M ATH -PRM-7B (Zhang et al., 2025b): step-level scoring for mathematical reasoning traces. • ACE CODER RM (Zeng et al., 2025): reward model used to score each step in a block of code. 
+
+Autoregressive (AR) solvers. 
+
+• QWEN 2.5-M ATH -I NSTRUCT (Yang et al., 2024): in-struction tuned model for mathematical reasoning tasks. • QWEN 2.5-C ODER -7B (Hui et al., 2024): code genera-tion, code reasoning, and code fixing. 
+
+4.1. Main Results Accuracy on reasoning benchmarks. Table 1 summa-rizes overall task performance. Stitching yields large gains over vanilla diffusion decoding by converting diverse but noisy reasoning paths into a higher-quality evidence set: In the 8B setting, we outperform the LLaDA baseline decoded with a high confidence threshold ( γ = 0 .9), despite using a much lower threshold ( γ = 0 .7), by an average of 23.9% 
+
+average points (72.38 vs. 48.51), with especially strong jumps on HumanEval ( +30.1 ), HumanEval+ ( +26.2 ), and MBPP ( +32.7 ). We also outperform recent hybrid diffusion– AR systems, exceeding TiDAR (Trust Diff) by +7.1 . No-tably, our training-free pipeline is competitive with strong 
+
+> 1huggingface.co/datasets/Jiayi-Pan/Countdown-Tasks-3to4
+
+5Stitching Noisy Diffusion Thoughts for Better Reasoning 
+
+Table 1. Evaluation Results: We evaluate the performance of Diffusion Stitching over several coding and math tasks. Baseline LLaDA and Dream numbers are taken from the TiDAR paper. The confidence-sampling variants were reproduced using γ = 0 .9 and 512 denoising steps, respectively. Our model and those reproduced were evaluated in a zero-shot setting. 
+
+Coding Math Avg Model Arch Size HumanEval HumanEval+ MBPP MBPP+ GSM8K Minerva Math 
+
+Qwen3 4B 57.32 50.61 67.00 80.69 77.48 47.10 63.37 Qwen3 8B 64.63 56.71 69.40 83.07 81.80 52.94 68.09 LLaDA 8B 32.32 27.44 40.80 51.85 70.96 27.30 41.78 ↰ w/ conf sampling 8B 40.24 37.80 41.89 55.82 78.77 36.54 48.51 Dream 7B 54.88 49.39 56.80 74.60 77.18 39.60 58.74 ↰ w/ conf sampling 7B 59.76 57.32 59.14 71.96 81.96 42.78 62.15 Block Diff 4B † 56.10 51.22 54.60 69.84 82.87 47.02 60.27 TiDAR (Trust AR) 8B ‡ 55.49 52.44 65.40 79.63 79.83 50.58 63.90 TiDAR (Trust Diff) 8B ‡ 57.93 55.49 65.40 80.95 80.44 51.64 65.31 Ours 8B 70.37 64.02 74.61 81.75 91.51 53.20 72.38 100 200 300 400  
+
+> Forward passes
+> 65
+> 70
+> 75
+> Accuracy (%)
+> Phi-4
+> Diffusion (baseline)
+> Autoregressive
+> Ours (diffusion + stitching)
+> 128
+> 256 512
+> DeepSeek-Coder-14B
+> Qwen2.5-Coder-7B
+> Qwen3
+> LLaDA 2.0 (512)
+> LLaDA 2.0 (1024)
+> TiDAR
+
+(a) MBPP 100 200 300 400 500  
+
+> Forward passes
+> 80
+> 85
+> 90
+> 95
+> Accuracy (%)
+> Qwen2.5-Math-7B
+> Diffusion (baseline)
+> Autoregressive
+> Ours (diffusion + stitching)
+> 256
+> 512
+> Dream (512)
+> LLaDA 2.0 (256)
+> LLaDA-1.5 (512)
+> TiDAR
+> Phi-4
+
+(b) GSM8K 0 500 1000 1500  
+
+> Forward passes
+> 40
+> 50
+> 60
+> 70
+> 80
+> Accuracy (%)
+> Qwen2.5-Math-7B
+> Diffusion (baseline)
+> Autoregressive
+> Ours (diffusion + stitching)
+> 128
+> 256
+> 512
+> Dream (512)
+> LLaDA-2.0 (512)
+> LLaDA-2.0 (1024)
+> LLaDA-1.5 (512)
+> Phi-4
+
+(c) MATH500 
+
+Figure 4. Pareto fronts of forward passes vs. accuracy on MBPP, GSM8K, and MATH500, showing that diffusion stitching bridges the gap between diffusion and AR models while enabling efficient test-time scaling for low-latency reasoning. All models are of the same 7-8B size, except for DeepSeek Coder which is 14B. We report our result for generation length 128, 256, and 512. 
+
+AR baselines: compared to Qwen3-8B, we are +4.3 points higher on average, driven by sizable gains on GSM8K ( +9.7 )and consistent improvements on HumanEval ( +5.7 ) and Hu-manEval+ ( +7.3 ) (with MBPP+ roughly matched). These results highlight that step-level reuse can deliver state-of-the-art accuracy among diffusion-based approaches while remaining latency-friendly: exploration is cheap and paral-lel in diffusion, and the AR solver is invoked only once to produce the final answer. 
+
+Accuracy vs. inference steps. To study efficiency, Fig-ure 4 reports Pareto frontiers as accuracy versus infer-ence steps, where we measure inference steps as the num-ber of model forward evaluations required to answer a problem (this includes the forward passes of the diffusion model, PRM, and AR Solver). Across MBPP, GSM8K, and MATH 500, diffusion stitching achieves a consistently better trade-off than both diffusion-only baselines (which are effi-cient but less accurate) and AR baselines (which are accurate but require many sequential decoding steps), demonstrat-ing an effective test-time scaling regime for low-latency reasoning. Moreover, we achieve much higher reasoning performance with far fewer steps than prior unified archi-tectures (TiDAR), suggesting that a natural decoupling of diffusion-based exploration and AR-based verification is an important design choice for efficient reasoning. 
+
+4.2. Ablation Study Effect of Aggregation Strategy and the AR Solver. We ablate both how we aggregate diffusion traces and when an AR solver is needed in Table 2. Concretely, we compare three setups. Without a solver , we either (i) decode a single trajectory ( Baseline ) or (ii) apply self-consistency by ma-jority voting over final answers from multiple generations (Majority Vote ; Wang et al. 2023). With a solver but with-out stitching , we condition the AR model on either (iii) the concatenation of all sampled CoTs ( All CoT ) or (iv) the single highest-quality CoT ( Best CoT ), selected by the geo-metric mean of PRM step scores. With a solver and stitch-ing , we provide the solver with (v) our confidence-filtered stitched rationale ( Stitching ), (vi) an improved variant that keeps all above-threshold steps and also the best CoT as an anchor ( Stitching + Best CoT ). Overall, we observe a clear progression: diverse exploration provides a stronger set of candidate trajectories, adding an AR solver improves coherence via re-computation, and 6Stitching Noisy Diffusion Thoughts for Better Reasoning the new value of the house, we need to calculate 150% of the original value ($80,000) and add it to the original value. [c=0.977] The original value of the house is $80,000, and the repairs increased this value by 150%. [c=0.969] 5. 150% of $80,000 is $1.5 \times 80,000 = 120,000$. [c=0.980] 6. Adding this to the original value gives $80,000 + 120,000 = 200,000$. [c=0.953] The original value of the house is $80,000, and the cost of the repairs is $50,000. [c=0.711] 7. The new value of the house after repairs is $200,000. [c=0.965] 8. Pro fi t is calculated by subtracting the total cost from the new value of the house. [c=0.984] 9. The total cost of the house is $80,000 + $50,000 = $130,000. [c=0.969] The original cost of the house is $80,000. [c=0.977] 10. Therefore, the pro fi t is $200,000 - 130,000 = 70,000$. 
+
+AR Solver resolves disagreement money from the lemon tree. [c=1.000] 4. **Calculate the total cost of planting the tree:** - The cost of planting the tree is $90. [c=0.988] 5. **Years to Start Making Money**: To find out how many years it will take for Carlos to start earning money, we need to determine how many years it will take for the total net profit to cover the initial cost. [c=0.840] 12} [c=1.000] Let $ y $ be the number of years. [c=0.996] 5. **Determine the number of years needed to cover the initial cost:** - Number of years needed to cover the initial cost = Total cost of planting the tree / Net annual revenue. [c=0.996] The total net profit after $ y $ years is: $ 7.5y $We need this total net profit to be at least the initial cost of $90: $ 7.5y \geq 90 $ [c=0.996] - Number of years needed to cover the initial cost = $90 / $7.50 = 12 years. Output: \\boxed{12} Output: \\boxed{70,000} Therefore, the total cost for mini cupcakes is $2 \times 80 = 160$ dollars. [c=1.000] 3. **Cost of mini cheesecakes:** - Toula bought 6dozen mini cheesecakes. [c=1.000] 3. **Cost of mini cheesecakes:** - Toula bought 6 dozen mini cheesecakes. [c=1.000] 3. **Cost of mini cheesecakes:** - Toula bought 6 dozen mini cheesecakes. [c=1.000] - The cost per dozen is $55. [c=1.000] - The cost per dozen is $55. [c=1.000] - The cost per dozen is $55. [c=1.000] - Therefore, the total cost for mini cheesecakes is $6 \times 55 = 330$ dollars. [c=1.000] - Therefore, the total cost for mini cheesecakes is $6 \times 55 = 330$ dollars. [c=1.000] - Therefore, the total cost for mini cheesecakes is $6 \times 55 = 330$ dollars. [c=0.930] Now, we sum up the costs of all the pastries to find the total cost: $ 204 + 160 + 330 = 694 $ 694} Confidence weighted voting Output: \\boxed{460} Output: \\boxed{330} \text{ hours} = 5 \text{ hours} $ The overtime pay for these 5 hours is: $ 5 \text{ hours} \times \$12/\text{hour} = \$60 $Finally, add the regular pay and the overtime pay to find the total earnings for the week: $\$400 + \$60 = \$460 $ 460} [c=1.000] - Her regular hourly rate is $10. [c=1.000] -Therefore, her overtime pay is: $ 1.2 \times 10 \text{ dollars/hour} = 12 \text{ dollars/hour} $ - Eliza worked for 45 hours in total, so the number of overtime hours is: $ 45 \text{ hours} - 40 \text{ hours} = 5 \text{ hours} $- Her earnings for the overtime hours are: $ 5 \text{ hours} \times 12 \text{ dollars/hour} =60 \text{ dollars} $ [c=0.961] 3. **Total earnings for the week:** - Adding the earnings from the first 40 hours and the overtime hours: $ 400 \text{ dollars} + 60 \text{ dollars} = 460 \text{ dollars} $ 460} 
+
+Figure 5. Qualitative examples of step stitching . Each column shows a stitched evidence trace built from multiple diffusion trajectories (colors denote retained high-scoring steps). A lightweight AR solver then conditions on this trace to output only the final answer. Column 1 illustrates resolving disagreements; column 3 shows using confidence as to guide the final prediction. 
+
+confidence-based stitching best leverages the full set of sampled traces. These results are consistent across both GSM8K and M ATH 500, where we see that the full pipeline obtains an average of 14 .7% improvement over the strong LLaDA baseline decoded with a high confidence ( γ = 0 .9). 
+
+Table 2. Ablation of stitching strategies . We compare selecting the best rollout, majority voting over final answers, using all steps, and our confidence-filtered step stitching, showing that selective stitching yields the best accuracy. Using γ = 0 .7 and τ = 1 .4 and 
+
+τ = 0 .8 for GSM8K and M ATH 500 respectively. 
+
+Setting GSM8K MATH500 
+
+Baseline 
+
+LLaDA 78.8 37.6 
+
+without Solver or PRM 
+
+Majority vote (Wang et al., 2023) 85.1 42.0 
+
+with Solver and PRM 
+
+All CoT 86.6 46.0 Best CoT 90.1 49.2 
+
+with Solver, PRM, and Stitching 
+
+Above confidence 90.4 52.0 Best CoT and above confidence 91.5 54.2 
+
+Low-latency inference via parallel generations. Our framework naturally supports low-latency test-time scal-ing because reasoning traces are independent and can be executed in parallel across devices. Figure 1 plots accu-racy versus end-to-end latency on M ATH 500 and shows that diffusion stitching achieves a better trade-off than both strong AR baselines, which achieve high accuracy but incur high sequential decoding latency, and vanilla diffusion base-lines, which are fast but less accurate. By combining cheap parallel exploration with PRM-based step selection and a lightweight recomputation stage, stitching closes the gap to AR reasoning while remaining in the low-latency regime. 
+
+Controlling the diversity of reasoning paths. The ben-efits of stitching depend not only on how many reasoning 0.0 0.5 1.0 1.5 2.0     
+
+> Temperature
+> 75
+> 80
+> 85
+> 90
+> 95
+> 100
+> Accuracy (%)
+> 0.0 0.5 1.0 1.5 2.0
+> Temperature
+> 40
+> 45
+> 50
+> 55
+> 60
+> 65
+
+(a) GSM8K 0.0 0.5 1.0 1.5 2.0      
+
+> Temperature
+> 75
+> 80
+> 85
+> 90
+> 95
+> 100
+> Accuracy (%)
+> 0.0 0.5 1.0 1.5 2.0
+> Temperature
+> 40
+> 45
+> 50
+> 55
+> 60
+> 65
+
+(b) MATH 500 
+
+Figure 6. Ablation on sampling temperature . Accuracy (%) improves with higher temperature by promoting diverse reasoning paths. Although strong performance is achieved across a range of values, the optimal temperature is dataset-specific. 
+
+traces are sampled but also on how diverse those traces are (see Figure 6). If the trajectories are highly similar, additional samples add little new information. We control diversity using the temperature parameter for sampling, and evaluate the resulting trade-offs on GSM8K and M ATH 500. We find that a moderate-to-high diversity is important for strong performance: too low temperatures leads to poor ex-ploration and diversity, while too high degrades the quality of each trace. 
+
+Table 3. Ablation on the number of generations . Accuracy (%) increases with more reasoning traces, and strong performance is already achieved with a modest number of samples. When these generations run in parallel, increasing the number of traces does not increase latency. The default number of traces used in the main experiments is highlighted in blue . 
+
+GSM8K MATH500 Avg 
+
+1 82.4 46.0 64.2 2 88.1 49.2 68.7 4 91.5 54.2 72.9 6 91.4 54.3 72.9 8 91.3 55.0 73.2 
+
+Scaling with the number of generations. We next study how performance scales with the number of diffusion gen-7Stitching Noisy Diffusion Thoughts for Better Reasoning 
+
+erations N on GSM8K and M ATH 500 (see Table 3). In-creasing N improves performance initially, as additional trajectories provide more opportunities to recover correct intermediate steps and reduce the impact of any single noisy path. This trend is most pronounced on M ATH 500, where each trace often shares re-usable sub-derivations but diverge in later steps; stitching allows us to preserve those shared correct components while avoiding late-stage derailment. 
+
+Diffusion sampling confidence. A key advantage of our framework is that it remains accurate even when the diffu-sion sampler is run with a low sampling confidence , produc-ing highly noisy and low quality trajectories. Our pipeline is explicitly designed to tolerate this noise: the PRM scores each step and filter out those of low quality. The stitched rationale can also contain gaps, yet the downstream AR solver can still recover the final solution. Table 4 shows that accuracy is stable across a wide range of sampling confidences, while the required inference steps change substantially. On GSM8K, reducing the sampling confidence from 0.8 to 0.6 decreases the average step budget from 111 .3 to 86 .8 (a 22 .0% reduction) with little loss in ac-curacy (from 91 .7 to 90 .5). On M ATH 500, the same reduc-tion lowers steps from 158 .5 to 119 .8 (a 24 .4% reduction), again with comparable accuracy ( 54 .4 vs. 52 .0). These re-sults indicate that we can operate the diffusion model with a relatively low confidence to substantially reduce latency.                                 
+
+> Table 4. Ablation on the confidence threshold . We report the average steps for the longest diffusion trajectory of each question + the number of solver steps required to regenerate the final an-swer. We use τ= 1 .4and τ= 0 .8for GSM8K and M ATH 500 respectively with the confidence value used in main experiments highlighted in blue .
+> GSM8K MATH500 Confidence Acc #steps Acc #steps 0.4 87.6 76.6 46.8 103.4 0.5 89.1 79.8 49.2 108.7 0.6 90.5 86.8 52.0 119.8 0.7 91.5 96.9 54.2 135.5 0.8 91.7 111.3 54.4 158.5
+
+Other diffusion backbones. Our stitching framework is model-agnostic: it only assumes (i) a generator that can produce candidate reasoning trajectories (here, masked dif-fusion LMs) and (ii) a PRM that can score intermediate steps. To test generality, we apply our framework to several other diffusion backbones. Table 5 shows consistent gains across diffusion models. For LL ADA-1.5, stitching raises M ATH 500 accuracy from 
+
+38 .0 to 53 .8 while reducing inference steps from 163 to 134 ,since it allows a lower confidence threshold γ to be used. For D REAM , stitching similarly increases accuracy on both GSM8K ( 82 .6 → 85 .4) and M ATH 500 ( 48 .2 → 53 .2), with essentially unchanged step counts (the diffusion model is already run at a fixed-length budget in this setting). Finally, on LL ADA-2.0, stitching provides a substantial boost on MATH 500 ( 44 .6 → 61 .4) while keeping compute compara-ble ( 256 → 267 steps), and preserves strong performance on GSM8K. This small increase in steps comes from the PRM and AR solvers.                                          
+
+> Table 5. dLLM/AR model ablation . AR models achieve strong accuracy but require many decoding steps, while our method boosts dLLM performance while also reducing the inference costs by enabling the use of a lower confidence for sampling. Accuracy (%) and the number of parallelizable steps performed.
+> GSM8K MATH500 Model Acc #steps Acc #steps Qwen-Math-Instruct 94.3 440 79.6 1504 Phi-4 92.4 295 76.8 791 LLaDA-1.5 84.0 101 38.0 163 ↰ w/ stitching 90.8 87 53.8 134 Dream 82.6 512 48.2 512 ↰ w/ stitching 85.4 521 53.2 523 LLaDA 2.0 88.0 256 44.6 256 ↰ w/ stitching 89.6 266 61.4 267
+
+5. Limitations 
+
+If the candidate pool is not sufficiently diverse some of the traces share the same mistakes. The solver cannot recover missing intermediate evidence and can only reuse what is already present. 
+
+6. Conclusion 
+
+We introduced a training-free reasoning framework that combines inexpensive diffusion-based exploration with step-level verification and selective aggregation. By scoring intermediate steps and stitching those with high confidence across independent rollouts, we turn noisy trajectories into a reusable pool of reliable evidence, which conditions a final autoregressive solver to produce the answer. Across both maths and coding benchmarks, stitching substantially strengthens accuracy–latency trade-offs: it improves accu-racy by up to +30.6% over vanilla diffusion decoding and remains competitive with strong autoregressive baselines (e.g., +4.3% on average), while reducing sequential solver compute to a single AR solve and yielding up to 3.2× fewer forward passes in latency-critical settings. Overall, these results show that aggregating steps rather than only final answers is an effective approach for scalable reasoning. 8Stitching Noisy Diffusion Thoughts for Better Reasoning 
+
+Impact Statement 
+
+This paper presents work whose goal is to advance the field of machine learning. There are many potential societal consequences of our work, none of which we feel must be specifically highlighted here. 
+
+References 
+
+Agrawal, S., Garrepalli, R., Goel, R., Lee, M., Lott, C., and Porikli, F. Spiffy: Multiplying diffusion llm acceleration via lossless speculative decoding. arXiv preprint , 2026. Arriola, M., Gokaslan, A., Chiu, J. T., Yang, Z., Qi, Z., Han, J., Sahoo, S. S., and Kuleshov, V. Block diffusion: Inter-polating between autoregressive and diffusion language models. ICLR , 2025. Austin, J., Odena, A., Nye, M., Bosma, M., Michalewski, H., Dohan, D., Jiang, E., Cai, C., Terry, M., Le, Q., et al. Program synthesis with large language models. arXiv preprint , 2021. Austin, J., Johnson, D. D., Ho, J., Tarlow, D., and van den Berg, R. Structured denoising diffusion models in discrete state-spaces. NeurIPS , 2025. Bie, T., Cao, M., Chen, K., Du, L., Gong, M., Gong, Z., Gu, Y., Hu, J., Huang, Z., Lan, Z., Li, C., Li, C., Li, J., Li, Z., Liu, H., Liu, L., Lu, G., Lu, X., Ma, Y., Tan, J., Wei, L., Wen, J.-R., Xing, Y., Zhang, X., Zhao, J., Zheng, D., Zhou, J., Zhou, J., Zhou, Z., Zhu, L., and Zhuang, Y. Llada2.0: Scaling up diffusion language models to 100b. 
+
+arXiv preprint , 2025. Chen, C., Borgeaud, S., Irving, G., Lespiau, J.-B., Sifre, L., and Jumper, J. Accelerating large language model decod-ing with speculative sampling. arXiv preprint , 2023. Chen, M., Tworek, J., Jun, H., Yuan, Q., Pinto, H. P. D. O., Kaplan, J., Edwards, H., Burda, Y., Joseph, N., Brockman, G., et al. Evaluating large language models trained on code. arXiv preprint , 2021. Cheng, Z., Yang, G.-W., Li, J., Deng, Z., Guo, M.-H., and Hu, S.-M. Deer: Draft with diffusion, verify with autore-gressive models. arXiv preprint , 2025. Christopher, J. K., Bartoldson, B. R., Ben-Nun, T., Cardei, M., Kailkhura, B., and Fioretto, F. Speculative diffu-sion decoding: Accelerating language generation through diffusion. ACL , 2025. Cobbe, K., Kosaraju, V., Bavarian, M., Chen, M., Jun, H., Kaiser, L., Plappert, M., Tworek, J., Hilton, J., Nakano, R., Hesse, C., and Schulman, J. Training verifiers to solve math word problems. arXiv preprint , 2021. Devlin, J., Chang, M.-W., Lee, K., and Toutanova, K. BERT: Pre-training of deep bidirectional transformers for lan-guage understanding. ACL , 2019. Feng, A., Alonso, M., and Odonnat, A. Optimal self-consistency for efficient reasoning with large language models. arXiv preprint , 2025. Gao, Y., Ji, Z., Wang, Y., Qi, B., Xu, H., and Zhang, L. Self speculative decoding for diffusion large language models. 
+
+arXiv preprint , 2025. Ghazvininejad, M., Levy, O., Liu, Y., and Zettlemoyer, L. Mask-predict: Parallel decoding of conditional masked language models. EMNLP , 2019. Gong, S., Li, M., Feng, J., Wu, Z., and Kong, L. Diffuseq: Sequence to sequence text generation with diffusion mod-els. ICLR , 2023. Hoogeboom, E., Nielsen, D., Jaini, P., Forr ´e, P., and Welling, M. Argmax flows and multinomial diffusion: Learning categorical distributions. NeurIPS , 2021. Hui, B., Yang, J., Cui, Z., Yang, J., Liu, D., Zhang, L., Liu, T., Zhang, J., Yu, B., Dang, K., et al. Qwen2. 5-coder technical report. arXiv preprint , 2024. Leviathan, Y., Kalman, M., and Matias, Y. Fast inference from transformers via speculative decoding. In ICML ,2023. Li, G., Fu, Z., Fang, M., Zhao, Q., Tang, M., Yuan, C., and Wang, J. Diffuspec: Unlocking diffusion language models for speculative decoding. arXiv preprint , 2025. Li, X. L., Thickstun, J., Gulrajani, I., Liang, P., and Hashimoto, T. B. Diffusion-lm improves controllable text generation. NeurIPS , 2022. Liao, B., Xu, Y., Dong, H., Li, J., Monz, C., Savarese, S., Sahoo, D., and Xiong, C. Reward-guided speculative decoding for efficient llm reasoning. ICML , 2025. Lightman, H., Kosaraju, V., Burda, Y., Edwards, H., Baker, B., Lee, T., Leike, J., Schulman, J., Sutskever, I., and Cobbe, K. Let’s verify step by step. In ICLR , 2024. Liu, J., Xia, C. S., Wang, Y., and Zhang, L. Is your code generated by chatGPT really correct? rigorous evaluation of large language models for code generation. In NeurIPS ,2023. Liu, J., Dong, X., Ye, Z., Mehta, R., Fu, Y., Singh, V., Kautz, J., Zhang, C., and Molchanov, P. Tidar: Think in diffusion, talk in autoregression. arXiv preprint , 2025. Lou, A., Meng, C., and Ermon, S. Discrete diffusion model-ing by estimating the ratios of the data distribution. arXiv preprint , 2024. 9Stitching Noisy Diffusion Thoughts for Better Reasoning 
+
+Nie, S., Zhu, F., You, Z., Zhang, X., Ou, J., Hu, J., ZHOU, J., Lin, Y., Wen, J.-R., and Li, C. Large language diffusion models. In NeurIPS , 2025. Sandler, J., Christopher, J. K., Hartvigsen, T., and Fioretto, F. Specdiff-2: Scaling diffusion drafter alignment for faster speculative decoding. arXiv preprint , 2025. Shao, C., Ren, S., Xu, F., and Li, Y. Diffuse thinking: Exploring diffusion language models as efficient thought proposers for reasoning. arXiv preprint , 2025. Wang, X., Wei, J., Schuurmans, D., Le, Q., Chi, E., Narang, S., Chowdhery, A., and Zhou, D. Self-consistency im-proves chain of thought reasoning in language models. 
+
+ICLR , 2023. Wei, J., Wang, X., Schuurmans, D., Bosma, M., Ichter, B., Xia, F., Chi, E. H., Le, Q. V., and Zhou, D. Chain-of-thought prompting elicits reasoning in large language models. In NeurIPS , 2022. Wu, C., Zhang, H., Xue, S., Liu, Z., Diao, S., Zhu, L., Luo, P., Han, S., and Xie, E. Fast-dllm: Training-free acceleration of diffusion llm by enabling kv cache and parallel decoding. arXiv preprint , 2025. Yang, A., Zhang, B., Hui, B., Gao, B., Yu, B., Li, C., Liu, D., Tu, J., Zhou, J., Lin, J., Lu, K., Xue, M., Lin, R., Liu, T., Ren, X., and Zhang, Z. Qwen2.5-math technical report: Toward mathematical expert model via self-improvement, 2024. Yao, S., Yu, D., Zhao, J., Shafran, I., Griffiths, T. L., Cao, Y., and Narasimhan, K. Tree of thoughts: Deliberate problem solving with large language models. NeurIPS ,2023a. Yao, S., Zhao, J., Yu, D., Du, N., Shafran, I., Narasimhan, K., and Cao, Y. React: Synergizing reasoning and acting in language models. In ICLR , 2023b. Ye, J., Gong, S., Chen, L., Zheng, L., Gao, J., Shi, H., Wu, C., Jiang, X., Li, Z., Bi, W., and Kong, L. Diffu-sion of thought: Chain-of-thought reasoning in diffusion language models. In NeurIPS , 2024. Ye, J., Xie, Z., Zheng, L., Gao, J., Wu, Z., Jiang, X., Li, Z., and Kong, L. Dream 7b: Diffusion large language models. arXiv preprint , 2025. Zeng, H., Jiang, D., Wang, H., Nie, P., Chen, X., and Chen, W. Acecoder: Acing coder rl via automated test-case synthesis. ACL , 2025. Zhang, L., Hosseini, A., Bansal, H., Kazemi, M., Kumar, A., and Agarwal, R. Generative verifiers: Reward modeling as next-token prediction. ICLR , 2025a. Zhang, Z., Zheng, C., Wu, Y., Zhang, B., Lin, R., Yu, B., Liu, D., Zhou, J., and Lin, J. The lessons of developing process reward models in mathematical reasoning. ACL, 2025b. Zhao, S., Gupta, D., Zheng, Q., and Grover, A. d1: Scaling reasoning in diffusion large language models via rein-forcement learning, 2025. Zhou, D., Sch ¨arli, N., Hou, L., Wei, J., Scales, N., Wang, X., Schuurmans, D., Cui, C., Bousquet, O., Le, Q., and Chi, E. Least-to-most prompting enables complex reasoning in large language models. In ICLR , 2022. 10 Stitching Noisy Diffusion Thoughts for Better Reasoning 
+
+A. Supplementary Material 
+
+This supplementary provides implementation and evaluation details that are omitted from the main paper due to space. We first present pseudo-code for the complete stitching procedure in algorithmic form (Appendix B), including the exact step-pool construction, confidence filtering, and evidence formatting provided to the AR solver. We then report all hyperparameters and decoding settings needed to reproduce the reported results (Appendix C). The next section (Appendix D and E) provide some qualitative stitching examples and failure cases. After this, we include additional comparisons against an RL fine-tuning baseline (Appendices F) and a recent speculative decoding baseline (Appendices G). Finally, we then list the prompts used for (i) diffusion generation, (ii) PRM step scoring, and (iii) solver recomputation (Appendix H). 
+
+B. Full Stitching Algorithm 
+
+Algorithm 1 provides the pseudocode of our pipeline. 
+
+Algorithm 1 PyTorch-style pseudocode for diffusion stitching                                                                                                                                                                                           
+
+> 1: #p_theta : diffusion generator (exploration)
+> 2: #PRM_phi : process reward model (step scoring)
+> 3: #p_psi : AR solver (final recomputation)
+> 4: #N:num generations (traces)
+> 5: #delta : PRM stitch threshold (step selection)
+> 6: #geom_mean(r) =(prod_t r[t])ˆ(1/max(len(r),1))
+> 7: 8: for batch in loader:
+> 9: x, _=batch #one problem x(batch size 1)
+> 10: S, R=[], [] #steps and PRM scores per trace
+> 11: 12: for nin range(N): #generations can be dispatched to different GPUs
+> 13: y_n =diffusion_generate(p_theta, x)
+> 14: s_n =extract_steps(y_n) #s_n =[sˆ{(n)}_1, ..., sˆ{(n)}_{T_n}]
+> 15: r_n =PRM_phi(x, s_n) #r_n =[rˆ{(n)}_1, ..., rˆ{(n)}_{T_n}] in [0,1]
+> 16: S.append(s_n); R.append(r_n)
+> 17: 18: n_star =argmax_n geom_mean(R[n]) #best trace by geometric mean PRM score
+> 19: 20: E=[] #stitched evidence list
+> 21: for nin range(N):
+> 22: for tin range(len(S[n])):
+> 23: keep =(R[n][t] >= delta) or (n == n_star) #keep all best-trace steps as anchor
+> 24: if keep:
+> 25: E.append((t, R[n][t], S[n][t])) #(step index, score, step text)
+> 26: 27: E=sort(E, key=(t, -score)) #chronological; break ties by higher score
+> 28: prompt =build_prompt(x, E) #format as: [c=score] step
+> 29: y_hat =ar_generate(p_psi, prompt) #stop after complete \boxed{...}
+
+C. Hyperparameters 
+
+We report the exact models and score metrics used for each evaluation benchmark in table 6. 
+
+Table 6. Metrics used for each evaluation task . All tasks were evaluated zero-shot, using 4 generations, and with a generation length of 512. Strict match is implemented using the math-verify library 2 and exact match uses string matching equality. 
+
+Task Category Task Name PRM Solver Score Metric 
+
+Coding HumanEval QWEN 2.5-M ATH -PRM-7B QWEN2.5-CODER-7B Pass@1 HumanEval+ QWEN 2.5-M ATH -PRM-7B QWEN2.5-CODER-7B Pass@1 MBPP ACECODERRM QWEN2.5-CODER-7B Pass@1 MBPP+ ACECODERRM QWEN2.5-CODER-7B Pass@1 Math GSM8K-CoT QWEN 2.5-M ATH -PRM-7B QWEN 2.5-M ATH -I NSTRUCT strict-match MATH500 QWEN 2.5-M ATH -PRM-7B QWEN 2.5-M ATH -I NSTRUCT strict-match Minerva Math QWEN 2.5-M ATH -PRM-7B QWEN 2.5-M ATH -I NSTRUCT strict-match Puzzle Countdown QWEN 2.5-M ATH -PRM-7B QWEN 2.5-M ATH -I NSTRUCT exact-match 
+
+11 Stitching Noisy Diffusion Thoughts for Better Reasoning 
+
+D. More stitching examples 
+
+Figure 7 shows representative cases where stitching succeeds. On the left, different diffusion trajectories contain comple-mentary correct steps but disagree on the final answer; the solver resolves the split decisions into a correct final answer. On the far right, a less common case, the diffusion generations produce only low-confidence predictions, yet the solver over-rules them by recomputing from the stitched intermediate evidence. Resolving split decisions Output: \\boxed{18} Output: \\boxed{4} Output: \\boxed{1.5} Output: \\boxed{9901} Solver over-ruling low confident answers 
+
+Figure 7. Qualitative examples . Left: resolving split decisions and right: over-ruling uniformly low-confidence predictions. 
+
+E. Failure cases 
+
+To understand the limits of stitching, we include representative cases where it provides the incorrect final answer (Figure 8). These failures arise when the sampled diffusion trajectories lack a correct sub-derivation e.g., many traces share the same early error due to insufficient diversity, which results in the the stitched pool containing no reliable evidence to recompute a correct solution. Stitching can also fail when the PRM misranks steps, either assigning low scores to a crucial but correct intermediate step (so it is filtered out) or being over-confident in a fluent but incorrect late step, which then dominates the stitched evidence and steers the solver toward the wrong answer. No correct reasoning trace Output: \\boxed{Debra}    
+
+> Ground truth: Evelyn Output: \\boxed{q} Output: \\boxed{5}
+> Ground truth: 4 Output: \\boxed{7}
+> Ground truth: 17 Ground truth: p - q Low confident anchor trace No correct reasoning trace Anchor trace later derrails
+
+Figure 8. Representative failure cases for stitching . Each column shows the stitched evidence list and the final autoregressive solver prediction. Failures occur when the sampled trajectories contain no correct sub-derivation (left, third), when a key correct step is scored too low by the PRM and is omitted (second), or when the PRM is over-confident in an incorrect late step (or anchor trace), causing the evidence set to be dominated by a wrong conclusion (right). 
+
+12 Stitching Noisy Diffusion Thoughts for Better Reasoning 
+
+F. Comparisons with RL 
+
+We also compare against d1 (Zhao et al., 2025), an RL fine-tuning approach that optimizes a model directly for performance on specific evaluation tasks. Unlike our training-free inference-time pipeline, d1 is a fine-tuning approach for specialist models using task specific reward losses. We compare in Table 7, where we can see that our generalist stitching framework is much more effective across various generation lengths, and evaluations.                       
+
+> Table 7. Model performance on GSM8K, MATH500, and Countdown Benchmarks: All models are evaluated zero-shot with generation lengths of 256–512. Diffusion stitching is training-free, whereas d1 requires task-specific RL fine-tuning.
+> GSM8K (0-shot) MATH500 (0-shot) Countdown (0-shot) Model / Seq Len 256 512 256 512 256 512 d1-LLaDA 81.1 82.1 38.6 40.2 32.0 42.2 Ours 89.4 91.5 49.4 54.2 37.5 45.7
+
+G. Comparisons with Speculative Decoding 
+
+We compare against a recent speculative decoding baseline (RSD (Liao et al., 2025)), which follows a draft-and-verify 
+
+paradigm: a lightweight drafter proposes multi-tokens and a larger verifier selectively accepts them based on a scalar quality signal, falling back to the verifier to regenerate rejected segments. In contrast, diffusion stitching is not a token-acceptance scheme. We first use a diffusion model to explore multiple complete reasoning traces in parallel, then select and recombine high-quality intermediate steps into a stitched evidence list, and finally invoke an autoregressive solver once to recompute the final answer conditioned on this evidence. The results are shown in table 8, where RSD attains only a small increase in accuracy on GSM8K, but requires substantially more forward passes. RSD uses 325 drafter steps and 75 verifier steps, whereas our pipeline uses 86 total steps (21.5% of RSD).           
+
+> Table 8. Comparison to speculative decoding on GMS8K. RSD steps are reported as drafter steps / verifier steps . For ours, the steps are reported as diffusion steps / solver steps .
+> GSM8K Model Acc #steps RSD (Liao et al., 2025) 94.6 325/75 Ours 91.5 80/6
+
+H. Prompts 
+
+We use three prompt templates for the math reasoning benchmarks: 
+
+Maths: Diffusion Proposer Prompt (Generating Reasoning Traces) 
+
+System: 
+
+You are a math expert. You will be given a question to solve. Wrap the final answer in a \boxed{}. Respond in the following format: <reasoning> Your reasoning here </reasoning> <answer> \boxed{...} </answer> 
+
+User: {PROBLEM }
+
+13 Stitching Noisy Diffusion Thoughts for Better Reasoning 
+
+Maths: PRM Scoring Prompt (Step-Level) 
+
+System: 
+
+Please reason step by step, and put your final answer within \\boxed{}. 
+
+User: Problem: {PROBLEM }
+
+Assistant: {ANSWER } with <extra 0> inserted after each step. 
+
+Maths: AR Solver Prompt (Condition on Stitched Rationale) 
+
+System: 
+
+Solve the problem. Use the candidate steps as evidence. If steps conflict, choose a consistent subset. Output only the final answer in \\boxed{...}. 
+
+User: Problem: {PROBLEM }
+
+Assistant: 
+
+Here are candidate reasoning steps from multiple traces. Each item: [c=conf]. Use them as evidence; ignore contradictions; prefer higher conf. {STITCHED ANSWER} </reasoning> <answer> 
+
+We use the following prompt templates for the coding benchmarks: 
+
+Code (MBPP, MBPP+): Diffusion Proposer Prompt (Generating Reasoning Traces) 
+
+System: 
+
+You are a helpful Python coding assistant. When given a programming problem, respond with self-contained Python 3 code that solves the task and passes the provided tests. Output only a single ‘‘‘python ...‘‘‘ code block with no additional commentary. Problem: {problem} Details: {description} Unit tests your solution must pass: {tests} Setup code that runs before the tests: {setup} Write the full solution now. Remember to return only Python code inside a single fenced block. 
+
+User: {PROBLEM }
+
+14 Stitching Noisy Diffusion Thoughts for Better Reasoning 
+
+Code (HumanEval, HumanEval+): Diffusion Proposer Prompt (Generating Reasoning Traces) 
+
+System: 
+
+You are helping a separate autoregressive code model solve HumanEval-style Python tasks. Given the exact task prompt below (signature + docstring + examples), produce a short, concrete implementation guide. REQUIREMENTS: - Do NOT write any Python code. - Do NOT include Markdown fences or explanations outside the hint block. - Output 6-12 lines total. - Each line must start with "# " (hash + space), with no other leading text. - Focus on: algorithm choice, key steps, edge cases, complexity, and any Python gotchas. - Prefer actionable steps over prose. Do not restate the entire prompt. TASK PROMPT: 
+
+User: {PROBLEM }
+
+Code: AR Solver Prompt (Condition on Stitched Rationale) 
+
+System: 
+
+You are an expert Python programmer. You will be given a Python function signature and docstring. Write a correct implementation. Use the candidate steps as evidence. If steps conflict, choose a consistent subset. 
+
+User: Problem: {PROBLEM }
+
+Assistant: 
+
+Here are candidate reasoning steps from multiple traces. Each item: [c=conf]. Use them as evidence; ignore contradictions; prefer higher conf. {STITCHED ANSWER} 
+
+15

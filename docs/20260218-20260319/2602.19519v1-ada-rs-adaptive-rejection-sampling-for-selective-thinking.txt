@@ -1,0 +1,531 @@
+Title: Ada-RS: Adaptive Rejection Sampling for Selective Thinking
+
+URL Source: https://arxiv.org/pdf/2602.19519v1
+
+Published Time: Tue, 24 Feb 2026 02:24:58 GMT
+
+Number of Pages: 10
+
+Markdown Content:
+# Ada-RS: Adaptive Rejection Sampling for Selective Thinking 
+
+Yirou Ge, Yixi Li, Alec Chiu, Shivani Shekhar, Zijie Pan , Avinash Thangali , Yun-Shiuan Chuang , Chaitanya Kulkarni ,
+
+Uma Kona , Linsey Pang , Prakhar Mehrotra 
+
+PayPal AI 
+
+Abstract 
+
+Large language models (LLMs) are increas-ingly being deployed in cost- and latency-sensitive settings. While chain-of-thought im-proves reasoning, it can waste tokens on sim-ple requests. We study selective thinking for tool-using LLMs and introduce Adaptive Rejec-tion Sampling (Ada-RS), an algorithm-agnostic sample filtering framework for learning selec-tive and efficient reasoning. For each given context, Ada-RS scores multiple sampled com-pletions with an adaptive length-penalized re-ward then applies stochastic rejection sampling to retain only high-reward candidates (or pref-erence pairs) for downstream optimization. We demonstrate how Ada-RS plugs into both pref-erence pair ( e.g. DPO) or grouped policy opti-mization strategies ( e.g. DAPO). Using Qwen3-8B with LoRA on a synthetic tool call-oriented e-commerce benchmark, Ada-RS improves the accuracy–efficiency frontier over standard algo-rithms by reducing average output tokens by up to ∼80% and reducing thinking rate by up to 
+
+∼95% while maintaining or improving tool call accuracy. These results highlight that training-signal selection is a powerful lever for efficient reasoning in latency-sensitive deployments. 
+
+1 Introduction 
+
+Large language models (LLMs) are increasingly deployed inside cost- and latency-sensitive systems that facilitate human interactions such as customer service assistants and e-commerce copilots that must respond within tight service-level agreements while handling a large volume of queries. To navi-gate complex requests, LLMs often rely on explicit chain-of-thought (CoT) (Wei et al., 2022) style rea-soning to ensure high quality; however, generating long reasoning traces can often introduce substan-tial overhead and degrade the user experience, es-pecially when many requests are routine or can be easily handled with short responses ( e.g. small talk, quick clarifications). As a result, a key practical question in real deployments is not whether models can reason and break down complex tasks, but how to allocate reasoning budget only when it aids in resolving a user’s request. Recent selective thinking work has begun to tackle this matter by training or prompting mod-els to modulate reasoning depth through strategies such as learning when to invoke CoT (Lou et al., 2025), pruning or compressing reasoning (Xiang et al., 2025; Fang et al., 2025; Hou et al., 2025), or balancing accuracy against token usage via reward shaping (Yang et al., 2025) and multi-objective op-timization (Xiang et al., 2026). These approaches make important progress, but they often rely on boundary tuning or specialized training objectives. In this work, we study selective thinking through the lens of model training. However, our key design choice is to target a different and complementary lever from existing work: the candidate samples used for learning. We introduce Adaptive Rejec-tion Sampling (Ada-RS), an algorithm-agnostic sampling mechanism that applies rejection sam-pling over candidates, probabilistically retaining responses that are most informative for learning se-lective and efficient thinking while downsampling uninformative or unnecessarily verbose samples. Due to its algorithm-agnostic nature, Ada-RS can complement several tuning algorithms such as di-rect preference optimization (DPO) (Rafailov et al., 2024) to construct higher-quality preference pairs for preference optimization or group relative pol-icy optimization-style methods ( i.e., GRPO-style updates) (Shao et al., 2024; Yu et al., 2025). We apply our method to a tool call oriented e-commerce domain setting and find our approach yields favorable accuracy–efficiency trade-offs, substantially reducing token usage by 70%-80% without sacrificing performance. These results highlight the importance of how we construct and filter the training signal and how that signal can be leveraged to improve the efficiency of generation, 1 
+
+> arXiv:2602.19519v1 [cs.AI] 23 Feb 2026 Figure 1: Comparison between thinking always reasoning and selective reasoning in a tool-calling LLM agent.
+> The agent performs explicit reasoning even for a simple user query, resulting in unnecessary inference cost and latency (left). The agent selectively skips reasoning and directly calls the appropriate tool (right).
+
+especially for systems where latency and inference cost are first-order product constraints. 
+
+Contributions. 
+
+1. We formalize and evaluate selective thinking 
+
+for latency-sensitive systems, emphasizing the practical need to decide when not to think .2. We propose Ada-RS, an algorithm-agnostic rejection-sampling mechanism for training sample candidates that improves sample effi-ciency and discourages unnecessary verbosity while preserving long reasoning when useful. 3. We empirically study different optimization strategies and show that Ada-RS enables stronger accuracy–efficiency trade-offs on tool call oriented tasks in an e-commerce do-main setting. 
+
+2 Related Work 
+
+CoT prompting can substantially improve reason-ing (DeepSeek-AI, 2025; OpenAI, 2024), but in production settings it often incurs unnecessary la-tency and cost when long explanations are gener-ated for otherwise simple inputs. Consequently, recent work on efficient reasoning has focused on controlling when a model should engage in explicit reasoning (selective thinking) (Lou et al., 2025; Zhang et al., 2025) and how much reasoning it should produce, via either (i) explicit, prompt-level control (Ma et al., 2025) or (ii) training-time objec-tives that encourage selective thinking (Sui et al., 2025). 
+
+2.1 Explicitly Controlled Reasoning 
+
+A straightforward way to reduce overthinking is to 
+
+explicitly control reasoning behavior at inference time, for example with special prompt instructions, formatting constraints, or difficulty-aware prompt-ing (Ma et al., 2025; Tu et al., 2025). While effec-tive and easy to deploy, such approaches typically rely on external prompt control and do not nec-essarily teach the model to internally learn when reasoning is warranted; performance can also be sensitive to prompt phrasing and may not general-ize across domains (Sui et al., 2025). 
+
+2.2 Selective Thinking Through Training 
+
+A complementary line of work aims to learn selec-tive thinking through training, typically by modify-ing rewards (Yang et al., 2025; Lou et al., 2025) or objectives (Zhang et al., 2025; Xiang et al., 2026), to trade off task success against reasoning cost. Compared to prompt-only control, these training-based methods can yield a single model that better 2internalizes the decision of when to reason; how-ever, they often require careful tuning of penalty strengths or multi-stage training to avoid degener-ate solutions ( e.g. collapsing to always-think or never-think behavior) (Sui et al., 2025). 
+
+2.3 Relation to Our Work 
+
+Our work targets the same goal of selective think-ing but focuses on training-signal construction and selection . While prior approaches emphasize reward design or alternative training objectives, we propose Adaptive Rejection Sampling (Ada-RS) to stochastically retain the most informative sam-ples (or preference pairs) under an adaptive length penalty. This design aims to reduce the influence of unnecessarily verbose trajectories during train-ing while preserving explicit reasoning on difficult inputs. 
+
+3 Preliminaries 
+
+3.1 Task Overview 
+
+We consider a tool calling LLM agent that resolves a user request by optionally invoking e-commerce-related tools ( e.g. , product search, account infor-mation retrieval, transaction look-ups) and then producing a final response. An example of a task in the e-commerce setting we explore is given in Figure 1. At any decision point, the agent observes a con-text x consisting of the conversation history and any tool outputs observed so far. Given x, the model produces a response y = ( <think> t </think> , a )
+
+where t is an optional reasoning trace and a is the final answer (including tool calls when applicable). The goal is to learn a policy πθ(y | x) that emits little-to-no reasoning on easy or simple instances while still using reasoning when it materially im-proves correctness. 
+
+4 Methods 
+
+4.1 Adaptive Rejection Sampling (Ada-RS) 
+
+Ada-RS is a lightweight sample selection mecha-nism that can be plugged into both off-policy and on-policy training objectives that rely on sampled completions. An overview of the framework and how we apply it are illustrated in Figure 2. For each context x, we draw K training sam-ple candidates {yi}Ki=1 ∼ πϕ(· | x), assign each candidate an adaptive efficiency-aware reward, and then apply stochastic rejection sampling to retain only the most informative candidates (or candidate pairs) for downstream optimization. 
+
+4.1.1 Adaptive length penalty (ALP) 
+
+Given rollouts {yi}Ki=1 ∼ πθ(· | x), we define a composite reward that trades off task success and reasoning cost: 
+
+r(yi, x ) = 1(yi, x ) − α · sK (x) · | ti| (1) Here 1(yi, x ) ∈ { 0, 1} indicates whether the roll-out yi solves the task for prompt x (i.e. correct tool call). |ti| penalizes the length of the reason-ing trace in the rollout (we use the number of sen-tences inside <think> as a proxy; |ti| = 0 when the <think> block is empty). The key adaptive component is 
+
+sK (x) = 1
+
+K
+
+> K
+
+X
+
+> i=1
+
+1(yi, x ) (2) an online estimate of how easy the prompt is under the current policy. When sK (x) is high, Ada-RS applies a stronger length penalty, discouraging un-necessary reasoning on easy prompts; when it is low, the penalty shrinks, allowing longer reasoning on harder prompts. This follows the spirit of (Xi-ang et al., 2025), which scales a length cost by an online solve-rate estimate. 
+
+4.1.2 Rejection sampling over training sample candidates 
+
+Given rewards {ri}Ki=1 for context x, Ada-RS per-forms rejection sampling to preferentially retain higher-reward (more correct and/or more efficient) samples while keeping stochasticity for diversity. We support: 
+
+Pair-wise rejection sampling (for preference learning). For a candidate pair (i, j ), define 
+
+∆ij = ri − rj and accept the pair with probability 
+
+pij = exp 
+
+ ∆ij − ∆max 
+
+βrs 
+
+
+
+, (3) where βrs is a temperature controlling selectivity hyperparameter and ∆max = max i<j (∆ ij ). The accepted pair is converted into a preference ex-ample (x, y w, y l) by setting yw = arg max( ri, r j )
+
+and yl = arg min( ri, r j ). This builds on recent successes found with rejection sampling (Liu et al., 2023) and utilizing reward gaps for preference pair optimization (Khaki et al., 2024). 3I nput Prompt    
+
+> Teacher
+> Policy
+> M odel
+> ...
+> Thinking " off"
+> Ada-RS-DPO
+> Tr aining
+> Thinking " on"
+> Preference
+> Pair s
+> I nput Prompt Policy
+> M odel ...
+> Pair-wise
+> Rej ection
+> Sampling
+> ...
+> Group-wise
+> Rej ection
+> Sampling
+> ...
+> Rollouts
+> Ada-RS-DAPO Tr aining
+> Candidate
+> Group
+> Off-Policy On-Policy
+> Policy
+> M odel
+> Adaptive Thinking Rewar ds
+> Adaptive Thinking Rewar ds
+> ...
+> ...
+> Rollouts
+
+Figure 2: Overview of the proposed Ads-RS training framework. Off-policy Ada-RS-DPO training pipeline (left). Given an input context x, a teacher policy model generates multiple rollouts. Ada-RS performs pair-wise rejection sampling based on adaptive thinking reward signals for selective thinking to construct high-quality preference pairs, which are then used to optimize the student policy model via DPO training. On-policy Ada-RS-DAPO 
+
+training pipeline (right). The current policy model generates multiple rollouts for the input context. Ada-RS applies group-wise rejection sampling based on adaptive thinking rewards to select informative candidate subsets. The resulting candidate group is used to update the policy through an on-policy DAPO training. 
+
+Group-wise rejection sampling (for grouped pol-icy optimization). Alternatively, we accept each candidate yi independently based on its standard-ized reward within the group: 
+
+pi = min 
+
+
+
+exp 
+
+ (ri − μ)/σ βrs 
+
+
+
+, 1
+
+
+
+, (4) where μ and σ are the mean and standard deviation of {ri}Ki=1 for the prompt. Smaller βrs concentrates training on above-mean samples; larger values keep more diverse candidates. 
+
+4.1.3 Ada-RS-DPO 
+
+Ada-RS-DPO uses pair-wise rejection sampling to construct higher-quality preference pairs for DPO. For each context x, we sample K candidates of equal amounts across thinking-enabled/disabled examples, compute rewards via Eq. 1, and accept candidate pairs with Eq. 3. Using the accepted preference pairs, we then optimize a DPO objective that includes an auxiliary negative log-likelihood (NLL) loss term to stabilize learning and preserve language modeling quality as described in (Pang et al., 2024). Psuedocode for this algorithm can be found in Appendix Algorithm 1. 
+
+4.1.4 Ada-RS-DAPO 
+
+We also integrate Ada-RS with Decoupled Clip and Dynamic Sampling Policy Optimization (DAPO) (Yu et al., 2025), which we use as our grouped policy optimization backbone. For each context 
+
+x, we sample a group of K on-policy candidates 
+
+{yi}Ki=1 ∼ πθ(· | x), compute rewards {ri}Ki=1 
+
+using Eq. 1, and apply group-wise rejection sam-pling using the acceptable probability from Eq. 4 to stochastically filter candidates before the DAPO update. The DAPO objective is then computed on the retained candidates, leaving the underlying DAPO loss unchanged while concentrating gradi-ent updates on trajectories that are both correct and efficiency-favorable. This yields a simple plug-in mechanism to bias grouped on-policy learning toward selective thinking. Psuedocode for this al-gorithm can be found in Appendix Algorithm 2. 
+
+5 Experimental Settings 
+
+All experiments use Qwen3-8B as the reasoning base model (Qwen Team, 2025) with a LoRA adapter (Hu et al., 2022) for all training runs. Ad-ditional details on training algorithm hyperparame-ters can be found in Appendix A and Appendix B. 
+
+5.1 Evaluation Setting 
+
+We evaluate our methodology on a synthetic multi-turn, multi-step e-commerce dataset designed to mirror common user personas and tasks modeled on general themes observed on e-commerce plat-forms. The tools available in the dataset mirror those in the τ 2-Bench retail benchmark (Barres et al., 2025). An example can be seen in Figure 1. Overall, our base training dataset consists of 15,000 tool invocations across 8,026 conversations, which span across 121 tasks and 8 user personas. Our evaluation dataset consists of 2,510 tool calls from 367 conversations, which span across 48 tasks and 8 user personas. 
+
+5.2 Metrics 
+
+The key metrics we evaluate are as follows: 4• Thinking Rate : the percentage of instances in which the model produces a non-empty rea-soning trace. This metric measures how often the model chooses to engage in explicit rea-soning. • Output Token Length : the average number of generated output tokens produced by the model (inclusive of reasoning) as a measure of token efficiency. This serves as a deployment-relevant proxy for inference cost and latency. • Tool Call Accuracy : whether the model se-lects the correct tool and produces the cor-rect arguments, ensuring functional correct-ness when reasoning is skipped. 
+
+5.3 Baselines and Ablation Studies 
+
+We compare prompt-only baselines, supervised fine-tuning (SFT), DPO, and DAPO as well as ab-lations and hyperparameter sweeps for Ada-RS. 
+
+5.3.1 Prompt-only and SFT baselines 
+
+We include two no-fine-tuning (NFT) baselines that differ only by prompting: NFT (Thinking-On) , where reasoning is always invoked, and NFT (Thinking-Off) , where explicit reasoning never oc-curs ( i.e. forced empty <think> ). An SFT baseline is established by applying SFT on a dataset of 75% reasoning and 25% non-reasoning data. 
+
+5.3.2 DPO baselines and ablations 
+
+We evaluate DPO-based training with and without the components used in Ada-RS-DPO: ALP reward, NLL auxiliary loss, and rejection sampling. When not using the ALP reward, we utilize a simple re-ward strategy to construct preference pairs where correct responses are preferred over incorrect re-sponses and subsequently more concise responses are preferred amongst the correct responses. 
+
+5.3.3 DAPO baselines and ablations 
+
+We also evaluate Ada-RS in a grouped policy opti-mization setting using DAPO as the backbone. We utilize DAPO with only accuracy as a reward func-tion and DAPO with the ALP reward function, both without rejection sampling, as baseline ablations for grouped policy optimization. 
+
+6 Results 
+
+6.1 Learning When to Reason 
+
+We first examine whether different training strate-gies induce the ability to selectively think. SFT is 0.0 0.2 0.4 0.6 0.8 1.0 
+
+> Thinking Rate
+> 0.65
+> 0.70
+> 0.75
+> 0.80
+> 0.85
+> 0.90
+> 0.95
+> 1.00
+> Tool Call Accuracy
+> Target region
+> Qwen3-8B thinking-on
+> Qwen3-8B thinking-off
+> SFT
+> DPO
+> DPO + NLL
+> DPO + ALP
+> DPO + ALP + NLL
+> Ada-RS DPO
+> DAPO
+> DAPO + ALP
+> Ada-RS DAPO
+
+Figure 3: Tool call accuracy versus Thinking Rate across methods. The most favorable target region (high accuracy, low thinking rate) is highlighted. Points are colored by algorithm: DPO (green), DAPO (blue), SFT (orange), and no-fine-tuning/base model (red). 
+
+Figure 4: Tool call accuracy and average Output token across methods relative to the Qwen3-8B base model with thinking enabled. Numbers above the bars show percentage decrease in average amount of output tokens relative to the base model. Bars are colored by algorithm: DPO (green), DAPO (blue), and SFT (orange). 
+
+able to successfully induce thinking to trigger only about half the time (Figure 3) but with high ver-bosity (Figure 4). In contrast, DPO applied directly to the base model with a simple preference pair gen-eration strategy fails to remove the model’s default 
+
+always-think behavior at all, suggesting that prefer-ence optimization alone does not reliably teach the model when to deliberate (Figure 3). Ada-RS changes this behavior by filtering train-ing sample candidates using an efficiency-aware reward. Ada-RS drastically reduces how often ex-plicit reasoning is invoked overall (Figure 3), while still allocating concise reasoning budgets to main-tain accuracy (Figure 4). 
+
+6.2 Accuracy-Efficiency Trade-offs 
+
+We can first focus on the two best extremes in terms of accuracy and generated output tokens. 5While SFT attains the highest overall tool call ac-curacy, it does so with the largest average output length (Figure 4), reflecting high inference cost in latency-sensitive deployments. Meanwhile, the extreme of NFT Thinking-Off produces short out-puts and never triggers reasoning but yields sub-stantially lower tool call accuracy (Figure 4), in-dicating that simply suppressing reasoning at in-ference time is insufficient for reliability. Ap-plying the Ada-RS framework substantially im-proves the accuracy-efficiency frontier. Ada-RS-DPO achieves a markedly better operating point: attaining similar tool call accuracy to SFT but with low output tokens and a very low thinking rate (Fig-ure 4). Ada-RS-DAPO further improves the fron-tier: reaching similar accuracy and token cost (Fig-ure 4) as Ada-RS-DPO while reducing the thinking rate even further (Figure 3). Together, these results suggest Ada-RS is complementary to both pairwise preference optimization and grouped policy opti-mization. 
+
+6.3 Ablation Studies 
+
+To further understand the effect of different com-ponents in Ada-RS, we ablate the specific compo-nents that drive selective thinking and efficiency. We further provide the hyperparameter analysis in Appendix B.              
+
+> Table 1: Ablation study results for the effect of us-ing NLL loss with DPO loss. For both experiments,
+> βrs = 0 .1and α= 0 .01 . RS denotes the use of the rejection sampling procedure used in Ada-RS for pref-erence pairs.
+> Method Accuracy (%) Avg Output Tokens Thinking Rate (%)
+> DPO ALP + RS 63.82 451.64 100.00 Ada-RS-DPO 89.24 87.81 6.10
+
+Rejection sampling without stabilization fails to learn selective thinking. Applying rejection sampling on top of the ALP reward without the aux-iliary NLL stabilization term leads to degenerate behavior (poor accuracy and an always-think pol-icy) (Table 1). This highlights that naive filtering alone can destabilize learning and that stabiliza-tion is important for maintaining correctness while optimizing efficiency. 
+
+NLL induces selectivity; ALP improves effi-ciency; Ada-RS amplifies. DPO alone fails to induce selective thinking (Figure 3). Adding the NLL term yields large improvements in selective thinking and accuracy (Figure 3), while the ALP reward improves token efficiency by discourag-ing verbosity (especially on prompts that have a high solve rate under the current policy) (Figure 4). The addition of rejection sampling from Ada-RS then further amplifies this effect beyond what is obtained by the reward and auxiliary objectives by concentrating updates on high-reward (correct and efficient) trajectories (Figure 3, 4). 
+
+7 Limitations and Future Work 
+
+Our study has several limitations that point to promising directions for future work. First, our experiments focus on a single domain and model size conducted using an internal simulated environ-ment that reflects a specific interaction structure and task distribution in the e-commerce domain. While this setting enables controlled study of se-lective reasoning behavior under specific system constraints, extending the analysis to additional domains and model scales would help to further assess generality. Second, our evaluation empha-sizes per-step tool call accuracy, which may not fully capture end-to-end task success in multi-turn settings ( e.g. whether a user goal is ultimately satis-fied). Future work should include goal-completion metrics and other user-facing outcomes. 
+
+8 Conclusion 
+
+We studied selective thinking for latency- and cost-sensitive LLM deployments, where the practical objective is not simply to reason well, but to al-locate explicit reasoning only when it materially improves tool behavior. To this end, we intro-duced Adaptive Rejection Sampling (Ada-RS) ,an algorithm-agnostic mechanism that filters train-ing sample candidates using an adaptive efficiency-aware reward, downweighting unnecessarily ver-bose trajectories while preserving reasoning on harder inputs. Across tuning backbones, Ada-RS consistently improved the accuracy-efficiency fron-tier in our e-commerce tool call setting: it reduced overall output length and the frequency of explicit reasoning while maintaining strong tool call accu-racy. Overall, these findings highlight that how 
+
+we construct and filter training signal can be a first-order lever for deploying reasoning-capable models under strict product constraints, and that selective thinking can be induced without relying on inference-time gating or prompt switches. 6References 
+
+Victor Barres, Honghua Dong, Soham Ray, Xujie Si, and Karthik Narasimhan. 2025. τ 2-bench: Evaluat-ing conversational agents in a dual-control environ-ment. Preprint , arXiv:2506.07982. DeepSeek-AI. 2025. Deepseek-r1: Incentivizing rea-soning capability in llms via reinforcement learning. 
+
+arXiv preprint arXiv:2501.12948 .Gongfan Fang, Xinyin Ma, and Xinchao Wang. 2025. Thinkless: Llm learns when to think. Preprint ,arXiv:2505.13379. Bairu Hou, Yang Zhang, Jiabao Ji, Yujian Liu, Kaizhi Qian, Jacob Andreas, and Shiyu Chang. 2025. Thinkprune: Pruning long chain-of-thought of llms via reinforcement learning. Preprint ,arXiv:2504.01296. Edward Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, and Weizhu Chen. 2022. Lora: Low-rank adaptation of large language models. In Proceedings of the International Confer-ence on Learning Representations (ICLR) .Saeed Khaki, JinJin Li, Lan Ma, Liu Yang, and Prathap Ramachandra. 2024. Rs-dpo: A hybrid rejection sampling and direct preference optimization method for alignment of large language models. Preprint ,arXiv:2402.10038. Tianqi Liu, Yao Zhao, Rishabh Joshi, Misha Khalman, Mohammad Saleh, Peter J Liu, and Jialu Liu. 2023. Statistical rejection sampling improves preference optimization. arXiv preprint arXiv:2309.06657 .Chenwei Lou, Zewei Sun, Xinnian Liang, Meng Qu, Wei Shen, Wenqi Wang, Yuntao Li, Qingping Yang, and Shuangzhi Wu. 2025. Adacot: Pareto-optimal adaptive chain-of-thought triggering via reinforce-ment learning. Preprint , arXiv:2505.11896. Wenjie Ma, Jingxuan He, Charlie Snell, Tyler Griggs, Sewon Min, and Matei Zaharia. 2025. Reasoning models can be effective without thinking. Preprint ,arXiv:2504.09858. OpenAI. 2024. Openai o1 system card. OpenAI Techni-cal Report .Richard Yuanzhe Pang, Weizhe Yuan, Kyunghyun Cho, He He, Sainbayar Sukhbaatar, and Jason Weston. 2024. Iterative reasoning preference optimization. 
+
+Preprint , arXiv:2404.19733. Qwen Team. 2025. Qwen3 technical report. Preprint ,arXiv:2505.09388. Rafael Rafailov, Archit Sharma, Eric Mitchell, Stefano Ermon, Christopher D. Manning, and Chelsea Finn. 2024. Direct preference optimization: Your lan-guage model is secretly a reward model. Preprint ,arXiv:2305.18290. Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan Zhang, Y. K. Li, Y. Wu, and Daya Guo. 2024. Deepseekmath: Pushing the limits of mathemati-cal reasoning in open language models. Preprint ,arXiv:2402.03300. Yang Sui, Yu-Neng Chuang, Guanchu Wang, Jiamu Zhang, Tianyi Zhang, Jiayi Yuan, Hongyi Liu, An-drew Wen, Shaochen Zhong, Na Zou, Hanjie Chen, and Xia Hu. 2025. Stop overthinking: A survey on ef-ficient reasoning for large language models. Preprint ,arXiv:2503.16419. Songjun Tu, Jiahao Lin, Qichao Zhang, Xiangyu Tian, Linjing Li, Xiangyuan Lan, and Dongbin Zhao. 2025. Learning when to think: Shaping adaptive reason-ing in r1-style models via multi-stage rl. Preprint ,arXiv:2505.10832. Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Fei Xia, Ed Chi, Quoc V Le, Denny Zhou, and 1 others. 2022. Chain-of-thought prompting elic-its reasoning in large language models. Advances in neural information processing systems , 35:24824– 24837. Violet Xiang, Chase Blagden, Rafael Rafailov, Nathan Lile, Sang T. Truong, Chelsea Finn, and Nick Haber. 2025. Just enough thinking: Efficient reasoning with adaptive length penalties reinforcement learning. In 
+
+NeurIPS 2025 Workshop on Efficient Reasoning .Violet Xiang, Rafael Rafailov, Chase Blagden, Nathan Lile, and Nick Haber. 2026. Self-guided thinking: Enabling LLMs to decide when to think. Junjie Yang, Ke Lin, and Xing Yu. 2025. Think when you need: Self-adaptive chain-of-thought learning. 
+
+Preprint , arXiv:2504.03234. Qiying Yu, Zheng Zhang, Ruofei Zhu, Yufeng Yuan, Xiaochen Zuo, Yu Yue, Weinan Dai, Tiantian Fan, Gaohong Liu, Lingjun Liu, Xin Liu, Haibin Lin, Zhiqi Lin, Bole Ma, Guangming Sheng, Yuxuan Tong, Chi Zhang, Mofan Zhang, Wang Zhang, and 16 others. 2025. Dapo: An open-source llm re-inforcement learning system at scale. Preprint ,arXiv:2503.14476. Jiajie Zhang, Nianyi Lin, Lei Hou, Ling Feng, and Juanzi Li. 2025. Adaptthink: Reasoning models can learn when to think. Preprint , arXiv:2505.13417. 
+
+7Table 2: Hyperparameter sweep for βrs and α. Sample numbers are reported to the nearest thousand. RS Acceptance Rate denotes the empirical acceptance rate from rejection sampling. Training time decrease denotes the fold change relative to using all produced samples (120k samples or preference pairs).                                                                                               
+
+> Method βrs αAcc. Avg Output Tokens Avg Reason. Tokens Thinking Rate Training Samples RS Accept. Rate Train Time Decrease
+> Ada-RS-DPO 10.01 84.10 236.52 126.54 50.60 96k 79.00 0.79x Ada-RS-DPO 0.5 0.01 86.26 233.06 114.25 50.48 86k 71.00 0.71x Ada-RS-DPO 0.1 0.01 89.24 87.81 0.94 6.10 53k 43.00 0.43x Ada-RS-DPO 0.1 0.001 87.69 88.00 3.77 28.64 53k 43.00 0.43x Ada-RS-DPO 0.01 0.01 89.68 84.81 0.83 16.97 28k 23.00 0.23x Ada-RS-DPO ≈00.01 90.04 87.21 0.87 13.03 12k 10.00 0.1x Ada-RS-DAPO 10.005 86.33 152.25 75.32 6.69 115k 96.50 1.3x Ada-RS-DAPO 0.5 0.005 87.05 81.90 36.31 4.34 78k 65.20 0.7x Ada-RS-DAPO 0.1 0.005 87.97 81.66 37.68 4.22 54k 45.50 0.5x Ada-RS-DAPO 0.1 0.001 73.39 118.64 41.55 93.98 54k 45.50 0.5x
+
+A Additional Training Details 
+
+All algorithms initialize from base Qwen3-8B model weights and are optimized using a standard Adam-based optimization. In all experiments, we used the same LoRA configuration: r = 32 , α = 32 , and dropout = 0 .05 with LoRA applied to the target modules q, k, v, and o.For SFT, we used a learning rate of 5 × 10 −4, while the DPO experiments employ 5 × 10 −5, and DAPO experiments use 5 × 10 −6. A warm-up ratio of 0.03 is applied in all three setups. Different learning rates are selected for each method due to their varying sensitivities to learning dynamics. Extensive hyperparameter tuning was not performed for any of the individual approaches. In experiments involving a combination of DPO and NLL loss, we set λNLL = 1 . For both DPO and DAPO experiments utilizing rollouts, the temperature is set to 1 for generation, with K = 6 for DPO and 
+
+K = 8 for DAPO. A smaller K is chosen for DPO due to its pairwise design, which would otherwise result in an exponentially larger number of pairs. 
+
+B Hyperparameter Sweeps 
+
+We present our full hyperparameter sweeps results in Table 2. We first fix α and a hyperparameter sweep over βrs . For Ada-RS-DPO, we observe a moderate range of βrs (0 - 0.1) can provide the best trade-off between accuracy and selective reasoning. Larger βrs values lead to excessive thinking and lower the tool calling accuracy. Similar trend is observed for Ada-RS-DAPO, a slightly higher range of βrs (0.1 - 0.5) better supports selecting thinking, yielding more consistent improvement. We further examine the effect of decreasing α. Since α controls the strength of the length pressure; weaker penalties increase the frequency of thinking and can increase total output length. We observe in both experiment groups that overly small α significantly degrade performance and impair the model’s adaptive thinking capability, often resulting in unstable or excessive reasoning behaviors. 8Algorithm 1 Ada-RS-DPO (Off-Policy) 
+
+Require: Dataset D of contexts x; teacher policy πϕ; student policy πθ; rollout count K; ALP weight α;RS temperature βrs ; NLL weight λNLL . 
+
+> 1:
+
+P ← ∅ ▷ preference pairs for DPO  
+
+> 2:
+
+for each context x ∈ D do  
+
+> 3:
+
+Generate mixed candidates (thinking-on/off):  
+
+> 4:
+
+Sample {yon  
+
+> i
+
+}K/ 2 
+
+> i=1
+
+∼ πϕ(· | x, think = 1)  
+
+> 5:
+
+Sample {yoff  
+
+> i
+
+}K/ 2 
+
+> i=1
+
+∼ πϕ(· | x, think = 0)  
+
+> 6:
+
+{yi}Ki=1 ← { yon } ∪ { yoff } 
+
+> 7:
+
+Compute correctness ci ← 1(yi, x ) ∈ { 0, 1} for each yi 
+
+> 8:
+
+Extract think trace ti from yi and set ℓi ← | ti| ▷ |ti| = 0 if empty <think>  
+
+> 9:
+
+sK (x) ← 1
+
+> K
+
+PKi=1 ci ▷ solve-rate estimate, Eq. (2)  
+
+> 10:
+
+ri ← ci − α · sK (x) · ℓi ▷ ALP reward, Eq. (1)  
+
+> 11:
+
+Pair-wise rejection sampling to build preferences:  
+
+> 12:
+
+∆max ← max i<j (ri − rj ) 
+
+> 13:
+
+for each unordered pair (i, j ) with i < j do  
+
+> 14:
+
+∆ij ← ri − rj 
+
+> 15:
+
+pij ← exp((∆ ij − ∆max )/β rs ) ▷ Eq. (3)  
+
+> 16:
+
+Draw u ∼ Uniform(0 , 1)  
+
+> 17:
+
+if u < p ij then  
+
+> 18:
+
+yw ← arg max {ri, r j }; yℓ ← arg min {ri, r j } 
+
+> 19:
+
+P ← P ∪ { (x, y w, y ℓ)} 
+
+> 20:
+
+end if  
+
+> 21:
+
+end for  
+
+> 22:
+
+end for  
+
+> 23:
+
+Update θ with DPO on P plus auxiliary NLL:  
+
+> 24:
+
+minimize LDPO (P; θ) + λNLL LNLL (P; θ)
+
+9Algorithm 2 Ada-RS-DAPO 
+
+Require: Dataset D of contexts x; current policy πθ; rollout count K; ALP weight α; RS temperature 
+
+βrs . 
+
+> 1:
+
+for each training step do  
+
+> 2:
+
+Sample minibatch {xb}Bb=1 ∼ D  
+
+> 3:
+
+for each context x in minibatch do  
+
+> 4:
+
+On-policy rollout group:  
+
+> 5:
+
+Sample {yi}Ki=1 ∼ πθ(· | x) 
+
+> 6:
+
+Compute correctness ci ← 1(yi, x ) and think-length ℓi ← | ti| for each yi 
+
+> 7:
+
+sK (x) ← 1
+
+> K
+
+PKi=1 ci ▷ solve-rate estimate, Eq. (2)  
+
+> 8:
+
+ri ← ci − α · sK (x) · ℓi ▷ ALP reward, Eq. (1)  
+
+> 9:
+
+Group-wise rejection sampling:  
+
+> 10:
+
+μ ← 1
+
+> K
+
+PKi=1 ri; σ ←
+
+q 1
+
+> K
+
+PKi=1 (ri − μ)2 
+
+> 11:
+
+Y′ ← ∅ ▷ retained candidate group  
+
+> 12:
+
+for each candidate yi do  
+
+> 13:
+
+pi ← min 
+
+
+
+exp  (( ri − μ)/σ )/β rs 
+
+, 1
+
+
+
+▷ Eq. (4)  
+
+> 14:
+
+Draw u ∼ Uniform(0 , 1)  
+
+> 15:
+
+if u < p i then  
+
+> 16:
+
+Y′ ← Y ′ ∪ { (yi, r i)} 
+
+> 17:
+
+end if  
+
+> 18:
+
+end for  
+
+> 19:
+
+DAPO update on retained group:  
+
+> 20:
+
+Apply one DAPO optimization step using (x, Y′) 
+
+> 21:
+
+end for  
+
+> 22:
+
+end for 
+
+10

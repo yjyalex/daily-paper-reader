@@ -1,0 +1,744 @@
+Title: Quantifying the Necessity of Chain of Thought through Opaque Serial Depth
+
+URL Source: https://arxiv.org/pdf/2603.09786v1
+
+Published Time: Wed, 11 Mar 2026 01:14:03 GMT
+
+Number of Pages: 23
+
+Markdown Content:
+# Quantifying the Necessity of Chain of Thought through Opaque Serial Depth 
+
+Jonah Brown-Cohen 1, David Lindner 1 and Rohin Shah 1
+
+> 1Google DeepMind
+
+Large language models (LLMs) tend to externalize their reasoning in their chain of thought, making the chain of thought a good target for monitoring. This is partially an inherent feature of the Transformer architecture: sufficiently long serial cognition must pass through the chain of thought (Korbak et al., 2025). We formalize this argument through the notion of opaque serial depth , given by the length of the longest computation that can be done without the use of interpretable intermediate steps like chain of thought. Given this formalization, we compute numeric upper bounds on the opaque serial depth of Gemma 3 models, as well as asymptotic results for additional architectures beyond standard LLMs. We also open-source an automated method that can calculate upper bounds on the opaque serial depth of arbitrary neural networks, and use it to demonstrate that Mixture-of-Experts models likely have lower depth than dense models. Overall, our results suggest that opaque serial depth is a useful tool for understanding the potential for models to do significant reasoning that is not externalized. 
+
+## 1. Introduction 
+
+Chain of thought monitoring for large language models (LLMs) is an important mitigation for AI safety. A key intuition supporting its robustness is that “thinking out loud is necessary for hard tasks” (Korbak et al., 2025), because there is no other way for LLMs based on the Transformer architecture (Vaswani et al., 2017) to perform long serial cognition, as illustrated in Figure 1. apples five So   
+
+> remain apples five So …
+> …remain
+
+Attention blocks 
+
+MLP blocks 
+
+MLP blocks 
+
+Input 
+
+Output 
+
+Layers 
+
+Tokens 
+
+chain of thought opaque computation 
+
+Attention blocks 
+
+Figure 1 | Adapted from Korbak et al. (2025). For Transformers, chain of thought is the only way to pass information from later layers to earlier layers, making it a bottleneck for serial computation. As a result, for tasks that require sufficiently long serial computation, the model will have to externalize some of its reasoning in the chain of thought.  
+
+> Corresponding author(s): jonahbc@google.com
+> ©2026 Google DeepMind. All rights reserved
+> arXiv:2603.09786v1 [cs.AI] 10 Mar 2026 Quantifying the Necessity of Chain of Thought through Opaque Serial Depth
+
+Different architectures could change these considerations. For example, adding recurrence should enable long serial cognition within the activations, and so should reduce our expectation that thinking out loud is necessary. As a result, we may want to avoid recurrent architectures, so as to preserve our ability to understand how an LLM is reasoning simply by reading its chain of thought. To make such arguments more precisely and rigorously, it is useful to have a standard, well-founded notion of opaque serial depth , that is, the extent to which the architecture supports long chains of cognition without having to think out loud. One approach would be to simply count the number of layers, but this immediately raises the question of what constitutes a layer. Should normalization operations be considered their own separate layer, or are they simply a part of an existing layer? Shouldn’t a multi-headed attention layer be “deeper” than a linear layer? Taking inspiration from computational complexity theory, we propose measuring the depth of a neural network based on the complexity measure known as circuit depth – the minimum depth of a Boolean circuit that computes the same function as the neural network. Section 2 discusses the many advantageous properties that circuit depth enjoys, while Section 3 provides a formal definition. We demonstrate how to compute upper bounds on opaque serial depth in practice in Section 4, including by-hand calculations for models in the Gemma 3 family (Team et al., 2025) and asymptotic analysis for a few different architectures. In Section 5, we implement and open-source an automatic method for calculating upper bounds on opaque serial depth of arbitrary neural networks, and demonstrate that the resulting bounds are close to the tighter bounds calculated by hand. Section 6 discusses limitations and Section 7 concludes. 
+
+## 2. Why focus on circuit depth? 
+
+The notion of depth has been formalized and extensively studied in computational complexity theory, via the complexity measure known as circuit depth . The circuit depth of a function (such as that computed by a neural network) is the minimum depth of a Boolean circuit that computes that function. This is a natural and useful choice to formalize intuitions around the necessity of chain of thought for hard tasks for a variety of reasons. 
+
+Implementation independence. Since circuit depth is defined for a function, it does not depend on the particular implementation of the mathematical operations in a neural network, only on its expressive power. This allows us to sidestep questions about e.g. what should constitute an individual layer of a neural network. 
+
+Theoretical connections between circuit depth and chain of thought. Recent work has used Boolean circuit depth to analyze the power and limitations of the standard Transformer architec-ture (Vaswani et al., 2017), particularly in explaining the power of chain of thought reasoning (Hahn, 2020; Merrill et al., 2022; Liu et al., 2024). This line of work demonstrates that bounded-depth Transformers can be computed by bounded-depth Boolean circuits, and hence have strong limitations on what problems they can solve without chain of thought. These results are asymptotic: they apply to input sequences of length 𝑛 and give bounds on the circuit depth of 𝑂 (1) or 𝑂 (log 𝑛 ) depending on the assumptions made. 
+
+Circuit depth distinguishes between parallel and serial reasoning. If a given function 𝑓 can be computed by a depth-𝑑 circuit, then one can compute 𝑓 in parallel in wall-clock time 𝑂 (𝑑 ), using one processor for each gate in the circuit. Thus, the circuit depth of 𝑓 is a quantification of the minimum 
+
+> 2Quantifying the Necessity of Chain of Thought through Opaque Serial Depth
+
+serial computation needed to compute 𝑓 , while allowing vast parallel reasoning. This exactly mirrors the intuition for why chain of thought is necessary: while the Transformer architecture certainly does vast parallel computation on a sequence of tokens, it can only do limited serial computation, except 
+
+when using chain of thought. So, chain of thought should be necessary for tasks that benefit from significant serial computation (i.e. “hard tasks”). Computational complexity theory has already used circuit depth to demonstrate that serial reasoning can be a bottleneck for some tasks. Under widely believed conjectures, there are problems solvable in polynomial time that cannot be solved by low-depth circuits e.g. 𝑂 (log 𝑛 ) depth, including, notably, the problem of planning in MDPs (Papadimitriou and Tsitsiklis, 1987). In our setting of interest, this would suggest that a neural network with limited depth would struggle to do a lot of planning within a single forward pass. We may also expect that the transparency and interpretability of the chain of thought would be better if the serial depth between successive tokens is smaller. 
+
+## 3. Formalizing Opaque Serial Depth 
+
+3.1. Circuit Depth in Complexity Theory 
+
+We begin by introducing the complexity-theoretic model of circuits with which we will measure depth. There are various technical subtleties involving the number of bits of precision when computing mathematical operations with Boolean logical circuits. To avoid some of these complexities, we will assume that all mathematical operations are performed on floating-point numbers with the same, fixed number of bits of precision. This will allow us to present a somewhat simplified definition and method for calculating neural network depth. However, a neural network architecture using floating-point numbers with many more bits of precision than is standard must be evaluated differently. 
+
+Circuits. A circuit is a directed acyclic graph that breaks down the computation of a given function into simpler operations. The edges in the graph are referred to as wires, and the nodes are referred to as gates. There are a set of 𝑛 designated input wires , and a set of 𝑚 designated output gates . For our purposes, each wire will carry a single real number, and each gate will compute a real-valued function applied to the real numbers carried on the wires feeding into that gate. The output of a circuit on a given real 𝑛 -dimensional input 𝑥 is computed as follows: 1. Write the 𝑛 coordinates of 𝑥 on the 𝑛 input wires. 2. For each gate G that has a number written on all of its incoming wires: (a) Compute the real-valued function given by G. (b) Write the output value of G on all of its outgoing wires 3. The m-dimensional output y is the vector with coordinates given by the values computed by the m output gates. 
+
+Circuit Depth. To measure circuit depth meaningfully, we must restrict the mathematical operations allowed at each gate. This captures the intuition that a circuit is a way of specifying how to compute a more complex function via simple operations. The permissible gate operations we choose are: 1. Associative binary operations applied to two real numbers e.g. addition, multiplication, max, or min. 2. Piecewise functions of a single real number, where each piece is an analytic function. 
+
+> 3Quantifying the Necessity of Chain of Thought through Opaque Serial Depth
+
+Given this set of gate operations the depth of a circuit is given by the maximum length of a path from an input wire to an output gate. The reason to consider piecewise analytic functions is that there are known to be logarithmic depth Boolean circuits for powering, addition and multiplication (Beame et al., 1984). Thus for a fixed number of bits of precision 𝐵 , we can approximate analytic functions by their Taylor series to sufficient accuracy using depth 𝑂 (log 𝐵 ). For simplicity we absorb the constant depending on the bit-precision, and just model such operations as requiring depth 1. 
+
+3.2. Serial Depth of a Neural Network 
+
+A neural network immediately corresponds to a function 𝑓 𝜃 : ℝ𝑛 → ℝ𝑚 , where 𝜃 represents the weights of the neural network. We let 𝑆 be the number of parameters defining 𝜃 . We define the depth of a neural network with weights 𝜃 as the the minimum depth of a circuit of size polynomial in 𝑆 that computes the function 𝑓 𝜃 . Overall this means that the depth of a neural network with weights 𝜃 is given by Depth ( 𝑓 𝜃 ) = min  
+
+> poly (𝑆 )-size circuits 𝐶
+
+max    
+
+> paths 𝑃 in 𝐶
+
+Length (𝑃 ). (1) The reason for the constraint that the circuit size be polynomial in 𝑆 , is that one can always produce a depth 𝑛 , size 2𝑂 (𝑛 ) circuit for any function 𝑓 , by simply writing out a giant lookup table of the correct output for every possible input. This constraint is not particularly binding for current Transformer models, where the input dimension 𝑛 is the product of the sequence length and the embedding dimension, and hence is typically much larger than the depth of the natural circuit formed from the neural network’s computational graph. However, future architectures could in principle have depth much larger than 𝑛 , but a similar number of parameters 𝑆 , and so it is important to include the above constraint. In general, it is likely to be intractable to find the minimally deep circuit equivalent to a given neural network. However, it is straightforward to compute an upper bound on the neural network depth by finding any circuit that computes 𝑓 𝜃 and calculating its depth. This is the approach we take in this paper. 
+
+3.3. Opaque Serial Depth of a Language Model 
+
+The prior section provides a mathematically formal definition of neural network depth. However, when attempting to measure the ability of a neural network to perform opaque serial reasoning, there are additional considerations. For example, an autoregressive transformer model outputs one token at a time, then feeds the full sequence produced so far back in as input before producing the next output token. Overall we view the output of the model on a given prompt as the full sequence of output tokens. We would like our measurement of depth to capture the fact that while the internal computations of a neural network are not easily interpretable, intermediate steps in the chain of thought producing the output may form interpretable bottlenecks . In the case of a transformer model, after each forward pass, a new token is produced, and the corresponding piece of natural language text represented by the token could reasonably be considered to be interpretable. Similarly a text diffusion model produces intermediate token outputs on each diffusion step, and each of these intermediate steps could also be considered interpretable. Motivated by these observations, we would like a definition of opaque serial depth that allows us to measure only the serial depth present between interpretable bottlenecks, such as intermediate tokens produced by transformers or text diffusion models. To do this, we view any computation involving feeding outputs of a neural network into inputs of a (possibly the same) neural network as 
+
+> 4Quantifying the Necessity of Chain of Thought through Opaque Serial Depth
+
+a single large circuit defined by connecting the output wires of some neural networks to the input wires of others. For example, an autoregressive transformer applied to a prompt of length 𝑘 and fixed output length 𝑛 corresponds to a circuit with 𝑛 − 𝑘 copies of the original transformer. The 𝑖 -th copy of the circuit has input wires connected to the 𝑘 token prefix as well as the output wires of the 𝑖 − 1
+
+previous copies. It is then straightforward to adapt the definition of depth to this setting by marking the outputs of certain gates/nodes in the circuit as interpretable , including the overall inputs and outputs. In this case, one can perform a depth-first search from any interpretable node 𝑢 that terminates at a leaf whenever it reaches another interpretable node 𝑣 . Thus, each interpretable node 𝑢 can be written as a function 𝑓 𝑢 𝜃 (𝑥 ), where each coordinate of 𝑥 corresponds to some interpretable node 𝑣 . The opaque serial depth is then the maximum over interpretable nodes 𝑢 of Depth ( 𝑓 𝑢 𝜃 ).
+
+3.4. What Counts as Interpretable? 
+
+The definition of opaque serial depth requires a user-specified set of “interpretable” nodes in a computational graph. Clearly, the decision of what to include in or exclude from this set will have a large impact on the calculated serial depth of a computation. Unfortunately, there is not yet a precise technical definition of interpretability that we could use to make this determination. Instead, we suggest two different methods for assessing whether a node is interpretable. The first method draws on the intuition that if we “understand” something, then we should be able to answer questions about it. This suggests a simple test: for a node to be considered interpretable, we should be able to answer questions about the model’s reasoning simply by looking at the information contained in that node. Monitorability evaluations (Guan et al., 2025) are one way in which this can be done. We can get even stronger evidence that the node is interpretable through stress tests that actively try to find questions that can’t be answered (Emmons et al., 2025a; Deng et al., 2025). The second method is to reason about what the node was optimized to do during training. If a node was directly optimized to imitate human-written text (e.g. via pre-training or supervised fine-tuning) or to look good to humans (e.g. via RLHF), this gives it a “natural language prior” and we should expect the information in that node to be interpretable to humans. If there are other incentives during training, this argument becomes weaker. For example, reasoning training (Jaech et al., 2024) provides a separate incentive for the chain of thought to be useful for solving difficult problems. So far reasoning training shapes the chain of thought less than pretraining, and so the chain of thought is likely still quite interpretable, but if it is scaled up significantly this may change. For a significantly more detailed discussion of these two approaches, see Section A. 
+
+## 4. Calculating Serial Depth 
+
+In this section we explain in detail how to calculate upper bounds on the serial depth of a neural network. 
+
+4.1. Upper Bounds on the Depth of a Neural Network 
+
+Our definition of neural network depth refers to the minimum depth of any circuit computing the same function as the neural network. This is famously difficult to calculate due to the quantification over all possible circuits computing the function. However, there is a straightforward method to calculate an upper bound on the circuit depth, by simply exhibiting a circuit of a given depth that correctly computes the function. 
+
+> 5Quantifying the Necessity of Chain of Thought through Opaque Serial Depth
+
+Any neural network implementation is already a real-valued circuit, though the gates can have more than two input wires. Thus, we need only account for the added depth required to compute operations on more than two inputs to determine the depth of this circuit, which then forms an upper bound for the opaque serial depth of the overall neural network. These considerations lead to the following algorithm for computing an upper bound on the depth of a neural network: 
+
+Algorithm 1: Opaque Serial Depth Calculation  
+
+> 1
+
+Function OpaqueSerialDepth( 𝑛𝑜𝑑𝑒 , 𝐼 ):
+
+// Where 𝐼 is the interpretable_nodes_set  
+
+> 2
+
+return max  Depth( node, I ), max 𝑛 ∈𝐼 Depth( n, I ) 
+
+> 3
+
+Function Depth( 𝑛𝑜𝑑𝑒 , 𝐼 ): 
+
+> 4
+
+if 𝑛𝑜𝑑𝑒 ∈ 𝐼 then  
+
+> 5
+
+return 0 
+
+> 6
+
+return Immediate_Depth( node ) + max 𝑐 ∈𝑐ℎ𝑖𝑙𝑑𝑟𝑒𝑛 (𝑛𝑜𝑑𝑒 ) Depth( c, I ) 
+
+> 7
+
+Function Immediate_Depth( 𝑛𝑜𝑑𝑒 ): 
+
+> 8
+
+if 𝑛𝑜𝑑𝑒 is an associative binary operation on 𝑛 inputs then  
+
+> 9
+
+return log 2 𝑛  
+
+> 10
+
+else if 𝑛𝑜𝑑𝑒 is a piecewise analytic function of two or fewer inputs then  
+
+> 11
+
+return 1
+
+The algorithm performs a depth first search starting from each interpretable node, and recursively adds up the total opaque serial depth by computing the depth contributed by the current node plus the maximum depth of any child node. The depth first search terminates whenever it reaches an interpretable input nodes. When computing the depth of a circuit, our definition requires operations that take at most two inputs. Hence, associative binary operations taking 𝑛 > 2 inputs must be computed by a depth log 2 𝑛 tree, where each node in the tree applies the binary associative operation on two inputs from the next level of the tree. 
+
+4.2. Example: Two layer MLP 
+
+To understand this depth calculation method, we now manually compute the depth of a simple two hidden-layer MLP with a single input dimension, a single output dimension, and two hidden layers with dimension 4. The activations in the hidden layers will be ReLUs. For this example the serial depth can be computed layer by layer, as illustrated in Figure 2: 
+
+• The first hidden layer has 4 neurons, and each neuron computes a product with the input. These can happen in parallel which gives depth 1. This is followed by a ReLU activation, so the total depth contribution is 1 + 1 = 2.
+
+• The second hidden layer has 4 neurons, and computes a product with each input (depth 1), a sum over 4 inputs (depth 2), and a ReLU activation (depth 1). The total depth contribution is 
+
+1 + ceil (log (4)) + 1 = 4.
+
+• The output layer has 1 output, and computes a product for each input and then a sum over 4 inputs. The depth contribution is 1 + ceil (log (4)) = 3.Hence, an upper bound on the serial depth of the MLP is the sum of these contributions: 2 + 4 + 3 = 9. 
+
+> 6Quantifying the Necessity of Chain of Thought through Opaque Serial Depth Output Layer
+> Layer 2
+> Layer 1
+> W1
+> ReLU
+> x
+
+× ×
+
++
+
+×
+
++ 
+
+> W2
+
++ +
+
++
+
+> ReLU
+> ReLU
+
++
+
+> ReLU
+
+× × × ×× ×× ×× × × ×× ××
+
++ +
+
++
+
+> ReLU
+
++   
+
+> ReLU
+> ReLU ReLU
+> W3
+
+× × ×
+
++
+
++
+
++
+
++
+
++
+
+> 9
+> 8
+> 7
+> 6
+> 5
+> 4
+> 3
+> 2
+> 1
+> Depth
+
+×
+
+×
+
+×
+
+Figure 2 | Serial depth of a circuit computing an MLP with two hidden layers, given a single input and a single output. The highlighted path is the longest in the circuit, and has length 9, determining the serial depth. The paths from the weights 𝑊 2 and 𝑊 3 to the output have a lower length, and so do not contribute to the serial depth. 
+
+4.3. Depth Calculations for Gemma 3 
+
+For a significantly more complicated example, we calculate upper bounds on the opaque serial depth by hand for the models from the Gemma 3 family (Team et al., 2025), treating the input and output tokens as the interpretable nodes. We provide the full calculation in Section B and summarize the results in Table 1. 
+
+Model Final Depth Formula Total Depth (T=T_max) Gemma 3 1B 4370 + 8 · log 2 𝑇 4,490 Gemma 3 4B 6036 + 10 · log 2 𝑇 6,206 Gemma 3 12B 8482 + 16 · log 2 𝑇 8,754 Gemma 3 27B 11322 + 20 · log 2 𝑇 11,662 
+
+Table 1 | Upper bounds on the serial depth of Gemma 3 models at maximum sequence length. 
+
+4.4. Asymptotic bounds on depths for different architectures 
+
+With a definition of opaque serial depth in hand, we can identify asymptotic bounds for a given architecture, allowing us to predict how opaque serial depth will change as models are scaled up. For the architectures we discuss here, we let 𝐷 be the dimension of the activations, 𝐿 be the number of layers, and 𝑇 be the number of tokens. The 𝐿 layers count all types of layers, such as attention, MLPs, mixture of experts, and RNNs. The 𝑇 tokens can be decomposed into 𝑇 𝑖𝑛 input tokens, 𝑇 𝑐𝑜𝑡 chain of thought tokens (where applicable), and 𝑇 𝑜𝑢𝑡 output tokens. Input and output tokens are always considered interpretable. We illustrate many of these architectures and their depths in Figure 3. 
+
+> 7
+
+Quantifying the Necessity of Chain of Thought through Opaque Serial Depth apples five So   
+
+> remain apples five So …
+> …remain
+> L
+> T
+
+Depth: O(L(log T + log D)) 
+
+> Interpretable
+> Opaque
+> D
+> Attention blocks
+> MLP blocks
+> MLP blocks
+> Input
+> Output
+> Attention blocks
+
+Transformer with Chain of Thought 
+
+(a) In a standard Transformer, opaque paths can only go “up” or “right”, with linear dependence on “up” steps and logarithmic dependence on “right” steps. apples five So   
+
+> remain apples five So …
+> …remain
+> MLP blocks
+> MLP blocks
+> Input
+> Output
+> RNN blocks
+> RNN blocks
+
+RNN with Chain of Thought 
+
+> L
+> T
+> Interpretable
+> Opaque
+> D
+
+Depth: O((L + T) log D) 
+
+(b) With RNN blocks, opaque paths can still only go “up” or “right”. However, there is now a linear dependence on “right” steps. 697 698 843   
+
+> 899 697 698 843 …
+> …899
+> Attention blocks
+> MLP blocks
+> MLP blocks
+> Input
+> Output
+> Attention blocks
+
+Transformer with Continuous Chain of Thought 
+
+> L
+> T
+> Interpretable
+> Opaque
+> D
+
+Depth: O(LT(log T + log D)) 
+
+(c) Once the chain of thought is not interpretable, opaque paths can also go “down” in addition to “up” or “right”, drastically increasing opaque serial depth. 697594 698235 843872  
+
+> 899282 697175 698440 …
+> 899152
+> Memory 115775878039862756 452837959858338222 164959499210452875 998564716421244564 941042708507970499 545101384176147011 617577075235441464 989923829646731491 008107793402258380 809645959737811486 963060040664387820 583037045569334326 612947896965738532 872349740662777584 922076059843406147 119676642091526614 583429706119558332
+> Read
+> Write
+
+Persistent Black Box Memory  
+
+> L
+> Interpretable
+> Opaque
+
+Depth: Unbounded 
+
+(d) Contents in persistent black box memory could have been produced with arbitrary opaque serial com-putation, making the depth unbounded. 
+
+Figure 3 | Asymptotic analysis of opaque serial depth for various architectures shows that architectural choices can make a large difference to the amount of opaque serial computation that can be done. 
+
+Autoregressive Transformers (Figure 3a). In an autoregressive Transformer, every token is an interpretable node, and so an opaque path is limited to the forward pass required to produce a single token. Since each output token 𝑖 is computed by a forward pass on an input sequence of length 𝑖 − 1,the longest opaque path will be for the final output token, when using the final sequence length 𝑇 .Each MLP block (or mixture of experts block) operates on a single token, computing a constant number of simple operations over activation vectors of size 𝐷 , which requires depth 𝑂 (log 𝐷 ). The attention operation also includes such operations of depth 𝑂 (log 𝐷 ), as well as a sum over 𝑇 numbers when calculating the attention pattern, which requires depth log 2 𝑇 .Thus, every layer has depth 𝑂 (log 𝑇 + log 𝐷 ). Since the overall forward pass is a composition of 𝐿 
+
+layers, the overall opaque serial depth is 𝑂 (𝐿 (log 𝑇 + log 𝐷 )) .
+
+8Quantifying the Necessity of Chain of Thought through Opaque Serial Depth 
+
+Recurrent Networks (Figure 3b). Instead of using attention layers to pass information from earlier tokens to later tokens, one could instead use RNN blocks. Each application involves a constant number of simple operations over activation vectors of size 𝐷 and so requires depth 𝑂 (log 𝐷 ).Any overall opaque path through the model then consists of two types of steps: processing the next deeper layer (going up in Figure 3b), or moving to the next token via an RNN block (going right in Figure 3b). There can be at most 𝐿 steps of the first type, and 𝑇 steps of the second type, and each step has depth 𝑂 (log 𝐷 ). Thus, the overall opaque serial depth is 𝑂 (( 𝐿 + 𝑇 ) log 𝐷 ).
+
+Continuous Latent Chain of Thought (Figure 3c). There have been proposals for continuous latent chain of thought (Hao et al., 2024). Rather than sampling tokens from a language model 𝑓 𝜃 ,one instead uses the final hidden state as a continuous representation of the current “thought” and feeds this continuous input directly back into the network as the input embedding, bypassing tokens entirely. It is unclear whether the new continuous thought tokens should be considered interpretable: for example, perhaps they can still be understood as discrete tokens via the logit lens (nostalgebraist, 2020). For the purposes of this section, we will assume that they are not interpretable. Thus, only the input and output tokens are interpretable. In this case, the overall computation is the composition of the backing neural network 𝑓 𝜃 for  
+
+> 𝑇 𝑐𝑜𝑡
+
+steps. Assuming that we are using a Transformer architecture, each invocation of the 𝑓 𝜃 has depth 𝑂 (𝐿 (log 𝑇 + log 𝐷 )) . Thus, the overall depth is 𝑂 (𝐿𝑇 𝑐𝑜𝑡 (log 𝑇 + log 𝐷 )) . This illustrates how our definition of opaque serial depth naturally assigns larger depth to longer computations that do not produce any interpretable intermediate steps. 
+
+Persistent Black Box Memory (Figure 3d). A language model could be equipped with memory that persists across individual queries. If this memory is interpretable, this does not change the opaque serial depth. However, if it is uninterpretable or “black box”, for example because it stores activation vectors, this can significantly increase opaque serial depth. In the case where the language model can read from the memory, carry out further opaque processing, and then write back to the memory, the amount of opaque serial computation put into any individual item stored in memory can grow continually. Thus, the opaque serial depth cannot be bounded in terms of 𝐿 , 𝑇 and 𝐷 . It could be bounded by including other quantities such as the total number of invocations of the language model or the total number of writes to the memory system, though such bounds would likely be too high to provide any kind of assurance about our understanding of the computation. 
+
+Text Diffusion Models. For a text diffusion model (Austin et al., 2021; Li et al., 2022; Nie et al., 2025), a single neural network 𝑓 𝜃 is used to produce 𝑇 tokens by an iterative diffusion process. The process proceeds in a series of diffusion steps, where in step 𝑡 a sequence 𝑠 𝑡 of 𝑇 tokens are produced in parallel, and then the tokens 𝑠 𝑡 are fed as inputs to 𝑓 𝜃 in step 𝑡 + 1. If we view any tokens output as interpretable, then a 𝑘 -step text-diffusion process producing 𝑇 tokens has depth Depth ( 𝑓 𝜃 ),because each interpretable node for a token produced at step 𝑖 in the circuit simply applies 𝑓 𝜃 to the interpretable nodes corresponding to the output tokens of the previous step. 
+
+> 9Quantifying the Necessity of Chain of Thought through Opaque Serial Depth
+
+## 5. Automating Serial Depth Calculations 
+
+While we give in-depth examples of hand-calculations in Section B, they can become quite tedious. To automate this process we also implemented a depth upper bound calculator in JAX (Bradbury et al., 2018). 
+
+5.1. Approach 
+
+We apply Algorithm 1 to the jaxpr intermediate language representation of the neural network. In particular, for each jaxpr that occurs in a neural network implemented in JAX, we first determine by hand the depth of the corresponding mathematical operation, and hard-code this into our implemen-tation. The algorithm then recursively traverses the tree of jaxprs to compute the maximum depth along any path. Overall, the number of jaxprs that need to be considered is not too large, with approximately 75 being sufficient to run a depth calculation for the full Gemma 3 architecture. The vast majority of these are quite simple depth 0 operations, such as reshaping or other indexing manipulations which correspond to the wiring of the induced circuit, or depth 1 operations, typically consisting of elementary coordinate-wise mathematical operations. We implement 7 further jaxprs that correspond to associative binary operations over multiple inputs, and 11 more that require special handling due to recursive calling of further jaxprs and other special-case operations. We open-source our code at 
+
+https://github.com/google-deepmind/serial_depth .
+
+5.2. Comparison to manual calculations 
+
+Our automated method calculates the opaque serial depth of the circuit implied by the jaxpr representation of the neural network. However, the jaxpr representation is not optimized to minimize serial depth. As a result, it often misses optimizations to the circuit that can tighten the upper bound on the opaque serial depth of the neural network. One common missed optimization is illustrated in Figure 4. A common pattern in neural networks is a matrix multiplication or dot product, followed by the addition of a bias. If the intermediate representation treats the addition of the bias as a separate step, this will typically increase the calculated serial depth. However, usually the addition of the bias can be folded into the sums involved in the matrix multiplication or dot product, thus avoiding the additional depth. This is analogous to the common trick of adding a feature that is always set to 1 to the data, such that the weight corresponding to that feature functions equivalently to a bias. To quantify the impact of these missed optimizations, we run our depth calculator on Gemma 3 models, and compare the results to the depths calculated by hand in Section 4.3. We provide the results in Table 2. For both cases, we report the depth at the maximum sequence length supported by each model. 
+
+Model By-Hand Depth JAX Calculator Depth JAX Overestimation Gemma 3 1B 4,490 5,728 1.28 ×
+
+Gemma 3 4B 6,206 7,958 1.28 ×
+
+Gemma 3 12B 8,754 11,268 1.29 ×
+
+Gemma 3 27B 11,662 14,856 1.27 ×
+
+Table 2 | Hand-calculated upper bounds on the serial depth of Gemma 3 models versus JAX depth calculator upper bounds at maximum sequence length. 
+
+> 10 Quantifying the Necessity of Chain of Thought through Opaque Serial Depth
+
++ b 
+
+w · x
+
+## + +
+
+## ×× × ××                       
+
+> w1x1w2x2w3x3w4x4w5x5w6x6
+> b
+
+## +
+
+## +
+
+## +
+
+## +
+
+## ×
+
+5
+
+4
+
+3
+
+2
+
+1
+
+Depth 
+
+(a) A tree traversal may compute a depth of 4 for 𝒘 · 𝒙 , and add a depth of 1 for + 𝑏 .w · x + b 
+
+## + +
+
+## ×× × ××                       
+
+> w1x1w2x2w3x3w4x4w5x5w6x6
+> b
+
+## +
+
+## +
+
+## +
+
+## ×
+
+## +
+
+4
+
+3
+
+2
+
+1
+
+Depth 
+
+(b) Folding in the addition of the bias 𝑏 into the dot product sum reduces the depth by 1. 
+
+Figure 4 | Manual optimizations can produce tighter upper bounds on the serial depth of a neural network. When computing 𝒘 · 𝒙 + 𝑏 where the vectors have dimension 6, an automated calculation can produce a depth of 5, but folding in the addition of the bias into the dot product sum produces a shallower circuit of depth 4. As expected, the JAX depth calculator overestimates the serial depth relative to the by-hand calculations, by around 28% for most models in the family. We view a 28% overhead as an excellent trade-off for the efficiency of the JAX depth calculator. The by-hand calculations can taken several hours of human effort to carefully verify for a new architecture, while the calculator runs in a few seconds. The by-hand calculations are also more error prone, and could miss some architectural details, whereas the JAX depth calculator works directly on an actual implementation of the neural network. Of course, if one is interested in the tightest possible upper bounds on the depth of a neural network, the by-hand calculations will be more effective. The by-hand calculations summarized in Table 1 predict logarithmic scaling of serial depth with sequence length for Gemma 3 models. In Figure 5, we plot the JAX-calculated depth as a function of sequence length for various models in the Gemma 2 and 3 families, confirming this predicted logarithmic scaling. 
+
+> 11 Quantifying the Necessity of Chain of Thought through Opaque Serial Depth
+
+Figure 5 | Automatic depth calculations for Gemma models across different sequence lengths. 
+
+5.3. Application to Mixture-of-Experts 
+
+Since the automated calculations are so cheap, and only require a model architecture (rather than a fully trained model), it is easy to get quick qualitative evidence about the impact of various architectural changes on the opaque serial depth. As a proof of concept, we implement a vanilla Mixture-of-Experts (MoE) Transformer model in JAX with 11B active parameters and 91B total parameters (full details in Table 3). The JAX calculator produces a depth of 4,096 for this model, which is significantly lower than the JAX-calculated depth of 11,268 for Gemma 3 12B, and even the by-hand calculation of 8,754 (Table 2), suggesting that Mixture-of-Experts likely decreases serial depth relative to dense architectures. 
+
+Parameter Value 
+
+Vocabulary size 151936 Hidden dim 2048 Num heads 16 Num layers 28 Experts per layer 64 Experts per token 8Sequence length 512 Total parameters 91.32B Active parameters 11.42B 
+
+Total Calculated Depth 4096 
+
+Table 3 | Parameters of the MoE Transformer architecture and total depth output by the JAX depth calculator. 
+
+> 12 Quantifying the Necessity of Chain of Thought through Opaque Serial Depth
+
+## 6. Limitations 
+
+Interpretable “nodes” only capture one aspect of transparency. When considering a computation expressed as a circuit, an individual node in that circuit does not represent the entire algorithm, but rather a snapshot of part of the computational state (Levy et al., 2025). In principle, this can give us some insight into the computation, but would be far from an explanation of the algorithm involved. However, since LLMs often imitate and improve upon written human reasoning, the chain of thought often lays out the reasoning explicitly, and so can serve as an explanation. This is not captured by our formalization of opaque serial depth, and thus other architectures (e.g. text diffusion models) may lose this property despite having similar opaque serial depth. 
+
+Definition of interpretability. A key limitation of the method is the need to specify which nodes are “interpretable”. While we discuss some ideas for operationalizing interpretability in Section 3.4 and Section A, ultimately there is not a clean, formal definition that captures what we want, and these determinations will likely involve significant judgment calls. 
+
+Quantification over circuits. Depth is defined via a minimum over polynomially sized circuits (Section 3.2). While this captures the benefits of serial reasoning in theory (Section 2), theory may not apply perfectly to practice, which is often highly inefficient relative to the theoretical optimum. For example, any function can be implemented by an input-output lookup table of exponential size and linear depth. Such a circuit could have a lower depth than the standard implementation for e.g. continuous chain of thought (Figure 3c). However, it is prima facie unreasonable to say that simply because we could cache the full input-output behavior of such an architecture, that means it is not doing sophisticated serial reasoning. While the polynomial size restriction rules out lookup tables, there may be other such cases we have not thought of. If opaque serial depth is used for decision making with practical systems, it may be prudent to only quantify over “natural” or “reasonable” circuits (determined by expert judgment). 
+
+New operations for automated depth calculations. The automated depth calculator (Section 5) only supports a subset of JAX operations. For models that use unsupported operations, users will have to extend the calculator with a new formula for that operation produced by hand. 
+
+## 7. Conclusion 
+
+We would like to build AI systems that perform sophisticated human-understandable reasoning. We capture the potential for sophisticated reasoning using the concept of serial (circuit) depth. With this language, we want AI systems with high serial depth, but low opaque serial depth. We provide an algorithm that calculates upper bounds on the opaque serial depth of a neural network, enabling both theoretical analysis by hand of proposed architectures, and an automated method for concretely instantiated models. This provides a standardized way to get quick concrete estimates that inform our understanding of the extent to which a proposed architecture enables sophisticated human-understandable reasoning. We hope that opaque serial depth will aid in the development of increasingly capable AI architec-tures while retaining a similar level of transparency as we have with chain of thought currently. 
+
+> 13 Quantifying the Necessity of Chain of Thought through Opaque Serial Depth
+
+## References 
+
+J. Austin, D. D. Johnson, J. Ho, D. Tarlow, and R. Van Den Berg. Structured denoising diffusion models in discrete state-spaces. Advances in neural information processing systems , 34:17981–17993, 2021. P. Beame, S. A. Cook, and H. J. Hoover. Log depth circuits for division and related problems. In SIAM journal on computing (Print) , 1984. URL https://api.semanticscholar.org/CorpusID: 535657 .J. Bradbury, R. Frostig, P. Hawkins, M. J. Johnson, C. Leary, D. Maclaurin, G. Necula, A. Paszke, J. Van-derPlas, S. Wanderman-Milne, and Q. Zhang. JAX: composable transformations of Python+NumPy programs, 2018. URL http://github.com/jax-ml/jax .M. Christ, S. Gunn, and O. Zamir. Undetectable watermarks for language models. In The Thirty Seventh Annual Conference on Learning Theory , pages 1125–1139. PMLR, 2024. A. Deng, S. Von Arx, B. Snodin, S. Kunnavakkam, and T. Lanham. CoT may be highly informative despite “unfaithfulness”, 2025. URL https://metr.org/blog/ 2025-08-08-cot-may-be-highly-informative-despite-unfaithfulness/ .S. Emmons, E. Jenner, D. K. Elson, R. A. Saurous, S. Rajamanoharan, H. Chen, I. Shafkat, and R. Shah. When chain of thought is necessary, language models struggle to evade monitors. arXiv preprint arXiv:2507.05246 , 2025a. S. Emmons, R. S. Zimmermann, D. K. Elson, and R. Shah. A pragmatic way to measure chain-of-thought monitorability. arXiv preprint arXiv:2510.23966 , 2025b. S. Farquhar, V. Varma, D. Lindner, D. Elson, C. Biddulph, I. Goodfellow, and R. Shah. Mona: Myopic optimization with non-myopic approval can mitigate multi-step reward hacking. arXiv preprint arXiv:2501.13011 , 2025. M. Guan, M. Wang, M. Carroll, Z. Dou, A. Wei, M. Williams, B. Arnav, J. Huizinga, I. Kivlichan, M. Glaese, J. Pachocki, and B. Baker. Monitoring monitorability. arXiv preprint arXiv:2512.18311 ,2025. M. Hahn. Theoretical limitations of self-attention in neural sequence models. Transactions of the Association for Computational Linguistics , 8:156–171, 2020. S. Hao, S. Sukhbaatar, D. Su, X. Li, Z. Hu, J. Weston, and Y. Tian. Training large language models to reason in a continuous latent space. arXiv preprint arXiv:2412.06769 , 2024. A. Jaech, A. Kalai, A. Lerer, A. Richardson, A. El-Kishky, A. Low, A. Helyar, A. Madry, A. Beutel, A. Carney, et al. Openai o1 system card. arXiv preprint arXiv:2412.16720 , 2024. T. Korbak, M. Balesni, E. Barnes, Y. Bengio, J. Benton, J. Bloom, M. Chen, A. Cooney, A. Dafoe, A. Dragan, et al. Chain of thought monitorability: A new and fragile opportunity for ai safety. arXiv preprint arXiv:2507.11473 , 2025. M. Levy, Z. Elyoseph, S. Ravfogel, and Y. Goldberg. State over tokens: Characterizing the role of reasoning tokens. arXiv preprint arXiv:2512.12777 , 2025. X. Li, J. Thickstun, I. Gulrajani, P. S. Liang, and T. B. Hashimoto. Diffusion-lm improves controllable text generation. Advances in neural information processing systems , 35:4328–4343, 2022. 
+
+> 14 Quantifying the Necessity of Chain of Thought through Opaque Serial Depth
+
+Z. Liu, H. Liu, D. Zhou, and T. Ma. Chain of thought empowers transformers to solve inherently serial problems. In The Twelfth International Conference on Learning Representations, ICLR 2024, Vienna, Austria, May 7-11, 2024 . OpenReview.net, 2024. URL https://openreview.net/forum?id= 3EWTEy9MTM .W. Merrill, A. Sabharwal, and N. A. Smith. Saturated transformers are constant-depth threshold circuits. Transactions of the Association for Computational Linguistics , 10:843–856, 2022. S. Nie, F. Zhu, Z. You, X. Zhang, J. Ou, J. Hu, J. Zhou, Y. Lin, J.-R. Wen, and C. Li. Large language diffusion models. arXiv preprint arXiv:2502.09992 , 2025. nostalgebraist. interpreting GPT: the logit lens, 2020. URL https://www.lesswrong.com/posts/ AcKRB8wDpdaN6v6ru/interpreting-gpt-the-logit-lens .L. Ouyang, J. Wu, X. Jiang, D. Almeida, C. Wainwright, P. Mishkin, C. Zhang, S. Agarwal, K. Slama, A. Ray, et al. Training language models to follow instructions with human feedback. Advances in neural information processing systems , 35:27730–27744, 2022. C. H. Papadimitriou and J. N. Tsitsiklis. The complexity of markov decision processes. Mathematics of operations research , 12(3):441–450, 1987. F. Roger. Do reasoning models use their scratchpad like we do? Evidence from distilling paraphrases, 2025. URL https://alignment.anthropic.com/2025/distill-paraphrases/ .G. Team, A. Kamath, J. Ferret, S. Pathak, N. Vieillard, R. Merhej, S. Perrin, T. Matejovicova, A. Ramé, M. Rivière, et al. Gemma 3 technical report. arXiv preprint arXiv:2503.19786 , 2025. A. Vaswani, N. Shazeer, N. Parmar, J. Uszkoreit, L. Jones, A. N. Gomez, Ł. Kaiser, and I. Polosukhin. Attention is all you need. Advances in neural information processing systems , 30, 2017. J. Wu, J. Lu, Z. Ren, G. Hu, Z. Wu, D. Dai, and H. Wu. Llms are single-threaded reasoners: Demystifying the working mechanism of soft thinking. arXiv preprint arXiv:2508.03440 , 2025. O. Zamir. Undetectable steganography for language models. Transactions on Machine Learning Research , 2024. Z. Zhang, X. He, W. Yan, A. Shen, C. Zhao, S. Wang, Y. Shen, and X. E. Wang. Soft thinking: Unlocking the reasoning potential of llms in continuous concept space. arXiv preprint arXiv:2505.15778 , 2025. Y. Zhuang, L. Liu, C. Singh, J. Shang, and J. Gao. Text generation beyond discrete token sampling. 
+
+arXiv preprint arXiv:2505.14827 , 2025. D. M. Ziegler, N. Stiennon, J. Wu, T. B. Brown, A. Radford, D. Amodei, P. Christiano, and G. Irving. Fine-tuning language models from human preferences. arXiv preprint arXiv:1909.08593 , 2019. 
+
+> 15 Quantifying the Necessity of Chain of Thought through Opaque Serial Depth
+
+## A. Determining whether a node is interpretable 
+
+As discussed in Section 3.4, opaque serial depth calculations are very sensitive to the choice of which subset of nodes are considered interpretable. In this section, while we do not provide a precise definition of interpretable nodes, we discuss some strategies for deciding whether a node should be considered interpretable. For a human to interpret an intermediate node, there must be some way to convert the node into a form that humans can understand. For simplicity, we will only consider translations to natural language text. Often this transformation will just be the identity function (e.g. an LLM’s chain of thought is already in natural language) but this is not always the case (e.g. residual stream activations might be transformed to text via the logit lens (nostalgebraist, 2020)). One very straightforward approach is to simply check that the resulting text looks like coherent language, and covers the reasoning that we expect (Emmons et al., 2025b). However, this is just a sanity check, and would not be suitable to certify that a node is interpretable. Instead, we consider two properties that could much more strongly suggest that the node overall is interpretable. The first property is the extent to which the nodes enable answering questions about the overall computation, and the second property is the extent to which the information contained in the node is understandable to humans. 
+
+A.1. Question answering 
+
+Intuitively, the point of interpretability is to allow humans to understand what the model is doing. One way to operationalize “understanding” a node is to say that we should be able to answer arbitrary questions about the node. Thus, we can test whether a node is interpretable by generating questions about the node and checking how accurately we can answer them using only our understanding of the node. In principle, we should be able to perfectly answer any question for a fully interpretable node. In practice, it is hard to identify questions that are purely about intermediate nodes, for which we can identify ground truth through some other mechanism. Instead, we ask questions about the 
+
+entire computation . Specifically, we construct settings with some latent variable 𝑉 for which we know the ground truth, and check whether we can predict the value of 𝑉 using only the information in the node 𝑁 . Note that in this setting, we should no longer expect perfect performance even if 𝑁 is fully interpretable: it is possible to have some questions about the full computation where the node does not contain the information needed to answer the question. In principle, these evaluations should be done with humans, to assess interpretability to humans. In practice, these evaluations are typically conducted using LLM autoraters, which serve as a much faster automated proxy for humans. 
+
+Monitorability evaluations. One subset of question answering is of particular interest: monitorabil-ity . A set of nodes is monitorable for a condition 𝐶 if, given the input tokens and the values of the intermediate nodes 𝑁 , it is possible to evaluate whether condition 𝐶 holds of the final response. Guan et al. (2025) develop three types of monitorability evaluations: 1. “Intervention” evaluations: An intervention may or may not be applied to the prompt. Given the chain of thought ( 𝑁 ) and optionally the response, a classifier must predict whether the intervention has been applied ( 𝑉 ). 2. “Process” evaluations: Suppose an AI system provides the correct answer to a challenging 
+
+> 16 Quantifying the Necessity of Chain of Thought through Opaque Serial Depth
+
+question. Given the chain of thought ( 𝑁 ) and optionally the response, a classifier must predict what reasoning steps the AI system used to answer the question ( 𝑉 ). 3. “Outcome property” evaluations: Given the chain of thought ( 𝑁 ) and optionally the prompt, a classifier must predict some property of the response ( 𝑉 ). 
+
+Stress tests. Since full understanding should allow us to answer any question, a more rigorous evaluation is to search for questions that cannot be answered by looking at the intermediate nodes. However, it is then important that the questions are well-chosen such that the information needed to answer them is known to be present in the node. This ensures that if we find a question that we cannot answer, it implies that we are failing to understand the information in the node, providing evidence against interpretability. Emmons et al. (2025a) and Deng et al. (2025) provide an example of what such a stress test could look like. They consider settings in which an LLM can only perform well when using chain of thought, and check whether the LLM can evade a monitor while still performing well. In other words, they search for LLM prompts such that the monitor is unable to find the behavior it is looking for from the chain of thought. They find that LLMs struggle with this, providing evidence that the chain of thought is interpretable. Note that it will usually be theoretically possible for models to evade monitors in such stress tests given sufficient capabilities. For example, for chain of thought monitoring, the Transformer architecture is capable of supporting undetectable steganographic computation (Zamir, 2024; Christ et al., 2024), and as such we would expect that fine-tuning the model to do this would eventually work and successfully evade monitors. 
+
+A.2. Human-understandable information 
+
+Intuitively, the key reason that LLM chains of thought are interpretable is because we train LLMs to predict natural language, providing the LLM with a “natural language prior”. As a result, the model’s semantics for the tokens in the chain of thought should mimic the semantics that humans would ascribe to those tokens, because that is what would be useful for predicting text that was generated by humans. Inspired by this basic argument, we propose two criteria that together suggest that an intermediate node should be considered interpretable: 1. Natural language prior: The intermediate representation is directly optimized either (1) to imitate human-written text (e.g., via pre-training or supervised fine-tuning) or (2) to look good to humans (e.g., RLHF (Ziegler et al., 2019)). 2. Limited optimization towards other incentives: There are relatively weak training incentives other than towards the natural language prior (ideally none). Incentives that directly push against the natural language prior are worse than incentives that are orthogonal to it. We illustrate this approach with six examples, in roughly decreasing order of interpretability: 1. Chain of thought for instruction-tuned language models: In a language model that has only undergone pre-training and instruction tuning (Ouyang et al., 2022) via supervised fine-tuning and/or RLHF, the chain of thought satisfies both criteria above and thus we expect it to be interpretable. 
+
+> 17 Quantifying the Necessity of Chain of Thought through Opaque Serial Depth
+
+2. Intermediate steps for text diffusion models: Typically when training text diffusion models (Li et al., 2022; Nie et al., 2025), a single diffusion step is applied to a noised input, and the resulting output is trained to directly mimic natural language or its token embeddings. Thus, outputs of diffusion steps are directly optimized to imitate natural language, and there is no optimization for other training incentives. 1 So, at inference time when multiple diffusion steps are applied, the intermediate outputs at each step should be considered interpretable. 3. Chain of thought for reasoning models: Reasoning models (Jaech et al., 2024) undergo rein-forcement learning where the rewards are based on successful task completion. This introduces additional incentives: in particular, the chain of thought is now additionally optimized to perform useful intermediate computation, and to be a useful intermediate representation, for completing the assigned task. For current models, we expect that this optimization is substantially weaker than that from pre-training, and so the chain of thought likely remains interpretable. However, substantially scaling RL could make the chain of thought less interpretable. 4. Chain of thought with token superpositions: Recent work increases the expressivity of inference-time chain of thought by allowing each element of the chain of thought to be the predicted probability distribution over tokens, rather than a single sampled token (Zhang et al., 2025; Zhuang et al., 2025; Wu et al., 2025). Since the chain of thought is still based on tokens and the training is unchanged, these states should still be considered interpretable. In principle, such an approach could still significantly increase the difficulty of using this interpretability, because the state at each point is now exponentially larger. However, Wu et al. (2025) find that in practice, only a small number of reasoning paths matter, and so the potential exponential blowup does not happen. 5. Continuous chain of thought: Continuous chain of thought vectors (Hao et al., 2024) may or may not be interpretable. For example, if the vectors passed are simply token embeddings that were optimized via pre-training, they would remain interpretable. However, if they are trained solely to be useful for the model to solve difficult problems, that would likely be uninterpretable. 6. Activations in a Transformer-based language model: Standard intermediate activations in a Transformer, such as the residual stream or the key vectors for an attention head, are not optimized towards natural language and so do not meet the first criterion. As a result, we should expect that they will not be naturally interpretable. 
+
+Evaluation. In cases where there is optimization towards other incentives, we may not be able to determine a priori whether the resulting nodes will have human-understandable information content or not. In such cases, we can test for this property. Specifically, we can replace the node’s content with paraphrased versions that retain the same (human) semantics, and check the model’s resulting performance (Roger, 2025). If the model was only using human-understandable information content, then a semantics-preserving paraphrase should not alter performance. In contrast, if the model relies on node content that is not human-understandable, that content will likely be destroyed by paraphrasing, causing a performance degradation. In practice, paraphrasing can move a model out of distribution which can degrade performance for innocuous reasons such as spurious correlations, and so Roger (2025) performs light fine-tuning as an initial step for both the original and paraphrased reasoning traces before checking for performance degradation. Note that unlike question answering evaluations, this evaluation requires that we are able to 
+
+> 1Note that it is important that only a single diffusion step is applied at training time. If multiple diffusion steps were applied at training time before the resulting output was optimized to imitate natural language, then the intermediate outputs would also be optimized to be useful representations for future diffusion steps.
+> 18 Quantifying the Necessity of Chain of Thought through Opaque Serial Depth
+
+reverse the translation, that is, given some natural language we can set the intermediate node to have content that corresponds to that natural language. This may not be possible for some architectures, and in those cases we would not be able to run this evaluation. 
+
+Caveat: Information content, not reasoning or algorithms. Note that the natural language prior argument only implies that humans would be able to understand the content of intermediate values in the overall computation , whereas it does not imply that we can understand the algorithms or reasoning underlying the computation (Levy et al., 2025). We can instead try to infer what algorithm or reasoning must have generated those intermediate values. For LLM chains of thought, the model’s reasoning also mimics written human reasoning, and so we can understand both information content and reasoning / algorithms. Text diffusion models are an example where these two properties come apart. If the first intermediate state in a text diffusion model is “The answer is 8” while the next state is “The answer is 7”, we can reasonably conclude that the model changed its best guess for the answer, but we would have to do more work to understand the reasoning that drove the change. 
+
+Caveat: Not a guarantee. Technically, to have a guarantee, the target or loss function should be something that is produced using only human semantics ascribed to natural language, thus ensuring that the only information that can be extracted from it is about human semantics. This is a similar property as would be desired in MONA (Farquhar et al., 2025), in which non-myopic approval should be provided by a trusted evaluator without looking at external consequences, thus ensuring that any incentives only result from what the evaluator themselves were able to understand. Human-written text and human evaluations do not meet this bar. For example, humans may write about the results of real-world experiments. This text-generation process certainly depends strongly on human semantics and reasoning, but it also depends on real-world physical law. Thus, an AI system trained on this text could in principle infer aspects of physical law that humans may not yet understand. In practice, we expect that such effects are relatively unimportant and can be neglected, and so we treat human-written text and human evaluations as sufficient for imparting a natural language prior that matches human semantics. Another complication is that this property can be transitive: for example, a loss function that solely encouraged imitation of token embeddings, that themselves were only optimized based on human-written text, would still impart a natural language prior. 
+
+## B. By-Hand Depth Calculations for Gemma 3 
+
+In this section we provide worked out examples of by-hand depth calculations for the Gemma 3 family of models. These can be quite tedious, so to speed up the process we prompted Gemini 2.5 Pro with the open-source pytorch code of each model along with various instructions to pay attention to important details such as sliding-window size and pre and post-attention norm layers. After some prompt iteration we used human expertise to verify the depth calculations. 
+
+B.1. Gemma 3 1B 
+
+The following is a circuit depth calculation for the full Gemma 3 1B model. 
+
+> 19 Quantifying the Necessity of Chain of Thought through Opaque Serial Depth
+
+1. Gemma 3 1B Model Architecture Parameters We use the relevant architectural parameters for the Gemma 3 1B model from the open source code. 
+
+• num_embed (V) : 262,144 (This is the vocabulary size) 
+
+• num_layers : 26 ( _NUM_LAYERS_GEMMA3_1B )
+
+• embed_dim (D) : 1,152 
+
+• hidden_dim (Hidden) : 6 · 1, 152 = 6, 912 
+
+• num_heads : 4 
+
+• head_dim (H) : 256 
+
+• use_post_attn_norm : True 
+
+• use_post_ffw_norm : True 
+
+• use_qk_norm : True 
+
+• sliding_window_size : 512 
+
+• Attention Pattern : A repeating pattern of (5 LOCAL_SLIDING , 1 GLOBAL ). Over 26 layers, this results in 22 sliding attention layers and 4 global attention layers .
+
+• Sequence Length (T) : For sliding attention layers, the effective sequence length is the window size (512). For global attention layers, it is the full sequence length, which we will denote as a variable 𝑇 .For our calculations, we will use the base-2 logarithm ( log ) and round to the nearest integer for clarity where appropriate. 
+
+• log (𝑉 ) = log 2 (262144 ) = 18 
+
+• log (𝐷 ) = log 2 (1152 ) ≈ 10 .16 → 11 
+
+• log (Hidden ) = log 2 (6912 ) ≈ 12 .75 → 13 
+
+• log (𝐻 ) = log 2 (256 ) = 8
+
+• log (sliding_window_size ) = log 2 (512 ) = 92. Calculating Depth of Core Components Following the provided rules, we determine the circuit depth for the fundamental operations and modules. The depth of a component is the length of the longest path from its input to its output. 
+
+• Input Embedding : This operation looks up a token’s vector from an embedding table of size 
+
+> 𝑉
+
+. This is equivalent to a multiplexer, which has a depth of log (𝑉 ). It is followed by a scaling multiplication (depth 1). 
+
+– Depth ( 𝐷 embed ) = log (𝑉 ) + 1 = 18 + 1 = 19 
+
+• Linear Layer : A linear transformation 𝑦 = 𝑊 𝑥 on a d-dimensional input involves 𝑑 multiplications computed in parallel (depth 1), followed by a sum of these 𝑑 results. Using a binary tree of additions, this sum has a depth of log (𝑑 ).
+
+– Depth = 1 + log (𝑑 in )
+
+• RMSNorm Layer : This layer computes 𝑥 · rsqrt (mean (𝑥 2) + eps ) · ( 1 + scale ). The longest computational path involves the mean calculation over a vector of dimension 𝑑 .1. square(x) : 1 (element-wise) 2. sum(square(x)) : log (𝑑 )
+
+3. divide_by_d : 1 4. add_epsilon : 1 
+
+> 20 Quantifying the Necessity of Chain of Thought through Opaque Serial Depth
+
+5. rsqrt : 1 (piecewise function) 6. multiply_by_x : 1 7. multiply_by_(1+scale) : 1 
+
+– Depth = 6 + log (𝑑 )
+
+• Attention Mechanism ( Attention ): We trace the longest data path through the attention module. The model uses QK Normalization, which adds to the depth. 1. Q/K/V Projections (Linear, D -> H): 1 + log (𝐷 )
+
+2. QK Norm (RMSNorm on head dimension 𝐻 ): 6 + log (𝐻 )
+
+3. Rotary Positional Encoding (RoPE) (element-wise ops): ≈ 2
+
+4. Query Scaling (element-wise multiply): 1 5. Q @ K T (Matrix mul, sum over head dim 𝐻 ): 1 + log (𝐻 )
+
+6. Softmax (Includes sum over seq length 𝑇 ): 2 + log (𝑇 )
+
+7. Probs @ V (Matrix mul, sum over seq length 𝑇 ): 1 + log (𝑇 )
+
+8. Output Projection (Linear, D -> D): 1 + log (𝐷 )
+
+– Total Attention Depth ( 𝐷 attn ) = (1 + log 𝐷 ) + ( 6 + log 𝐻 ) + 2 + 1 + ( 1 + log 𝐻 ) + ( 2 + log 𝑇 ) + (1 + log 𝑇 ) + ( 1 + log 𝐷 )
+
+– 𝐷 attn = 15 + 2 · log (𝐷 ) + 2 · log (𝐻 ) + 2 · log (𝑇 )
+
+• Feed-Forward Network ( FeedForward ): This MLP block consists of two linear projections with a GeLU activation and element-wise multiplication in between. 1. Gating Projection (Linear, D -> Hidden): 1 + log (𝐷 )
+
+2. GeLU and Multiply (element-wise): 2 3. Linear Projection (Linear, Hidden -> D): 1 + log (Hidden )
+
+– Total FFW Depth ( 𝐷 mlp ) = (1 + log 𝐷 ) + 2 + ( 1 + log (Hidden )) 
+
+– 𝐷 mlp = 4 + log (𝐷 ) + log (Hidden )
+
+3. Calculating Depth of a Single Transformer Block ( Block ) The longest path through a transformer block traverses all its components sequentially. Gemma 3 uses pre-normalization for both sub-layers and post-normalization for the residual connections ( use_post_attn_norm=True ,
+
+use_post_ffw_norm=True ). The critical path is: pre_attn_norm -> attn -> post_attn_norm 
+
+-> residual_add -> pre_ffw_norm -> mlp -> post_ffw_norm -> residual_add .The depth of a single block ( 𝐷 block ) is the sum of the depths of these components:  
+
+> 𝐷 block
+
+= 𝐷 (pre_attn_norm ) + 𝐷 (attn ) + 𝐷 (post_attn_norm ) + 𝐷 (add )+ 𝐷 (pre_ffw_norm ) + 𝐷 (mlp ) + 𝐷 (post_ffw_norm ) + 𝐷 (add )
+
+= (6 + log 𝐷 ) + ( 15 + 2 log 𝐷 + 2 log 𝐻 + 2 log 𝑇 ) + ( 6 + log 𝐷 ) + 1
+
++ ( 6 + log 𝐷 ) + ( 4 + log 𝐷 + log Hidden ) + ( 6 + log 𝐷 ) + 1 
+
+> 𝐷 block
+
+= 45 + 7 · log (𝐷 ) + 2 · log (𝐻 ) + log (Hidden ) + 2 · log (𝑇 )
+
+We now calculate the depth for the two types of attention blocks using our pre-calculated log values. 
+
+• Sliding Block Depth (𝑇 = 512 , log (𝑇 ) = 9):  
+
+> 𝐷 slide
+
+= 45 + 7(11 ) + 2(8) + 13 + 2(9)
+
+= 45 + 77 + 16 + 13 + 18 = 169 
+
+> 21 Quantifying the Necessity of Chain of Thought through Opaque Serial Depth
+
+• Global Block Depth (𝑇 is a variable): 
+
+𝐷 global = 45 + 7(11 ) + 2(8) + 13 + 2 · log (𝑇 )
+
+= 45 + 77 + 16 + 13 + 2 · log (𝑇 ) = 151 + 2 · log (𝑇 )
+
+4. Final Calculation for the Entire Gemma 3 1B Model The total circuit depth is the sum of the depths of all layers along the longest computational path, from the initial input token to the final logit. 1. Input Embedding (Lookup + Scaling): 
+
+• 𝐷 embed = 19 
+
+2. Transformer Blocks (22 sliding, 4 global): 
+
+• 𝐷 blocks = 22 · 𝐷 slide + 4 · 𝐷 global 
+
+• 𝐷 blocks = 22 · 169 + 4 · ( 151 + 2 · log (𝑇 )) 
+
+• 𝐷 blocks = 3718 + 604 + 8 · log (𝑇 ) = 4322 + 8 · log (𝑇 )
+
+3. Final Normalization (RMSNorm over embed_dim ): 
+
+• 𝐷 final_norm = 6 + log (𝐷 ) = 6 + 11 = 17 
+
+4. Output Decoding (Linear Projection to vocab): 
+
+• The depth depends on the input dimension ( embed_dim ), not the output, as the 𝑉 dot products are parallel. 
+
+• 𝐷 decode = 1 + log (𝐷 ) = 1 + 11 = 12 Total Depth = 𝐷 embed + 𝐷 blocks + 𝐷 final_norm + 𝐷 decode 
+
+Total Depth = 19 + ( 4322 + 8 · log (𝑇 )) + 17 + 12 
+
+The final, fully calculated circuit depth for the Gemma 3 1B model is: 
+
+Depth = 4370 + 8 · log 2 𝑇 
+
+where 𝑇 is the sequence length processed by the four global attention layers. The maximum sequence length is 𝑇 = 32 , 768 , so log 2 𝑇 is at most 15 . Hence the final depth is: 
+
+Depth = 4370 + 8 · log 2 𝑇 = 4370 + 8 · 15 = 4490 
+
+B.2. Gemma 3 Family Depth Summary 
+
+We now summarize the total circuit depth calculated for the maximum sequence length ( T_max )of each model in the Gemma 3 family. First, we calculate the required logarithm values for T_max :
+
+• For Gemma 3 1B: log 2 (T_max ) = log 2 (32 , 000 ) ≈ 14 .97 → 15 
+
+• For the other models: log 2 (T_max ) = log 2 (128 , 000 ) ≈ 16 .97 → 17 
+
+Table 1 provides the final depth formulas and the calculated depth at the maximum sequence length for each model. Table 4 shows the key parameters and intermediate calculations that lead to the final depth. 
+
+> 22 Quantifying the Necessity of Chain of Thought through Opaque Serial Depth
+
+Parameter Gemma 3 1B Gemma 3 4B Gemma 3 12B Gemma 3 27B num_layers 26 34 48 62 
+
+embed_dim (D) 1,152 2,560 3,840 5,376 
+
+hidden_dim (Hidden) 6,912 10,240 15,360 21,504 
+
+head_dim (H) 256 256 256 128 
+
+log(D) 11 12 12 13 
+
+log(Hidden) 13 14 14 15 
+
+log(H) 8 8 8 7
+
+# Sliding Blocks 22 29 40 52 
+
+# Global Blocks 4 5 8 10 
+
+Sliding Block Depth 169 179 179 185 
+
+Global Block Depth 151 + 2 ·log(T) 159 + 2 ·log(T) 159 + 2 ·log(T) 165 + 2 ·log(T) 
+
+Total Depth (T=T_max) 4,490 6,206 8,754 11,662 
+
+Table 4 | Details of the Gemma 3 model intermediate calculations that contribute to the final depth.
