@@ -1,0 +1,1453 @@
+Title: Recursive Models for Long-Horizon Reasoning
+
+URL Source: https://arxiv.org/pdf/2603.02112v1
+
+Published Time: Tue, 03 Mar 2026 03:59:41 GMT
+
+Number of Pages: 30
+
+Markdown Content:
+# Recursive Models for Long-Horizon Reasoning 
+
+Chenxiao Yang 1 Nathan Srebro 1 Zhiyuan Li 1
+
+## Abstract 
+
+Modern language models reason within bounded context, an inherent constraint that poses a fun-damental barrier to long-horizon reasoning. We identify recursion as a core principle for overcom-ing this barrier, and propose recursive models as a minimal realization, where the model can recur-sively invoke itself to solve subtasks in isolated contexts. We prove that any computable problem admits a recursive decomposition in which each subtask requires only exponentially smaller ac-tive context than standard autoregressive models; this strictly surpasses any context management approach confined to a single sequence, such as summarization. We further generalize our frame-work to modern agentic systems with arbitrary context processing and control flows, and prove that recursive models can achieve optimal power within this broader class. Experimentally, we train a 3B model to reason recursively and eval-uate on Boolean satisfiability, a task requiring long-horizon combinatorial search, where it sig-nificantly outperforms frontier LLMs. 
+
+## 1. Introduction 
+
+Modern language models exhibit remarkable general prob-lem solving power (Radford et al., 2018; 2019; Brown et al., 2020; Achiam et al., 2023). Through extended thinking (Wei et al., 2022; OpenAI, 2024; Guo et al., 2025) and agentic systems (Yao et al., 2023; Shinn et al., 2023; Park et al., 2023), they can handle increasingly complex tasks across diverse domains. Nevertheless, these systems are subject to a physical constraint: at every step, the model can only attend to bounded-sized context window, strictly limiting what can be computed in a single forward pass. This has driven growing interest in effective context man-agement. For instance, summarization compresses lengthy reasoning traces into compact states, discarding no longer needed history to free up space (Yang et al., 2025b; Yu 
+
+> 1Toyota Technological Institute at Chicago. Correspondence to: Chenxiao Yang <chenxiao@ttic.edu>.
+> arXiv preprint.
+
+et al., 2025; Zhou et al., 2025; Yan et al., 2025); memory-augmented approaches write and retrieve relevant informa-tion in external storage (Packer et al., 2024; Chhikara et al., 2025; Suzgun et al., 2025; Xu et al., 2025); and in agentic systems, subtasks are distributed across agents, each operat-ing in its own context while collaborating toward a shared goal (Hong et al., 2024; Wu et al., 2023; Li et al., 2023). Yet questions remain: how do these different systems for-mally compare in their reasoning power? What core mecha-nisms, as scaffolding that wraps around the base generator, can enable models to handle long-horizon tasks that are otherwise impossible because of context constraints? And are these mechanisms optimal? Despite the importance of these questions, existing work lacks a formalization for these questions to be answered systematically. Notable related works are Yang et al. (2025b;c), which, however, focus on summarization-based context management and self-correction in diffusion language models respectively. 
+
+In this work, we identify recursion as a core principle for overcoming context constraints, and a source of power exclusive to modern agentic systems. In a broad sense, re-cursion refers to the application of a finite, static set of rules to a target problem, that dynamically produces a potentially infinite depth of behaviors that, though contextually isolated from each other, contribute to the final solution. We propose the simplest realization of this principle, which we call recursive model . It consists of a single base LLM as the generator, equipped with two minimal tools, call 
+
+and return . As illustrated in Figure 1c, the model can in-voke itself: call creates an isolated context and the model solves the subtask there independently; upon completion, 
+
+return discards the intermediate reasoning and passes only the final answer back to the parent context. Since each invoked model can itself invoke further calls, this enables a deep context stack while keeping each individual context bounded by the maximal context length. Similar ideas have been explored in earlier and concurrent work (Lee & Kim, 2023; Prasad et al., 2024; Schroeder et al., 2025; Pan et al., 2025; Zhang et al., 2025c; Sun et al., 2025; Zhang et al., 2025a); see a comprehensive discussion in § A. One important observation is that the recursive model natu-rally induces a separation between local and global space: the generator only needs to attend to the active context, 1
+
+> arXiv:2603.02112v1 [cs.LG] 2 Mar 2026
+
+Recursive Models for Long-Horizon Reasoning Thoughts 1Input Thoughts 2 Thoughts 3 Thoughts k Output Output Thoughts 4 Thoughts 5 Thoughts 6 Thoughts 7 . . . 
+
+> LLM Generator
+
+(a) Standard Autoregressive Model. The model generates tokens sequentially, appending each to the current sequence until the context limit is reached. Thoughts 1Input <sum> Summary 1 </sum> Thoughts 2 <sum> Summary 2 </sum> Summary 1 Thoughts k Output Summary k
+
+> Context Manager
+
+. . .   
+
+> LLM Generator LLM Generator LLM Generator
+> Output
+
+(b) Single-Context Model. The entire generation process operates within a single sequence. As a representative example, summarization periodically compresses past reasoning into a compact summary and discards the original tokens. Input Thoughts 1 <call> Subtask 1 </call>         
+
+> Subtask 1Answer 1
+> Answer 1Thoughts 2<call> Subtask 2</call> <return> </return> Output Answer 2
+> Subtask 2Answer 2
+
+Recursion  (Root) 
+
+. . . Recursion  (Depth 1) Recursion  (Depth 1)                           
+
+> Thoughts 1.1 <call> Subtask 1.1 </call>
+> Subtask 1.1 Answer 1.1
+> Answer 1.1 Thoughts 1.2 <call> Subtask 1.2 </call> Answer 1.2
+> Subtask 1.2 Answer 1.2
+> . . . . . .
+> Recursion (Depth 2) Recursion (Depth 2)
+> Thoughts 2.1 <call> Subtask 2.1 </call>
+> Subtask 2.1 Answer 2.1
+> Answer 2.1 Thoughts 2.2 <call> Subtask 2.2 </call> Answer 2.2
+> Subtask 2.2 Answer 2.2
+> . . . . . .
+> Recursion (Depth 2) Recursion (Depth 2)
+
+Self-Call  Return Self-Call  Return 
+
+> Output
+
+(c) Recursive Model. Unlike the previous two approaches, computation spans multiple isolated contexts. The model delegates subtasks via call , each solved in a fresh context; return passes back only the result, discarding intermediate reasoning. This enables unbounded recursion depth without growing any single context. 
+
+Figure 1. Overview of different context management strategies. 
+
+while inactive contexts in the context stack can be offloaded to external storage and restored upon return. While this im-proves space efficiency, it seems to impose a strong require-ment that problems must admit modular decompositions. Do general computational problems possess such structure? We show the answer is affirmative: any computable prob-lem inherently admits a recursive decomposition, and furthermore, by doing so, the required context can be reduced exponentially. Specifically, we prove that with local space S(n), recursive models can solve any prob-lem requiring up to exp( O(S(n))) computation time. In comparison, standard autoregressive models would require context length exp( O(S(n))) to solve the same problems, which is an exponential gap. Recursion, however, is not the only approach for context management. Consider summarization (Figure 1b), which periodically compresses the context and discards old history to keep the context window bounded. Unlike recursion, summarization and indeed most existing strategies keep the entire generation process within a single sequence. We call these single-context models . Prior work (Yang et al., 2025b) shows that with context length S(n), summarization can solve all problems requiring S(n) space. We prove that this is in fact optimal: no single-context model, regardless of its context management strategy, can surpass sum-marization, which is, however, still strictly less powerful than recursion . Indeed, we show that even constant-depth recursion (i.e., depth 1) suffices to match the optimum of all single-context models. Moreover, deeper recursion breaks through this ceiling, solving problems beyond what any single-context approach can reach. This separates the power of recursive models from those shallow counterparts (Sun et al., 2025; Zhang et al., 2025a). Modern agentic systems are unique in that they are no longer confined to a single context: they can dynamically spawn contextually isolated sub-agents to solve specialized sub-tasks independently, and the responses are integrated back, processed, and used to determine the system’s next behavior. This unique feature enables recursion in broader use cases. While not all agentic systems possess this capability, we for-malize a powerful family called recursive agentic systems ,which equip agentic systems with scaffoldings that create a recursive control loop. The recursive model is the mini-mal realization of this family. We show that any agentic system that is recursive can reach the same power as re-cursive models, enabling them to break through context constraints far beyond standard approaches . Yet, none can surpass recursive models, suggesting that the recursive model, despite its simplicity, is already optimally powerful within this family. Experimentally, we train Qwen2.5-3B-Instruct to perform recursive reasoning on SAT, a canonical NP-complete prob-lem that naturally admits recursive decomposition via back-tracking search. The resulting model significantly outper-forms non-recursive baselines while requiring significantly smaller context. 2Recursive Models for Long-Horizon Reasoning 
+
+Algorithm 1 Autoregressive Generation, ARM π
+
+Input: Input sequence x ∈ Σ∗, next-token generator π :Σ∗ → Σ, stopping condition stop : Σ ∗ → { 0, 1}. 
+
+> 1:
+
+while ¬stop (x) do  
+
+> 2:
+
+Generate: y ← π(x) 
+
+> 3:
+
+Append: x ← x.append (y) 
+
+> 4:
+
+return x
+
+## 2. Recursive Models 
+
+In this section, we formalize recursive models . Consider a base language model f : Σ ∗ → Σ∗ that maps an input sequence to an output sequence over a finite vocabulary 
+
+Σ. A recursive model RCM f extends f by allowing it to recursively invoke itself to solve subtasks in isolated con-texts. In the following, we first define f as an autoregressive generator, then introduce the mechanisms that build RCM f .
+
+Autoregressive Models. Let π : Σ ∗ → Σ be a next-token generator that maps a sequence x = ( x1, . . . , x n)
+
+to the next token xn+1 . Autoregressive generation re-peatedly appends π(x) to x until a stopping condition 
+
+stop (x) is met, inducing a sequence-to-sequence mapping 
+
+ARM π : Σ ∗ → Σ∗ (see Algorithm 1). Common choices for stop include encountering an end-of-sequence token or reaching a maximum length; we will specify our choice when defining recursive models below. 
+
+Recursive Generation Process. A standard sequence gen-erator maintains only a single sequence as its state. To en-able recursion, we extend this to a context stack S ∈ (Σ ∗)+,a non-empty sequence of sequences. The top sequence 
+
+S[−1] is the active context where generation occurs; S[: −1] 
+
+holds all suspended parent contexts awaiting results from recursive calls, and |S| denotes the recursion depth. At each step, the sequence generator f : Σ∗ → Σ∗
+
+takes the top sequence St[−1] and produces an extended sequence; then the context manager g : (Σ ∗)+ × Σ∗ →
+
+(Σ ∗)+ updates the stack based on this output: 
+
+St+1 = g(St, f (St[−1])) (1) For autoregressive Transformers, f = ARM π as defined above. The context manager g is a parameter-free symbolic rule that parses the output and updates the stack accordingly. This interface decouples the recursion mechanism from the base generator: the sequence generator f can be any language model, such as autoregressive Transformers or diffusion language models (Austin et al., 2021; Lou et al., 2024; Sahoo et al., 2024; Shi et al., 2024; Nie et al., 2025; Yang et al., 2025c); the context manager g can also be instantiated in various ways. In this paper, we consider the simplest instantiation: f as an autoregressive model, and g
+
+using only two tools: call and return. 
+
+Algorithm 2 Recursive Model, RCM f
+
+Input: Sequence x ∈ Σ∗, language model f : Σ ∗ → Σ∗. 
+
+> 1:
+
+while true:  
+
+> 2:
+
+y ← f (x) 
+
+> 3:
+
+if y = y′ ◦ ⟨ return ⟩ a ⟨/return ⟩: return a 
+
+> 4:
+
+if y = y′ ◦ ⟨ call ⟩ q ⟨/call ⟩: 
+
+> 5:
+
+x ← y′.append (RCM f (q)) 
+
+Context Manager: Call and Return. We assume the vo-cabulary Σ contains four special tokens ⟨call ⟩, ⟨/call ⟩,
+
+⟨return ⟩, ⟨/return ⟩. The transition function g recog-nizes two patterns formatted by these tokens, each triggering a tool: 
+
+(i) Call : When the generated top sequence ends with 
+
+⟨call ⟩ q ⟨/call ⟩, it extracts the content q ∈ Σ∗ and pushes it onto the context stack as a new context. The prefix before the call block remains on the parent context. 
+
+(ii) Return : When the generated top sequence ends with 
+
+⟨return ⟩ a ⟨/return ⟩, it pops the current context and appends the content a ∈ Σ∗ to the parent context. The content before the return block is discarded. Formally, let y := f (S[−1]) denote the updated top sequence produced by the generator, where the stop-ping condition stop (x) triggers when x ends with a 
+
+⟨call ⟩ · · · ⟨ /call ⟩ or ⟨return ⟩ · · · ⟨ /return ⟩ pattern. The transition function g (defined for any S ∈ (Σ ∗)+ and 
+
+y ∈ Σ∗) updates the context stack as g(S, y) = 
+
+
+
+S[: −1] ⊕ [y′, q] y = y′ ◦ ⟨ call ⟩q⟨/call ⟩
+
+S[: −2] ⊕ [S[−2] ◦ a] y = y′ ◦ ⟨ return ⟩a⟨/return ⟩
+
+S[: −1] ⊕ [y] otherwise (2) where ⊕ denotes list concatenation. The trigger conditions are suffix-based: a tool fires only when the corresponding pattern appears at the end of y.
+
+Overall Process. To compute RCM f (x) on input prompt 
+
+x, the context stack is initialized as S0 = [ x]. At each step, the stack is updated via Equation (1). The computation terminates when the model generates a return pattern at depth one ( |S| = 1 ), and the returned content a is the final output RCM f (x). If the model enters an endless loop (e.g., the same context occurs twice), RCM f (x) is undefined and we denote it by RCM f (x) = ⊥. In practice, we set a maximum number of iterations as a safeguard. We provide a simplified pseudocode in Algorithm 2; other implementation details are discussed in § B.3. 
+
+2.1. Variants and Extensions 
+
+We consider the following variants and extensions of the basic recursive model. 3Recursive Models for Long-Horizon Reasoning 
+
+Variant 1: Prompt Prefixing. In practice, it is often use-ful for the model to retain access to the original problem throughout all recursive calls. We achieve this by prepend-ing the root prompt x0 to the input of f at every step. For-mally, Equation (2) becomes: 
+
+St+1 = g(St, f (x0 ◦ St[−1])) , for t ≥ 1 (3) Note that while this increases the context length by |x0|,the KV cache for x0 can be precomputed and reused; the overhead is the additional attention cost per generated token. 
+
+Variant 2: Question Preservation. In the basic formu-lation (Equation 3), upon return, information about what subtask was asked is discarded. In practice, preserving the subtask description can help the parent context track what was solved. We achieve this by retaining q in the parent con-text at call time. Formally, when s = s′ ◦⟨ call ⟩q⟨/call ⟩,the call rule becomes: 
+
+St+1 = St[: −1] ⊕ [s′ ◦ q, q] (4) Though this does not increase expressive power (as will be formalized), it is often practically useful as the model no longer needs to include the question in its returned answer. 
+
+Further Extensions. The basic recursive model can be ex-tended in several directions: (i) heterogeneous model calls ,where the model can invoke different specialized models for different subtasks rather than always calling itself; (ii) 
+
+tool use , where the model can call external tools and APIs in addition to recursive calls; (iii) parallel subtasks , where multiple subtasks are generated and processed in parallel; and (iv) arbitrary context processing , where the context manager g can perform arbitrary computation on the se-quence before passing it to the base language model, e.g., concatenating instructions or performing additional parsing and reorganization. We formalize these generalizations in a generic framework of recursive agentic systems and extend our theoretical results to them in § 4. In subsequent sections, we default to the basic recursive model unless otherwise specified, but will additionally dis-cuss the implications of these variants on theoretical results. 
+
+## 3. Power of Deep Recursion 
+
+Recursive calls provide a natural mechanism to solve com-plex tasks through decomposition. But do generic reasoning tasks naturally admit such modular structure? And to what extent can recursion reduce the required context length, or enhance computational power given a limited one? 
+
+3.1. Separation of Global and Local Spaces 
+
+Unlike the standard generation process where context grows monotonically, recursive models work on a stack of se-quences, which gives rise to two natural resource measures: 
+
+Definition 1 (Global and Local Space) . For a stack S, we define the global space and local space respectively as: 
+
+GS (S) := X
+
+> s∈S
+
+|s|, LS (S) := max  
+
+> s∈S
+
+|s|, (5) where global space GS refers to the total number of tokens across all sequences, and local space LS refers to the length of the longest sequence. This resource distinction is practically significant: the 
+
+global space corresponds to the total size of the current stack (including suspended and active contexts). Suspended contexts (i.e., all but the stack top) are temporarily inactive, allowing their KV caches to be offloaded to external storage (e.g., CPU memory or disk), which has virtually unlimited capacity and thus imposes no practical limit on global space. In contrast, local space is the maximum length of the active context window throughout next-token generation. Unlike suspended contexts, the active context must reside in GPU memory during inference, making local space the practical bottleneck. We thus focus our analysis on the reasoning power achievable under strict local space constraints. RCM Complexity Class. We formalize the computational power of recursive models by defining the class of decision problems they can solve under different resource constraints. 
+
+Definition 2 (Recursive Model Complexity Class) .
+
+For functions S, D, T : N → N, the class 
+
+RCM (S(n), D (n), T (n)) 1 consists of all decision prob-lems solvable by recursive models with constant-size, 
+
+O(log S(n)) -precision Transformers (defined in § C), such that for all inputs x ∈ Σn:1. Local Space : max t LS (St) ≤ S(n) (the maximum se-quence length is bounded by S(n)); 2. Recursion Depth : max t |St| ≤ D(n) (the stack depth is bounded by D(n)); 3. Total Steps : t ≤ T (n) (the number of generated tokens is bounded by T (n)). When no time constraint is imposed, we write it as 
+
+RCM (S(n), D (n)) .
+
+Standard Complexity Classes. To characterize the ex-pressivity of recursive models, we compare with stan-dard Turing machine complexity classes. We denote by 
+
+TIME (T (n)) and SPACE (S(n)) the classes of problems solvable in T (n) time and S(n) space, respectively, and 
+
+TM (S(n), T (n)) := TIME (T (n)) ∩ SPACE (S(n)) for their intersection (see § D for formal definitions).       
+
+> 1We slightly abuse notation: RCM (without subscript) denotes the complexity class, while RCM f(with subscript) denotes the recursive model with base generator f.
+
+4Recursive Models for Long-Horizon Reasoning 
+
+3.2. Power of Deep Recursion (Main Result) 
+
+Now we formally establish the computational power of recursive models with unbounded recursion depth. 
+
+Theorem 1 (Deep Recursive Models) . For any S(n) ≥ n,recursive models can solve any problem in TIME (2 O(S(n)) )
+
+under local space constraint O(S(n)) :
+
+TIME (2 O(S(n)) ) ⊆ RCM (O(S(n)) , ∞, ∞). (6) Furthermore, if we only count the space S(n) ≤ n addi-tional to the input length n, we have TIME (2 O(S(n)) ) ⊆
+
+RCM (n + O(S(n)) , ∞, ∞). Achieving this simulation re-quires recursion depth T (n) = 2 O(S(n)) and inflated total steps 2O(T (n)) . However, if we allow an external memory that caches previously computed subproblem answers and recursive models to retrieve them when the same subprob-lem is called, the total steps reduce to T (n), matching the original time complexity. We provide two proofs in § Eand § F: the first expresses Turing machine computation as recursive functions, and the second simulates a more powerful variant called alternating Turing machines (Arora & Barak, 2009). The above results also apply to the two variants discussed in § 2.1. This result has important implications as it suggests that any computable problem is modularizable, i.e., inherently admitting a recursive decomposition such that every sub-task fits within a small active context. By separating local attention and global memory, recursion allows the model to always reason within a bounded active context while in-formation that is useful but not currently needed is stored externally. This means the physical attention limit of mod-ern LLMs is not a fundamental barrier for recursive models: they can scale to extreme long-horizon tasks demanding exponential computation. 
+
+3.3. No Recursion and Shallow Recursion 
+
+Next, we show that the depth of recursion is critical to the power of recursive models, and shallow recursion strictly makes the model less powerful, essentially degrading it to other simpler context management approaches. 
+
+Standard Autoregressive Models. When D(n) = 1 , no recursive calls are made and the model reduces to standard autoregressive models (a.k.a. CoT). While it is known that with sufficiently many intermediate steps, autoregressive models can solve any computable problem (Merrill & Sab-harwal, 2024; Feng et al., 2024; Li et al., 2024; Yang et al., 2025b), this comes at a significant cost: 
+
+Theorem 2 (Standard Autoregressive Models / CoT) . For a standard autoregressive model (i.e., recursive model with depth D = 1 ) with local space O(S(n)) , S(n) ≥ n, we have: 
+
+TIME (O(S(n))) ⊆ RCM (O(S(n)) , 1) , (7) 
+
+RCM (O(S(n)) , 1) ⊆ TIME ( eO(S2(n))) . (8) Both inclusions follow from Merrill & Sabharwal (2024) (Eq. (1); the eO(·) absorbs the polylogarithmic overhead of simulating O(log S(n)) -precision arithmetic on a Turing machine. Together, the two inclusions show that standard au-toregression with context length S(n) (which determines the total reasoning steps when D(n) = 1 ) can solve problems up to TIME (O(S(n))) , but strictly cannot reach problems requiring time beyond eO(S2(n)) .Compared with Theorem 1, this reveals that deep recursion exponentially reduces the required local space , as achiev-ing RCM (O(S(n)) , ∞) would require RCM (2 O(S(n)) , 1) .For instance, with polynomial context S(n) = poly( n),standard models are confined to P, while recursive models reach EXPTIME , which is beyond NP and PSPACE (under standard assumptions). 
+
+Constant-Depth Recursion. Interestingly, we next show that constant recursion depth can already improve the model’s power, but is still confined to the power of single-context management strategies such as summarization: 
+
+Theorem 3 (Constant-Depth Recursive Models) . For any 
+
+S(n) ≥ n, recursive models with constant recursion depth 
+
+D = O(1) and local space O(S(n)) can solve any problem in SPACE (S(n)) :
+
+SPACE (S(n)) ⊆ RCM (O(S(n)) , O(1)) . (9) 
+
+Moreover, for any T : N → N,
+
+TM (S(n), T (n)) ⊆ RCM (O(S(n)) , O(1) , O(T (n))) .
+
+This result shows that constant-depth recursion achieves both space and time efficiency: the local space matches the actual space complexity S(n), and the total number of gen-erated tokens matches the time complexity T (n). The proof relies on tail recursion optimization, which, however, does not apply to the question preservation variant ( § 2.1); for that variant, constant depth offers no additional expressive power. Notably, this computational power is equivalent to that of 
+
+summarization (Yang et al., 2025b), an optimal single-context strategy that periodically compresses reasoning his-tory to free up space (illustrated in Figure 1b). In fact, as we will prove later ( § 4), SPACE (S(n)) is the maximum 
+
+expressive power it can achieve, and constant-depth recur-sion therefore offers no advantage over single-context management strategies .Yet even this upper bound is exponentially weaker than deep recursion: comparing with Theorem 1, there is a gap 5Recursive Models for Long-Horizon Reasoning 
+
+Algorithm 3 Summarization 
+
+Input: Input x, generator f , summarizer g, max length L. 
+
+> 1:
+
+while ¬stop (x) do  
+
+> 2:
+
+y ← f (x) ▷ generate  
+
+> 3:
+
+if |y| ≥ L: x ← g(y) ▷ summarize  
+
+> 4:
+
+else : x ← y 
+
+> 5:
+
+return x
+
+Algorithm 4 Discrete Diffusion 
+
+Input: State x ∈ (Σ ∪ { mask })n, denoiser f , transition g. 
+
+> 1:
+
+while ¬stop (x) do  
+
+> 2:
+
+y ← f (x) ▷ predict mask-free tokens  
+
+> 3:
+
+x ← g(x, y ) ▷ new masked sequence  
+
+> 4:
+
+return x
+
+Algorithm 5 Mutual Recursion: P ROVER & V ERIFIER 
+
+Input: Goal g, seeds s1, . . . , s k, prover fp, verifier fv . 
+
+> 1:
+
+def PROVER (g): 
+
+> 2:
+
+for i = 1 to k: 
+
+> 3:
+
+p ← fp(g, s i) ▷ generate proof  
+
+> 4:
+
+if VERIFIER (g, p ) = correct : 
+
+> 5:
+
+return correct  
+
+> 6:
+
+return wrong ▷ all failed  
+
+> 7: 8:
+
+def VERIFIER (g, p ): 
+
+> 9:
+
+(status , G) ← fv (g, p ) ▷ check proof  
+
+> 10:
+
+if status ∈ { correct , wrong }: 
+
+> 11:
+
+return status  
+
+> 12:
+
+if status = incomplete : 
+
+> 13:
+
+return ∧g′∈G PROVER (g′) ▷ prove subgoals  
+
+> Figure 2. Example systems formalized as recursive agentic systems.
+
+from SPACE (S(n)) to TIME (2 O(S(n)) ). For polynomial context S(n) = poly( n), this is the gap between PSPACE 
+
+and EXPTIME , widely believed to be strict. 
+
+## 4. Generalization to Agentic Systems 
+
+Our recursive model captures a core principle: hierarchically decompose tasks into contextually isolated subtasks. While our implementation uses a minimal design, this principle extends naturally to richer systems. Particularly, modern agentic systems (Gao et al., 2025; Wang et al., 2024; Hong et al., 2024; Wu et al., 2023) already exhibit key struc-tural properties amenable to recursion: multiple specialized agents handle isolated subtasks, mutual calling among com-ponents, and sophisticated orchestration coordinating the system. In this section, we generalize to modern agentic systems through recursive agentic systems , illustrate how diverse systems fit within this framework, and prove that our minimal recursive model, despite its simplicity, is already optimally powerful among these richer designs. 
+
+4.1. Formalizing Recursive Systems 
+
+The orchestration layer of a recursive agentic system, which we call a scaffold , wraps around base LLMs and controls when to invoke generators, tools, and recursive calls. To precisely characterize computational power, we formalize scaffolds as oracle Turing machines (see § I.3 for a formal definition). 
+
+Definition 3 (Recursive Agentic System) . A recursive agen-tic system is specified by a finite family of sequence genera-tors F = ( f1, . . . , f k) (could be language models or exter-nal tools like Python) and m ≥ 1 scaffolds (S1, . . . , S m);write S := ( S1, . . . , S m). Each scaffold Si is a determinis-tic oracle Turing machine that takes an input x ∈ Σ∗ and produces an output in Σ∗ (or a failure symbol ⊥), thereby defining a partial function ϕS,F 
+
+> i
+
+: Σ ∗ → Σ∗ ∪ {⊥} . During execution, Si may query: 1. fℓ for any ℓ ∈ { 1, . . . , k }: generator oracles answering 
+
+u 7 → fℓ(u);2. SELF j for any j ∈ { 1, . . . , m }: recursion oracles that invoke scaffold Sj , answering u 7 → ϕS,F 
+
+> j
+
+(u).Intuitively, each scaffold Si corresponds to a function in a real-world agentic system, i.e., the outer Python code that wraps around LLMs. It can process generator/tool responses in any way, decide what to do next, and invoke other scaf-folds, as long as the computation stays within a limit. This framework also allows for multiple base generators, external tools, and mutual recursion among scaffolds. 
+
+Semantics via Least Fixpoint. The above definition does not directly specify the functions (ϕS,F 
+
+> 1
+
+, . . . , ϕ S,F 
+
+> m
+
+), since each ϕS,F 
+
+> i
+
+involves the others. To obtain a rigorous def-inition, we solve a system of functional equations via a least-fixpoint construction (Winskel, 1993). For fixed 
+
+(S, F), define a one-step operator ΦS,F on candidate tu-ples ϕ = ( ϕ1, . . . , ϕ m) by letting  ΦS,F (ϕ)
+
+> i
+
+(x) be the output of scaffold Si on input x, where generator queries are answered by F and recursion queries SELF j (u) are an-swered by ϕj (u). The system semantics is then the least fixed point ϕS,F = ΦS,F
+
+ ϕS,F , which exists by Kleene’s fixed-point theorem (see § I.4 for details). Our recursive model ( § 2) corresponds to the special case 
+
+m = 1 , k = 1 : a single scaffold S1 that parses the genera-tor f1’s output for call /return patterns and dispatches to SELF 1. This is the minimal scaffold that realizes full recursive control flow. Below we give more examples of recursive agentic systems. 
+
+Example 1: Summarization. Standard summarization fits this framework with m = 1 , k = 2 (generator f , sum-6Recursive Models for Long-Horizon Reasoning 
+
+marizer g). During generation, whenever output exceeds a working memory limit L, the scaffold triggers the sum-marizer to compress the sequence; otherwise generation continues. This repeats until termination (Algorithm 3). The recursion oracle is never queried ( D = 1 ). 
+
+Example 2: Discrete Diffusion. Diffusion-style genera-tion can be viewed as a non-recursive system with m = 1 
+
+and D = 1: the scaffold maintains a length-n state 
+
+x ∈ (Σ ∪ { mask })n. The denoiser f is an encoder-only Transformer that, in a single forward pass, predicts mask-free tokens from a masked input. The scaffold then applies a transition rule g (e.g., overwrite or re-mask some posi-tions) to obtain the next state. Iterating this refinement until convergence yields the final sample (Algorithm 4). 
+
+Example 3: Mutual Recursion between Prover and Veri-fier. Let scaffold A be P ROVER , which queries the prover generator fp and calls V ERIFIER ; let scaffold B be V ER -
+
+> IFIER
+
+, which queries the verifier generator fv and calls PROVER . P ROVER attempts k proofs using fp with differ-ent seeds; if any is verified correct by V ERIFIER , it returns 
+
+correct ; otherwise returns wrong . VERIFIER checks proof (g, p ) via fv : returns correct /wrong if conclu-sive; if incomplete with missing subgoals G, it recur-sively calls P ROVER on each and returns their conjunction (Algorithm 5). 
+
+4.2. Optimality of Recursive Models 
+
+Given that even our minimal recursion yields strong compu-tational gains ( § 3), a natural question arises: is our minimal recursive model already optimally powerful, or can more sophisticated systems achieve strictly more under bounded active context? We show that under bounded active context, no recursive system, regardless of architectural sophistica-tion, can surpass the minimal recursive model. Recursion depth alone determines computational power. 
+
+Definition 4 (L-bounded execution) . Fix a system (S, F)
+
+with scaffolds S = ( S1, . . . , S m) and induced partial func-tions ϕS,F = ( ϕS,F 
+
+> 1
+
+, . . . , ϕ S,F 
+
+> m
+
+) (Definition 3 and § I.4). For an index r ∈ { 1, . . . , m }, an input x ∈ Σ∗ and a bound 
+
+L ∈ N, we say that evaluation of ϕS,F 
+
+> r
+
+(x) is L-bounded 
+
+if, in the recursive call graph induced by evaluating ϕS,F
+
+> r
+
+starting from x, the total space (including work tapes and oracle tapes) used by any scaffold invocation is at most L.The L-bounded constraint plays the same role as the lo-cal space bound in Definition 1, generalized to arbitrary systems. 
+
+Unbounded Depth. With this notion, we can state upper bounds on what any recursive system can compute. 
+
+Theorem 4 (Upper bounds under L-bounded executions (unbounded recursion depth)) . Fix any function L(n) ≥
+
+n. Let (S, F) be any recursive agentic system. For any index r ∈ { 1, . . . , m }, any language decided by ϕS,F 
+
+> r
+
+under 
+
+L(n)-bounded execution for input of length n (Definition 4) lies in DTIME F  2O(L(n)) . Here DTIME F denotes the usual relativized deterministic time class ( § I.3), viewing the generator/tool family F as an oracle family. In particular, if every oracle in F is computable by a deter-ministic (non-oracle) Turing machine in time 2O(L(n)) and work space O(L(n)) on all queries of length at most L(n),then the language lies in TIME (2 O(L(n)) ).
+
+Constant Depth. When recursion depth is further bounded to a constant, an even tighter space bound holds: 
+
+Theorem 5 (Upper bounds under L-bounded executions (constant recursion depth)) . Fix any function L(n) ≥ n.Let (S, F) be any recursive agentic system. For any in-dex r ∈ { 1, . . . , m }, if ϕS,F 
+
+> r
+
+decides a language under 
+
+L(n)-bounded execution for input of length n (Definition 4) and the recursion stack depth is D(n) = O(1) through-out evaluation of ϕS,F 
+
+> r
+
+, then the decided language lies in 
+
+DSPACE F  O(L(n)) .In particular, if every oracle in F is computable by a deter-ministic (non-oracle) Turing machine in time 2O(L(n)) and work space O(L(n)) on all queries of length at most L(n),then the language lies in DSPACE (O(L(n))) .
+
+See § K for the proofs. From a practical standpoint, recursion is what enables agentic systems to break through the context barrier , fun-damentally separating them from single-context approaches that remain confined to SPACE (S(n)) . Yet sophisticated multi-agent orchestration offers no additional power over the simple call /return mechanism ; the minimal recursive model is already the canonical choice. 
+
+## 5. Experiments 
+
+We validate the effectiveness of recursive models by train-ing base LLMs on tasks requiring long-horizon reasoning. Below we describe the setup (§5.1) and present results. 
+
+5.1. Experimental Setup Training. We train recursive models via supervised fine-tuning on generated reasoning traces. Since the model con-ditions only on the top sequence of the stack at each step, we apply standard next-token prediction loss on these active contexts. Formally, let (S0, S1, . . . , ST ) be the context-stack states visited during a trace, and let yt ∈ Σ be the ground-truth next token appended to St−1[−1] at step t.The training objective is: 
+
+L(θ) = −
+
+> T
+
+X
+
+> t=1
+
+log pθ
+
+ yt | St−1[−1] . (10) 7Recursive Models for Long-Horizon Reasoning  
+
+> Table 1. Accuracy (%) on SAT instances. Baseline results from Wei et al. (2025). Ours is fine-tuned from Qwen2.5-3B-Instruct.
+
+Model Easy Medium Hard 
+
+Random Baseline 50.0 50.0 50.0 
+
+DeepSeek-Distill-14B 84.3 55.2 46.4 LLaMA3.3-70B 65.1 58.1 52.9 Qwen3-235B 88.0 64.8 51.4 GPT-4o 69.9 55.2 48.8 Recursive Model (ours) 98 95 64 In other words, at each step the model predicts only the newly generated tokens within the current stack frame, with-out seeing other sequences in the stack. 
+
+Dataset. We evaluate on SAT, a canonical NP-complete problem: given n Boolean variables and m clauses (each a disjunction of literals), determine whether there exists an assignment to the variables such that the entire formula evaluates to true. Worst-case reasoning trajectories grow exponentially, yet with call and return , each local con-text stays linear. SAT admits a natural recursive solution: pick an unassigned variable, try setting it to true; if a clause becomes unsatisfied, backtrack and try false. We encode each branch as call and each backtrack as return . We adopt instances from Wei et al. (2025), converted to natu-ral language puzzles, and generate reasoning traces in our recursive format. Details appear in § B.1. 
+
+Implementation. We make two practical adaptations. First, upon return , we preserve the subtask description and answer in the parent context so the parent knows what was asked and solved. Second, we prepend the root problem to every recursive context so all subtasks retain access to the global objective. See § B.3 for details. 
+
+5.2. Results Accuracy. We fine-tune Qwen2.5-3B-Instruct with our recursive framework (see §§ B.1 and B.2 for data splits and training details) and compare against frontier LLMs with standard prompting, including GPT-4o, LLaMA3.3-70B, and Qwen3-235B. As Table 1 shows, these larger models struggle on SAT, with accuracy dropping as difficulty in-creases. In contrast, our recursive model, despite being orders of magnitude smaller, achieves 98% on easy and 95% on medium instances, substantially outperforming baselines. Notably, we train on easy and medium instances, yet the model still reaches 64% on hard instances, suggesting that the recursive decomposition strategy learned from simpler problems can transfer to harder ones beyond the training distribution. 
+
+Context Efficiency. Recursive models also enjoy context efficiency. Define trajectory length as the total tokens gen-2 4 6 8 10 12 14 16 18 20  
+
+> Number of Variables
+> 10 3
+> 10 4
+> 10 5
+> 10 6
+> Length (tokens)
+> Trajectory (avg)
+> Trajectory (max)
+> Context (avg)
+> Context (max)
+> Figure 3. Trajectory length vs. active context length.
+
+erated across all recursive calls, and active context length 
+
+as the maximum context actually used at any step. Figure 3 shows that trajectory length grows rapidly with problem size, while active context length stays bounded. This gap widens as problems become harder, highlighting the benefit of recursive decomposition: the model can explore deep search trees without exceeding its context limit. 
+
+## 6. Discussion 
+
+6.1. Inference Efficiency 
+
+Recursion significantly reduces inference cost by decou-pling stack capacity from attention cost. Any single-context model, even those with proper context management strate-gies such as summarization, must attend to all preceding tokens in the sequence, incurring O(|xt|) FLOPs with KV cache at each step t. In contrast, recursive models bound the active context to |St[−1] | ≤ LS (St), therefore requiring only O(LS (St)) FLOPs per token. This is a GS (St)/LS (St)
+
+times speedup over the baseline that works on a single se-quence, and larger speedup compared with standard CoT that does not manage the context at all. To achieve this speedup, we assume in implementation, KV caches of sus-pended contexts are stored in external storage and restored upon return, avoiding recomputation. 
+
+6.2. Heterogeneous Model Selection and Tool-Use 
+
+The recursive structure of recursive models naturally sup-ports heterogeneous model selection (Ye et al., 2025; Zhang et al., 2025b; Agashe et al., 2025): instead of always calling itself, the model can invoke different models to handle differ-ent subtasks, such as larger models for complex reasoning and smaller models for routine operations. This strikes a natural tradeoff between capability and cost, allowing the overall expense and latency to scale with actual task com-plexity rather than being dominated by the most expensive model in the system. 
+
+6.3. Error Accumulation 
+
+A potential risk of recursive models is error accumulation: mistakes in subtasks may propagate and corrupt the final 8Recursive Models for Long-Horizon Reasoning 
+
+answer, especially as recursion depth grows. This concern, however, is not unique to recursion: if CoT produces the same long trajectory as recursive models, a single mistake could propagate as well. Moreover, recursive models offer partial mitigation that CoT lacks: upon return , the inter-mediate reasoning within a subtask is discarded, so errors made there do not pollute sibling or parent computations. 
+
+## 7. Related Work 
+
+Recursion in Language Modeling. Some prior work has explored the idea of recursion in language models. However, these approaches are limited in several ways. First , many methods only support shallow recursion (depth = 1 ) or context folding (Sun et al., 2025; Zhang et al., 2025a; Pan et al., 2025), which we prove in Theorem 3 to be no more powerful than summarization-based single-context models. 
+
+Second , many rely on prompting frozen models to follow recursive patterns (Schroeder et al., 2025; Prasad et al., 2024; Zhang et al., 2025c). Third , prior work often targets specific scenarios: arithmetic with fixed recursive patterns (Lee & Kim, 2023), rigid Planner-Executor architectures (Prasad et al., 2024; Zhang et al., 2025c), or context extension via input chunking (Zhang et al., 2025a). This paper provides a general formalization of recursive models, both in its simplest form and generalized form in agentic systems. Our theoretical analysis highlights the critical role of recursion depth: constant-depth recursion offers no advantage over single-context models, whereas unbounded depth unlocks exponentially greater computational power. 
+
+Recursion in Classical Computation Theory. Although the idea that recursion depth and local space are fundamental computational resources has classical roots (Savitch, 1977; Ginsburg et al., 1967; Aho, 1969; Engelfriet, 1991; Savitch, 1970), our work introduces recursion as an explicit design principle for Transformer-based reasoning and proves that constant-depth Transformers can realize the per-step logic at each recursion level (see § A for detailed discussion). More broadly, our results suggest that scaling LLM rea-soning need not rely solely on extending context length: a lightweight recursive scaffold that requires no architectural changes can leverage bounded context exponentially more efficiently. Just as recursion transformed programming from flat instruction sequences to modular, composable programs, it may similarly transform LLM reasoning from monolithic chain-of-thought into structured, hierarchical computation. 
+
+LLM-based Agentic Systems. LLM-based agentic sys-tems (see Gao et al. (2025); Wang et al. (2024) and refer-ences therein) have emerged as a powerful paradigm for complex task solving. One key feature that distinguishes agentic systems from standard LLMs is modularity : com-plex problems are decomposed into modular subtasks, each handled by an agent operating in its own isolated context, and agents collaborate to produce the final solution. These principles are precisely what make recursion realizable in agentic systems. 
+
+Context Management. Various strategies have been pro-posed for context management, including summarization 
+
+that compresses context into compact representations (Yang et al., 2025b; Yu et al., 2025; Zhou et al., 2025; Yan et al., 2025; Wu et al., 2025), and memory augmentation that main-tains explicit external storage for retrieval (Packer et al., 2024; Chhikara et al., 2025; Suzgun et al., 2025; Xu et al., 2025). Despite the practical importance of context man-agement, formal analysis of what strategies are effective re-mains limited. Notable exceptions are Yang et al. (2025b;c), but they focus on summarization and diffusion models re-spectively. 
+
+## 8. Conclusion 
+
+We identify recursion as a core principle for overcoming context constraints and propose recursive models as a mini-mal yet powerful realization. We show that recursion expo-nentially reduces the required context length compared to single-context approaches, and this power is optimal among all recursive agentic systems. Experiments on SAT validate that even a small model trained with recursive reasoning can significantly outperform frontier LLMs. 
+
+## Impact Statement 
+
+This paper presents a theoretical understanding of recur-sive models and suggests an approach to enhance the long-horizon reasoning capabilities of language models. We do not foresee any direct negative societal impact from this work, unless AI systems are employed for unethical pur-poses, which is a general concern applicable to all advances in machine learning. 
+
+## References 
+
+Achiam, J., Adler, S., Agarwal, S., Ahmad, L., Akkaya, I., Aleman, F. L., Almeida, D., Altenschmidt, J., Altman, S., Anadkat, S., et al. Gpt-4 technical report. arXiv preprint arXiv:2303.08774 , 2023. Agashe, S., Wong, K., Tu, V., Yang, J., Li, A., and Wang, X. E. Agent S2: A compositional generalist-specialist framework for computer use agents. arXiv preprint arXiv:2504.00906 , 2025. Aho, A. V. Nested stack automata. Journal of the ACM , 16 (3):383–406, 1969. Arora, S. and Barak, B. Computational complexity: a mod-ern approach . Cambridge University Press, 2009. 9Recursive Models for Long-Horizon Reasoning 
+
+Austin, J., Johnson, D. D., Ho, J., Tarlow, D., and van den Berg, R. Structured denoising diffusion models in dis-crete state-spaces. In Advances in Neural Information Processing Systems , volume 34, pp. 17981–17993, 2021. Brown, T., Mann, B., Ryder, N., Subbiah, M., Kaplan, J. D., Dhariwal, P., Neelakantan, A., Shyam, P., Sastry, G., Askell, A., et al. Language models are few-shot learners. 
+
+Advances in neural information processing systems , 33: 1877–1901, 2020. Chandra, A. K., Kozen, D. C., and Stockmeyer, L. J. Alter-nation. Journal of the ACM , 28(1):114–133, 1981. Chhikara, P., Khant, D., Aryan, S., Singh, T., and Ya-dav, D. Mem0: Building production-ready ai agents with scalable long-term memory, 2025. URL https: //arxiv.org/abs/2504.19413 .Engelfriet, J. Iterated stack automata and complexity classes. 
+
+Information and Computation , 95(1):21–75, 1991. Feng, G., Zhang, B., Gu, Y., Ye, H., He, D., and Wang, L. Towards revealing the mystery behind chain of thought: a theoretical perspective. Advances in Neural Information Processing Systems , 36, 2024. Gao, H.-a., Geng, J., Hua, W., Hu, M., Juan, X., Liu, H., Liu, S., Qiu, J., Qi, X., Wu, Y., et al. A survey of self-evolving agents: On path to artificial super intelligence. arXiv preprint arXiv:2507.21046 , 2025. Ginsburg, S., Greibach, S. A., and Harrison, M. A. One-way stack automata. Journal of the ACM , 14(2):389–418, 1967. Guo, D., Yang, D., Zhang, H., Song, J., Zhang, R., Xu, R., Zhu, Q., Ma, S., Wang, P., Bi, X., et al. Deepseek-r1: In-centivizing reasoning capability in llms via reinforcement learning. arXiv preprint arXiv:2501.12948 , 2025. Hong, S., Zheng, X., Chen, J., Cheng, Y., Wang, J., Zhang, C., Wang, Z., Yau, S. K. S., Lin, Z., Zhou, L., et al. Metagpt: Meta programming for a multi-agent collabora-tive framework. In ICLR , 2024. Lee, S. and Kim, G. Recursion of thought: A divide-and-conquer approach to multi-context reasoning with lan-guage models. arXiv preprint arXiv:2306.06891 , 2023. Li, G., Hammoud, H. A. A. K., Itani, H., Khizbullin, D., and Ghanem, B. Camel: Communicative agents for "mind" exploration of large language model society. In NeurIPS ,2023. Li, Z., Liu, H., Zhou, D., and Ma, T. Chain of thought em-powers transformers to solve inherently serial problems. 
+
+arXiv preprint arXiv:2402.12875 , 2024. Lou, A., Meng, C., and Ermon, S. Discrete diffusion mod-eling by estimating the ratios of the data distribution. In 
+
+International Conference on Machine Learning , 2024. URL https://arxiv.org/abs/2310.16834 .Merrill, W. and Sabharwal, A. The expresssive power of transformers with chain of thought. International Confer-ence on Learning Representations , 2024. Merrill, W., Sabharwal, A., and Smith, N. A. Saturated transformers are constant-depth threshold circuits. Trans-actions of the Association for Computational Linguistics ,10:843–856, 2022. Nie, S., Zhu, F., You, Z., Zhang, X., Ou, J., Hu, J., Zhou, J., Lin, Y., Wen, J.-R., and Li, C. Large language diffusion models, 2025. OpenAI. Learning to reason with llms, Septem-ber 2024. URL https://openai.com/index/ learning-to-reason-with-llms/ .Packer, C., Wooders, S., Lin, K., Fang, V., Patil, S. G., Stoica, I., and Gonzalez, J. E. Memgpt: Towards llms as operating systems, 2024. URL https://arxiv. org/abs/2310.08560 .Pan, J., Li, X., Lian, L., Snell, C., Zhou, Y., Yala, A., Dar-rell, T., Keutzer, K., and Suhr, A. Learning adaptive parallel reasoning with language models. arXiv preprint arXiv:2504.15466 , 2025. Park, J. S., O’Brien, J., Cai, C. J., Morris, M. R., Liang, P., and Bernstein, M. S. Generative agents: Interactive simulacra of human behavior. In UIST , pp. 1–22, 2023. Prasad, A., Koller, A., Hartmann, M., Clark, P., Sabharwal, A., Bansal, M., and Khot, T. Adapt: As-needed decompo-sition and planning with language models. In Findings of the Association for Computational Linguistics: NAACL 2024 , pp. 4226–4252, 2024. Radford, A., Narasimhan, K., Salimans, T., Sutskever, I., et al. Improving language understanding by generative pre-training. 2018. Radford, A., Wu, J., Child, R., Luan, D., Amodei, D., Sutskever, I., et al. Language models are unsupervised multitask learners. OpenAI blog , 1(8):9, 2019. Sahoo, S. S., Arriola, M., Schiff, Y., Gokaslan, A., Mar-roquin, E. M., Chiu, J. T., Rush, A. M., and Kuleshov, V. Simple and effective masked diffusion language mod-els. In The Thirty-eighth Annual Conference on Neural Information Processing Systems , 2024. URL https: //openreview.net/forum?id=L4uaAR4ArM .10 Recursive Models for Long-Horizon Reasoning 
+
+Savitch, W. J. Relationships between nondeterministic and deterministic tape complexities. Journal of Computer and System Sciences , 4(2):177–192, 1970. Savitch, W. J. Recursive Turing machines. International Journal of Computer Mathematics , 6(1):3–31, 1977. Schroeder, P., Morgan, N. W., Luo, H., and Glass, J. Thread: Thinking deeper with recursive spawning. In Proceedings of the 2025 Conference of the Nations of the Americas Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume 1: Long Papers) ,pp. 8418–8442, 2025. Shi, J., Han, K., Wang, Z., Doucet, A., and Titsias, M. K. Simplified and generalized masked diffusion for discrete data. In Advances in Neural Information Processing Systems , volume 37, 2024. Shinn, N., Cassano, F., Gopinath, A., Narasimhan, K., and Yao, S. Reflexion: Language agents with verbal rein-forcement learning. Advances in Neural Information Processing Systems , 36:8634–8652, 2023. Sun, W., Lu, M., Ling, Z., Liu, K., Yao, X., Yang, Y., and Chen, J. Scaling long-horizon llm agent via context-folding, 2025. URL https://arxiv.org/abs/ 2510.11967 .Suzgun, M., Yuksekgonul, M., Bianchi, F., Jurafsky, D., and Zou, J. Dynamic cheatsheet: Test-time learning with adaptive memory. arXiv preprint arXiv:2504.07952 ,2025. Wang, L., Ma, C., Feng, X., Zhang, Z., Yang, H., Zhang, J., Chen, Z., Tang, J., Chen, X., Lin, Y., Zhao, W. X., Wei, Z., and Wen, J. A survey on large language model based autonomous agents. Frontiers of Computer Science , 18, 2024. Wei, A., Wu, Y., Wan, Y., Suresh, T., Tan, H., Zhou, Z., Koyejo, S., Wang, K., and Aiken, A. Satbench: Benchmarking llms’ logical reasoning via automated puzzle generation from sat formulas. arXiv preprint arXiv:2505.14615 , 2025. Wei, J., Wang, X., Schuurmans, D., Bosma, M., Xia, F., Chi, E., Le, Q. V., Zhou, D., et al. Chain-of-thought prompting elicits reasoning in large language models. Advances in neural information processing systems , 35:24824–24837, 2022. Winskel, G. The formal semantics of programming lan-guages: an introduction . MIT press, 1993. Wu, Q., Bansal, G., Zhang, J., Wu, Y., Li, B., Zhu, E., Jiang, L., Zhang, X., Zhang, S., Liu, J., Awadallah, A. H., White, R. W., Burger, D., and Wang, C. Autogen: Enabling next-gen llm applications via multi-agent conversation, 2023. Wu, X., Li, K., Zhao, Y., Zhang, L., Ou, L., Yin, H., Zhang, Z., Yu, X., Zhang, D., Jiang, Y., Xie, P., Huang, F., Cheng, M., Wang, S., Cheng, H., and Zhou, J. Resum: Unlocking long-horizon search intelligence via context summariza-tion, 2025. URL https://arxiv.org/abs/2509. 13313 .Xu, W., Mei, K., Gao, H., Tan, J., Liang, Z., and Zhang, Y. A-mem: Agentic memory for llm agents. arXiv preprint arXiv:2502.12110 , 2025. Yan, S., Yang, X., Huang, Z., Nie, E., Ding, Z., Li, Z., Ma, X., Schütze, H., Tresp, V., and Ma, Y. Memory-r1: Enhancing large language model agents to manage and utilize memories via reinforcement learning. arXiv preprint arXiv:2508.19828 , 2025. Yang, A., Yang, B., Zhang, B., Hui, B., Zheng, B., Yu, B., Li, C., Liu, D., Huang, F., Wei, H., Lin, H., Yang, J., Tu, J., Zhang, J., Yang, J., Yang, J., Zhou, J., Lin, J., Dang, K., Lu, K., Bao, K., Yang, K., Yu, L., Li, M., Xue, M., Zhang, P., Zhu, Q., Men, R., Lin, R., Li, T., Tang, T., Xia, T., Ren, X., Ren, X., Fan, Y., Su, Y., Zhang, Y., Wan, Y., Liu, Y., Cui, Z., Zhang, Z., and Qiu, Z. Qwen2.5 technical report, 2025a. URL https://arxiv.org/ abs/2412.15115 .Yang, C., Srebro, N., McAllester, D., and Li, Z. Pen-cil: Long thoughts with short memory. arXiv preprint arXiv:2503.14337 , 2025b. Yang, C., Zhou, C., Wipf, D., and Li, Z. On powerful ways to generate: Autoregression, diffusion, and beyond. arXiv preprint arXiv:2510.06190 , 2025c. Yao, S., Zhao, J., Yu, D., Du, N., Shafran, I., Narasimhan, K., and Cao, Y. React: Synergizing reasoning and acting in language models. In ICLR , 2023. Ye, R., Liu, X., Wu, Q., Pang, X., Yin, Z., Bai, L., et al. X-mas: Towards building multi-agent systems with het-erogeneous llms. arXiv preprint arXiv:2505.16997 , 2025. Yu, H., Chen, T., Feng, J., Chen, J., Dai, W., Yu, Q., Zhang, Y.-Q., Ma, W.-Y., Liu, J., Wang, M., et al. Memagent: Re-shaping long-context llm with multi-conv rl-based mem-ory agent. arXiv preprint arXiv:2507.02259 , 2025. Zhang, A. L., Kraska, T., and Khattab, O. Recursive lan-guage models. arXiv preprint arXiv:2512.24601 , 2025a. Zhang, G., Chen, K., Wan, G., Chang, H., Cheng, H., et al. Evoflow: Evolving diverse agentic workflows on the fly. 
+
+arXiv preprint arXiv:2502.07373 , 2025b. Zhang, Z., Chen, T., Xu, W., Pentland, A., and Pei, J. Recap: Recursive context-aware reasoning and planning for large language model agents. arXiv preprint arXiv:2510.23822 ,2025c. 11 Recursive Models for Long-Horizon Reasoning 
+
+Zhou, Z., Qu, A., Wu, Z., Kim, S., Prakash, A., Rus, D., Zhao, J., Low, B. K. H., and Liang, P. P. Mem1: Learning to synergize memory and reasoning for efficient long-horizon agents. arXiv preprint arXiv:2506.15841 , 2025. 12 Recursive Models for Long-Horizon Reasoning 
+
+## A. Recursion in Classical Computation Theory 
+
+The idea that recursion depth and local space are fundamental computational resources has deep roots in classical theory. Most directly related to our work, Savitch (1977) formally extended Turing machines with recursive subroutine calls—each call receives its own workspace and returns a result to the caller, mirroring the call/return and context-stack mechanism of our recursive models. Savitch studied the time and storage overhead of recursion, showing that t steps of a recursive TM can be simulated in O(t) steps on a multitape TM, and used this framework to re-derive the NSPACE (S) ⊆ DSPACE (S2)
+
+result of Savitch’s theorem (Savitch, 1970)—whose proof is itself a recursive subroutine with bounded stack depth, where recursion depth times per-level workspace yields the total space upper bound, foreshadowing our local-vs-global space decomposition. The key difference is that Savitch’s recursive TM reads one tape cell per step ( O(1) communication), and therefore already captures SPACE (S) without needing deep recursion. Our recursive model replaces the TM head with a bounded-context Transformer that attends to all S(n) tokens per step; it is this architectural constraint that makes deep recursion necessary to recover the same computational power. Stack automata (Ginsburg et al., 1967) extend pushdown automata by allowing the head to read within the stack, and nested stack automata (Aho, 1969) further allow the creation and destruction of substacks, yielding a stack-of-stacks mechanism reminiscent of our context stack. Engelfriet (1991) studied iterated (higher-order) pushdown storages and established an iterated-exponential hierarchy in computational power as the storage order increases—a phenomenon consistent with our Theorem 1 and Theorem 3. The alternation theorem (Chandra et al., 1981), which we directly use in our proofs, connects alternating computation to space complexity via a recursive evaluation of configuration games. Our contribution relative to this classical line of work is twofold. First, we introduce recursion as an explicit design principle for Transformer-based reasoning, formalizing how bounded-context language models can overcome their attention bottleneck through recursive self-invocation. Second, we prove Transformer realizability : a fixed constant-depth, constant-size Transformer with O(log S(n)) precision can implement the per-step logic at each recursion level, serving as the transition function of a recursive machine. This bridges the classical recursion-theoretic framework with the concrete capabilities of modern neural architectures. 
+
+## B. Experimental Setup 
+
+B.1. Data Generation 
+
+We directly use the SAT instances from Wei et al. (2025), which are Boolean formulas in conjunctive normal form (CNF). Each instance is converted to a natural language puzzle where variables map to real-world entities and clauses become narrative constraints. The dataset contains instances of varying difficulty based on the number of clauses: easy (4–19 clauses), medium (20–30 clauses), and hard (31–50 clauses). For each instance, we generate a recursive reasoning trace by running the DPLL algorithm. At each step, the algorithm picks an unassigned variable and tries assigning it to True. After each assignment, we check for conflicts: either a clause becomes empty (directly violated), or unit clauses force the same variable to both True and False. If a conflict is detected, the algorithm backtracks and tries False. We emit <call> when branching and <return> when returning. These traces are used for supervised fine-tuning. For training, we select only easy and medium instances with at most 15 variables. For evaluation, we randomly sample 100 held-out instances from each difficulty level (easy, medium, hard) without any filtering. 
+
+B.2. Training Configuration 
+
+We fine-tune from Qwen2.5-3B-Instruct (Yang et al., 2025a), a decoder-only Transformer with 3 billion parameters. We use the AdamW optimizer with a learning rate of 1 × 10 −5 and cosine decay schedule. The batch size is 16 with gradient checkpointing enabled. We train for 10 epochs with a maximum context length of 4096 tokens (left truncation for sequences exceeding this limit). Training is conducted on 2 × NVIDIA H200 GPUs and takes approximately 8 hours. 
+
+B.3. Implementation 
+
+When <call> is generated, only the reasoning before the tag is preserved in the parent context; the tag content becomes the child’s current_task . When <return> is generated, the subtask description and return value are appended to the parent context in the format “ subtask_desc . The answer is: result .” while the intermediate reasoning within the subtask is 13 Recursive Models for Long-Horizon Reasoning 
+
+discarded. Each context is wrapped with the following template: 
+
+[Instructions] Solve problems recursively. Use <call> </call> to decompose the problem and <return> </return> to return the answer. [Root Problem] {root_problem} [Current Task] {current_task} 
+
+The root_problem field contains the original problem statement and remains constant across all recursion levels. The 
+
+current_task field contains the subtask description for the current level (equal to root_problem at the top level). 
+
+B.4. Sample Problems 
+
+Each training sample consists of three parts: user (the prompt), assistant_prefix (previous reasoning to continue from), and assistant_content (the target to predict). Below we show two representative turns. 
+
+Example 1: <call> at root level. The model analyzes clauses and branches on a variable: 
+
+# user [Instructions] Solve problems recursively. Use <call> </call> to decompose the problem and <return> </ return> to return the answer. [Root Problem] Five scientists--Alice, Bob, Carol, Dave, and Eve--are considering whether to join a new research project. Each scientist makes an independent decision about their participation. They may choose to join or not join the project regardless of others' choices. Conditions: 1. Either Alice joins the project or Carol does not join. 2. Either Alice does not join or Carol joins. 3. Either Alice joins or Carol joins. 4. Either Alice does not join or Carol does not join. 5. Either Carol does not join or Eve does not join. Is there a way to assign decisions so all these conditions are satisfied? [Current Task] Is there a way to assign decisions so all these conditions are satisfied? # assistant_prefix (empty) # assistant_content Condition 1: Clause: (Alice v ~Carol) (no simplification needed) -> (not unit) Condition 2: Clause: (~Alice v Carol) (no simplification needed) -> (not unit) Condition 3: Clause: (Alice v Carol) (no simplification needed) -> (not unit) Condition 4: Clause: (~Alice v ~Carol) (no simplification needed) 
+
+14 Recursive Models for Long-Horizon Reasoning 
+
+-> (not unit) Condition 5: Clause: (~Carol v ~Eve) (no simplification needed) -> (not unit) No unit clause found. Unassigned: [Alice, Carol, Eve] Try Alice = True <call>Alice=True</call> 
+
+Example 2: <return> at leaf node. The model detects a contradiction and returns: 
+
+# user [Instructions] Solve problems recursively. Use <call> </call> to decompose the problem and <return> </ return> to return the answer. [Root Problem] Five scientists--Alice, Bob, Carol, Dave, and Eve--are considering whether to join a new research project. Each scientist makes an independent decision about their participation. They may choose to join or not join the project regardless of others' choices. Conditions: 1. Either Alice joins the project or Carol does not join. 2. Either Alice does not join or Carol joins. 3. Either Alice joins or Carol joins. 4. Either Alice does not join or Carol does not join. 5. Either Carol does not join or Eve does not join. Is there a way to assign decisions so all these conditions are satisfied? [Current Task] Alice=True, Carol=True # assistant_prefix (empty) # assistant_content Given: Alice=True, Carol=True Condition 1: Clause: (Alice v ~Carol) -> satisfied Condition 2: Clause: (~Alice v Carol) -> satisfied Condition 3: Clause: (Alice v Carol) -> satisfied Condition 4: Clause: (~Alice v ~Carol) Simplify as: () -> CONFLICT Contradiction! <return>No</return> 
+
+Example 3: <call> with prefix (backtracking). After trying Alice=True and receiving “No”, the model backtracks and tries Alice=False: 
+
+# user [Instructions] Solve problems recursively. Use <call> </call> to decompose the problem and <return> </ return> to return the answer. [Root Problem] 
+
+15 Recursive Models for Long-Horizon Reasoning 
+
+Five scientists--Alice, Bob, Carol, Dave, and Eve--are considering whether to join a new research project. Each scientist makes an independent decision about their participation. They may choose to join or not join the project regardless of others' choices. Conditions: 1. Either Alice joins the project or Carol does not join. 2. Either Alice does not join or Carol joins. 3. Either Alice joins or Carol joins. 4. Either Alice does not join or Carol does not join. 5. Either Carol does not join or Eve does not join. Is there a way to assign decisions so all these conditions are satisfied? [Current Task] Is there a way to assign decisions so all these conditions are satisfied? # assistant_prefix Condition 1: Clause: (Alice v ~Carol) (no simplification needed) -> (not unit) Condition 2: Clause: (~Alice v Carol) (no simplification needed) -> (not unit) Condition 3: Clause: (Alice v Carol) (no simplification needed) -> (not unit) Condition 4: Clause: (~Alice v ~Carol) (no simplification needed) -> (not unit) Condition 5: Clause: (~Carol v ~Eve) (no simplification needed) -> (not unit) No unit clause found. Unassigned: [Alice, Carol, Eve] Try Alice = True Alice=True. The answer is: No. # assistant_content Try Alice = False <call>Alice=False</call> 
+
+## C. Transformer Architecture 
+
+We define the decoder-only Transformer architecture used throughout this paper. Let Σ be a finite vocabulary and d be the hidden dimension. 
+
+Token and Positional Embeddings. A token embedding TE : Σ → Rd maps each token to a d-dimensional vector. A 
+
+positional embedding PE : N+ → Rd encodes position information. For an input sequence (x1, . . . , x n) ∈ Σn, the initial embedding at position i is h(0)  
+
+> i
+
+= TE (xi) + PE (i).
+
+Attention. For query, key, and value vectors (q, k j , v j )nj=1 where q, k j ∈ Rdk and vj ∈ Rdv , the attention output with temperature β > 0 is: 
+
+Attn β (q, {kj , v j }nj=1 ) = 
+
+> n
+
+X
+
+> j=1
+
+αj vj , where α = softmax β
+
+ (q · kj )nj=1 
+
+ , (11) 16 Recursive Models for Long-Horizon Reasoning 
+
+and [softmax β (z)] i = exp( zi/β )/ P 
+
+> j
+
+exp( zj /β ).
+
+Average-Hard Attention (AHA). Taking the zero-temperature limit β → 0 yields average-hard attention (Merrill et al., 2022), which uniformly averages over the maximum-scoring positions: 
+
+AHA (q, {kj , v j }nj=1 ) = 1
+
+|A|
+
+X
+
+> j∈A
+
+vj , where A = arg max 
+
+> j∈[n]
+
+⟨q, k j ⟩. (12) AHA involves only comparisons and uniform averaging, which can be computed exactly in finite precision. All theoretical results in this paper use AHA. 
+
+Multi-Head Self-Attention. A multi-head self-attention layer with H heads is parametrized by projection matrices 
+
+W hQ, W hK , W hV ∈ Rdk ×d and W hO ∈ Rd×dk for h ∈ [H]. For embeddings (h1, . . . , h n), the output at position n is: 
+
+MHA (h1, . . . , h n) = 
+
+> H
+
+X
+
+> h=1
+
+W hO · AHA  W hQhn, {W hK hj , W hV hj }nj=1 
+
+ . (13) For decoder-only (causal) Transformers, position n attends only to positions j ≤ n.
+
+Feed-Forward Layer. A feed-forward layer with width dff and activation σ is defined as: 
+
+FF (h) = W2 · σ(W1 · h + b1) + b2, (14) where W1 ∈ Rdff ×d, W2 ∈ Rd×dff , and b1, b 2 are bias terms. 
+
+Transformer Layer. A single Transformer layer combines multi-head attention and feed-forward with residual connec-tions: 
+
+TF (h1, . . . , h n) = FF (˜hn) + ˜hn, where ˜hn = MHA (h1, . . . , h n) + hn. (15) 
+
+Next-Token Predictor. An L-layer decoder-only Transformer defines a next-token predictor fθ : Σ ∗ → Σ as: 
+
+fθ (x1, . . . , x n) = arg max 
+
+> x∈Σ
+
+h
+
+Wdec · h(L)
+
+> n
+
+i
+
+> x
+
+, (16) where h(L) 
+
+> n
+
+is the final-layer embedding at position n, computed by stacking L Transformer layers on top of the initial embeddings, and Wdec ∈ R|Σ|× d is the decoding matrix. 
+
+Precision. We say a Transformer has O(log S(n)) precision if all intermediate numerical values (embeddings, attention scores, and feed-forward activations) are rational numbers p/q with |p|, |q| ≤ S(n)C for a universal constant C, where S(n)
+
+is the local space bound, i.e., the input sequence length to the Transformer. Equivalently, each value is representable in 
+
+O(log S(n)) bits, and all arithmetic is exact with no rounding. This precision model is consistent with Yang et al. (2025b): operations such as seq_sum over S(n) indicator values produce results bounded by S(n), seq_max preserves input magnitudes, and rightmost_exact_match concentrates attention on a single position, all within O(log S(n)) -bit exact arithmetic. 
+
+## D. Single-Tape Turing Machine 
+
+A single-tape Turing machine operates on an infinite tape indexed by Z, where each cell holds a symbol from a finite tape alphabet Γ. A read/write head moves along the tape, and a finite set of control states governs the machine’s behavior. Formally, a Turing machine is a 7-tuple TM = (Γ , b, Q, q 0, δ, Q acc , Q rej ), where b ∈ Γ is the blank symbol; q0 ∈ Q is the initial state; δ : ( Q \ (Qacc ∪ Qrej )) × Γ → Q × Γ × {− 1, 0, +1 } is the transition function; and Qacc , Q rej ⊆ Q are disjoint accepting and rejecting states. 
+
+Execution. Given input x ∈ (Γ \ { b})n, the tape is initialized with x in cells 0, . . . , n − 1 and blanks elsewhere; the head starts at position 0 in state q0. At each step, the machine reads the symbol a under the head, computes (q′, w, d ) = δ(q, a ),writes w, moves the head by d ∈ {− 1, 0, +1 }, and transitions to state q′. The machine halts upon entering Qacc ∪ Qrej ,outputting 1 (accept) or 0 (reject) accordingly. 17 Recursive Models for Long-Horizon Reasoning 
+
+Normalization. To ensure configurations are well-defined for all t ≤ T (n), we extend δ to halting states by making them self-loops: for all q ∈ Qacc ∪ Qrej and a ∈ Γ, define δ(q, a ) := ( q, a, 0) . This does not change the language decided by TM .
+
+Complexity Classes. The time complexity T (TM , x ) is the number of steps before halting. The space complexity S(TM , x )
+
+is the number of distinct tape cells visited. A Turing machine TM decides a language L ⊆ Σ∗ if it halts on all inputs and accepts exactly those in L. The complexity classes are defined as: 
+
+TIME (f (n)) = {L : ∃ TM deciding L with T (TM , x ) ≤ f (|x|) for all x}, (17) 
+
+SPACE (f (n)) = {L : ∃ TM deciding L with S(TM , x ) ≤ f (|x|) for all x}. (18) 
+
+## E. Proof of Theorem 1 
+
+Theorem 6 (Deep Recursive Models, Formal) . For any S(n) ≥ n, recursive models can solve any problem in 
+
+TIME (2 O(S(n)) ) under local space constraint O(S(n)) :
+
+TIME (2 O(S(n)) ) ⊆ RCM (O(S(n)) , ∞, ∞). (19) The proof proceeds in two parts: (1) we define mutually recursive functions that compute TM configurations and prove their correctness; (2) we analyze the resource consumption (local space, recursion depth, and runtime). We further provides a sketch for constructing the Transformer but the detailed implementation is omitted. An alternative proof via Alternating Turing Machines appears in Appendix F, which includes the detailed implementation for the corresponding Transformer. 
+
+E.1. Recursive Construction 
+
+Let TM = (Γ , b, Q, q 0, δ, Q acc , Q rej ) be a single-tape Turing machine. We use time t to denote the number of transitions already executed: t = 0 is the initial configuration, and transitioning from t to t + 1 executes the t-th transition. 
+
+Configuration. A configuration of TM at time t is a triple ct = ( qt, τ t, p t) where: • qt ∈ Q is the control state at time t;• τt : Z → Γ is the tape contents at time t, mapping each cell index to a symbol, with τt(i) = b (the blank symbol) for all but finitely many i;• pt ∈ Z is the head position at time t.For a tape τ and position p, we write τ [p 7 → w] for the tape that agrees with τ everywhere except at position p, where it holds symbol w. The initial configuration is c0 = ( q0, τ 0, 0) where τ0(i) = x[i] for 0 ≤ i < n and τ0(i) = b otherwise. 
+
+Recursive functions. We define the following mutually recursive functions that compute the components of ct. Let 
+
+x ∈ (Γ \ { b})n be the input. • STATE (x, t ) ∈ Q: returns the control state qt
+
+• POS (x, t ) ∈ Z: returns the head position pt
+
+• CELL (x, t, p ) ∈ Γ: returns the tape symbol τt(p) at position p
+
+• SYMBOL (x, t ) ∈ Γ: returns the symbol under the head τt(pt)
+
+• RUN (x, t ) ∈ { 0, 1}: starting from time t, simulate until halting and return accept (1) or reject (0) 
+
+Algorithm. The following five algorithms present the pseudocode for these mutually recursive functions. The transition function δ is assumed to be hardcoded into the model parameters. We fix a constant c > 0 such that the Turing machine TM 
+
+deciding L halts within T (n) := 2 c·S(n) steps on all inputs of length n.18 Recursive Models for Long-Horizon Reasoning 
+
+Algorithm 6 STATE (x, t ) → qt ∈ Q 
+
+> 1:
+
+if t = 0 then return q0 
+
+> 2:
+
+(q′, w, d ) ← δ(STATE (x, t − 1) , SYMBOL (x, t − 1))  
+
+> 3:
+
+return q′
+
+Algorithm 7 POS (x, t ) → pt ∈ Z 
+
+> 1:
+
+if t = 0 then return 0 
+
+> 2:
+
+(q′, w, d ) ← δ(STATE (x, t − 1) , SYMBOL (x, t − 1))  
+
+> 3:
+
+return POS (x, t − 1) + d
+
+Algorithm 8 CELL (x, t, p ) → τt(p) ∈ Γ 
+
+> 1:
+
+if t = 0 then return x[p] if 0 ≤ p < |x| else b 
+
+> 2:
+
+pprev ← POS (x, t − 1)  
+
+> 3:
+
+if p̸ = pprev then return CELL (x, t − 1, p ) ▷ recurse  
+
+> 4:
+
+(q′, w, d ) ← δ(STATE (x, t − 1) , SYMBOL (x, t − 1))  
+
+> 5:
+
+return w ▷ symbol written at t − 1
+
+Algorithm 9 SYMBOL (x, t ) → τt(pt) ∈ Γ 
+
+> 1:
+
+return CELL (x, t, POS (x, t )) 
+
+Algorithm 10 RUN (x, t ) → { 0, 1} 
+
+> 1:
+
+q ← STATE (x, t ) 
+
+> 2:
+
+if q ∈ Qacc then return 1 ▷ accept  
+
+> 3:
+
+if q ∈ Qrej then return 0 ▷ reject  
+
+> 4:
+
+return RUN (x, t + 1) ▷ continue The decision procedure is DECIDE (x) := RUN (x, 0) . Since L ∈ TIME (2 O(S(n)) ), the TM halts within T = 2 c·S(n) steps, so RUN terminates and correctly outputs accept/reject. We now show that the recursive semantics faithfully tracks the TM’s behavior. 
+
+Lemma 7 (Correctness of Recursive Semantics) . Let qt, p t, τ t denote the true state, head position, and tape contents of TM 
+
+at time t. For every input x, every t ≥ 0, and every position p ∈ Z:1. STATE (x, t ) = qt
+
+2. POS (x, t ) = pt
+
+3. CELL (x, t, p ) = τt(p)
+
+4. SYMBOL (x, t ) = τt(pt)
+
+Proof. By induction on t.
+
+Base case ( t = 0 ): By the TM initialization semantics, q0 is the initial state, p0 = 0 , and τ0(p) = x[p] for 0 ≤ p < n 
+
+and τ0(p) = b otherwise. These match the base cases of our recursive functions. For claim (4), SYMBOL (x, 0) = 
+
+CELL (x, 0, POS (x, 0)) = τ0(0) = τ0(p0).
+
+Inductive step ( t ≥ 1): Assume the claims hold for time t − 1. By definition and the induction hypothesis: 
+
+SYMBOL (x, t − 1) = CELL (x, t − 1, POS (x, t − 1)) = τt−1(pt−1) (20) 19 Recursive Models for Long-Horizon Reasoning 
+
+Let (q′, w, d ) := δ(STATE (x, t − 1) , SYMBOL (x, t − 1)) be the transition output. By the induction hypothesis, 
+
+STATE (x, t − 1) = qt−1, so the transition δ(qt−1, τ t−1(pt−1)) computed by the algorithm is exactly the transition taken by TM at step t − 1. Thus: • STATE (x, t ) = q′ = qt (the new state from δ)• POS (x, t ) = pt−1 + d = pt (head moves by d)• CELL (x, t, p ) = τt(p): only cell pt−1 changes to w; others unchanged • SYMBOL (x, t ) = CELL (x, t, POS (x, t )) = τt(pt)
+
+This completes the induction. 
+
+E.2. Resource Analysis 
+
+We analyze three resources: local space (per-context length), recursion depth (call stack height), and total runtime (number of recursive calls). 
+
+Local Space. Each recursive frame must store the following data: • Input x: length n
+
+• Time parameter t′: O(log t) bits in binary representation • Position parameter p (for CELL ): since the head moves at most 1 cell per step, |p| ≤ t, so |bin( p)| = O(log t)
+
+• State q ∈ Q, symbol a ∈ Γ, move direction d ∈ {− 1, 0, +1 }: O(1) bits (finite sets) • Returned answers from subcalls : state ( O(1) ), position ( O(log t)), symbol ( O(1) )Crucially, each context makes only O(1) nested calls before returning. When a callee returns, the call/return mechanism removes its entire context from the stack and appends only the returned value to the caller’s context. This prevents accumulation of intermediate results. Thus, each context has length O(n + log t). In Theorem 6, t ≤ T (n) = 2 c·S(n), so 
+
+log t ≤ c · S(n). Since S(n) ≥ n, the local space bound is O(n + S(n)) = O(S(n)) .
+
+Recursion Depth. For the inner functions ( STATE , POS , CELL , SYMBOL ): each call with time parameter t recursively invokes only subcalls with parameter t − 1. Thus, starting from t = T (n), the recursion depth is O(T (n)) .For the outer decision procedure RUN : even without assuming any tail-call optimization, the additional stack height contributed by iterating through time steps 0, 1, . . . is at most O(T (n)) . Each RUN (x, t ) calls STATE (x, t ), which itself has depth O(t).Overall, the maximum recursion depth is O(T (n)) = O(2 c·S(n)).
+
+Time Complexity (Total Subroutine Invocations). We measure runtime by the total number of subroutine invocations across all recursive contexts. Since the Transformer fθ has constant size and each invocation produces at most O(S(n)) 
+
+tokens, this differs from the total token count by at most an O(S(n)) factor. For each routine F ∈ { STATE , POS , CELL , SYMBOL , RUN }, let TF(t) denote the worst-case total number of subroutine invocations triggered by evaluating F(x, t ) (for CELL , we also maximize over p ∈ Z). From Algorithms 1–5: 
+
+TSTATE (t) ≤ T STATE (t − 1) + TSYMBOL (t − 1) + O(1) , (21) 
+
+TPOS (t) ≤ T POS (t − 1) + TSTATE (t − 1) + TSYMBOL (t − 1) + O(1) , (22) 
+
+TCELL (t) ≤ T POS (t − 1) + max TCELL (t − 1) , TSTATE (t − 1) + TSYMBOL (t − 1) + O(1) , (23) 
+
+TSYMBOL (t) ≤ T POS (t) + TCELL (t) + O(1) , (24) 
+
+TRUN (t) ≤ T STATE (t) + TRUN (t + 1) + O(1) . (25) To simplify these coupled recurrences, we define two dominant quantities: 
+
+V (t) := max TSTATE (t), TPOS (t) , C(t) := TCELL (t). (26) 20 Recursive Models for Long-Horizon Reasoning 
+
+By equation 24, TSYMBOL (t) ≤ V (t) + C(t) + O(1) . Substituting into equation 21–equation 23 yields: 
+
+V (t) ≤ 3V (t − 1) + C(t − 1) + O(1) ,C(t) ≤ 3V (t − 1) + C(t − 1) + O(1) .
+
+Therefore, V (t)
+
+C(t)
+
+
+
+⪯
+
+3 13 1
+
+  V (t − 1) 
+
+C(t − 1) 
+
+
+
++ O(1) , (27) whose spectral radius is 4. Hence V (t), C (t) = O(4 t).Finally, if the simulated Turing machine halts within T (n) steps, then RUN (x, 0) performs at most T (n) iterations, each invoking STATE (x, t ) once. Using equation 25: 
+
+TRUN (0) ≤ 
+
+> T(n)
+
+X
+
+> t=0
+
+TSTATE (t) = O(V (T (n))) = O(4 T (n)). (28) For T (n) = 2 c·S(n), this becomes 4T (n) = 2 2T (n) = 2 2Θ( S(n)) 
+
+, i.e., double exponential in S(n). Since each invocation produces at most O(S(n)) tokens, the total generated tokens remain 22Θ( S(n)) 
+
+.This double-exponential runtime does not affect the RCM (·, ·) membership statement, which constrains only local space and recursion depth. To reduce runtime to 2O(S(n)) , one can augment the simulation with memoization: caching results of 
+
+STATE (x, t ′) in external storage ensures each subproblem is computed only once. 
+
+E.3. Transformer Construction 
+
+We sketch how a Transformer can implement the recursive simulation described above. The key insight is that each step of Algorithms 1–5 involves only: (i) parsing a bounded-length prefix to identify the function and arguments, (ii) counting delimiters to determine the current phase, (iii) performing constant-size table lookups ( δ, Qacc , Qrej ), and (iv) emitting tokens for calls/returns. E.3.1. S ETUP 
+
+Token Vocabulary. We define the following special tokens: • Function tokens : ⟨STATE ⟩, ⟨POS ⟩, ⟨CELL ⟩, ⟨SYMBOL ⟩, ⟨RUN ⟩ indicate which recursive function is being invoked. • Control tokens : ⟨call ⟩, ⟨/call ⟩, ⟨return ⟩, ⟨/return ⟩ mark the boundaries of recursive calls and returns. • Separator tokens : ⟨sep ⟩ separates arguments within a call; [SEP] is an internal delimiter that separates cached intermediate results within a context. • Data tokens : Tokens from Γ (tape alphabet), Q (states), and binary digits {0, 1} for encoding integers. 
+
+Context Format. Each function-call frame is a single sequence (context) whose prefix contains the input arguments, and whose suffix progressively caches intermediate results from subcalls. A typical context has the form: 
+
+⟨F ⟩ ⟨ sep ⟩ arg 1 ⟨sep ⟩ arg 2
+
+  ⟨sep ⟩ arg 3
+
+ [SEP] z1 [SEP] z2 · · · (29) where ⟨F ⟩ is the function token (e.g., ⟨STATE ⟩), and each zi is either a returned value from a recursive call or an internally produced constant-size token. Recursive calls are wrapped as ⟨call ⟩ ⟨ F ⟩⟨ sep ⟩ · · · ⟨ /call ⟩. Returns are encoded as 
+
+⟨return ⟩ [SEP] v ⟨/return ⟩—note that the payload begins with [SEP] . Thus, when a subcall finishes, the caller receives the payload [SEP] v appended to its context, so each completed subcall contributes exactly one [SEP] delimiter to the caller’s phase cache. 
+
+Transformer Behavior. The Transformer fθ decides what to do next by inspecting only: (i) which function token ⟨F ⟩
+
+begins the context, (ii) whether the time argument is zero (via a bit-scan), and (iii) how many [SEP] delimiters have already appeared (the “phase”). This is a standard finite-phase construction: each function needs only a constant number of phases to implement the corresponding algorithmic step. Specifically, fθ executes the logic specified in Algorithms 1–5: 21 Recursive Models for Long-Horizon Reasoning 
+
+1. Base case : If t = 0 (detected by checking if bin( t) is all zeros), output ⟨return ⟩ [SEP] v0 ⟨/return ⟩ where v0 is the base case value ( q0, 0, x[p] or b, depending on the function). 2. Recursive case : If t > 0, the Transformer performs the following operations depending on the function token: • ⟨STATE ⟩: (i) compute t − 1 via binary decrement; (ii) call ⟨STATE ⟩ and ⟨SYMBOL ⟩ with (x, t − 1) to obtain qt−1
+
+and at−1; (iii) compute δ(qt−1, a t−1) via lookup table to get (q′, w, d ); (iv) return q′.• ⟨POS ⟩: (i) compute t − 1; (ii) call ⟨STATE ⟩ and ⟨SYMBOL ⟩ with (x, t − 1) ; (iii) compute δ to get d; (iv) call ⟨POS ⟩
+
+with (x, t − 1) to get pt−1; (v) compute pt−1 + d via binary addition; (vi) return pt.• ⟨CELL ⟩: (i) compute t − 1; (ii) call ⟨POS ⟩ with (x, t − 1) to get pt−1; (iii) compare p with pt−1: if p̸ = pt−1, recurse by calling ⟨CELL ⟩ with (x, t − 1, p ); otherwise (iv) call ⟨STATE ⟩ and ⟨SYMBOL ⟩ with (x, t − 1) , compute δ to get w,and return w.• ⟨SYMBOL ⟩: call ⟨POS ⟩ with (x, t ) to get pt, then call ⟨CELL ⟩ with (x, t, p t) and return the result. • ⟨RUN ⟩: (i) call ⟨STATE ⟩ with (x, t ) to get qt; (ii) check if qt ∈ Qacc ∪ Qrej : if qt ∈ Qacc , return 1; if qt ∈ Qrej , return 
+
+0; otherwise (iii) compute t + 1 via binary increment and call ⟨RUN ⟩ with (x, t + 1) .3. Return processing : When a ⟨/return ⟩ token is encountered, the context manager g pops the current frame and appends the payload [SEP] v to the parent context, automatically incrementing the parent’s phase count. 
+
+Transformer construction. It remains to verify that the next-token policy described above is implementable by a fixed constant-depth, constant-size Transformer with O(log S(n)) precision. The recursive functions STATE , POS , CELL ,
+
+SYMBOL , and RUN reduce to the following primitive operations: (a) Parsing the context to identify the function token ⟨F ⟩ and extract arguments; (b) Phase counting via seq_sum : counting the number of [SEP] delimiters to determine the current computation phase; (c) Binary arithmetic: increment ( t 7 → t + 1 ) and decrement ( t 7 → t − 1) of the time parameter, and position updates (p ± d), using seq_max for bit-scans; (d) Cache retrieval via rightmost_exact_match : retrieving previously computed values from the context; (e) Finite lookups of δ, Qacc , Qrej (hard-coded into parameters). All primitive operations (a)–(e) above are already established in Appendix G of Yang et al. (2025b); our construction differs only in the choice of special tokens and parsing format. We refer readers to that paper for the detailed Transformer implementation. A complete construction using an alternative approach (via Alternating Turing Machines) appears in Appendix F. 
+
+## F. Proof of Theorem 1 via Alternating Turing Machine 
+
+This section gives an alternative proof of Theorem 1. The proof follows the classical characterization TIME (2 O(S(n)) ) = 
+
+ASPACE (O(S(n))) (Chandra–Kozen–Stockmeyer) and then realizes the resulting AND/OR computation using the 
+
+call /return recursion mechanism, with the per-step logic implemented by a constant-depth Transformer via Full-Access Sequence Processing (FASP) (Yang et al., 2025b). 
+
+F.1. Alternating Turing Machines and ASPACE 
+
+An alternating Turing machine (ATM) is a nondeterministic Turing machine A = (Γ , b, Q, q 0, ∆, Q acc , Q rej ) whose non-halting states are partitioned into existential and universal states: Q \ (Qacc ∪ Qrej ) = Q∃ ˙∪ Q∀. The transition relation is a finite set 
+
+∆ ⊆ (Q \ (Qacc ∪ Qrej )) × Γ × Q × Γ × {− 1, 0, +1 }. (30) Each tuple (q, a, q ′, a ′, d ) ∈ ∆ specifies: in state q reading symbol a, the machine may transition to state q′, write a′ on the current cell, and move the head by d ∈ {− 1, 0, +1 }. For a configuration c = ( q, τ, p ) (state q, tape contents τ : Z → Γ,head position p), the set of successor configurations is 
+
+Succ( c) := {(q′, τ [p 7 → a′], p + d) : ( q, τ (p), q ′, a ′, d ) ∈ ∆}, (31) 22 Recursive Models for Long-Horizon Reasoning 
+
+where τ [p 7 → a′] denotes the tape with symbol at position p updated to a′. Since we assume exactly two successors, we index them as Succ 0(c) and Succ 1(c). For i ∈ { 0, 1}, let δi(c) := ( q′
+
+> i
+
+, w i, d i) denote the i-th applicable transition tuple (i.e., (q, τ (p), q ′
+
+> i
+
+, w i, d i) ∈ ∆), so that Succ i(c) = ( q′
+
+> i
+
+, τ [p 7 → wi], p + di).
+
+Acceptance Semantics. Fix an input x and let cstart (x) be the start configuration. Assuming A is a decider (every branch halts), the acceptance value Win (c) ∈ { 0, 1} is defined recursively over the computation tree: if c halts in Qacc then 
+
+Win (c) = 1 ; if in Qrej then Win (c) = 0 ; if c is non-halting with state in Q∃, then Win (c) = W 
+
+> c′∈Succ( c)
+
+Win (c′); if in Q∀,then Win (c) = V 
+
+> c′∈Succ( c)
+
+Win (c′). The machine accepts x iff Win (cstart (x)) = 1 .
+
+Alternating Space. The class ASPACE (S(n)) consists of languages decidable by an ATM that visits at most O(S(n)) 
+
+tape cells along every branch. 
+
+Lemma 8 (Chandra–Kozen–Stockmeyer characterization) . For any space-constructible S(n) ≥ n,
+
+TIME (2 O(S(n)) ) = ASPACE (O(S(n))) . (32) 
+
+Proof. This is the classical alternation theorem (Chandra et al., 1981); see also standard textbook treatments (Arora & Barak, 2009). 
+
+F.2. Recursive Construction 
+
+Fix a space-constructible S(n) ≥ n and a language L ∈ TIME (2 O(S(n)) ). By Lemma 8, there exists an ATM A deciding 
+
+L in space O(S(n)) . Deciding x reduces to evaluating Win (cstart (x)) . Since A is fixed, we assume w.l.o.g. that every non-halting configuration has exactly two successors (by padding missing successors with reject for existential states and accept for universal states, and converting bounded fanout to binary). We denote the two successors by Succ 0(c) and 
+
+Succ 1(c).
+
+Configuration. A configuration of A is a triple c = ( q, τ, p ) where q ∈ Q is the control state, τ : Z → Γ is the tape contents, and p ∈ Z is the head position. Since A uses O(S(n)) space, each reachable configuration can be encoded as a token sequence Embed (c) of length O(S(n)) ; the precise encoding is described in § F.3. 
+
+Recursive functions. We define the following functions for evaluating configurations: • STEP (c, i ) ∈ { configurations }: returns the i-th successor Succ i(c) for i ∈ { 0, 1}
+
+• HALTING (c) ∈ { 0, 1, ⊥} : returns 1 if c ∈ Qacc , 0 if c ∈ Qrej , ⊥ otherwise • TYPE (c) ∈ {∃ , ∀} : returns the alternation type of non-halting configuration c
+
+• COMB (c, b 0, b 1) ∈ { 0, 1}: returns b0 ∨ b1 if TYPE (c) = ∃, else b0 ∧ b1
+
+• EVAL (c) ∈ { 0, 1}: evaluates Win (c) recursively 
+
+Algorithm. The following algorithm presents the pseudocode for EVAL :
+
+Algorithm 11 EVAL (c) → b ∈ { 0, 1} 
+
+> 1:
+
+if HALTING (c) = 1 then return 1 ▷ accept  
+
+> 2:
+
+if HALTING (c) = 0 then return 0 ▷ reject  
+
+> 3:
+
+b0 ← EVAL (STEP (c, 0)) ▷ evaluate first successor  
+
+> 4:
+
+b1 ← EVAL (STEP (c, 1)) ▷ evaluate second successor  
+
+> 5:
+
+return COMB (c, b 0, b 1) ▷ AND/OR combination 
+
+Correctness. By structural induction on the computation tree: • Base case: If c is halting, EVAL (c) returns 1 iff c ∈ Qacc , which equals Win (c) by definition. 23 Recursive Models for Long-Horizon Reasoning 
+
+• Inductive step: If c is non-halting, by IH, bi = EVAL (STEP (c, i )) = Win (Succ i(c)) for i ∈ {0, 1}. Then 
+
+COMB (c, b 0, b 1) computes the correct AND/OR combination based on TYPE (c), matching the definition of Win (c).Thus EVAL (cstart (x)) = Win (cstart (x)) , correctly deciding whether A accepts x.
+
+Resource analysis. Each recursive frame stores the configuration encoding Embed (c) (O(S(n)) tokens), the returned bits 
+
+b0, b 1 (O(1) bits), and call/return delimiters ( O(1) tokens), yielding local space O(S(n)) per context. For recursion depth, an ATM using O(S(n)) space has at most 2O(S(n)) distinct configurations (finite control × head position × tape contents). Because A is a decider, the configuration graph is acyclic—a cycle would induce an infinite branch. Hence the maximum recursion depth is bounded by the number of reachable configurations: 2O(S(n)) .
+
+F.3. Preliminaries and Setup 
+
+To implement the recursive evaluation with a Transformer, we first introduce how to represent Turing machine configurations as token sequences that the Transformer can process. 
+
+Update tokens. We encode configurations using update tokens . Let Σupd := Q × Γ × {− 1, 0, +1 } be the set of update tokens, where each token (q′, w, d ) represents: “write w at the current head cell, move by d, and set state to q′”. 
+
+Update operator. For a configuration c = ( q, τ, p ), define the update operator Update (c, (q′, w, d )) := ( q′, τ [p 7 →
+
+w], p + d), and extend it to sequences by Update (c, x 1: k) := Update (Update (c, x 1: k−1), x k). Let cblank := ( q0, b Z, 0) 
+
+denote the blank configuration (initial state, all-blank tape, head at origin). 
+
+Translational equivalence. Two configurations c1 = ( q, τ 1, p 1) and c2 = ( q, τ 2, p 2) are translationally equivalent , written 
+
+c1 ∼ c2, if there exists k ∈ Z such that τ1(i) = τ2(i − k) for all i and p1 = p2 + k. Intuitively, they differ only by a shift in absolute tape coordinates. This relation preserves halting status and successor structure. 
+
+Configuration embedding. The embedding Embed : ( Q × ΓZ × Z) → Σ∗ 
+
+> upd
+
+maps a configuration c = ( q, τ, p ) to the canonical token sequence that “walks through” the non-blank tape region. Formally, for a tape τ , define ℓ(τ ) := min( {0} ∪ { i : τ (i)̸ = b}) and r(τ ) := max( {0} ∪ { i : τ (i)̸ = b}) as the left and right boundaries of the non-blank region. Then Embed (c) is a sequence of tokens (q, a i, d i) where each ai is the tape symbol at position ℓ(τ ) + P 
+
+> j<i
+
+dj and the moves di ∈ {− 1, 0, +1 } are chosen so that the sequence “walks through” the interval [ℓ(τ ), r (τ )] and ends with the head aligned to p. By construction, Update (cblank , Embed (c)) ∼ c. (Note: while many token sequences can produce the same configuration, Embed is a deterministic function that outputs a canonical representation.) Since the ATM uses O(S(n)) space, |Embed (c)| = O(S(n)) for all reachable configurations. Each transition tuple 
+
+δi(c) = ( q′
+
+> i
+
+, w i, d i) ∈ Σupd is a single update token. Appending δi(c) to Embed (c) yields an update sequence that represents the successor up to translation: Update (cblank , Embed (c) ◦ δi(c)) ∼ Succ i(c). Define the canonicalization operator Canon : Σ ∗ 
+
+> upd
+
+→ Σ∗ 
+
+> upd
+
+by Canon (z) := Embed (Update (cblank , z )) . Then Canon (Embed (c)) = Embed (c) and 
+
+Embed (Succ i(c)) = Canon (Embed (c) ◦ δi(c)) . (33) 
+
+F.4. Transformer Construction 
+
+We now describe how the Transformer autoregressively generates tokens to implement the recursive evaluation. 
+
+Call/return mechanism. As in the primary proof, we use control tokens ⟨call ⟩, ⟨/call ⟩, ⟨return ⟩, ⟨/return ⟩ to implement recursion: 
+
+CALL (c) := ⟨call ⟩ Embed (c) ⟨/call ⟩, RET (b) := ⟨return ⟩ b ⟨/return ⟩. (34) Completing CALL (c) pushes Embed (c) as a child context and removes the call block from the parent; completing RET (b)
+
+pops and appends b to the parent. 
+
+Evaluation transcript. For a configuration c = ( q, τ, p ), we describe the step-by-step token generation. Recall that for non-halting c, there are exactly two applicable transitions yielding successors ci := STEP (c, i ) with bi := Win (ci).24 Recursive Models for Long-Horizon Reasoning 
+
+For non-halting c, the active context cycles through three phases: 
+
+Embed (c) step 1 
+
+−−−→ Embed (c) b0
+
+> step 2
+
+−−−→ Embed (c) b0 b1
+
+> step 3
+
+−−−→ return . (35) In step 1, the generator emits CALL (c0), where the call payload is the canonical embedding Embed (c0) =
+
+Canon (Embed (c) ◦ δ0(c)) ; the child returns b0. In step 2, similarly for c1. In step 3, it emits RET (COMB (c, b 0, b 1)) .We now describe each step in detail. 
+
+Halting case: If c is halting, the context is Embed (c) and the generator emits RET (Win (c)) .
+
+Non-halting case: If c is non-halting, let ci := Update (c, δ i(c)) = Succ i(c) for i ∈ { 0, 1}:1. Context: Embed (c) → Generate: CALL (c0); child recurses and returns b0.The generator first computes the update token δ0(c) ∈ Σupd and then emits CALL (c0) whose payload is the canonical embedding Embed (c0) = Canon (Embed (c) ◦ δ0(c)) . The child recursively evaluates c0 and returns b0 = Win (c0).After return, the parent context becomes Embed (c) b0.2. Context: Embed (c) b0 → Generate: CALL (c1); child recurses and returns b1.Similarly, the generator emits CALL (c1) with payload Embed (c1) = Canon (Embed (c) ◦ δ1(c)) . The child returns 
+
+b1 = Win (c1). After return, the parent context becomes Embed (c) b0 b1.3. Context: Embed (c) b0 b1 → Generate: RET (COMB (c, b 0, b 1)) .With both results b0, b 1 available, the generator computes COMB (c, b 0, b 1) (AND if c ∈ Q∀, OR if c ∈ Q∃) and emits the return block, completing the evaluation of c.
+
+Transformer construction. It remains to verify that the next-token policy is implementable by a fixed constant-depth, constant-size Transformer with O(log S(n)) precision. The recursive evaluation of EVAL (c) reduces to the following primitive operations: (a) Parsing the configuration embedding prefix Embed (c) to extract the current state q (reading the state component of any update token in Embed (c)); (b) Halting and alternation-type detection: checking q ∈ Qacc ∪ Qrej and q ∈ Q∃ vs. q ∈ Q∀ (constant-size set membership); (c) Computing the head position p as a prefix sum of moves in Embed (c) (via seq_sum ); (d) Retrieving the scanned symbol a = τ (p) via a “rightmost match” query: find the most recent update token in Embed (c)
+
+that wrote to position p (via rightmost_exact_match ); (e) Computing the successor transition δi(c) = ( q′
+
+> i
+
+, w i, d i) via finite lookup on (q, a ) (hard-coded into parameters); (f) Computing COMB (c, b 0, b 1): AND/OR of returned bits based on alternation type (local gates); (g) Canonicalization: generating the call payload Embed (ci) = Canon (Embed (c) ◦ δi(c)) for i ∈ { 0, 1}. This re-embeds the successor configuration by walking through the updated tape using (c) and (d) with the new state q′
+
+> i
+
+, new head position p + di, and tape symbol wi at position p. The output length is |Embed (ci)| = O(S(n)) .All primitive operations (a)–(g) above are already established in Appendix G of Yang et al. (2025b); our construction differs only in the choice of special tokens and parsing format. We refer readers to that paper for the detailed Transformer implementation. 
+
+Conclusion. By FASP-to-Transformer compilation (Yang et al., 2025b), the next-token rule can be implemented by a fixed constant-depth Transformer fθ with O(log S(n)) precision. The recursive model with generator fθ decides L with local space O(S(n)) and recursion depth 2O(S(n)) . Therefore L ∈ RCM (O(S(n)) , 2O(S(n)) ), completing the alternative proof of Theorem 1. 
+
+## G. Proof of Theorem 2 
+
+Proof. Both inclusions are a direct corollary of the chain-of-thought characterization in Merrill & Sabharwal (2024). When D = 1 (no recursive calls), the recursive model reduces to standard autoregressive generation: the sequence grows 25 Recursive Models for Long-Horizon Reasoning 
+
+monotonically until the model emits a return token, so the local space bound O(S(n)) directly limits the total number of generated tokens to O(S(n)) . Setting t(n) = Θ( S(n)) in their Eq. (1) and using S(n) ≥ n yields TIME (O(S(n))) ⊆
+
+RCM (O(S(n)) , 1) and RCM (O(S(n)) , 1) ⊆ TIME ( eO(S2(n))) , where the eO(·) absorbs the polylogarithmic overhead from simulating O(log S(n)) -precision arithmetic on a Turing machine. 
+
+## H. Proof of Theorem 3 
+
+Theorem 9 (Constant-Depth Recursive Models, Formal) . For any S(n) ≥ n, recursive models with constant recursion depth D = O(1) and local space O(S(n)) can solve any problem in SPACE (S(n)) :
+
+SPACE (S(n)) ⊆ RCM (O(S(n)) , O(1)) . (36) 
+
+Moreover, for any T : N → N,
+
+TM (S(n), T (n)) ⊆ RCM (O(S(n)) , O(1) , O(T (n))) . (37) 
+
+Proof. Fix any language L ∈ SPACE (O(S(n))) and let TM = (Γ , b, Q, q 0, δ, Q acc , Q rej ) be a deterministic single-tape Turing machine deciding L using at most c · S(n) tape cells on inputs of length n. We construct a constant-size Transformer 
+
+fθ(L) such that the recursive model with fθ(L) simulates TM with recursion depth D = 2 and local space O(S(n)) in a time- and space-efficient manner. 
+
+Configuration. A configuration of TM is a triple c = ( q, τ, p ) where: • q ∈ Q is the current control state; • τ : Z → Γ is the tape contents , a function mapping each cell index to a symbol, with τ (i) = b (the blank symbol) for all but finitely many i;• p ∈ Z is the head position. For a tape τ and position p, we write τ [p 7 → w] for the tape that agrees with τ everywhere except at position p, where it holds symbol w.
+
+Update tokens and the update operator. Let Σupd := Q × Γ × {− 1, 0, +1 }. We interpret a token x = ( q′, w, d ) ∈ Σupd 
+
+as an update : “write w at the current head cell, move by d, and set the control state to q′”. For a configuration c = ( q, τ, p ),define 
+
+Update (c, (q′, w, d )) := ( q′, τ [p 7 → w], p + d), (38) and extend Update to sequences x1: k ∈ Σ∗ 
+
+> upd
+
+by Update (c, x 1: k) := Update (Update (c, x 1: k−1), x k). We also extend δ to configurations by δ(q, τ, p ) := δ(q, τ (p)) .
+
+Translational equivalence. Two configurations c1 = ( q, τ 1, p 1) and c2 = ( q, τ 2, p 2) are translationally equivalent , written 
+
+c1 ∼ c2, if there exists k ∈ Z such that τ1(i) = τ2(i − k) for all i ∈ Z and p1 = p2 + k. Intuitively, two configurations are translationally equivalent if they differ only by a shift in absolute tape coordinates, while their control state, tape contents, and the head’s relative position within the tape are identical. This relation preserves the next update and halting status: 
+
+c1 ∼ c2 ⇒ δ(c1) = δ(c2).
+
+Configuration embedding. For a tape τ , define ℓ(τ ) := min( {0}∪{ i : τ (i)̸ = b}) and r(τ ) := max( {0}∪{ i : τ (i)̸ = b}).The embedding Embed : ( Q × ΓZ × Z) → Σ∗ 
+
+> upd
+
+maps a configuration c = ( q, τ, p ) to a sequence (x1, . . . , x m) where each xi = ( q, a i, d i), with ai being the tape symbol at position ℓ(τ ) + P 
+
+> j<i
+
+dj and di ∈ {− 1, 0, +1 } chosen so that the sequence “walks through” the non-blank interval [ℓ(τ ), r (τ )] and ends with the head aligned to p. Let cblank := ( q0, b Z, 0) 
+
+be the blank configuration. Then Update (cblank , Embed (c)) ∼ c. (Note: while many token sequences can produce the same configuration, Embed is a deterministic function that outputs a canonical representation; the proof only requires 
+
+Update (cblank , Embed (c)) ∼ c.) Since TM is space-bounded, |Embed (c)| = O(S(n)) for all reachable configurations. Let N := C · S(n) for a sufficiently large constant C such that |Embed (c)| ≤ N for every reachable configuration. 26 Recursive Models for Long-Horizon Reasoning 
+
+Depth-1 frame. The depth-1 frame is the outermost frame and serves as a “dispatcher”. Its role is simple: whenever its suffix matches ⟨call ⟩ w for some string w, it emits the closing token ⟨/call ⟩, which triggers a push of a new depth-2 frame with content w. This mechanism enables tail-call elimination: when the depth-2 frame returns an open call-prefix, the depth-1 frame completes the call and activates a fresh depth-2 frame. 
+
+Depth-2 frame. The depth-2 frame is the active simulation frame. It stores 
+
+Frame (z, u ) := z ◦ ⟨ sep ⟩ ◦ u, (39) where z ∈ Σ∗ 
+
+> upd
+
+is the summarized history (the embedding of all past computation) and u ∈ Σ∗ 
+
+> upd
+
+is the new trace (updates generated since the last summarization). The current simulated configuration is recovered by 
+
+c∗ := Conf (z, u ) := Update (cblank , z ◦ u), (40) where the delimiter ⟨sep ⟩ is ignored by Update .
+
+Next-token policy (simulation vs. summarization). Given Frame (z, u ), let c∗ = ( q∗, τ ∗, p ∗) = Conf (z, u ). The next-token policy operates as follows: (i) Halting: If q∗ ∈ Qacc (resp. Qrej ), emit ⟨return ⟩ 1 ⟨/return ⟩ (resp. ⟨return ⟩ 0 ⟨/return ⟩) and halt. (ii) Simulation mode: If q∗ /∈ Qacc ∪ Qrej and |u| < 2N , emit the single update token δ(c∗) ∈ Σupd . This appends exactly one TM step to the new trace u.(iii) Summarization mode: If |u| = 2N , compute the summarized state z′ := Embed (c∗) and emit 
+
+⟨return ⟩ ⟨ call ⟩ Frame (z′, ϵ ) ⟨/return ⟩. Under the recursive-model stack semantics, this returns an open call-prefix to the depth-1 frame, which then emits ⟨/call ⟩ and activates a new depth-2 frame Frame (z′, ϵ ).
+
+Correctness and resource analysis. We now verify that the construction is correct and analyze its resource consumption: local space O(S(n)) , recursion depth 2, and token efficiency O(T ) where T is the number of TM steps. 
+
+Correctness. We maintain the invariant that at all times the depth-2 frame represents the current TM configuration (up to translation): after t simulated steps since the last summarization, Conf (z, u ) ∼ ct, where ct is the true TM configuration after 
+
+t steps. The base case follows from Update (cblank , Embed (c0)) ∼ c0. In simulation mode, emitting δ(Conf (z, u )) advances the configuration by one Update , matching one TM transition since δ is invariant under ∼. In summarization mode, replacing 
+
+(z, u ) by (Embed (Conf (z, u )) , ϵ ) preserves the represented configuration since Update (cblank , Embed (Conf (z, u ))) ∼
+
+Conf (z, u ). Thus the model returns the correct accept/reject decision. 
+
+Local space. During simulation, the depth-2 frame has length |z| + 1 + |u| ≤ N + 1 + 2 N = 3 N + 1 = O(S(n)) .During summarization, the return payload contributes at most |z′| + O(1) = O(S(n)) additional tokens, so local space remains O(S(n)) . The stack height is always at most 2.
+
+Token efficiency. Each TM step produces exactly one emitted update token in simulation mode. A summarization happens once every 2N simulated steps and emits at most |z′| + O(1) ≤ N + O(1) tokens. If TM halts after T steps, the total number of emitted tokens is 
+
+T + O
+
+ T
+
+2N
+
+
+
+· (N + O(1)) = O(T ), (41) which is linear in T .
+
+Transformer construction. It remains to verify that the next-token policy is implementable by a fixed constant-depth, constant-size Transformer with O(log n) precision. Both δ(·) and Embed (·) reduce to the following primitive operations: (a) Parsing the summarized history z and new trace u (fixed-format tokenized strings); (b) Computing the head position as a prefix sum of moves in z ◦ u (arithmetic on O(log S(n)) -bit integers); (c) Retrieving the current tape symbol via a “rightmost match” query: for a given head position, find the most recent update token in z ◦ u that wrote to that cell; 27 Recursive Models for Long-Horizon Reasoning 
+
+(d) A finite lookup of δ (hard-coded into parameters). All primitive operations (a)–(d) above are already established in Appendix G of Yang et al. (2025b); our construction differs only in the choice of special tokens and parsing format. We refer readers to that paper for the detailed Transformer implementation. Hence, for arbitrary L ∈ SPACE (O(S(n))) , we have L ∈ RCM (O(S(n)) , 2) .
+
+## I. Preliminaries for Section 4 
+
+I.1. Strings 
+
+Fix a finite token alphabet Σ. We write Σ∗ for the set of all finite token strings and |x| for the length of x ∈ Σ∗. For a length bound L, define Σ≤L := {z ∈ Σ∗ : |z| ≤ L}. Note that |Σ≤L| ≤ PLi=0 |Σ|i = 2 O(L).
+
+I.2. Polynomial-Time Generators 
+
+A generator f is polynomial-time if there exists a deterministic Turing machine that computes f (x) from x in time 
+
+poly( |x| + |f (x)|). A generator family F = ( f1, . . . , f k) is polynomial-time if each fℓ is polynomial-time. 
+
+I.3. Oracle Turing Machine 
+
+A deterministic oracle Turing machine (OTM) is a deterministic multi-tape Turing machine equipped with, for each oracle name o in a finite index set N , an oracle query tape and an oracle answer tape . Each oracle is a total function Oo : Σ ∗ → Σ∗.
+
+Query/Answer Mechanism. When the machine enters a distinguished query state qask ,o , the string currently written on the oracle-o query tape (from cell 0 to the first blank) is taken as the query u. In one transition, the oracle answer tape is overwritten with Oo(u) (starting at cell 0), and the machine enters a distinguished return state qret ,o .
+
+Resource Measures. Time counts ordinary TM transitions (including transitions into and out of query/return states). Space counts the number of distinct tape cells visited on work tapes (excluding the read-only input tape and oracle tapes). 
+
+Relativized Complexity Classes. For a fixed oracle family Ω = ( O1, . . . , Ok):
+
+TIME Ω(f (n)) = {L : ∃ OTM with access to Ω deciding L in O(f (n)) time }, (42) 
+
+SPACE Ω(f (n)) = {L : ∃ OTM with access to Ω deciding L in O(f (n)) work space }. (43) 
+
+Alternating Turing Machines. An alternating Turing machine (ATM) extends a nondeterministic TM by labeling each state as either existential (∃) or universal (∀). At an ∃-state, the machine accepts if some successor configuration accepts; at a ∀-state, it accepts if all successor configurations accept. We write ASPACE (S(n)) for the class of languages decidable by an ATM using space O(S(n)) .
+
+Space-Constructibility. A function S : N → N is space-constructible if there exists a TM that, on input 1n, computes 
+
+S(n) in binary using O(S(n)) space. Common functions like n, n2, 2n are space-constructible. 
+
+I.4. Least-Fixpoint Semantics for Recursive Agentic Systems 
+
+We now give the formal construction of the semantics for a recursive agentic system (S, F) where S = ( S1, . . . , S m) are scaffolds and F = ( f1, . . . , f k) are generators. Recall from the main text that each scaffold Si may query two types of oracles: fℓ for ℓ ∈ { 1, . . . , k } (generator oracles), and SELF j for j ∈ { 1, . . . , m } (recursion oracles). 
+
+Partial Functions and Order. Let Σ∗⊥ = Σ ∗ ∪ {⊥} , where ⊥ denotes “undefined.” Let P = {F : Σ ∗ → Σ∗⊥} be the set of partial functions. We order P by extension : F ⊑ G iff for all x ∈ Σ∗, either F (x) = ⊥ or F (x) = G(x). The pair (P, ⊑) forms a complete partial order with least element ⊥P (the everywhere-undefined function). For tuples, define 
+
+P(m) = ( P)m with componentwise order; the least element is ⊥(m) = ( ⊥P , . . . , ⊥P ).28 Recursive Models for Long-Horizon Reasoning 
+
+One-Step Operator. Define ΦS,F : P(m) → P (m) as follows. Given F = ( F1, . . . , F m) ∈ P (m), the i-th component 
+
+ΦS,F (F)i is defined by: on input x ∈ Σ∗, simulate Si on x with generator queries fℓ answered by F and each SELF j
+
+answered by Fj . If any queried Fj (u) = ⊥, the simulation halts and returns ⊥; otherwise, ΦS,F (F)i(x) is the output of the simulation. 
+
+ω-Continuity and Existence. The operator ΦS,F is ω-continuous (Scott-continuous) on the pointed CPO (P(m), ⊑):each scaffold execution, if it terminates, makes only finitely many recursion queries, hence depends only on a finite stage of any increasing chain of approximants. By Kleene’s fixed-point theorem, the least fixpoint F∗ = lfp( ΦS,F ) = F 
+
+> n<ω
+
+Φn 
+
+> S,F
+
+(⊥(m)) ∈ P (m) exists. 
+
+Semantics. The semantics of the system (S, F) is defined as F∗ = ( F ∗ 
+
+> 1
+
+, . . . , F ∗
+
+> m
+
+). Intuitively, F ∗ 
+
+> i
+
+(x) is the output of running scaffold Si on input x, where all recursive calls are resolved according to the least fixpoint. 
+
+I.5. Chandra–Kozen–Stockmeyer Characterization Lemma 10 (Alternating-space characterization of exponential time) . For any space-constructible S(n) ≥ n,
+
+ASPACE (O(S(n))) = TIME (2 O(S(n)) ).Proof. This is a classical result. The key insight is that an alternating TM using space S has at most 2O(S) configurations, and a deterministic simulation can explore the entire game tree in time 2O(S) via dynamic programming. 
+
+## J. Proof of Theorem 4 
+
+Proof of Theorem 4. Fix n, an index r ∈ { 1, . . . , m }, and input x ∈ Σn, and write L := L(n) and D := Σ ≤L. Let ΦS,F
+
+be the one-step operator from Appendix I.4. Under L-boundedness (Definition 4) of the evaluation of ϕS,F 
+
+> r
+
+(x), every generator argument/return and every recursion argument/return that appears during evaluation lies in D.
+
+Time upper bound (oracle form). Let Φ(≤L) 
+
+> S,F
+
+be the same one-step operator as ΦS,F , except that each scaffold simulation is run with an explicit L-space cutoff (counting work plus oracle tapes): if the simulation exceeds L total tape cells, it aborts and returns ⊥. Since the call graph of the evaluation of ϕS,F 
+
+> r
+
+(x) is L-bounded, this cutoff never triggers on any scaffold invocation that influences ϕS,F 
+
+> r
+
+(x), so ϕS,F 
+
+> r
+
+(x) equals the stabilized (r, x ) entry of the least fixpoint of Φ(≤L) 
+
+> S,F
+
+.We compute this least fixpoint by performing Kleene iteration on the finite restriction to D. Define a table-valued sequence 
+
+(ϕt)t≥0 where each ϕt is a tuple of partial maps D → D ∪ {⊥} (one component per scaffold), with ϕ0 = ⊥(m) and 
+
+ϕt+1 = Φ(≤L) 
+
+> S,F
+
+(ϕt) restricted to inputs in D. Because the restriction domain is finite and the order is by extension, each table entry can change at most once (from ⊥ to a defined value), so the sequence stabilizes after at most m · | D| iterations. To update one table entry, we simulate one one-step scaffold run on an input q ∈ D, answering generator/tool queries by oracle access to F and answering recursion queries SELF j (u) by table lookup of ϕt. By construction of Φ(≤L) 
+
+> S,F
+
+, each such update halts within exp( O(L)) transitions and costs exp( O(L)) time. There are m · | D| = 2 O(L) entries and at most 
+
+m · | D| = 2 O(L) iterations, so the total oracle-machine running time is 2O(L). The stabilized table entry corresponding to 
+
+(r, x ) equals ϕS,F 
+
+> r
+
+(x), proving TIME F (2 O(L(n)) ).
+
+Eliminating the oracle. Now assume additionally that each oracle in F is computable by a deterministic (non-oracle) TM in time 2O(L(n)) and work space O(L(n)) on all queries of length at most L(n). We simulate the above oracle TM by a plain TM, replacing each oracle query by running the corresponding oracle-computing TM on the query string and writing its output back before resuming the simulation. Since the oracle TM runs for at most 2O(L(n)) steps, it makes at most 2O(L(n)) oracle queries. Thus the total time is 2O(L(n)) · 2O(L(n)) = 2 O(L(n)) , proving TIME (2 O(L(n)) ).
+
+## K. Proof of Theorem 5 
+
+Proof of Theorem 5. Fix an index r ∈ { 1, . . . , m }. Assume the recursion stack depth is D(n) = O(1) throughout evaluation of ϕS,F 
+
+> r
+
+(x) on every length-n input x. We decide the language by directly simulating the recursive evaluation in a depth-first manner on an oracle TM with access to F. The simulator maintains the full local configuration of the currently active scaffold 29 Recursive Models for Long-Horizon Reasoning 
+
+simulation (including its work tapes and the bounded oracle query/answer content), and pushes/pops such configurations on a stack when encountering recursion-oracle calls/returns. By L(n)-boundedness, each call frame requires O(L(n)) space to store, and by assumption there are O(1) frames simultaneously. Thus the simulation uses O(L(n)) work space, proving membership in SPACE F (O(L(n))) .
+
+Eliminating the oracle. Now assume additionally that each oracle in F is computable by a deterministic (non-oracle) TM in time 2O(L(n)) and work space O(L(n)) on all queries of length at most L(n). We simulate the above oracle TM by a plain TM, replacing each oracle query by running the corresponding oracle-computing TM on the query string and then resuming the simulation. Reusing O(L(n)) work space for each oracle computation, the overall work space remains 
+
+O(L(n)) , proving SPACE (O(L(n))) .30

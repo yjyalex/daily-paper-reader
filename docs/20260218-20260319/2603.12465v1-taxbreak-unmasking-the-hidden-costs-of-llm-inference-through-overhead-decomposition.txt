@@ -1,0 +1,1285 @@
+Title: TaxBreak: Unmasking the Hidden Costs of LLM Inference Through Overhead Decomposition
+
+URL Source: https://arxiv.org/pdf/2603.12465v1
+
+Published Time: Mon, 16 Mar 2026 00:18:11 GMT
+
+Number of Pages: 12
+
+Markdown Content:
+# TaxBreak : Unmasking the Hidden Costs of LLM Inference Through Overhead Decomposition 
+
+Prabhu Vellaisamy, Shreesh Tripathi, Vignesh Natarajan, Surya Santhan Thenarasu, Shawn Blanton, John P. Shen 
+
+NeuroAI Computer Architecture Lab (NCAL) Electrical and Computer Engineering Department 
+
+Carnegie Mellon University (pvellais@andrew.cmu.edu, jpshen@cmu.edu) 
+
+Abstract —Large Language Model (LLM) inference is widely used in interactive assistants and agentic systems. In latency-sensitive deployments, inference time can become dominated by host-side overheads. Existing approaches typically expose this cost only as an aggregate residual or a launch/queue metric, which is often insufficient to identify which execution layer should be optimized. This work presents TaxBreak , a trace-driven methodology for decomposing host-visible orchestration overhead into three components: framework translation time, CUDA library translation time, and kernel launch-path time. We validate TaxBreak on NVIDIA H100 and H200 systems and use it to derive our proposed Host–Device Balance Index (HDBI) , a boundedness summary index that relates device-active execution to host-visible orchestration. Across representative dense and mixture-of-experts workloads in both prefill and decode, we show that aggregate latency, GPU inactivity, or boundedness ratios alone can obscure the dominant optimization target. TaxBreak 
+
+instead distinguishes cases where optimization should reduce software-stack overhead from cases where the primary win comes from reducing device-side work. We further show that MoE models dispatch 8-11 × more kernels per output token than dense models, and that for such host-bound workloads, CPU single-thread performance is a first-order parameter: a faster host CPU reduces orchestration overhead by 10-29% and improves end-to-end latency by up to 14%, even when paired with a slower-clocked GPU. These results position TaxBreak as a diagnostic tool for assessing whether optimization effort should target the software stack or the device-side workload execution. 
+
+Index Terms —Framework tax, CUDA libraries, Kernel launch, LLM inference profiling, Mixture-of-Experts (MoE) models. 
+
+I. I NTRODUCTION 
+
+Large language models (LLMs), spanning dense (e.g., GPT-4 [1], LLaMA [15], [28]) and mixture-of-experts (MoE) (e.g., DeepSeek-V3, R1 [16], [20]) architectures, now underpin interactive AI services operating under strict latency con-straints [21]. In user-facing systems such as chatbots and coding assistants, end-to-end delay directly impacts user ex-perience [8], [32]. Agentic workflows amplify this sensitivity: interleaving reasoning steps with tool execution introduces se-quential dependencies, causing overhead to accumulate across iterations [26], [27], [33]. Recent work indicates that, in such settings, host-side orchestration increasingly lies on the critical path, especially when control flow and tool invocation occur outside the GPU execution stream [24]. Critically, in eager mode, PyTorch dispatches the entire path serially on a single CPU thread, so the relevant CPU performance characteristic is single-core throughput, not core count. 
+
+Fig. 1: TaxBreak Methodology. TaxBreak decomposes overall host-side orchestration overhead into three components: (i) framework execution, (ii) CUDA library front-end execution, and (iii) kernel launch invocation. We also introduce a new 
+
+Host-Device Balance Index (HDBI) to characterize the relative boundedness between the host (CPU) and the device (GPU). Prior work A refers to aggregate framework tax [14]; B refers to kernel launch/queue tax (TKLQT) [30]. Today, LLM inference is run via deeply layered inference stacks. High-level runtimes (vLLM [18], Orca [34]) manage batching, scheduling, and KV-cache state before dispatching execution through ML frameworks or compilers (PyTorch/Ten-sorFlow [22], [23], TVM [9]). These, in turn, may or may not invoke vendor libraries (cuBLAS/cuBLASLt/cuDNN) and submit kernels. Although this modularity enables portability and abstraction, it introduces host-side orchestration overhead across multiple layers. Prior work typically exposes this cost either as an aggregated CPU-side residual (the framework tax [14]), or by isolating kernel launch/queue behavior (the 
+
+total kernel launch and queue time (TKLQT) [30]). These metrics are useful for identifying whether a workload appears host- or device-limited, but they do not pinpoint which layer of the stack is the dominant impediment to be optimized. The attribution challenge intensifies for modern workloads. Inference-centric studies show that performance reflects both hardware capability and host software orchestration across heterogeneous systems [19], [30]. GPU-focused analyses fur-ther demonstrate strong phase dependence (prefill vs. de-
+
+> arXiv:2603.12465v1 [cs.DC] 12 Mar 2026
+
+code) and scaling effects invisible to coarse-grain profil-ing [13], [31]. MoE architectures add complexity: although they achieve high effective capacity through sparse activation (e.g., DeepSeek-V3 activates 37B of 671B parameters per token [20]), they incur dynamic routing overhead and fragment execution into many small, dependent kernels [4], [17]. Even in non-distributed settings, elevated GPU idle time may stem from host-induced delays, workload-induced fragmentation, or memory/data-movement effects, yet existing profilers lack the cross-stack granularity needed to distinguish these causes. There is a need for a diagnostic framework that attributes inference inefficiencies across host-side abstraction layers and execution phases. To address this, we introduce TaxBreak , a trace-driven methodology that decomposes host-side orches-tration into three components: (i) framework execution , (ii) 
+
+CUDA library front-end execution , and (iii) kernel launch tar-geting NVIDIA systems. We further propose the Host–Device Balance Index (HDBI) to quantify relative CPU- vs. GPU-boundedness (Fig. 1). This decomposition turns a coarse host vs. device diagnosis into a mechanism-level attribution, guid-ing whether optimization should target runtimes, compilers, CUDA/driver pathways, or device-side workload. 
+
+Key Contributions. This work introduces TaxBreak , atrace-driven methodology for decomposing host-side LLM in-ference overhead. Our contributions include: 1 A three-stage 
+
+TaxBreak decomposition of framework translation, CUDA library translation, and kernel launch overhead; 2 Validation on NVIDIA H100/H200, including per-kernel launch-floor characterization; 3 Empirical evidence across dense and MoE inference in prefill and decode that aggregate metrics by themselves can obscure the dominant optimization target; 4Host-Device Balance Index (HDBI), a diagnostic summary to complement TaxBreak attribution to show if a workload is host- or device-bound; and 5 A cross-platform result showing that faster CPU single-thread performance reduces host-bound end-to-end latency by 11-14%. II. B ACKGROUND AND MOTIVATION 
+
+A. Inference Serving Dynamics 
+
+LLM inference serving is divided into two phases: prefill 
+
+and decode . During prefill, the server processes the full input prompt to produce the first output token and materializes atten-tion KV cache. Hence, prefill exposes substantial parallelism across prompt tokens and can achieve high GPU utilization when requests are batched. By contrast, the decode phase autoregressively generates tokens one at a time per active request. Decode therefore affords less intra-request parallelism and relies on batching many concurrent requests to improve utilization. Decode is also increasingly shaped by memory behavior because attention repeatedly reads and updates a growing KV cache [12]. Production systems thus track time-to-first-token (TTFT) and time-per-output-token (TPOT) as primary latency key performance indicators (KPIs) for inter-active responsiveness and steady-state streaming [2], [3]. The growing memory footprint of KV cache complicates allocation, fragmentation, and reuse, thereby constraining fea-sible batch sizes and latency. vLLM [18] reduces fragmenta-tion by storing the KV state in non-contiguous paged memory, enabling flexible sharing and lower allocation costs. Schedul-ing approaches such as iteration-level scheduling and selective batching by Orca [34] mitigate inefficiencies from early-finished or late-joining requests. Further, Sarathi-Serve [3] targets the throughput–latency tradeoff by leveraging chunked prefills and stall-free scheduling. These serving techniques are typically implemented atop general ML frameworks (Py-Torch/TensorFlow/JAX [6], [22], [23]) and vendor runtimes, where framework execution and library/launch paths meaning-fully shape TTFT and TPOT. However, the per-layer attribu-tion of those effects remains underexplored and is the focus of this work. 
+
+B. Dense and Mixture-of-Experts (MoE) LLMs 
+
+Dense LLMs run a fixed per-token compute graph (all layers active), producing a predictable, largely compute-bound prefill and an iterative decode with fixed per-token overheads and a growing KV cache. In contrast, MoE inference activates a subset of experts per token, adding routing/gating, synchro-nization, and small, dependency-chained kernels that increase both host-side orchestration (routing dispatch, fragmented ker-nel submission) and device-side sensitivity (fine-grained de-pendencies, memory stalls). Coarse metrics (GPU utilization, aggregate launch time) alone cannot distinguish these causes, as observed GPU idle time in MoEs may result from host-induced delays, device dependency chains, or memory/data-movement stalls. Previous studies document routing overhead and imbalance across MoE design points [10] and show that loss-optimal expert scaling can misalign with serving effi-ciency [35], motivating MoE-aware characterization, but not providing the cross-stack attribution that TaxBreak provides. 
+
+C. Execution Stack Anatomy 
+
+End-to-end LLM latency arises from a layered execution stack spanning application serving logic, framework runtimes, compiler/lowering pipelines, vendor libraries, and submission path. Requests enter a serving runtime (vLLM, Orca) that han-dles batching, scheduling, and admission control, then invoke model execution through ML frameworks (e.g., PyTorch). In the PyTorch path, the ATen dispatcher resolves tensor metadata and selects backends to target before lowering to vendor libraries (cuBLAS/cuDNN) or directly submitting elementwise and custom kernels to the CUDA launch/submit path. The PyTorch 2 [5] compilation pipeline captures Python execution into FX graphs (TorchDynamo), uses ahead-of-time (AOT) Autograd and optimization passes to fuse and lower operators, and emits backend kernels via TorchInductor. These compilation steps reduce Python overhead but may fall back to eager mode for dynamic workloads. CUDA Graph–based execution can further reduce steady-state launch overhead, but it incurs a one-time capture and instantiation cost and typically requires static tensor shapes, memory layouts, and control flow [30]. Nevertheless, MoE routing and expert execution increase both kernel count and heterogeneity, incurring host 1 2 4 8 16     
+
+> Batch size
+> 20
+> 30
+> 40
+> 50
+> Inference time (ms)  Framework
+> bound
+> Compute
+> bound
+> Batch vs. Inference Latency
+> 124816
+> Batch size
+> 0
+> 2000
+> 4000
+> 6000
+> TKLQT (μs)
+> CPU
+> bound
+> GPU
+> bound
+> Batch vs. Inference Latency
+
+Fig. 2: Previous characterizations of GPT-2 inference across batch sizes. Left: end-to-end latency (ms) shows a transition from framework-bound to compute-bound at small batch sizes [14]. Right: TKLQT in μs highlights similar CPU-bound to GPU-bound transition as kernel queuing increases with batch size and utilization [30]. overhead during decode. Crucially, whether execution is eager or compiled, each inference step still traverses the CUDA run-time/driver submission path: hosts issue runtime/driver calls, work is queued on streams, and the GPU executes kernels. Eager execution issues kernels serially on the host dispatch thread for each request. Although individual launches are asynchronous, the dispatch path remains single-threaded. Con-sequently, host-side overhead scales linearly with kernel count 
+
+N , and reducing it requires either lowering the per-kernel dispatch cost (faster single-thread execution or compilation) or reducing N directly (kernel fusion, CUDA Graphs), rather than adding CPU cores. Short per-token iterations magnify any fixed per-iteration host overhead. Hence, TaxBreak focuses on execution below the framework boundary (PyTorch/ATen via library mapping to the CUDA launch path) and measures the host-side orchestration time. Although compilation is in-creasingly adopted, eager mode persists for workloads with dynamic shapes or control flow, and TaxBreak targets this path. 
+
+D. Previous Works on AI Inference Taxes 
+
+Holistic AI tax studies show that pipeline and infrastructure costs can dominate real deployments [7], [25], [36], [37]. In server-class LLM inference, the gap between theoretical compute gains and realized latency improvements is referred to as framework tax , motivating the framework-bound vs. compute-bound classification [14]. CPU-GPU coupling work exposes the kernel launch/queue tax, making kernel submis-sion overhead explicit [30] (Fig. 2). The kernel launch tax is also relevant to distributed settings where offload and queueing behaviors amplify latency penalties [29]. 
+
+Limitations of previous works. 1 Existing studies ei-ther present host-side overhead as an aggregate residual [14] or localize it mainly to the H2D (host to device) launch path (TKLQT) [30]. However, neither decomposes pre-launch contributors across framework, library, and driver layers. 2Prior characterizations are often prefill-centric or target legacy workloads/hardware (e.g., CNNs, encoder models, FP32) [14]; device-side analyses focus on microarchitectural behavior but do not attribute host-side stack costs [31]. Table I summarizes these comparisons. These gaps motivate us to (i) develop a layer-resolved decomposition separating framework translation, library mapping, and launch-path floor costs; (ii) cover both prefill and decode; and (iii) target dense and MoE workloads on NVIDIA H100/H200. III. TaxBreak METHODOLOGY 
+
+Before any GPU kernel executes, a PyTorch operation tra-verses Python dispatch, ATen operator resolution, an optional vendor library front-end, and the CUDA launch API. TaxBreak 
+
+decomposes this host-side latency into three mutually exclu-sive, collectively exhaustive components per kernel invocation: 
+
+THost = TP y + Tdispatch base 
+
+| {z }
+
+> ∆F T
+
++
+
+Ilib · max(0 , T dispatch − Tdispatch base )
+
+| {z }
+
+> ∆CT
+
++ T f loor sys 
+
+| {z } 
+
+> ∆KT
+
+(1) where: ∆F T (framework translation) is the sum of Python dispatch overhead TP y = taten op − ttorch op and the ir-reducible ATen dispatch cost Tdispatch base ; ∆CT (CUDA-Library Translation) is the vendor library front-end excess above that baseline, gated to zero for non-library kernels by 
+
+Ilib ∈ { 0, 1}; and ∆KT = T f loor sys is the hardware floor from 
+
+cudaLaunchKernel call to GPU kernel start, measured via null-kernel profiling. The raw launch cost is reported separately as T raw launch = T f loor sys + ∆ KT f w for diagnostic insight, but not used in Eq. 2, as ∆KT f w reflects framework enqueue overhead already captured by ∆F T and ∆CT .Summing over all N kernel invocations in a model run gives the host-side orchestration overhead :
+
+TOrchestration =
+
+> N
+
+X
+
+> i=1
+
+ ∆F T (i) +I(i) 
+
+> lib
+
+·∆CT (i) +∆ KT (i) (2) Together with device active time aggregated over kernel executions, TDeviceActive = PNk=1 tk, where tk denotes the execution time of kernel k, these quantities define the Host-Device Balance Index :
+
+HDBI = TDeviceActive 
+
+TDeviceActive + TOrchestration 
+
+∈ (0 , 1) (3) 
+
+HDBI → 0 indicates a totally host-bound regime; HDBI →
+
+1 indicates fully device-bound execution. HDBI is a work balance ratio relating device-active time to host orchestration, and not a GPU utilization metric (which measures device-active time against wall-clock latency). Previous work [14] defines THost as inference latency minus GPU active time, but cannot decompose it, while prior kernel-tax analysis [30] reports P ∆KT alone. Eq. 1 provides the full per-kernel decomposition. 
+
+Diagnostic interpretation using HDBI. When HDBI sig-nals a host-bound workload ( HDBI → 0), the TOrchestration 
+
+decomposition identifies which layer of the execution stack dominates and thereby suggests an optimization strategy:  
+
+> •
+
+If P ∆F T + P ∆CT dominates, the bottleneck lies in the software stack (Python dispatch and library front-end TABLE I: Comparisons with Previous Works                                                    
+
+> Work Tax Granularity CPU-GPU Cross-Layer Overhead Workloads Prefill + Decode Hopper-Era HW Evaluation Platform(s)
+> AI Tax [25] Pipeline-level ✗✗Google FaceNet, R-CNN ✗✗Edge data center deployment Framework Tax [14] Coarse residual ✗✗BERT-Base; ResNet-50; DistilBERT; GPT-2; WavLM.
+> ✗✗NVIDIA Pascal, Turing, Ampere. TKLQT / Kernel-Tax View [30] Launch-path only ✓✗Bert-Base-Uncased; XLM-Roberta-Base; GPT-2; Llama-3.2-1B.
+> ✗✓PCIe A100/H100 and tightly-coupled GH200 (prefill-centric). GPU Inference Characteriza-tion [31] Device-centric ✗✗Llama-3-8B; Qwen2.5-7B/-32B; Qwen3-30B-A3B.
+> ✓✗4×NVIDIA A100 80GB (SXM) + Jetson AGX Orin.
+> This Work (TaxBreak) Host-stack attribution:
+> ∆F T ,∆CT ,
+> ∆KT
+> ✓✓Llama-3.2-1B,-3B, OLMoE-1B/7B; Qwen1.5-MoE-A2.7B
+> ✓✓H100 (DGX H100); H200 NVL (single-GPU).
+> (a) Library-mediated (b) Framework-native
+> torch_op torch_op (nn.Linear.__call__) (layer_norm)
+> ↓↓
+> aten::addmm aten::native_layer_norm
+> ↓↓
+> cuBLAS front-end ↓
+> (heuristic, descriptor) ↓↓↓
+> cudaLaunchKernel() cudaLaunchKernel()
+> ↓↓
+> GPU: sm90_xmma_gemm_... GPU: vectorized_layer_<...>
+
+Fig. 3: Dispatch chains for library-mediated and framework-native kernels. For library mediated, cuBLAS front-end contributes ∆CT for Ilib = 1 .overhead), optimizations should target runtime compila-tion (e.g., torch.compile ) or library dispatch paths.  
+
+> •
+
+If N ·T f loor sys dominates, the cost scales with kernel count, and kernel fusion will yield the largest reduction.  
+
+> •
+
+If the per-kernel framework launch overhead ∆KT f w =max(0 , T launch − T f loor sys ) is significant, the driver/run-time path is the bottleneck, with CUDA Graphs or persistent kernels helping amortize cost. 
+
+A. Kernel-Family Taxonomy 
+
+The Ilib indicator gates the ∆CT term in Eq. 2, ensur-ing that vendor library overhead is only charged to library-mediated kernels, and determines how a kernel traverses the software stack (illustrated in Fig. 3):  
+
+> •
+
+Library-mediated (Ilib = 1 ): routed through a vendor library (cuBLAS, cuDNN). Incurs heuristic selection, descriptor setup, and packing before the CUDA launch API, contributing ∆CT > 0. 
+
+> •
+
+Framework-native (Ilib = 0): generated directly by ATen/Inductor (e.g., aten::mul ,
+
+aten::native_layer_norm ) or data-movement ops ( cudaMemcpyAsync , cudaMemset ). No vendor library front-end; Ilib gates ∆CT to zero. 
+
+B. Two-Phase Measurement Pipeline TaxBreak measures the components of Eq. 1 in two phases. Phase 1 captures Python-visible framework overhead from a full-model trace and builds a kernel database. Phase 2 first measures the dynamic system floor with a null-kernel nsys 
+
+run, then replays each unique kernel in isolation to measure dispatch translation, launch-floor cost, and their residuals without queue interference. 
+
+Phase 1: Full-model trace. We execute R profiled iterations after W warm-up runs under PyTorch Profiler (values in Sec-tion IV), which captures timestamped Python/torch operators, ATen operators, CUDA runtime calls, and GPU kernels linked by correlation IDs. From the last profiled iteration, we extract kernel launch sequences and compute framework translation per invocation: 
+
+∆F T (i) = T (i) 
+
+> P y
+
++ Tdispatch base (4) where T (i) 
+
+> P y
+
+= t(i) 
+
+> aten op
+
+−t(i) 
+
+> torch op
+
+is the Python-side dispatch overhead before execution reaches the ATen C++ layer, and 
+
+Tdispatch base is the irreducible framework dispatch cost mea-sured in Phase 2 from framework-native kernels. We also build a kernel database containing each unique kernel’s cleaned name, grid/block configuration, ATen metadata, invocation frequency, and Ilib classification. 
+
+Phase 2: Isolation replay. We first measure T f loor sys with a null-kernel nsys run. Then, for each kernel-database entry, we replay the original ATen operation in isolation under nsys .Kernels sharing identical ATen metadata (operator, shapes, dtypes, scalar arguments), target kernel name, and launch configuration are deduplicated via a global cache, partitioned so that only uncached entries are profiled, saving significant runtime. Each replay is NVTX-scoped and serialized with 
+
+torch.cuda.synchronize() to prevent GPU queue overlap (Fig. 4). After W warm-up iterations, nsys records three times-tamps per invocation j (Fig. 4): tnvtx at line (1), tapi 
+
+(cudaLaunchKernel ) at line (2), and tkernel (GPU exe-cution start) at line (3). For each matched replayed kernel, we nvtx.range_push("aten_dispatch") # t_nvtx (1) execute_operation(op_name, inputs) # t_api (2) nvtx.range_pop() # t_kernel (3) torch.cuda.synchronize() # kernel complete 
+
+Fig. 4: Annotated NVTX ranges around an operator dispatch and kernel execution. 
+
+report the mean of the per-invocation T (j) 
+
+> dispatch
+
+and T (j)
+
+> launch
+
+values over R replay runs. These timestamps map directly to: 
+
+T (j) 
+
+> dispatch
+
+= t(j) 
+
+> api
+
+− t(j)
+
+> nvtx
+
+| {z }
+
+> lines (1)–(2): host dispatch
+
+(5) 
+
+T (j) 
+
+> launch
+
+= t(j) 
+
+> kernel
+
+− t(j)
+
+> api
+
+| {z }
+
+> lines (2)–(3): launch gap
+
+(6) where tnvtx , tapi , and tkernel come from 
+
+NVTX_EVENTS , CUPTI_ACTIVITY_KIND_RUNTIME ,and CUPTI_ACTIVITY_KIND_KERNEL , respectively, linked by correlation ID. 
+
+1) Dispatch baseline: The NVTX range encompasses both ATen dispatch and any vendor-library front-end, so Tdispatch 
+
+conflates them for Ilib =1 kernels. We isolate ∆CT by sub-tracting the dispatch baseline , defined as the median Tdispatch 
+
+of framework-native kernels: 
+
+Tdispatch base = median  {T (k) 
+
+> dispatch
+
+: I(k) 
+
+> lib
+
+= 0 } (7) We then compute 
+
+∆CT = max(0 , T dispatch − Tdispatch base ) (8) Additionally, T f loor sys is the mean T raw launch of an empty C++ 
+
+__global__ null kernel profiled under the same protocol. 
+
+2) Kernel matching: Replay may dispatch a variant that dif-fers from the original trace due to autotuning. After narrowing replay candidates to the target neighborhood, we resolve the final kernel via the following name-based fallback hierarchy, where ¯n denotes the cleaned (canonical) kernel name: match (k) = 
+
+
+
+exact , ¯nreplay = ¯ ntrace 
+
+substring , ¯nreplay ⊆ ¯ntrace 
+
+∨ ¯ntrace ⊆ ¯nreplay 
+
+most-frequent , otherwise (9) IV. E XPERIMENTATION INFRASTRUCTURE 
+
+A. Hardware Setup 
+
+We evaluate on the following NVIDIA GPU platforms:  
+
+> •
+
+H100 platform: Intel Xeon 8480C (PCIe Gen5, 56 cores @ 2.0/3.8 GHz) paired with an NVIDIA H100 (80 GB) GPU in a DGX H100 system.  
+
+> •
+
+H200 platform: Intel Xeon Gold 6538Y+ (32 cores) paired with an NVIDIA H200 NVL (141 GB) GPU. All experiments use a single-GPU Slurm allocation . To provide a fair comparison across platforms, we allocate 6 CPU cores and 32 GB of host memory per GPU on both systems. The 6-core allocation exceeds the single-threaded dispatch path’s needs and provides OS scheduling headroom. 
+
+Measurement . To eliminate cold-start and transient effects, each configuration runs ( W =50) warm-up iterations followed by ( R=150) measured runs, for both Phase 1 and Phase 2. Reported latencies are averaged across runs, and the 95% confidence interval of TOrchestration remains below 0.34 ms across all configurations, indicating stable measurements. 
+
+B. Software Setup 
+
+The software setup uses Python 3.13, PyTorch 2.10, CUDA toolkit 12.6 for runtime libraries and NVIDIA Nsight Sys-tems 12.8.1 ( nsys ) for kernel-level tracing. These traces provide the boundaries needed for the TaxBreak decomposition (framework dispatch, CUDA-library front-end processing, and launch-path intervals). Unless otherwise specified, experiments run in eager mode. 
+
+C. Workloads 
+
+We profile dense and MoE LLMs in BFloat16, including Llama-3.2-1B/-3B [15] (dense) , GPT-2 (124M), and OLMoE-1B/7B, Qwen1.5-MoE-A2.7B (MoEs) . GPT-2 is used for direct comparison with prior TKLQT characterization [30]. V. E XPERIMENTAL RESULTS AND ANALYSIS 
+
+A. End-to-End Prefill and Decode Latency 
+
+We evaluate end-to-end inference in two phases: prefill (TTFT-oriented) and decode (aggregated latency over m out-put tokens). Fig. 5 reports latency across batch size (BS) and sequence length (SL) for dense and MoE workloads on H100/H200. Throughout all subsections, decode values correspond to the total over m=10 output-token decode run. 
+
+Dense-Model Trends. Dense prefill scales primarily with sequence length because attention work grows with prompt length: for Llama-3.2-1B on H100, latency rises from 22 ms at SL=512 to 586 ms at SL=8192 (26.6 ×), while Llama-3.2-3B reaches 827 ms at SL=8192. Batching amortizes fixed overhead effectively in this regime: at SL=512, increasing BS from 1 to 16 raises Llama-3.2-1B prefill latency by only 3.6 × (22 ms to 79 ms). Dense decode behaves differently. At (BS=1/SL=512), generating 10 decode tokens requires 188 ms vs. 22 ms for prefill over the same context. Unlike prefill, decode proceeds iteratively, so latency accumulates across repeated kernel launches, GPU execution, and KV-cache ac-cesses. As sequence length grows, the decode bottleneck shifts toward KV-cache memory traffic, reaching 756 ms at SL=8192. Batch scaling again helps, primarily because device work grows: at SL=512, increasing batch size from 1 to 16 raises decode latency by only 1.3 × while aggregate decode throughput improves 11.9 × (53 tok/s to 634 tok/s), measured over the m = 10 decode window across the batch. 
+
+MoE-Model Trends. MoE prefills and decodes differ qual-itatively because routing introduces many short, dependency-chained kernels. On H100 at BS=1/SL=512, OLMoE-1B/7B takes 260.5 ms in prefill, 11.7 × slower than Llama-3.2-1B despite similar activated parameter count, and dispatches H100 - Prefill ( m = 1 ) H100 - Decode ( m = 10 ) H200 - Prefill ( m = 1 ) H200 - Decode ( m = 10 )
+
+Llama-3.2-1B 1
+
+> 2
+> 4
+> 8
+> 16
+
+Batch Size 
+
+512 
+
+1024 
+
+2048 
+
+4096 
+
+8192 
+
+> Seq Len (tokens)
+
+22 22 26 43 79 
+
+23 39 58 108 218 
+
+46 87 166 324 640 
+
+151 300 592 1176 OOM 
+
+586 1159 OOM OOM OOM 
+
+Llama-3.2-1B · bfloat16 · H100 · (ms) 
+
+22 
+
+1176 1
+
+> 2
+> 4
+> 8
+> 16
+
+Batch Size 
+
+512 
+
+1024 
+
+2048 
+
+4096 
+
+8192 
+
+> Seq Len (tokens)
+
+188 201 205 218 252 
+
+193 206 230 284 389 
+
+220 261 345 498 825 
+
+323 472 764 1360 OOM 
+
+756 1338 OOM OOM OOM 
+
+Llama-3.2-1B · bfloat16 · H100 · (ms) 
+
+188 
+
+1360 1
+
+> 2
+> 4
+> 8
+> 16
+
+Batch Size 
+
+512 
+
+1024 
+
+2048 
+
+4096 
+
+8192 
+
+> Seq Len (tokens)
+
+18 19 24 41 75 
+
+19 36 54 101 194 
+
+43 81 155 303 598 
+
+143 286 564 1121 2249 
+
+555 1105 2202 OOM OOM 
+
+Llama-3.2-1B · bfloat16 · H200 · (ms) 
+
+18 
+
+2249 1
+
+> 2
+> 4
+> 8
+> 16
+
+Batch Size 
+
+512 
+
+1024 
+
+2048 
+
+4096 
+
+8192 
+
+> Seq Len (tokens)
+
+163 167 171 187 219 
+
+165 176 198 247 338 
+
+187 226 300 445 745 
+
+288 432 713 1269 2466 
+
+703 1252 2349 OOM OOM 
+
+Llama-3.2-1B · bfloat16 · H200 · (ms) 
+
+163 
+
+2466 
+
+Llama-3.2-3B 1
+
+> 2
+> 4
+> 8
+> 16
+
+Batch Size 
+
+512 
+
+1024 
+
+2048 
+
+4096 
+
+8192 
+
+> Seq Len (tokens)
+
+36 36 48 87 163 
+
+37 60 111 201 392 
+
+75 143 277 545 1076 
+
+228 453 897 1785 OOM 
+
+827 1651 OOM OOM OOM 
+
+Llama-3.2-3B · bfloat16 · H100 · (ms) 
+
+36 
+
+1785 1
+
+> 2
+> 4
+> 8
+> 16
+
+Batch Size 
+
+512 
+
+1024 
+
+2048 
+
+4096 
+
+8192 
+
+> Seq Len (tokens)
+
+316 313 323 371 438 
+
+312 339 379 485 668 
+
+353 425 550 822 1387 
+
+505 729 1180 2094 OOM 
+
+1107 1937 OOM OOM OOM 
+
+Llama-3.2-3B · bfloat16 · H100 · (ms) 
+
+312 
+
+2094 1
+
+> 2
+> 4
+> 8
+> 16
+
+Batch Size 
+
+512 
+
+1024 
+
+2048 
+
+4096 
+
+8192 
+
+> Seq Len (tokens)
+
+30 30 47 85 162 
+
+32 56 102 199 380 
+
+71 137 264 521 1042 
+
+218 436 864 1739 3510 
+
+788 1575 3171 OOM OOM 
+
+Llama-3.2-3B · bfloat16 · H200 · (ms) 
+
+30 
+
+3510 1
+
+> 2
+> 4
+> 8
+> 16
+
+Batch Size 
+
+512 
+
+1024 
+
+2048 
+
+4096 
+
+8192 
+
+> Seq Len (tokens)
+
+276 272 291 318 396 
+
+281 300 348 440 620 
+
+319 378 511 754 1349 
+
+462 674 1104 2043 4021 
+
+1033 1819 3467 OOM OOM 
+
+Llama-3.2-3B · bfloat16 · H200 · (ms) 
+
+272 
+
+4021 
+
+OLMoE-1B/7B 1
+
+> 2
+> 4
+> 8
+> 16
+
+Batch Size 
+
+512 
+
+1024 
+
+2048 
+
+4096 
+
+> Seq Len (tokens)
+
+260 279 279 289 327 
+
+270 273 289 340 440 
+
+289 312 372 504 780 
+
+336 433 636 1044 1891 
+
+OLMoE-1B-7B-0924 · bfloat16 · H100 · (ms) 
+
+260 
+
+1891 1
+
+> 2
+> 4
+> 8
+> 16
+
+Batch Size 
+
+512 
+
+1024 
+
+2048 
+
+4096 
+
+> Seq Len (tokens)
+
+2157 2220 2565 2356 2385 
+
+2188 2170 2539 2385 2530 
+
+2191 2216 2408 2767 2873 
+
+2271 2386 2646 3006 4005 
+
+OLMoE-1B-7B-0924 · bfloat16 · H100 · (ms) 
+
+2157 
+
+4005 1
+
+> 2
+> 4
+> 8
+> 16
+
+Batch Size 
+
+512 
+
+1024 
+
+2048 
+
+4096 
+
+> Seq Len (tokens)
+
+217 231 235 267 291 
+
+229 228 249 302 407 
+
+236 263 327 460 733 
+
+295 397 591 995 1817 
+
+OLMoE-1B-7B-0924 · bfloat16 · H200 · (ms) 
+
+217 
+
+1817 1
+
+> 2
+> 4
+> 8
+> 16
+
+Batch Size 
+
+512 
+
+1024 
+
+2048 
+
+4096 
+
+> Seq Len (tokens)
+
+1754 1832 2102 2126 2241 
+
+1778 1796 2073 2164 2296 
+
+1779 1865 2190 2335 2636 
+
+1819 1989 2426 2852 3725 
+
+OLMoE-1B-7B-0924 · bfloat16 · H200 · (ms) 
+
+1754 
+
+3725 
+
+Qwen1.5-MoE-A2.7B 1
+
+> 2
+> 4
+> 8
+> 16
+
+Batch Size 
+
+512 
+
+1024 
+
+2048 
+
+4096 
+
+8192 
+
+> Seq Len (tokens)
+
+439 433 431 477 532 
+
+434 444 464 555 689 
+
+468 486 583 780 1143 
+
+551 678 964 1544 OOM 
+
+909 1388 OOM OOM OOM 
+
+Qwen1.5-MoE-A2.7B · bfloat16 · H100 · (ms) 
+
+431 
+
+1544 1
+
+> 2
+> 4
+> 8
+> 16
+
+Batch Size 
+
+512 
+
+1024 
+
+2048 
+
+4096 
+
+8192 
+
+> Seq Len (tokens)
+
+1020 1170 1284 1627 1925 
+
+1019 1255 1357 1811 2269 
+
+1059 1210 1492 1897 2607 
+
+1154 1405 1855 2600 OOM 
+
+1503 2176 OOM OOM OOM 
+
+Qwen1.5-MoE-A2.7B · bfloat16 · H100 · (ms) 
+
+1019 
+
+2607 1
+
+> 2
+> 4
+> 8
+> 16
+
+Batch Size 
+
+512 
+
+1024 
+
+2048 
+
+4096 
+
+8192 
+
+> Seq Len (tokens)
+
+367 374 397 424 483 
+
+376 396 430 498 629 
+
+406 448 536 711 1071 
+
+491 632 909 1469 2614 
+
+839 1324 2288 OOM OOM 
+
+Qwen1.5-MoE-A2.7B · bfloat16 · H200 · (ms) 
+
+367 
+
+2614 1
+
+> 2
+> 4
+> 8
+> 16
+
+Batch Size 
+
+512 
+
+1024 
+
+2048 
+
+4096 
+
+8192 
+
+> Seq Len (tokens)
+
+876 998 1115 1415 1685 
+
+895 1090 1174 1582 1906 
+
+919 1053 1315 1665 2217 
+
+992 1242 1667 2409 3876 
+
+1337 1981 3110 OOM OOM 
+
+Qwen1.5-MoE-A2.7B · bfloat16 · H200 · (ms) 
+
+876 
+
+3876 
+
+Fig. 5: End-to-end latency across dense and MoE LLM workloads. Heatmaps show end-to-end latency across batch sizes and input sequence lengths during prefill ( m = 1 ) and decode ( m = 10 ) on H100/H200 systems, where m denotes the number of generated tokens. The decode heatmaps report total latency aggregated over a 10-token decode window. OLMoE-1B/7B does not support SL=8192 context length. 13,741 kernels vs. 850 for the dense model. Qwen1.5-MoE-A2.7B is even more fragmented at the same point (22,558 ker-nel launches). In decode, host bottleneck becomes dominant: OLMoE-1B/7B reaches 2157 ms at BS=1/SL=512 (11.5 ×
+
+slower than dense Llama-3.2-1B) and remains nearly flat across context length, varying only from 2081 ms (SL=512) to 2164 ms (SL=4096). This weak context sensitivity reflects a dispatch-dominated regime: at BS=4/SL=2048 (m=10), OLMoE-1B/7B dispatches 9,305 kernels per token (Table II); with a per-kernel floor of about 4.7 μs (Table III), launch-path cost alone contributes about 44 ms per token before framework dispatch is added. The main levers are therefore reducing kernel count or amortizing the submission path. 
+
+Cross-Platform Comparison. H200 improves dense prefill most at short context ( ≈18%) and narrows toward ≈5% at long context due to compute saturation. For decode, H200 delivers 12-15% lower dense latency across sequence lengths and 14-19% lower MoE latency. However, these gains do not remove the dominant MoE bottleneck: absolute latency improves, but routing- and dispatch-related host overhead remains first-order. 
+
+Key Takeaway #1. Dense models shift from host-bound at small batches to compute- or memory-bound as workload grows. MoE decode does not: its latency stays dominated by 1 2 4 8 16 
+
+Batch Size 
+
+0.00 
+
+0.25 
+
+0.50 
+
+0.75 
+
+1.00 
+
+> Idle Fraction
+> Llama-3.2-3B
+
+Prefill 
+
+1 2 4 8 16 
+
+Batch Size 
+
+Decode 
+
+1 2 4 8 16 
+
+Batch Size 
+
+0.00 
+
+0.25 
+
+0.50 
+
+0.75 
+
+1.00 
+
+> Idle Fraction
+> Qwen1.5-MoE-A2.7B
+
+Prefill 
+
+1 2 4 8 16 
+
+Batch Size 
+
+Decode 
+
+SL: 512 1024 2048 4096 8192 
+
+Fig. 6: Idle fraction across batch size and sequence length on H200 . The idle fraction indicates the portion of latency during which the GPU is not fully executing kernels. 
+
+host-side routing and dispatch, so hardware upgrades reduce absolute latency but do not change the bottleneck. Metric Llama-3.2-1B Llama-3.2-3B OLMoE-1B/7B Qwen1.5-MoE-A2.7B                     
+
+> Total kernel launches 8,475 15,369 93,053 66,951 Unique kernel names 77 76 222 223 Kernels per token 847.5 1,536.9 9,305.3 6,695.1 Diversity ratio 0.0091 0.0049 0.0024 0.0033 GPU utilization (%) 58.9 67.6 15.5 27.7
+
+TABLE II: Kernel fragmentation for dense vs. MoE models on H100 (BS=4/SL=2048, m=10). 
+
+B. MoE Latency: Idle Fraction and Kernel Fragmentation 
+
+While aggregate latency reveals that MoE decode is persis-tently host-bound, it cannot identify where inference time is lost. We define the GPU idle fraction (captures non-compute portion) as: (( Te2e − TDeviceActive )/T e2e ), where Te2e is the wall-clock inference latency. Fig. 6 plots idle fraction across batch sizes and sequence lengths on H200, comparing between prefill and decode regimes. 
+
+Llama-3.2-3B. The dense model provides a baseline where orchestration overhead rapidly amortizes as workloads scale. During prefill execution, increasing sequence length or batch size expands the GEMM workload per kernel launch, causing the idle fraction to rapidly drop from 59.2% (BS=1/SL=512) to 0.8% (BS=1/SL=8192). Beyond BS ≥ 4 and SL ≥ 2048 ,idle fraction remains below 2.5%, indicating that execution is effectively compute-bound. When decode is included ( m=10), idle fraction rises due to repeated small-batch kernel bursts (78.5% at BS=1/SL=512), but batching largely mitigates this effect, dropping below 5% once BS ≥ 8 and SL ≥ 2048 .
+
+Qwen1.5-MoE-A2.7B. The MoE’s idle fractions remain high across the sweep, indicating that inference does not become compute-bound even at large batch sizes and se-quence lengths. In the prefill regime, the idle fraction at BS=1 ranges from 77.8% (SL=512) to 32.8% (SL=8192), comparable to the decode idle fraction of the dense model. Increasing the batch size only partially reduces this overhead: even at BS=16/SL=4096, Qwen1.5-MoE-A2.7B exhibits an 8.7% idle fraction, compared to 0.2% for Llama-3.2-3B under the same configuration (ratio of 44 ×). This disparity persists during decode. At SL=512, increasing batch size from 1 to 16 reduces MoE idle fraction only from 81.5% to 73.3%. At BS=1/SL=1024, Llama-3.2-3B exhibits 20.5% idle fraction while Qwen1.5-MoE-A2.7B reaches 75.7% (3.7 × higher). Such patterns appear in single-GPU setting and cannot be attributed to inter-device expert communication. They point to non-compute overhead associated with expert routing and fragmented dispatch, which we next analyze using TaxBreak .
+
+C. TaxBreak Results 
+
+Kernel Fragmentation in MoE. Table II quantifies the structural source of MoE’s persistently high idle fraction. At a fixed decode configuration (BS=4/SL=2048, m=10) on H100, OLMoE-1B/7B dispatches 93,053 GPU kernels per inference - 11 × vs. Llama-3.2-1B (8,475) and 6 × vs. Llama-3.2-3B (15,369). Qwen1.5-MoE-A2.7B similarly dispatches 66,951 kernels (8 × Llama-3.2-1B). Normalized per output token, OLMoE-1B/7B requires 9,305 kernel launches per token vs. 848 for Llama-3.2-1B (an 11 × difference). Despite this higher launch volume, the MoE kernel diversity ratio (unique names/-total launches) is lower : 0.002 for OLMoE-1B/7B vs. 0.009 for Llama-3.2-1B, confirming that MoE fragmentation arises from many repeated invocations of a small set of routing and expert-GEMM kernels rather than from architectural heterogeneity. This launch explosion is consistent with OLMoE-1B/7B’s 15.5% GPU utilization (vs. 58.9% for Llama-3.2-1B). Because dispatch is single-threaded, each additional kernel adds host-path cost; when kernels complete faster than dispatch, the GPU can become underfed. These results suggest that faster memory alone is unlikely to remove MoE’s host-bound behavior in such settings. 
+
+Key Takeaway #2. At the measured decode configura-tion (BS=4/SL=2048, m=10), MoE models dispatch 8-11 ×
+
+more GPU kernels per output token than dense models of comparable active parameter count. This launch inflation stems from repeated invocations of a small set of routing and expert-GEMM kernels, which is not readily amortized by larger batches or faster memory. Unlike dense models, MoE inference remains persistently host-bound during decode, even at BS=16, since each token requires an order-of-magnitude more host-side dispatch work, which persists regardless of compute capacity or batch size. 
+
+Tfloor sys and ∆KT fw Characterization . The null-kernel measurements in Table III indicate that T f loor sys is small and stable across Hopper platforms. We next ask whether real kernels launch close enough to that floor, for it to serve as a meaningful irreducible baseline. To answer that question, we decompose observed launch latency into the hardware floor 
+
+T f loor sys and a residual framework-attributable term, ∆KT f w =max(0 , T launch − T f loor sys ), and report the result by kernel family in Table IV.             
+
+> GPU avg p50 p5 p95
+> H100 4.707 4.578 4.260 5.396 H200 4.503 4.452 4.177 4.909
+
+TABLE III: Null-kernel T f loor sys (μs) measured in isolation. 
+
+Table IV shows that most scan, reduction, and elementwise families launch close to T f loor sys , with median residuals below 0.6 μs and typical deviations of only 7-12% above the floor. This supports the use of T f loor sys as the irreducible launch baseline for the majority of kernel invocations. The main deviations occur in GEMM families: cuBLAS reaches 1.88 μs(40% above T f loor sys ) for Llama-3.2-3B and 1.70 μs (36%) for OLMoE-1B/7B, while nvJit GEMMs also sit above the floor. Thus, Table IV supports the intended split: T f loor sys captures the hardware floor common to all launches, and ∆KT f w 
+
+captures the family-dependent software excess above that floor. 
+
+p95 value for Llama-3.2-3B nvjet GEMM family reaches 18.58 μs despite a much lower median ( p50 ). We interpret this as a long-tail launch anomaly, likely reflecting variant-Llama-3.2-3B ( μs) OLMoE-1B/7B ( μs) Kernel Family p50 p95 ∆KT f w ↑ p50 p95 ∆ KT f w ↑
+
+Tfloor sys (null) 4.75 4.75 – – 4.73 4.73 – –Scan (prefix) 5.07 5.16 0.32 7% 5.12 5.13 0.40 8% Elem. (unroll) 5.11 5.28 0.36 8% 5.11 5.20 0.38 8% Elem. (vector) 5.13 5.38 0.38 8% 5.30 5.49 0.58 12% Reduce 5.30 5.30 0.55 12% 5.07 5.46 0.34 7% Elem. (generic) 5.31 5.46 0.56 12% 5.31 5.58 0.58 12% GEMM (nvjett) 5.93 18.58 1.18 25% 5.57 6.17 0.84 18% GEMM (cuBLAS) 6.63 6.63 1.88 40% 6.43 6.43 1.70 36% 
+
+TABLE IV: Per-family launch latency (in μs) on H100 relative to the floor T f loor  
+
+> sys
+
+for Llama-3.2-3B and OLMoE-1B/7B (BS=1/SL=512; prefill). Most scan, reduction, and elementwise families remain close to the floor, while GEMM families show the highest ∆KT f w . The T f loor sys row reports the in-context replay floor, which differs slightly from the stan-dalone measurement in Table III ( ≈0.04 μs) due to process-level CUDA context state. 1 2 4 8 16     
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> HDBI Score
+> Device
+> Host
+> 0.25
+> 0.32
+> 0.44
+> 0.60
+> 0.74
+> HDBI
+> 124816
+> 10 4
+> 10 5
+> 10 6
+> TKLQT ( s)
+> TKLQT
+
+(a) HDBI vs. TKLQT. HDBI crosses the host/device boundary near BS = 8 , while TKLQT rises sharply as the GPU becomes saturated in the same region. 1 2 4 8 16           
+
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> TOrchestration  (ms)  5.04
+> 5.51 5.48 5.46 5.52
+> Host Overhead
+> 124816
+> 0.0
+> 2.5
+> 5.0
+> 7.5
+> 10.0
+> 12.5
+> 15.0
+> TDeviceActive  (ms)
+> TDeviceActive
+> TOrchestration ΔFT py ΔFT dispatch Tsys
+
+(b) Host orchestration decomposition vs. device-active time. 
+
+Fig. 7: Host vs device behavior for GPT-2 (SL=512) across batch sizes on H200. 
+
+selection or framework/runtime replay effects rather than a change in the underlying floor. 
+
+GPT-2 Case Study. We use GPT-2 on H200 to compare 
+
+TaxBreak against prior TKLQT-based characterization [30]. Fig. 7a shows that HDBI rises monotonically with batch size, from 0.25 (BS=1) to 0.74 (BS=16), placing the host-to-device crossover between BS=4 and BS=8. Fig. 7b explains the source of that transition. TOrchestration 
+
+stays nearly flat across batch sizes ranging from 5.04 ms (BS=1) to 5.52 ms (BS=16). This batch-size invariance is con-sistent with a serial dispatch path: larger batches increase GPU work without materially changing host submission behavior. Normalizing by kernel count (376 to 394 across batch sizes) yields a per-kernel host cost of ≈13.7 μs that is effectively constant ( ±2.3%), confirming that TOrchestration scales lin-early with N at a fixed per-dispatch overhead. Instead, the dominant change is in device work: TDeviceActive rises from 1.66 ms (BS=1) to 15.43 ms (BS=16). Within host decomposi-tion, the H200 GPT-2 run is also notably stable: TP y increases only from 0.50 ms to 0.68 ms, Tdispatch base stays within 2.89-3.11 ms, ∆CT remains zero for this workload, and the T f loor sys 
+
+contribution remains nearly constant at 1.65-1.80 ms. This zero-∆CT result reflects that GPT-2’s matrix-multiply kernels are emitted as framework-native nvjet /gemv2T rather than cuBLAS/cuDNN, so Ilib = 0 and ∆CT is gated to zero. This behavior also clarifies the relationship between HDBI and TKLQT (Fig. 7a). Both metrics capture the same regime shift, but TKLQT rises much more sharply at larger batch sizes because it includes queue delay once the GPU becomes more occupied. HDBI remains interpretable across both regimes because it reflects the balance between TDeviceActive and 
+
+TOrchestration rather than the exposed launch path alone. For GPT-2 on H200, TaxBreak shows that the crossover is driven by increasing device work while host orchestration remains nearly flat and is dominated by Tdispatch base , with no hidden vendor-library contribution. 
+
+TOrchestration and HDBI Characterization . Fig. 8 illus-trates the H200 characterization TOrchestration , TDeviceActive ,and HDBI across sequence lengths and batch sizes. Decode values are aggregated over the m=10 autoregressive steps, hence the values reflect cumulative per-token execution. The trend is a progressive divergence between dense and MoE execution as the workload moves from prefill into decode. At BS=1/SL=512 on H200, total TOrchestration for the m=10 decode window is 102.13 ms for Llama-3.2-1B and 188.27 ms for Llama-3.2-3B, compared with 10.5 ms and 17.6 ms, respectively, in single-step prefill ( m=1). The per-step orchestration cost is nearly identical, with the decode totals implying ≈10.2 ms and ≈18.8 ms per step, respectively. This invariance is consistent with the kernel dispatch data: Llama-3.2-1B issues 850 kernel launches in prefill and 8,437 over ten decode steps ( ≈844 per step), showing that for a fixed dense architecture in eager mode, the dispatch count N per forward pass is approximately shape-invariant. Therefore, the ≈10 ×
+
+growth in total TOrchestration reflects the multiplicative effect of m=10 steps. HDBI nevertheless drops sharply - from 0.37 to 0.23 for Llama-3.2-1B, and from 0.41 to 0.24 for Llama-3.2-3B - because per-step TDeviceActive is much smaller in decode (processing one new token per step) than in prefill (processing 512 tokens in parallel), shifting the balance toward host-visible execution. That host-bound shift does not persist indefinitely for dense models. At BS=1/SL=512, the smallest decode case, dense models are most host-visible (HDBI ≈0.23). The larger decode cases at BS=4/SL=512, BS=1/SL=4096, and espe-cially BS=4/SL=4096, move back toward device-dominant execution as per-step GPU work grows with batch size and context length. TOrchestration grows much more slowly than 
+
+TDeviceActive across these points, and HDBI rises corre-spondingly. The dense-model trajectory is thus moderately balanced in prefill (HDBI ≈0.37-0.41), host-visible at small b1                                                  
+
+> 512 b4
+> 512 b1
+> 4k b4
+> 4k b1
+> 512 b4
+> 512 b1
+> 4k b4
+> 4k b1
+> 512 b4
+> 512 b1
+> 4k b4
+> 4k b1
+> 512 b4
+> 512 b1
+> 4k b4
+> 4k
+> 0
+> 200
+> 400
+> 600
+> 800
+> Prefill latency (ms)
+> Prefill ( =)
+> Llama-3.2-1B Llama-3.2-3B OLMoE-1B-7B Qwen1.5-MoE-A2.7B
+> b1
+> 512 b4
+> 512 b1
+> 4k b4
+> 4k b1
+> 512 b4
+> 512 b1
+> 4k b4
+> 4k b1
+> 512 b4
+> 512 b1
+> 4k b4
+> 4k b1
+> 512 b4
+> 512 b1
+> 4k b4
+> 4k
+> 0
+> 500
+> 1000
+> 1500
+> 2000
+> 2500
+> Aggregate decode latency (ms)
+> Decode ( =)
+> Llama-3.2-1B Llama-3.2-3B OLMoE-1B-7B Qwen1.5-MoE-A2.7B
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> HDBI
+> 0.37
+> 0.63
+> 0.93
+> 0.97
+> 0.41
+> 0.69
+> 0.92
+> 0.97
+> 0.14 0.17
+> 0.27
+> 0.42
+> 0.14 0.16
+> 0.29
+> 0.55
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> HDBI
+> 0.23
+> 0.31
+> 0.63
+> 0.85
+> 0.24
+> 0.34
+> 0.60
+> 0.83
+> 0.10 0.11 0.14
+> 0.23
+> 0.15 0.16
+> 0.24
+> 0.39
+> Python Dispatch CUDA lib T_sys HDBI
+
+Fig. 8: H200 TOrchestration and HDBI characterization across dense and MoE workloads. Stacked bars decompose 
+
+TOrchestration into Python, dispatch, CUDA-library, and Tsys contributions; adjacent bars show TDeviceActive ; diamonds show HDBI. Prefill uses m=1. Decode bars and HDBI points are totals aggregated over the matched m=10 decode run. Note: y-axis scales are different between panels; for cross-panel absolute-time comparisons use the HDBI diamonds with the same scale. 
+
+decode (HDBI ≈0.23-0.24), then increasingly device-dominant as batch and context scale. MoE follows a different trajectory. It starts host-bound in prefill and remains host-bound as decode scales. At BS=1/SL=512 on H200, Qwen1.5-MoE-A2.7B and OLMoE-1B/7B prefill sit at HDBI ≈0.15, with TOrchestration far larger than TDeviceActive (448.8 ms vs. 75.9 ms for Qwen1.5-MoE-A2.7B; 273 ms vs. 46.1 ms for OLMoE-1B/7B). Decode at the same point ( m=10) amplifies that gap sharply: Qwen1.5-MoE-A2.7B reaches 895.5 ms of TOrchestration with HDBI=0.15, while OLMoE-1B/7B reaches 1655 ms with HDBI=0.1. More importantly, unlike dense decode, the MoE decode cases at BS=4/SL=512, BS=1/SL=4096, and BS=4/SL=4096 still do not return to a balanced regime: host orchestration remains dominant and HDBI stays well below the dense-model values throughout the sweep. The dominant scaling trend is therefore not simply that decode is slower, but that MoE sustains host-boundedness over a wider region. 
+
+Key Takeaway #3. TOrchestration and HDBI together re-veal dense models become host-visible at small decode but re-turn toward device-dominant as workload size grows, whereas MoE models remain host-bound from prefill to decode and persist at larger decode configurations. The key optimization depends on the trend in boundedness: reduce device work for dense long-context decode, but reduce routing- and launch-fragmentation overhead for MoE. 
+
+Eager vs. FlashAttention-2. Fig. 9 contrasts eager ex-ecution vs. FlashAttention-2 (FA2) [11] for Llama-3.2-1B on H200 using TaxBreak . At smaller configuration (BS=1/SL=512), FA2 reduces end-to-end latency from 19.5 ms to 18.1 ms (7.2%) and lowers TOrchestration from 9.8 ms to 9.1 ms (7.1%). Despite improving absolute latency, FA2 removes device work faster than host overhead, which causes HDBI to decrease from 0.38 to 0.33 even as both 
+
+TOrchestration and TDeviceActive improve in absolute terms. At the larger configuration (BS=8/SL=2048), the perfor-mance impact is much larger: FA2 reduces end-to-end latency 1x512 8x2048   
+
+> 0
+> 100
+> 200
+> 300
+> Runtime (ms)
+> Performance
+> 1x512 8x2048
+> 0.0
+> 2.5
+> 5.0
+> 7.5
+> 10.0
+> 12.5
+> TOrchestration  (ms)
+> Host Overhead
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Util (%)
+> 32
+> 98
+> 26
+> 96
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> HDBI
+> 0.38
+> 0.96
+> 0.33
+> 0.90
+> Eager FA2
+
+Fig. 9: Eager vs. FlashAttention-2 for Llama-3.2-1B on H200. Bars show end-to-end runtime and TOrchestration ;lines show GPU utilization and HDBI for BS=1/SL=512 and BS=8/SL=2048. from 303.9 ms to 95.5 ms (68.6%) while also reducing 
+
+TOrchestration from 11.7 ms to 8.9 ms (24%). GPU utilization remains effectively saturated in both modes (97.9% eager vs. 96.5% FA2), showing that the primary benefit at long context is not improved occupancy but a large reduction in device-active work per token - FA2’s tiled, online-softmax kernel avoids materializing the full N ×N attention matrix to HBM, substantially reducing memory traffic by eliminating intermediate read-back round trips. The HDBI decrease (0.96 to 0.90) reflects FA2 cutting TDeviceActive faster than host orchestration, enlarging the host-visible share despite both absolute values improving. This paired result illustrates the intended use of TaxBreak : a boundedness ratio alone can look counterintuitive after an optimization, whereas the decompo-sition shows that FA2 is succeeding mainly as a device-side optimization rather than a host-overhead reduction. FA2 also exemplifies the kernel-fusion prescription from the 
+
+TaxBreak diagnostic: by collapsing the multi-kernel attention sequence into a single fused kernel, FA2 reduces dispatch count from 850 to 791 ( −7%) at (BS=1/SL=512) and from 903 to 731 ( −19%) at (BS=8/SL=2048). The corresponding 
+
+N · T f loor sys term drops by 0.3 ms and 0.8 ms respectively, consistent with the eliminated launches × T f loor sys .Llama = Llama-3.2-1B; Qwen = Qwen1.5-MoE-A2.7B; P = Prefill; D = Decode 0 250 500 750 1000 1250 1500 1750    
+
+> Latency (ms)
+> Llama-P
+> Llama-D
+> Qwen-P
+> Qwen-D
+> Llama-P
+> Llama-D
+> Qwen-P
+> Qwen-D
+> BS=1, SL=512
+> BS=4, SL=2048
+> H100 H200 H100 H200
+
+Fig. 10: Latency decomposition: H100 vs. H200. Stacked bars show TOrchestration (blue) and TDeviceActive (green) for each H100/H200 pair. Darker = H100; lighter =H200. TOrchestration is consistently shorter on H200, while 
+
+TDeviceActive is comparable or slightly longer. Decode is aggregated latency over 10 output tokens. 
+
+Key Takeaway #4. FlashAttention-2 improves both host-visible orchestration and end-to-end latency, but the dominant win at larger sequence lengths comes from reducing device-side attention work rather than from eliminating host over-head. TaxBreak and HDBI make this distinction explicit: FA2 lowers TOrchestration modestly, while a sharper reduction in GPU work drives the much larger runtime collapse. 
+
+VI. CPU S INGLE -T HREAD PERFORMANCE IMPACT 
+
+Eager-mode dispatch is single-threaded, so TOrchestration 
+
+scales with kernel count N on one CPU core. Our two platforms provide a useful controlled comparison. Both use Hopper-generation GPUs, but pair them with different host CPUs: H100 with an Intel Xeon 8480C (Sapphire Rapids, 2.0/3.8 GHz turbo) and H200 with an Intel Xeon Gold 6538Y+ (Emerald Rapids, 2.2/4.0 GHz turbo). H200 GPU runs at a lower clock (1785 MHz vs. 1980 MHz, −9.9 %); end-to-end speedup cannot be attributed to faster GPU compute. The TOrchestration /TDeviceActive decomposition allows us to separate host-dispatch effects from device-side effects with the same allocations (6 CPU cores, 32 GB, single GPU). Fig. 10 compares TOrchestration and TDeviceActive 
+
+(BS=1/SL=512 and BS=4/SL=2048) for Llama-3.2-1B and Qwen1.5-MoE-A2.7B. Three findings: 1) Orchestration overhead tracks CPU single-thread speed. TOrchestration is 10-29% lower on H200. Since GPU is the same and H200 GPU clock is lower, this reduction is due to faster host-side dispatch on Emerald Rapids. TDeviceActive is comparable on H200, ruling out GPU memory bandwidth as the source of improvement. 2) Decode amplifies CPU effect. For Llama-3.2-1B, de-code reduces TOrchestration by 29% on H200, and 14% in prefill, because decode issues 10 × more kernel launches (8,437 vs. 850). Per-dispatch savings thus compound much more strongly in decode. 3) For host-bound MoE, CPU gains outweigh GPU penalties. Qwen1.5-MoE-A2.7B on H200 is 8% slower in ( TDeviceActive ) yet 13-14% faster end-to-end.            
+
+> L = Llama-3.2-1B; Q = Qwen1.5-MoE-A2.7B; P = Prefill; D = Decode; Trailing digits = BS/SL 0.0 0.2 0.4 0.6 0.8 1.0
+> HDBI
+> −15.0
+> −12.5
+> −10.0
+> −7.5
+> −5.0
+> E2E Latency   (%)
+> LP1/512
+> LD1/512
+> QP1/512
+> QD1/512
+> LP4/2k
+> LD4/2k QP4/2k
+> QD4/2k
+> Host-bound Device-bound
+> Llama-P Llama-D Qwen-P Qwen-D BS1/SL512 (filled) BS4/SL2048 (open)
+
+Fig. 11: E2E latency gain (H100 →H200) vs. HDBI. Marker shape encodes model ×phase; filled is BS=1/SL=512, hollow is BS=4/SL=2048. Host-bound points show largest gains; device-bound points show smaller gains. Decode is aggregate latency over 10 output tokens. With HDBI ≈0.12, TOrchestration is ≈7× larger than 
+
+TDeviceActive , so host-side improvement dominates the device-side loss. Dense Llama-3.2-1B sees smaller end-to-end gains because it is less host-bound. This relationship holds at higher load, but its effect is gated by HDBI (Fig. 11). Llama-3.2-1B prefill at BS=4/SL=2048 is strongly device-bound (HDBI=0.93), so a 13% drop in TOrchestration yields only a 5% end-to-end gain. Qwen1.5-MoE-A2.7B at the same point remains host-bound (HDBI=0.24), and reducing TOrchestration still gives an 8% latency gain. The pattern follows in decode: host-bound points benefit most from the faster CPU, while device-bound points see attenuated gains because TDeviceActive dominates. 
+
+Key Takeaway #5. For host-bound LLM inference, es-pecially MoE decode, CPU single-thread performance is a first-order design parameter. A faster host CPU reduces 
+
+TOrchestration by 10-29% and can improve end-to-end latency even when paired with a slower-clocked GPU. The effect weakens as the workload becomes more device-bound. 
+
+VII. C ONCLUSION AND OUTLOOK 
+
+This work presents the TaxBreak methodology, a trace-driven decomposition of host-visible inference overhead into framework translation, CUDA-library translation, and launch-path components. Across dense and MoE LLM workloads on NVIDIA H100 and H200 systems, the results show that pre-vious approaches are insufficient to identify key performance impediments and potential optimization targets. TaxBreak can identify whether the key opportunity lies in the software stack, the launch path, or the device-side. The HDBI provides a diagnostic boundedness metric to help guide optimization. This study has some limitations. The methodology is eval-uated on NVIDIA GPUs and is dependent on CUDA tracing interfaces. Also, replay-based attribution can be imperfect for highly dynamic, autotuned, or synchronization-heavy kernels. In addition, HDBI is a diagnostic work ratio, not an optimiza-tion objective in itself, and should be interpreted alongside absolute latency and TaxBreak decomposition. For host-bound workloads, CPU single-thread performance is a first-order parameter: faster single-core execution reduces TOrchestration by 10-29%, whereas additional cores provide no benefit. The cross-platform (H100 vs. H200) comparison (Section VI) shows that for MoE inference, a faster host CPU can improve end-to-end latency by 11-14% even when paired with a slower-clocked GPU. This effect persists across prefill and decode, and weakens as HDBI rises above ≈0.3. Our future work will focus on more diverse AI workloads and plat-forms (NVIDIA GB200/GB300 and AMD MI300A/MI300X). REFERENCES [1] Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Florencia Leoni Aleman, Diogo Almeida, Janko Altenschmidt, Sam Altman, Shyamal Anadkat, et al. Gpt-4 technical report. arXiv preprint arXiv:2303.08774 , 2023. [2] Amey Agrawal, Nitin Kedia, Jayashree Mohan, Ashish Panwar, Nipun Kwatra, Bhargav S Gulavani, Ramachandran Ramjee, and Alexey Tu-manov. Vidur: A large-scale simulation framework for llm inference. 
+
+Proceedings of Machine Learning and Systems , 6:351–366, 2024. [3] Amey Agrawal, Nitin Kedia, Ashish Panwar, Jayashree Mohan, Nipun Kwatra, Bhargav Gulavani, Alexey Tumanov, and Ramachandran Ram-jee. Taming {Throughput-Latency } tradeoff in {LLM } inference with 
+
+{Sarathi-Serve }. In 18th USENIX Symposium on Operating Systems Design and Implementation (OSDI 24) , pages 117–134, 2024. [4] Osayamen Jonathan Aimuyo, Byungsoo Oh, and Rachee Singh. Flashd-moe: Fast distributed moe in a single kernel. arXiv preprint arXiv:2506.04667 , 2025. [5] Jason Ansel, Edward Yang, Horace He, Natalia Gimelshein, Animesh Jain, Michael Voznesensky, Bin Bao, Peter Bell, David Berard, Evgeni Burovski, et al. Pytorch 2: Faster machine learning through dynamic python bytecode transformation and graph compilation. In Proceedings of the 29th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 2 , 2024. [6] James Bradbury, Roy Frostig, Peter Hawkins, Matthew James Johnson, Chris Leary, Dougal Maclaurin, George Necula, Adam Paszke, Jake VanderPlas, Skye Wanderman-Milne, et al. Jax: Autograd and xla. 
+
+Astrophysics Source Code Library , pages ascl–2111, 2021. [7] Michael Buch, Zahra Azad, Ajay Joshi, and Vijay Janapa Reddi. Ai tax in mobile socs: End-to-end performance analysis of machine learning in smartphones. In 2021 IEEE International Symposium on Performance Analysis of Systems and Software (ISPASS) , pages 96–106. IEEE, 2021. [8] Mark Chen. Evaluating large language models trained on code. arXiv preprint arXiv:2107.03374 , 2021. [9] Tianqi Chen, Thierry Moreau, Ziheng Jiang, Lianmin Zheng, Eddie Yan, Haichen Shen, Meghan Cowan, Leyuan Wang, Yuwei Hu, Luis Ceze, et al. {TVM }: An automated {End-to-End } optimizing compiler for deep learning. In 13th USENIX Symposium on Operating Systems Design and Implementation (OSDI 18) , pages 578–594, 2018. [10] Krishna Teja Chitty-Venkata, Sylvia Howland, Golara Azar, Daria Soboleva, Natalia Vassilieva, Siddhisanket Raskar, Murali Emani, and Venkatram Vishwanath. Moe-inference-bench: Performance evaluation of mixture of expert large language and vision models. In Proceedings of the SC’25 Workshops of the International Conference for High Performance Computing, Networking, Storage and Analysis , 2025. [11] Tri Dao. Flashattention-2: Faster attention with better parallelism and work partitioning. arXiv preprint arXiv:2307.08691 , 2023. [12] Tri Dao, Dan Fu, Stefano Ermon, Atri Rudra, and Christopher R´ e. Flashattention: Fast and memory-efficient exact attention with io-awareness. Advances in neural information processing systems ,35:16344–16359, 2022. [13] Michael Davies, Neal Crago, Karthikeyan Sankaralingam, and Christos Kozyrakis. Liminal: Exploring the frontiers of llm decode performance. 
+
+arXiv preprint arXiv:2507.14397 , 2025. [14] Jared Fernandez, Jacob Kahn, Clara Na, Yonatan Bisk, and Emma Strubell. The framework tax: Disparities between inference efficiency in nlp research and deployment. arXiv preprint arXiv:2302.06117 , 2023. [15] Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Alex Vaughan, et al. The llama 3 herd of models. arXiv preprint arXiv:2407.21783 , 2024. [16] Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Ruoyu Zhang, Runxin Xu, Qihao Zhu, Shirong Ma, Peiyi Wang, Xiao Bi, et al. Deepseek-r1: Incentivizing reasoning capability in llms via reinforce-ment learning. arXiv preprint arXiv:2501.12948 , 2025. [17] Quzhe Huang, Zhenwei An, Nan Zhuang, Mingxu Tao, Chen Zhang, Yang Jin, Kun Xu, Liwei Chen, Songfang Huang, and Yansong Feng. Harder tasks need more experts: Dynamic routing in moe models. arXiv preprint arXiv:2403.07652 , 2024. [18] Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph Gonzalez, Hao Zhang, and Ion Stoica. Efficient memory management for large language model serving with pagedattention. In Proceedings of the 29th symposium on operating systems principles , pages 611–626, 2023. [19] Jinhao Li, Jiaming Xu, Shan Huang, Yonghua Chen, Wen Li, Jun Liu, Yaoxiu Lian, Jiayi Pan, Li Ding, Hao Zhou, et al. Large language model inference acceleration: A comprehensive hardware perspective. 
+
+arXiv preprint arXiv:2410.04466 , 2024. [20] Aixin Liu, Bei Feng, Bing Xue, Bingxuan Wang, Bochao Wu, Chengda Lu, Chenggang Zhao, Chengqi Deng, Chenyu Zhang, Chong Ruan, et al. Deepseek-v3 technical report. arXiv preprint arXiv:2412.19437 , 2024. [21] Deepak Narayanan, Mohammad Shoeybi, Jared Casper, Patrick LeGres-ley, Mostofa Patwary, Vijay Korthikanti, Dmitri Vainbrand, Prethvi Kashinkunti, Julie Bernauer, Bryan Catanzaro, et al. Efficient large-scale language model training on gpu clusters using megatron-lm. In Proceedings of the international conference for high performance computing, networking, storage and analysis , pages 1–15, 2021. [22] Bo Pang, Erik Nijkamp, and Ying Nian Wu. Deep learning with tensorflow: A review. Journal of Educational and Behavioral Statistics ,45(2):227–248, 2020. [23] Adam Paszke, Sam Gross, Francisco Massa, Adam Lerer, James Brad-bury, Gregory Chanan, Trevor Killeen, Zeming Lin, Natalia Gimelshein, Luca Antiga, et al. Pytorch: An imperative style, high-performance deep learning library. Advances in neural information processing systems , 32, 2019. [24] Ritik Raj, Hong Wang, and Tushar Krishna. A cpu-centric perspective on agentic ai. arXiv preprint arXiv:2511.00739 , 2025. [25] Daniel Richins, Dharmisha Doshi, Matthew Blackmore, Aswathy Thu-laseedharan Nair, Neha Pathapati, Ankit Patel, Brainard Daguman, Daniel Dobrijalowski, Ramesh Illikkal, Kevin Long, et al. Ai tax: The hidden cost of ai data center applications. ACM Transactions on Computer Systems (TOCS) , 37(1-4):1–32, 2021. [26] Timo Schick, Jane Dwivedi-Yu, Roberto Dess` ı, Roberta Raileanu, Maria Lomeli, Eric Hambro, Luke Zettlemoyer, Nicola Cancedda, and Thomas Scialom. Toolformer: Language models can teach themselves to use tools. Advances in Neural Information Processing Systems , 36:68539– 68551, 2023. [27] Noah Shinn, Federico Cassano, Ashwin Gopinath, Karthik Narasimhan, and Shunyu Yao. Reflexion: Language agents with verbal reinforcement learning. Advances in neural information processing systems , 36:8634– 8652, 2023. [28] Hugo Touvron, Thibaut Lavril, Gautier Izacard, Xavier Martinet, Marie-Anne Lachaux, Timoth´ ee Lacroix, Baptiste Rozi` ere, Naman Goyal, Eric Hambro, Faisal Azhar, et al. Llama: Open and efficient foundation language models. arXiv preprint arXiv:2302.13971 , 2023. [29] Octavian Alexandru Trifan, Karthik Sangaiah, Muhammad Awad, Muhammad Osama, Sumanth Gudaparthi, Alexandru Nicolau, Alexan-der Veidenbaum, and Ganesh Dasika. Eliminating multi-gpu perfor-mance taxes: A systems approach to efficient distributed llms. arXiv preprint arXiv:2511.02168 , 2025. [30] Prabhu Vellaisamy, Thomas Labonte, Sourav Chakraborty, Matt Turner, Samantika Sury, and John Paul Shen. Characterizing and optimizing llm inference workloads on cpu-gpu coupled architectures. arXiv preprint arXiv:2504.11750 , 2025. [31] Haonan Wang, Xuxin Xiao, Mingyu Yan, Zhuoyuan Zhu, Dengke Han, Duo Wang, Wenming Li, Xiaochun Ye, Cunchen Hu, Hongyang Chen, et al. A systematic characterization of llm inference on gpus. arXiv preprint arXiv:2512.01644 , 2025. [32] Florian Weber, Carola Haering, and Roland Thomaschke. Improving the human–computer dialogue with increased temporal predictability. 
+
+Human factors , 55(5):881–892, 2013. [33] Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak Shafran, Karthik R Narasimhan, and Yuan Cao. React: Synergizing reasoning and acting in language models. In The eleventh international conference on learning representations , 2022. [34] Gyeong-In Yu, Joo Seong Jeong, Geon-Woo Kim, Soojeong Kim, and Byung-Gon Chun. Orca: A distributed serving system for {Transformer-Based } generative models. In 16th USENIX Symposium on Operating Systems Design and Implementation (OSDI 22) , pages 521–538, 2022. [35] Longfei Yun, Yonghao Zhuang, Yao Fu, Eric P Xing, and Hao Zhang. Toward inference-optimal mixture-of-expert large language models. 
+
+arXiv preprint arXiv:2404.02852 , 2024. [36] Huaifeng Zhang, Mohannad Alhanahnah, Fahmi Abdulqadir Ahmed, Dyako Fatih, Philipp Leitner, and Ahmed Ali-Eldin. Machine learning systems are bloated and vulnerable. Proceedings of the ACM on Measurement and Analysis of Computing Systems , 8(1):1–30, 2024. [37] Huaifeng Zhang and Ahmed Ali-Eldin. The hidden bloat in machine learning systems. arXiv preprint arXiv:2503.14226 , 2025.
