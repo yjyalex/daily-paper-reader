@@ -1,0 +1,1460 @@
+Title: Sema: A High-performance System for LLM-based Semantic Query Processing
+
+URL Source: https://arxiv.org/pdf/2603.11622v1
+
+Published Time: Fri, 13 Mar 2026 00:35:29 GMT
+
+Number of Pages: 27
+
+Markdown Content:
+# Sema : A High-performance System for LLM-based Semantic Query Processing 
+
+# Kangkang Qi 
+
+Beijing Institute of Technology qikangkang0126@gmail.com 
+
+# Dongyang Xie 
+
+Wuhan University xdy1122310013@163.com 
+
+# Wenbo Li 
+
+Wuhan University liwenbo82@whu.edu.cn 
+
+# Hao Zhang 
+
+The Chinese University of Hong Kong zhanghaowuda12@gmail.com 
+
+# Yuanyuan Zhu 
+
+Wuhan University yyzhu@whu.edu.cn 
+
+# Jeffrey Xu Yu 
+
+HKUST (Guangzhou) jeffreyxuyu@hkust-gz.edu.cn 
+
+# Kangfei Zhao ∗
+
+Beijing Institute of Technology zkf1105@gmail.com 
+
+## ABSTRACT 
+
+The integration of Large Language Models (LLMs) into data ana-lytics has unlocked powerful capabilities for reasoning over bulk structured and unstructured data. However, existing systems typi-cally rely on either DataFrame primitives, which lack the efficient execution infrastructure of modern DBMSs, or SQL User-Defined Functions (UDFs), which isolate semantic logic from the query op-timizer and burden users with implementation complexities. The LLM-powered semantic operators also bring new challenges due to the high cost and non-deterministic nature of LLM invocation, where conventional optimization rules and cost models are inappli-cable for their optimization. To bridge these gaps, we present Sema , a high-performance se-mantic query engine built on DuckDB that treats LLM-powered semantic operators as first-class citizens. Sema introduces SemaSQL ,a declarative dialect that allows users seamlessly inject natural lan-guage expressions into standard SQL clauses, enabling end-to-end optimization and execution. At the logical level, the optimizer of 
+
+Sema compresses natural language expressions and deduces re-lational constraints from semantic operators. At runtime, Sema 
+
+employs Adaptive Query Execution (AQE) to dynamically reorder operators, fuse semantic operations, and apply prompt batching. This approach seeks a Pareto-optimal execution path balancing token consumption and latency under accuracy constraints. We evaluate Sema on 20 semantic queries across classification, sum-marization, and extraction tasks. Experimental results demonstrate that Sema achieves 2 − 10 × speedup against three baseline systems while achieving competitive result quality. 
+
+## 1 INTRODUCTION 
+
+The powerful semantic reasoning capabilities of modern language models (LLMs) are unlocking new opportunities for AI-driven an-alytics over both structured and unstructured data. Applications in science, healthcare, business and industry increasingly require complex reasoning over large datasets, e.g., summarizing recent research, extracting biomedical insights from patient records, or analyzing corporate meeting transcripts at scale. To realize these capabilities, analytics systems need to orchestrate sophisticated, 
+
+> ∗corresponding author
+
+bulk semantic processing with efficiency and usability, promising a revolutionize on existing database systems. This vision raises two fundamental questions: How should developers express semantic queries? And how should developers design a data analytics system to achieve high efficiency and accuracy? 
+
+Recent systems have begun to explore LLM-powered semantic query processing for both structured [ 18 , 36 ] and unstructured data [ 5, 48 , 50 ]. A variety of systems DocETL [ 48 ], ZenDB [ 34 ], DocWanger [ 47 ], Aryn [ 5] and Unify [ 50 ] support semantic queries expressed in extended SQL, declarative operations, or natural lan-guage. These systems employ LLMs not only to interpret queries, but also to optimize execution through techniques like query plan-ning [ 5], rewriting, prompt refinement, and operation decomposi-tion [ 50 ]. Palimpzest [ 35 ] and its optimizer Abacus [ 46 ] focus on reducing LLM query latency and cost through logical and physi-cal optimizations, including Pareto-efficient planning. Lotus [ 42 ]formulates LLM-based semantic operations for tabular data and proposes efficient execution algorithms for costly operators. Recent benchmarks [ 4, 18 ] have highlighted key challenges in supporting semantic query processing in existing databases, such as ensuring structured outputs, enabling batch processing, and effective query planning. Current systems typically express semantic queries in two differ-ent ways: DataFrame primitives [ 35 , 42 , 46 ] and SQL user-defined functions (UDFs) [ 4 , 18 , 36 ], each highly intertwined with the under-lying system design. Systems built on DataFrame primitives define custom semantic operations and optimize them with specialized algorithms, but often lack the efficient execution infrastructure of a DBMS. This forces developers to redeploy execution environments such as vectorized and pipeline parallel execution, I/O and memory management. On the other hand, integrating semantic operators as SQL UDFs offers greater flexibility, but places the burden of imple-menting, debugging, and maintaining complex AI-based operators on users, raising concerns about security, reliability, and efficiency. With the growing demand for semantic queries, a core set of semantic operators, such as semantic filter, projection, join, and aggregation, has emerged as an AI-powered analogy to classic rela-tional operators [ 42 , 50 ]. A natural envision arising from this trend is whether we can efficiently support these semantic operators as na-tive database operators, thereby fully leveraging DBMS optimization         
+
+> arXiv:2603.11622v1 [cs.DB] 12 Mar 2026 Kangkang Qi et al. Applications
+> Parser
+> &
+> Planner
+> Query
+> Interface SQL SemaSQL
+> Optimizer
+> Executor
+> Storage
+> Optimization Rules for
+> Expression
+> Cost-based Optimizer for Join Order
+> Optimization Rules for
+> Semantic Expression
+> Columnar Storage Light-weight Compression
+> Pipeline Parallelism
+> Push-based Model &
+> Vectorized Execution
+> Semantic
+> Operator Fusion
+> Prompt
+> Batching
+> Predicates
+> Reordering
+> Adaptive Query
+> Execution
+> Expression Semantic
+> Expression
+> Relational Operators Semantic Operators
+> Expression
+> Level
+> Operator
+> Level
+> Sentiment
+> Analysis
+> Data
+> Cleaning
+> Text
+> Summarization
+> Information
+> Extraction
+
+…
+
+…
+
+Figure 1: System architecture of Sema 
+
+processing? However, fulfilling this envision is not merely about implementation add-ons. Unlike relational operators, which have deterministic semantics, stable algebraic laws, and cost models ap-proximated from data statistics, semantic operators are context-and model-dependent: their execution depends not only on input tuples, but also on the natural language (NL) expression, prompting strategy, and the specific LLM being invoked. LLM inference opti-mizations in external LLM serving environments, such as KV cache, Paged Attention, and continuous batching also impact the execution performance significantly. Modeling the cost of these LLM-powered operators also beyond the modeling of complex, CPU-expensive operators [ 21 ]. This shift breaks key assumptions behind traditional query optimization: standard rewrite rules may be unsafe, selectiv-ity and cost are unable to estimate statically. These challenges call for new system-level optimizations tailored for semantic operators. The system should treat semantic operators as first-class citizens and focus on reducing the cost of LLM invocations, which domi-nate the performance of query evaluation. Furthermore, semantic operators also bring additional concerns of multiple optimization objectives, including query accuracy, latency, and the monetary cost of LLM calls. As a tentative realization, we design and develop a prototype system dubbed Sema back ended DuckDB [ 43 ], injecting native semantic operators that invoke local or remote LLMs. On the ba-sis of vectorized and pipeline execution infrastructure, the design principle of Sema focuses on reducing the cost of LLM invocations. Fig. 1 illustrates the architecture of Sema , which extends the query language interface, parser and planner, optimizer and executor of DuckDB accordingly, as highlighted in Fig. 1. To express semantic operators, Sema introduces SemaSQL that allows users to insert Natural Language (NL) expressions into SQL clauses. These NL expressions, wrapping DB column names, convey user intent on semantic predicates, ranking, or aggregate criteria. To process these native semantic operators efficiently and flexibly, we propose logi-cal intra-operator optimizations in the optimizer for compressing the NL expression and deducing relational operators from semantic operators, where the optimizer leverages auxiliary LLMs to fulfill these optimizations. In the executor, Sema integrates semantic op-erator fusion and prompt batching to reduce the number of LLM invocations in bulk data processing. As the statistical patterns of semantic operator instances are hard to depict before execution, 
+
+Sema adopts adaptive query execution (AQE) to reorder consecu-tive semantic operators, together with operator fusion and batch prompting. The AQE attempts to find a Pareto-optimal execution path regarding LLM token consumption and query latency, under the constraint of query accuracy. We comprehensively evaluate 
+
+Sema on 20 semantic queries spanning 3 analytical tasks (classifica-tion, summarization, and keyword extraction) from BIRD [ 32 ]. The results demonstrate that Sema achieves a 2–4 × speedup over the DataFrame-based system Lotus and a 2–10 × speedup over pipeline-execution system Palimpzest , while maintaining competitive result quality compared with both systems and significantly outperform-ing the UDF-based system FlockMTL . The contributions of this paper are summarized as follows. 
+
+• We design and develop Sema , a high-performance semantic query engine built on DuckDB that treats LLM-powered semantic op-erators as first-class query plan operators, enabling end-to-end semantic query optimization and execution in a columnar and vectorized database system. 
+
+• We propose SemaSQL , a declarative SQL dialect that allows users to inject natural language expressions into standard SQL clauses to define semantic operators, enabling seamless composition of semantic and relational computation. 
+
+• We introduce optimization techniques tailored to semantic oper-ators to reduce the overhead of LLM invocations collaboratively, including logical-level semantic expression optimizations and runtime optimizations via adaptive query execution (AQE) that combines operator fusion and prompt batching. 
+
+• We design a semantic query benchmark consisting of 20 queries over 9 datasets and conduct a comprehensive evaluation of Sema .Results demonstrate that Sema significantly outperforms both DataFrame-based and UDF-based systems in query efficiency with competitive result quality, demonstrating high usability. 
+
+Roadmap. The following of this paper is organized as follows. We introduce the background and our motivation in §2. §3 introduces the system overview of Sema , followed by the details of its optimizer and executor in §4 and §5, respectively. §6 elaborates on critical engineering details of Sema . We report our system evaluation in §7 and review related works in §8. We conclude the paper in §9. 
+
+## 2 BACKGROUND 2.1 Semantic Operators 
+
+A semantic operator is a declarative transformation on tabular data, which is parametrized by a natural language expression as a predicate. In this paper, we consider semantic operators powered by Large Language Models (LLMs). We use 𝑇 (𝐴 1, · · · , 𝐴 𝑗 ) or 𝑇 for short to denote a table, where 𝐴 1, · · · , 𝐴 𝑗 are the attributes of 𝑇 .
+
+𝑡 ∈ 𝑇 denotes a tuple in Table 𝑇 and 𝑡 (𝐴 𝑗 ) denotes the value of attribute 𝐴 𝑗 in tuple 𝑡 . 𝑀 : T ↦ → T is a pre-trained LLM that accepts input and generates output in textual space T . Sema starts from a relational algebra generalization on semantic query processing, Sema : A High-performance System for LLM-based Semantic Query Processing 
+
+Table 1: Semantic Operators                                                                                                    
+
+> Operator Expression Description # LLM calls
+> Semantic Filter {𝑡 |𝑡 ∈𝑇 ∧𝑀 (𝑡 ,𝑒 )=True }Select tuples that can pass a NL predicate 𝑒 O ( | 𝑇 | )
+> Semantic Projection {𝑀 (𝑡 ,𝑒 ) | 𝑡 ∈𝑇 }Project attribute values specified by a NL predicate 𝑒 O ( | 𝑇 | )
+> Semantic Join { ( 𝑡 𝑖 ,𝑡 𝑗 ) | 𝑡 𝑖 ∈𝑇 1∧𝑡 𝑗 ∈𝑇 2∧𝑀 (𝑡 𝑖 ,𝑡 𝑗 ,𝑒 )=True }Join two tables on a join key that pass a NL predicate 𝑒 O ( | 𝑇 1| · | 𝑇 2| )
+> Semantic Order By [𝑡 1,· · · ,𝑡 𝑛 ],𝑠 .𝑡 .∀[ 𝑡 𝑖 ,𝑡 𝑗 ] ⇒ 𝑀 (𝑡 𝑖 ,𝑡 𝑗 ,𝑒 )=𝑡 𝑖 ⪯𝑡 𝑗 Reorder tuples following a NL-specified criteria O ( | 𝑇 |2)
+> Semantic Aggregate 𝑀 ( { 𝑡 1,· · · ,𝑡 𝑛 },𝑒 ),𝑡 1,· · · ,𝑡 𝑛 ∈𝑇 Aggregate tuples according to a NL-specified aggregate function O ( 1)
+
+a coreset of semantic operators in Lotus [ 42 ], while other specific systems may provide additional operators beyond these operators. Table 1 summarizes these five semantic operators we imple-mented in Sema , i.e., Semantic Filter ( SemFilter ), Semantic Pro-jection ( SemProj ), Semantic Join ( SemJoin ), Semantic OrderBy ( Se-mOrderBy ), and Semantic Aggregate ( SemAgg ). Each operator is implemented by a default reference algorithm. For SemFilter and 
+
+SemProj , their reference algorithms scan the table and invoke an LLM to evaluate each tuple in table 𝑇 , and the LLM is requested to return True or False for SemFilter or textual attribute for SemProj ,respectively, which take O(| 𝑇 |) LLM invocations. For SemJoin , the reference algorithm performs a nested loop join on two tables 𝑇 1
+
+and 𝑇 2, and uses an LLM to evaluate whether a pair of tuples can be joined on a semantic predicate, which takes O(| 𝑇 1 | · | 𝑇 2 |) LLM invo-cations. The reference algorithm of SemOrderBy is a Selection Sort algorithm that compares two pairs of tuples in 𝑇 regarding a seman-tic comparison criteria, resulting in O(| 𝑇 |2) LLM comparisons. For 
+
+SemAgg , the reference algorithm performs a many-to-one reduce that puts all the values of an attribute in 𝑇 into an LLM prompt and generates the aggregated result. Managing finite context limits of the underlying LLM is implemented by the system, where hierar-chical aggregation over subsets of values can be performed. Similar to relational operators, the evaluation of one semantic operator can be implemented by different algorithms; however, supporting LLM-based semantic operators inside a database engine is non-trivial, not simply an implementation. 
+
+## 2.2 Semantic Operators Handling 
+
+Unlike relational operators, whose behavior is grounded in deter-ministic and decidable semantics, well-defined algebraic laws, and stable cost models, semantic operators are inherently context- and model-dependent. Their outcomes depend not only on input tu-ples, but also on the NL expression, prompting strategy, and the specific LLM invoked. As a result, evaluation is intrinsically un-certain and cannot be characterized by a single canonical truth function. This shift in semantics also weakens the foundations that classical query optimizers rely on. Standard algebraic rewrite rules may not hold: for example, SemFilter is commutative only under restrictive conditions (e.g., tuple-independent prompting and zero-temperature inference), while associativity does not generally apply. For SemProj and SemJoin , commutativity and associativity are typi-cally not semantics-preserving, which makes traditional rule-based rewriting unsafe or inapplicable. Finally, the cost profile of semantic operators is dominated by external inference environments, i.e., latency, throughput, and monetary cost vary with models, prompts, inference optimization, and caching mechanism; therefore, they are difficult to estimate from database statistics alone. Together, these properties call for a system design that treats semantic operators as first-class citizens rather than black-box add-ons. Existing solutions for semantic query processing are constrained by their execution environments. Implementations built on light-weight libraries (e.g., Pandas or custom DataFrame APIs) provide accessible programming models but lack mature database capabili-ties such as vectorized execution, pipeline parallelism, and robust query optimization, resulting in inefficient processing for large-scale hybrid analytical workloads. In contrast, database-centric approaches frequently encapsulate LLM calls as user-defined func-tions (UDFs). While convenient, this makes semantic operators opaque to the optimizer and executor, preventing system-level op-timizations tailored to semantic workloads. Motivated by these gaps, we built Sema , a prototype system that integrates semantic operators directly into DuckDB to pro-cess semantic operators at scale by exploiting a high-performance OLAP execution engine with an expression-centric design, vector-ized processing, and pipeline parallelism, capabilities that DuckDB developed. By embedding semantic primitives into the query plan-ner, optimizer, and executor, Sema provides a concrete platform for exploring semantic-specific optimization, i.e., expression optimiza-tion and adaptive query execution, aiming to reduce the overhead of LLM invocations. In this work, we focus on the system design and end-to-end integration of semantic operators in a relational engine. We do not aim to fully optimize each individual operator or cover the full space of production concerns. We leave the following to future work: specialized algorithmic improvements for individ-ual operators, storage-level optimizations, LLM routing and model selection, and comprehensive mechanisms for privacy, governance, and fault tolerance in external inference. 
+
+## 3 SYSTEM OVERVIEW 
+
+We present an overview of Sema , including its query interface (§3.1) and workflow (§3.2). Fig. 1 shows the system architecture of Sema .
+
+## 3.1 The Query Syntax 
+
+Sema introduces SemaSQL , a declarative syntax with injection of Natural Language (NL) expression, for semantic query processing. The design of SemaSQL follows three main principles: Transparency :isolation from underlying implementation and optimization, Flexi-bility : sufficient expressive capability of user intent with high utility, 
+
+Compatibility : extension of SemaSQL compatible with the syntax standard and implementation of SQL. The first-class citizen of SemaSQL is an NL expression with one or multiple placeholders, denoted as 𝑠 ‘ · · · {} · · · ’ where {} is a placeholder that identifies a mention of columns/attributes or the NL description of the attributes in the expression, instructing the system to process the corresponding tables and attributes. Semantic Kangkang Qi et al. 
+
+operators are implicitly implemented by injecting NL expressions into SQL clauses such as SELECT , WHERE , JOIN ON , etc. Specifically, 
+
+SemProj injects an NL expression into SELECT and SemFilter injects an NL expression into WHERE or HAVING clauses, respectively. For 
+
+SemJoin , we inject an NL expression into a JOIN ON clause, which is also compatible with other join types, including OUTER JOIN ,
+
+SEMI JOIN , etc. For SemAgg , we introduce a special aggregation function sem_agg() that wraps the NL expression, and sem_agg() 
+
+can be used together with the standard GROUP BY clause. In addition, users can use AS to rename new textual columns, e.g., the columns generated from SemProj and SemAgg , and these columns can be further mentioned in other NL expressions. Fig. 2 demonstrates a SemaSQL query containing two predicates of SemFilter in the 
+
+WHERE clauses. The query performs a relational join on two tables, with two relational operators and two SemFilter operators on the 
+
+translated_review attribute of table user_reviews . Here, NL expressions are used as the semantic predicates whose valuations are inferred by an LLM. Additional exemplar queries can be found in Appendix A, Fig. 9-12. 
+
+SemaSQL uses interpolation of NL expressions to support se-mantic operators while preserving the nature of the symbolic logic of SQL. Sema also supports complex syntax with SemaSQL such as subqueries, Common Table Expressions (CTEs), and window func-tions, etc. Unlike NL2SQL, SemaSQL makes minimal extensions, i.e., the NL expression on SQL, enabling full compatibility with RDBMS and sufficient semantic reasoning. 
+
+## 3.2 System Workflow 
+
+We use the running example in Fig. 2 to illustrate the end-to-end workflow of Sema , which is depicted in Fig. 3. The query counts, for each app , the reviews that satisfy two semantic predicates (‘is a valid user review’ and ‘is a positive user review’), together with standard relational predicates on category and type . When the user submits the query, Sema parses SemaSQL and produces an abstract syntax tree (AST) and an initial logical plan in which NL expressions are identified as explicit semantic operators. Here, two SemFilter 
+
+operators become first-class plan nodes that Sema can analyze and transform at the logical and physical levels, respectively. First, logical NL expression optimization in the optimizer op-erates before conventional SQL rewrites and focuses on reduc-ing and restructuring intra-operator semantic expressions. Specifi-cally, Sema applies redundancy-aware expression compression to shorten NL predicates and stabilize prompting. More importantly, 
+
+Sema performs predicate deduction for SemFilter : it opportunisti-cally extracts fully or partially deductible symbolic conditions (e.g., ‘translated _review != “nan”’) from an NL predicate, rewrites them into relational filters which are pushed down to pruned tuples early, thereby avoiding unnecessary LLM invocations. These expression optimizations are guided by an auxiliary LLM with CoT prompting. §4 will elaborate on these optimizations injected as special rules for semantic expression in the optimizer. Then, physical execution optimization and adaptive query execu-tion (AQE) target the dominant runtime cost of semantic operators, under a vectorized, pipeline-parallel execution engine. The executor of Sema applies semantic operator fusion and prompt batching to reduce the number of LLM calls and improve throughput. Because                                                            
+
+> --Calculate the counts of valid and positive reviews for each app of 'Free 'type and '
+> ART_AND_DESIGN 'category .
+> SELECT ur . app , COUNT (*) AS
+> positive_and_valid_count
+> FROM user_reviews AS ur INNER JOIN playstore AS p
+> ON ur . app =p. app
+> WHERE p. category ='ART_AND_DESIGN 'AND p. type ='
+> Free '
+> AND s'{ translated_review } is avalid user review '
+> AND s'{ translated_review } is apositive user review '
+> GROUP BY ur . app ;
+
+Figure 2: A running semantic query example 
+
+the effects of these optimizations and the selectivities of SemFilter 
+
+are hard to predict statically, Sema introduces AQE for SemFilter 
+
+operators. At runtime, the executor micro-executes a small fraction of the input to collect predicate statistics, explores multiple candi-date execution paths, and selects a path that best trades off latency and token cost subject to an accuracy tolerance. The selected path is then used to process the remaining data at scale. We will present these technical details in §5. 
+
+## 4 THE OPTIMIZER OF SEMA 
+
+Aligning with the goal of our system design, Sema ’s optimizer concentrates on reducing the cost of LLM invocations without compromising accuracy. As end users may deliver arbitrary NL expressions in the semantic operators with SemaSQL , NL expres-sions are inherently verbose or ambiguous, and their evaluation will bring redundant overhead for LLM reasoning. To resolve these issues, Sema ’s optimizer introduces specific rules for optimizing these NL expressions, including expression compression and predi-cate deduction, which are applied to the query plan step by step. Since NL expressions are free text, traditional rule matching cannot comprehensively capture the compression and deduction patterns, therefore, we use LLM-assisted optimizations. 
+
+NL Expression Compression. For the NL expression in each se-mantic operator, the optimizer first employs a light-weight LLM with Chain-of-Thought (CoT) prompting [ 51 ] with demonstrations to compress and refine the NL expression. The CoT prompting includes decomposed instructions on removing stop words, simpli-fying sentence structure, e.g., passive to active voice, and consoli-dating repeated pronoun references to the placeholder, which are listed as multiple rules. We also inject demonstrations for each rule to illustrate its utility. This step introduces only one LLM call for each semantic operator, while potentially reducing LLM inference cost and improving semantic clarity. 
+
+Predicate Deduction. After expression compression, the optimizer seeks the opportunity to deduce semantic filters into relational fil-ters, i.e., rewriting entire or partial NL expressions of SemFilter as SQL predicates. An entire deduction bypasses LLM invocations, Sema : A High-performance System for LLM-based Semantic Query Processing Parser & Planner                              
+
+> AST
+> Select List: ur.app , COUNT( *)
+> From Table: user_reviews AS ur
+> JOIN playstore AS P
+> ON ur.app =p.app
+> Where Clause:
+> 1. p.category =
+> 'ART_AND_DESIGN'
+> 2. p.type ='Free'
+> 3. s '{ translated_review } is a
+> valid user review'
+> 4. s '{ translated_review } is a
+> positive user review'
+> GROUPS: ur.app
+> HAVING: nullptr
+> QUALIFY: nullptr
+> SAMPLE: nullptr
+> Scan
+> user_reviews AS ur
+> Scan
+> playstore AS p
+> Join
+> ur.app =p.app
+> SemFilter
+> 1. s'{ translated_review }
+> is a valid user review'
+> 2. s'{ translated_review }
+> is a positive user
+> review'
+> Aggregate
+> GROUPS: ur.app
+> COUNT( *)
+> Project
+> app
+> positive_valid_count
+> Filter
+> 1. p.category =
+> 'ART_AND_DESIGN'
+> 2. p.type = 'Free'
+
+Optimizer Executor                          
+
+> Scan
+> user_reviews AS ur
+> Filter
+> translated_review !=
+> 'nan'
+> Scan
+> playstore AS p
+> Filter
+> 1. p.category =
+> 'ART_AND_DESIGN'
+> 2. p.type = 'Free'
+> Join
+> ur.app =p.app
+> SemFilter
+> 1. s'{ translated_review }
+> valid?'
+> 2. s'{ translated_review }
+> positive?'
+> Project
+> app
+> positive_valid_count
+> Aggregate
+> GROUPS: ur.app
+> COUNT( *)
+> Scan
+> user_reviews AS ur
+> Filter
+> translated_review !=
+> 'nan'
+> Scan
+> playstore AS p
+> Filter
+> 1. p.category =
+> 'ART_AND_DESIGN'
+> 2. p.type = 'Free'
+> Join
+> ur.app =p.app
+> Project
+> app
+> positive_valid_count
+> Aggregate
+> GROUPS: ur.app
+> COUNT( *)
+> SemFilter
+> 1. s'{ translated_review }
+> valid?'
+> 2. s'{ translated_review }
+> positive?'
+> SemFilter
+> Fusion (s'{translated_
+> review} valid? ',
+> s'{ translated_review }
+> positive?')
+> Path 0 Path 1
+> Redundancy
+> Reduction
+> Predicate
+> Deduction
+> Adaptative
+> Execution
+> Operator
+> Fusion
+
+Catalog playstore (app, category, type)   
+
+> user_reviews (app, translated_review)
+> SemaSQL
+> Query
+> Runtime Statistics
+> LLM-assisted Optimization
+
+Figure 3: System workflow of Sema 
+
+while a partial deduction only surgically replaces partial filter pred-icates in compound logic with SQL predicates as a necessary con-dition, preserving the remaining semantics as more concise NL expressions. This partial deduction enables potentially fewer LLM invocations, with the deducted SQL predicates pushdown. Predicate Deduction for SemFilter is analogous to predicate simplification for relational query processing, and the similar idea has also been introduced into ML-based predicates [ 13 ]. It is worth mentioning that existing NL2SQL approaches [ 15 ] cannot directly perform this task. Rule-based approaches fully rely on rule matchings for SQL translation, which do not possess flexible reasoning ability for semantic expression. DL-based approaches rely on high-quality an-notated data for training. LLM-based approaches have the potential to deduce the NL predicates; however, they cannot support partial deduction, i.e., translating a SQL predicate as a necessary condition, with a corresponding verification mechanism. 
+
+Sema supports deducing predicates of categorical matching, nu-meric comparison, and LIKE operations on strings. First, we use CoT prompting, feeding the DB schema into the context, to guide an LLM to opportunistically identify deductible predicates and then transform them into SQL expressions in string format. The instruction is explicitly decomposed into multiple steps, starting from extracting relevant tables and columns from the expression, determining if the query possesses objective intent, e.g., numeric or string comparison, and whether it can be mapped to a pattern of symbolic comparison, subsequently judging deductibility, and fi-nally generating a SQL statement. In each step, we provide few-shot examples, which also demonstrate special cases of case variations, fuzzy matches, and data type consistency. To alleviate LLM halluci-nation, we equip a back-forward self-reflection mechanism. Once a syntactically valid SQL statement is deduced, we request the LLM by another CoT prompt to judge whether the SQL statement is a necessary condition for the original NL expression. If the deduc-tion of the self-reflection fails, the system falls back to the original 
+
+SemFilter , preserving correctness. 
+
+Example 4.1. (Expression Compression and Predicate Deduc-tion) We use the query in Fig. 2, which contains two SemFilter 
+
+operators on the attribute translated _view in table user _reviews .The parser of Sema transforms the query into an initial unopti-mized plan shown as Fig. 3. In the optimizer, the two NL expres-sions are first compressed, forming two shorter sentences, respec-tively. As the placeholders already wrap exact matches of column names, meta-entity resolution directly binds them to the column objects. Subsequently, predicate deduction extracts a SQL predicate ‘translated_review != “nan”’ from the SemFilter with the expression ‘s{translated_review} is a valid user review’. Here, an auxiliary LLM is prompted with the DB metadata as context, which indicates that for column translated _review , around 41.8% of entries are ‘nan’. The ‘nan’ is obviously an invalid review, but it may not be noticed by the users. Predicate deduction automatically identifies this sym-bolic logic from a SemFilter , and the deducted SQL predicate is further pushed down to enable early filtering, as shown in Fig. 3, bypassing a large number of LLM invocations. In the optimizer of Sema , LLM-assisted expression optimizations are applied before rule-based optimization for standard SQL. By strategically employing LLM-assisted expression optimizations, the optimizer improves the usability of SemaSQL for general users to access their analytical tasks and enhances the reliability, accuracy, and efficiency of Sema . We provide the algorithm in the appendix to present the overall procedure of expression optimizations, together with the prompts for predicate deduction by Sema .
+
+## 5 EXECUTION OPTIMIZATION 
+
+The executor of Sema integrates new physical optimizations (§5.1) and Adaptive Query Execution (§5.2), which are specifically de-signed for semantic operators. 
+
+## 5.1 Physical optimization 
+
+Semantic Operator Fusion. In semantic query evaluation, each semantic operator typically triggers an individual LLM invocation. Kangkang Qi et al. 
+
+Table 2: Operator Fusions in Sema                                   
+
+> # LLM calls 𝜎 𝑎 ⊕𝜎 𝑏 Π𝑎 ⊕Π𝑏 𝜎 𝑎 ⊕Π𝑏 Π𝑎 ⊕𝜎 𝑏
+> Original 2|𝑇 |2|𝑇 |(1+𝑠 ) · | 𝑇 |(1+𝑠 ) · | 𝑇 |
+> Fused |𝑇 ||𝑇 ||𝑇 ||𝑇 |
+
+While this preserves modularity and operator independence, for complex queries with cascaded semantic operators, intermediate data will be repeatedly materialized and transferred between multi-ple operators, leading to a high memory footprint, token consump-tion, and API call latency. Inspired by operator fusion for relational operators [ 40 ] and linear algebra operators [ 9], Sema introduces semantic operator fusion, which combines consecutive semantic operators into one operator. Unlike fusing conventional operators which synthesizes generated code by compiling optimizations, fus-ing semantic operators is essentially combining their semantic NL expressions into one expression, with one LLM inference per tuple. 
+
+Sema supports four patterns of operator fusion as listed in Table 2, between two ‘unary’ semantic operators SemFilter and SemProj on one table in one query pipeline. We bootstrap semantic operator fusion from these four patterns, since the fusion of more operators that includes both unary and binary operators entails parsing and combining complex semantics to guarantee the evaluation accu-racy. For SemFilter -first operators, the NL expressions of the two operators to be fused should refer to a common attribute in their placeholders. For SemProj -first operators, the rename operator AS 
+
+indicates the intermediate column, which is referred by the ex-pression of the subsequent operator. Once Sema identifies a match of these patterns, it concatenates the two NL expressions of the two consecutive operators into a single NL expression and adds an instruction for step-by-step processing. As Table 2 summarizes, a fusion will save |𝑇 | LLM invocations for SemProj -first patterns and 𝑠 · | 𝑇 | LLM invocations for SemFilter -first patterns, respectively, where 𝑠 is the selectivity of the first 
+
+SemFilter in table 𝑇 .
+
+Example 5.1. (Semantic Operator Fusion) We use the query in Fig. 2 to illustrate operator fusion, which contains two SemFilter 
+
+referring a same column translated _review in table user _review .
+
+Sema combines the two compressed expressions s’translated_review is valid’ and s’translated_review is positive’ into a single expression ‘stranslated_review is valid and positive’, and then generates a new 
+
+SemFilter for the expression to replace the original two operators. 
+
+Prompt Batching. As an analytical system, the vectorized execu-tion of DuckDB is the cornerstone of batch query processing of 
+
+Sema . On this basis, Sema further considers improving token utiliza-tion and throughput of semantic operators with prompt batching, i.e., batching multiple tuples into a single LLM prompt [ 33 ], for 
+
+SemFilter , SemProj , and SemJoin .Despite the reduction of LLM calls, operator fusion and prompt batching break the operator-independent and tuple-independent execution. A potential risk is that they usually lead to inconsis-tent inference results compared to one-by-one LLM invocations. Taking this issue into account, first, for prompt batching, the ex-ecutor exploits the structural output of LLM API calls that specify the return value of an API call as a Json Array. This enforces the output of one batch prompting to generate a consistent number of results. Second, when fusing SemFilter -first patterns, Sema adds an instruction in the combined prompt to request the LLM explic-itly generate intermediate results of the first operator, in order to maintain the evaluation consistency of the fused operator with the original operator flow. Sema restricts operator fusion to only two operators, leaving fusion on more operators as further work. Third, for SemFilter , Sema allows users to specify the tolerance regarding the consistency of results. This user preference will be used to choose the real execution plan by adaptive query execution at runtime, which we will elaborate on in §5.2. 
+
+## 5.2 Adaptive Query Execution for SemFilter 
+
+The behavior of semantic operators depends on both the NL ex-pression and the particular LLM used to interpret it, making key planning quantities, such as selectivity, latency, and monetary/-token cost difficult to predict statically. Moreover, optimizations that reduce LLM calls (e.g., operator fusion and batch prompting) can introduce hard-to-model accuracy shifts. To address these chal-lenges, we postpone inter-operator optimizations such as operator reordering and fusion to runtime via an adaptive query execution (AQE) strategy. Specifically, the executor of Sema collects runtime feedback from evaluating a small fraction of data on multiple candi-date physical plans, a.k.a., execution paths, and selects an optimal path to process the remaining data. Different from relational query processing where latency is typically the unique optimization goal, semantic query processing entails considering multiple objectives including query accuracy, query latency, and monetary cost of LLM invocations. Thereby, the AQE of Sema is designed to find the Pareto optimal path for both query latency and monetary cost, under the constraint of a user-specific tolerance to accuracy inconsistency. If the accuracy loss is more tolerant, or the latency and cost are highly-concerned factors, the system can be easily extended regarding the objective of Pareto optimization. As the ground-truth of semantic query is usually unavailable beforehand, we use a reference path, e.g., the path generated by the optimizer, without operator fusion and batch prompting, to evaluate the accuracy deviation of other candidate paths. The AQE framework operates in three phases: the expression exploration phase, the path exploration phase and the path ex-ploitation phase. Algorithm 1 presents the overall procedure of AQE. In expression exploration phase (line 3-4), we use a small fraction of 𝛿 1 tuples to collect statistics of each SemFilter and the sudo ground-truth of reference path 𝑝 ref . Subsequently, we generate a set of candidate paths P using these statistics, and evaluate the performance of these paths on another small fraction of 𝛿 1 tuples, selecting the optimal paths 𝑝 ★ in P regarding either time-efficiency or token-efficiency preference (line 5-11). Finally, in the path ex-ploitation phase (line 12), the executor will process the remaining 
+
+1 − ( 𝛿 1 + 𝛿 2) tuples. Users can balance the exploration and exploita-tion via tuning the system parameters 𝛿 1 and 𝛿 2. Note the overall query results are the concatenation of the results from the three phases: (1) evaluating 𝛿 1 tuples individually on each SemFilter and intersecting their results, (2) evaluating 𝛿 2 tuples by 𝑝 ref and (3) evaluating the remaining 1 − ( 𝛿 1 + 𝛿 2) tuples by 𝑝 ★. Complete al-gorithm for each phase is shown in Appendix B. In the following, we elaborate on the key design of each phase. Sema : A High-performance System for LLM-based Semantic Query Processing 
+
+Algorithm 1: Adaptive Query Execution                                                                   
+
+> Input :Input chunks D, expr_limit 𝛿 1· | D | , path_limit 𝛿 2· | D |
+> 1𝑛 ←0;
+> 2for chunk 𝑐 ∈ D do
+> 3if 𝑛 <expr_limit then
+> 4collect statistics of filters of 𝑐 ▷Phase 1: Exp. Exploration ;
+> 5else if 𝑛 <path_limit then
+> 6if paths not generated then
+> 7generate candidate paths Pusing the statistics of 𝑐 ▷
+> Phase 2: Path Exploration ;
+> 8evaluate paths in Pon 𝑐 and collects their metics ;
+> 9else
+> 10 if optimal path not selected then
+> 11 select optimal path 𝑝 ★based on collected metrics ;
+> 12 execute optimal path 𝑝 ★on 𝑐 ▷Phase 3: Path Exploitation ;
+> 13 𝑛 ←𝑛 + | 𝑐 |;
+
+Phase 1: Expression Exploration. Given a sequence of SemFilter 
+
+Σ = {𝜎 1, · · · , 𝜎 𝑛 }, in the expression exploration phase, we exe-cute each SemFilter 𝜎 𝑖 independently on a fraction of 𝛿 1 tuples, obtaining its selectivity 𝑠 𝑖 and query result 𝑅 𝑖 , denoted as a boolean vector. The query results are used to evaluate the potential of oper-ator fusion. Specifically, the higher the correlations between two filters, the more likely the fusion can preserve the semantics. We use the Matthews Correlation Coefficient (MCC) [ 39 ] to quantify the pair-wise correlation of two SemFilter , statistically from the perspective of their results, where MCC (𝜎 𝑖 , 𝜎 𝑗 ) equals to 1 and −1
+
+indicates an absolute positive and negative correlation between 𝜎 𝑖 
+
+and 𝜎 𝑖 , respectively, and MCC (𝜎 𝑖 , 𝜎 𝑗 ) equals to 0 indicates a random association. Only a pair of SemFilter whose MCC is larger than a threshold is considered to be fused into one SemFilter .
+
+Phase 2: Path Exploration. Based on the statistics collected in Phase 1, we first generate a set of candidate paths P, including the ref-erence path 𝑝 ref and a base path 𝑝 base . The reference path 𝑝 ref pre-serves the order of Σ as the user-specified order in the SemaSQL 
+
+query, while the base path 𝑝 base reorders the filters in Σ ascendingly by their selectivities. For operator fusion, if MCC (𝜎 𝑖 , 𝜎 𝑗 ) is larger than a threshold 𝜏 , we merge the two SemFilter operators 𝜎 𝑖 , 𝜎 𝑗 into one SemFilter 𝜎 𝑖 ⊕ 𝑗 , and treat its selectivity 𝑠 𝑖 ⊕ 𝑗 as the minimum of 
+
+𝑠 𝑖 and 𝑠 𝑗 . For 𝑛 SemFilter operators, we only consider introducing one fusion into candidate paths, to prevent degeneration of query accuracy and explosion of exploration space, resulting in at most 
+
+𝑛 (𝑛 − 1)/ 2 candidate paths with 𝑛 − 1 operators ordering by selec-tivity ascendingly. For all paths with fused operators, as well as the reference path and base path, we also generate their counterpart paths with batch prompting. Next, the executor evaluates these candidate paths on a frac-tion of 𝛿 2 tuples, collecting the query latency, token consumption, and the query results. As the ground-truth of semantic queries is unavailable beforehand, we treat the query results of 𝑝 ref without batch prompting as proxy ground-truth, which is used to evaluate the accuracy of other candidate paths. If the accuracy, e.g., F1 or Accuracy, is below a threshold 𝜏 𝑎𝑐𝑐 , it indicates that the correspond-ing path generates results far divergent from the reference path, and that path will be discarded to guarantee high result quality. During path evaluation, we devise two dynamic pruning strategies to reduce the exploration cost. First, if the accuracy of the reference path with batch prompting is below the threshold, the system will not explore all paths with batch prompting. Second, if the accuracy of one candidate path with operator fusion cannot meet the thresh-old, the evaluation of its counterpart with batch prompting will be bypassed. After the candidate paths are evaluated, we compute the Pareto frontier in the bi-objective space of query latency and token cost. Regarding user or application preference, the latency-first or token-first optimal path is selected as the optimal path 𝑝 ★.
+
+Phase 3: Path Exploitation. The selected path 𝑝 ★ is applied to process the remaining bulk of the data. Since the plan has been validated for both efficiency and accuracy, this phase ensures predictable, op-timized performance while amortizing the cost of path exploration. We present a case study of AQE in §7.5 on a specific query with three SemFilter operators, serving as an illustrative example. Currently, AQE is only supported for SemFilter operators in one execution pipeline of DuckDB. Optimizing more complex operators at runtime, especially for those across multiple pipelines will incur over-sophisticated implementation and large overhead of context switch, which deserves deeper engineering optimization. 
+
+## 6 ENGINEERING DETAILS 
+
+We present key engineering details of Sema , focusing on concurrent LLM calls and pipeline-parallel adaptive query execution (AQE). 
+
+Concurrent LLM Invocations. To integrate LLM inference into the system, Sema extends DuckDB’s pipeline-parallel engine with a thread-local concurrent I/O design. DuckDB uses a morsel-driven execution framework [ 31 ], decomposing work into fine-grained morsels, each processing a small batch of tuples within a pipeline. A central scheduler dynamically assigns morsels to worker threads from a shared pool, ensuring balanced load distribution and efficient CPU utilization with minimal synchronization overhead. In Sema ,each worker thread maintains a dedicated CURL multi-handle in-stance as its private HTTP connection pool. During execution, the thread synchronously issues LLM API requests within the morsel loop, while the CURL multi-handle enables non-blocking progress and efficient connection reuse. This design avoids cross-thread syn-chronization, allowing multiple workers to issue and manage LLM requests concurrently. As a result, Sema preserves DuckDB’s fine-grained parallelism and fully utilizes its task scheduler for both computation and I/O-bound workloads. 
+
+Pipeline-Parallel AQE. Sema integrates AQE directly into DuckDB’s pipeline-parallel engine via a customized operator, PhysicalSemAdap-tiveFilter , which unifies adaptive decision-making with streaming execution. Each pipeline executor incrementally pulls data chunks and processes them through the adaptive three-phase execution process of Sema , dynamically selecting and applying the opti-mal execution path. Leveraging DuckDB’s streaming primitives (NEED_MORE_INPUT and HAVE_MORE_OUTPUT ), Sema performs pro-gressive data slicing, evaluating only small fractions of the input during exploration before committing to the optimal path for the remaining data. During execution, multiple concurrent executors operate in par-allel on disjoint data partitions, each maintaining thread-local states Kangkang Qi et al. 
+
+(including expression evaluators and intermediate buffers) while reporting lightweight performance metrics (e.g., selectivity, latency, and token-level cost) to a shared global state. This dual-state ar-chitecture enables global coordination with local autonomy: adap-tive decisions are made collectively yet executed independently, minimizing synchronization overhead. As pipelines progress, the global controller aggregates feedback via atomic updates and prop-agates refined execution choices to all threads. Consequently, Sema 
+
+achieves fine-grained adaptivity and stable throughput across vary-ing data distributions, remaining compatible with the lightweight, streaming, and memory-efficient execution model of DuckDB. 
+
+## 7 SYSTEM EVALUATION 
+
+We present the experimental setup in §7.1 and report our compre-hensive evaluation in the following facets: ① Compare Sema with baseline systems on output quality, efficiency (§7.2); ② Assess the impact of operator fusion and prompt batching in Sema (§7.3); ③
+
+Explore the utility of LLM-assisted expression optimizations (§7.4); 
+
+④ Study the effectiveness of breakdown optimizations (§7.5). 
+
+## 7.1 Experimental Setup 
+
+Datasets. We use 9 datasets from BIRD [ 32 ], a widely used bench-mark originally designed for NL2SQL. Table 7 in Appendix C sum-marizes the profiles of the datasets, where each dataset represents distinct analytical applications. Specifically, Appstore , Superstore ,and Food_Inspection focus on entity-level semantic extraction, while others like Movies_4 and Authors emphasize multi-table reasoning and text-intensive query evaluation. This diversity ensures robust validation of Sema ’s optimization strategies across both structured and unstructured data. 
+
+Benchmark Queries. Based on the 9 datasets, we design 20 seman-tic queries, forming a comprehensive testbed for semantic query processing. The queries fall into three categories: ❶ Single-operator queries (Q1-Q5): contain a single SemFilter or SemProj . ❷ Consecu-tive SemFilter queries (Q6-Q10): contain 2-3 consecutive SemFilter 
+
+operators, used to evaluate the AQE framework and execution op-timizations. ❸ Queries with consecutive semantic operators other than SemFilter (Q14-Q20): include queries with SemProj and Sem-Filter (Q14-Q15), queries with two SemProj operators (Q14-Q15), queries with SemFilter and SemProj (Q16-Q18), and queries with 
+
+SemFilter and SemAgg (Q19-Q20). The complete 20 queries in Se-maSQL are presented in Appendix C, Fig. 13-32. Ground-truth re-sults for Q1-Q5 are collected from the original datasets, while those for Q6-Q20 are obtained from the inference results of a reference LLM (Gemma-3 27B by default). 
+
+Evaluation Metrics. For quality, we employ a range of evaluation metrics regarding the specific objectives of each query: ❶ Q1-Q14: Single label, multi-class classification; we report Accuracy, Preci-sion, Recall, and F1. ❷ Q15: Multi-label, multi-class classification. We report subset Accuracy, micro- and macro- F1 and Jaccard, re-spectively. ❸ Q16-Q20: Each involves two consecutive operators. We first evaluate the binary classification performance of the SemFil-ter , then assess the downstream task. Specifically, Q16 is a keyword extraction task (evaluated by macro- Precision/Recall/F1 and Jac-card); Q17 and Q18 are classification tasks (weighted-F1, micro-F1, macro-F1); Q19 and Q20 focus on aggregation and summarization (measured by word overlap between generated and ground-truth results). For time and cost efficiency, we use query latency, # LLM invocations, # input/output tokens, and cost ( ¢) of API calls as evaluation metrics. 
+
+Baselines. We compare Sema against three representative sys-tems: Lotus [ 42 ] built on Pandas, with optimized algorithms for 
+
+SemFilter and SemJoin , Palimpzest [ 35 ] with a cascaded optimizer and FlockMTL [18 ], which implements semantic operators as UDFs within DuckDB. The capabilities of these baseline systems and Sema 
+
+regarding vectorized execution, pipeline parallelism and asynchro-nous execution are shown as below:                 
+
+> Capability Lotus FlockMTL Palimpzest Sema
+> Vectorized Execution ✓✗✗✓
+> Pipeline Parallelism ✗✓✓✓
+> Asynchronous Execution ✓✗✓✓
+
+Implementation Details. Sema is built on DuckDB v1.2.2, support-ing both local and remote LLM invocations. We use vLLM [ 30 ] as the local LLM inference engine and OpenRouter as remote LLM APIs, respectively. We deploy Google’s Gemma-3 model [ 49 ] with 4B, 12B, and 27B, with a temperature of 0 for inference reproducibility. LLMs with a temperature of 0 will generate the same query results regardless of the reordering of SemFilter . For vLLM, all models are configured with tensor _parallel _size =4, bfloat16 precision, and a GPU memory utilization limit of 0.9. Local experiments are con-ducted on a Linux server with four NVIDIA RTX 5090 GPUs and an AMD EPYC 9554 CPU (64 cores, 503 GB RAM). Pricing for remote API calls follows DeepInfra’s rate on OpenRouter : 0.04$ /million input tokens and 0.13$ /million output tokens for Gemma-3 12B, 
+
+2$ /million input tokens and 8$ /million output tokens for GPT-4.1. 
+
+## 7.2 Overall Evaluation of Quality & Efficiency 
+
+We compare the output quality and query latency of Sema against three baseline systems using 20 semantic queries. To reduce the influence of network delay and fluctuation, local vLLM is used for all the systems. For Q1–Q5, we use the Gemma-3 4B model since these queries involve only a single operator and are relatively simple, while for the more complex queries Q6–Q20 that consist of multiple operators, we adopt the Gemma-3 12B model. For Palimpzest , we use MinTime optimizer policy to execute all queries. 
+
+Overall Efficiency Comparison. As shown in Fig. 4, Sema con-sistently outperforms all three baseline systems in query latency across all 20 queries. Particularly, the performance advantage of 
+
+Sema is remarkable for complex queries (Q6–Q20), where Sema 
+
+achieves up to a 3–6 × speedup. This improvement is attributed to 
+
+Sema ’s vectorized execution, pipeline parallelism and asynchro-nous execution mechanisms, which allow it to effectively utilize hardware concurrency and effectively interplay with vLLM during LLM invocation. In contrast, the three baseline systems exhibit notable limitations stemming from missing execution optimiza-tions. Lotus , although supporting vectorized and asynchronous execution, lacks pipeline parallelism, which prevents effective over-lap between operators. FlockMTL suffers from more fundamental Sema : A High-performance System for LLM-based Semantic Query Processing Q1 Q2 Q3 Q4 Q5 Q6 Q7 Q8 Q9 Q10 Q11 Q12 Q13 Q14 Q15 Q16 Q17 Q18 Q19 Q20 
+
+10 0
+
+10 1
+
+10 2
+
+10 3
+
+10 4
+
+> Query Latency (sec)
+
+Lotus FlockMTL Palimpzest SEMA 
+
+Figure 4: Overall Query Latency (seconds) Table 3: Query Accuracy for Q1-Q14 (FlockMTL does not support Q1, Q5 and Q20.)                                                                                                                                                                                                                                                                                                     
+
+> System Q1 Q2 Q3 Q4 Q5 Q6 Q7
+> Acc. Pre. Rec. F1 Acc. Pre. Rec. F1 Acc. Pre. Rec. F1 Acc. Pre. Rec. F1 Acc. Pre. Rec. F1 Acc. Pre. Rec. F1 Acc. Pre. Rec. F1 Lotus 0.9940 1.0000 0.9940 0.9970 0.7367 0.8148 0.7367 0.7450 0.7157 1.0000 0.7157 0.8343 0.4194 0.8837 0.4194 0.4534 0.3040 1.0000 0.3040 0.4662 0.6977 1.0000 0.2561 0.4078 0.8489 0.8722 0.6102 0.7180 FlockMTL ----0.7973 0.8221 0.7973 0.7994 0.2294 1.0000 0.2294 0.3732 0.4897 0.7182 0.4897 0.4543 ----0.7195 0.9023 0.3475 0.5017 0.7504 0.9558 0.2185 0.3557 Palimpzest 0.9461 1.0000 0.9461 0.9723 0.3832 0.4471 0.3832 0.4022 0.9426 1.0000 0.9426 0.9705 0.2573 0.4080 0.2573 0.2326 0.5799 1.000 0.5799 0.7341 0.7011 0.9928 0.2664 0.4201 0.8556 0.8316 0.6796 0.7480
+> Sema 0.9934 1.0000 0.9934 0.9967 0.7369 0.8154 0.7369 0.7407 0.7124 1.0000 0.7124 0.8320 0.4428 0.7349 0.4428 0.4878 0.1265 1.0000 0.1265 0.2245 0.7030 1.0000 0.2693 0.4243 0.8148 0.7825 0.5715 0.6606
+> System Q8 Q9 Q10 Q11 Q12 Q13 Q14
+> Acc. Pre. Rec. F1 Acc. Pre. Rec. F1 Acc. Pre. Rec. F1 Acc. Pre. Rec. F1 Acc. Pre. Rec. F1 Acc. Pre. Rec. F1 Acc. Pre. Rec. F1 Lotus 0.8542 0.6728 0.8921 0.7670 0.9959 0.5000 0.1154 0.1875 0.9456 0.9412 0.3743 0.5356 0.8697 0.9887 0.3954 0.5648 0.7358 0.6534 0.4096 0.5035 0.7181 0.8864 0.6754 0.7666 0.7168 0.7767 0.7168 0.7115 FlockMTL 0.7445 0.9706 0.0574 0.1083 0.9962 1.0000 0.0769 0.1429 0.9251 0.6809 0.1882 0.2949 0.1563 0.0870 0.3103 0.1360 0.6613 0.4722 0.2993 0.3664 0.7440 0.8196 0.8035 0.8115 0.7059 0.7684 0.7059 0.7249 Palimpzest 0.8644 0.7979 0.6680 0.7272 0.9956 0.4167 0.1923 0.2632 0.9407 0.5953 0.9000 0.7166 0.9381 0.8503 0.8621 0.8562 0.6855 0.5168 0.5951 0.5532 0.7305 0.8441 0.7445 0.7912 0.6517 0.6763 0.6517 0.6543
+> Sema 0.8426 0.6958 0.7375 0.7160 0.9955 0.3636 0.1538 0.2162 0.9543 0.9364 0.4873 0.6410 0.9651 0.9740 0.8598 0.9133 0.7273 0.6082 0.4683 0.5292 0.7315 0.9012 0.6834 0.8883 0.7570 0.7954 0.7570 0.7563 subset_acc
+> mirco_f1
+> micro_jaccard
+> mac_f1
+> mac_jaccard
+> 0.2 0.4 0.6 0.8 1.0
+
+(a) Q15 filter_acc  
+
+> filter_pre
+> filter_rec
+> filter_f1
+> map_pre
+> map_rec
+> map_f1
+> map_similarity
+> 0.2 0.4 0.6 0.8 1.0
+
+(b) Q16 filter_acc  
+
+> filter_pre
+> filter_rec
+> filter_f1
+> map_weighted_f1
+> map_macro_f1
+> map_micro_f1
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+
+(c) Q17 filter_acc  
+
+> filter_pre
+> filter_rec
+> filter_f1
+> map_weighted_f1
+> map_macro_f1
+> map_micro_f1
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+
+(d) Q18 filter_acc   
+
+> filter_pre filter_rec
+> filter_f1
+> agg_similarity agg_overlap
+> 0.2 0.4 0.6 0.8 1.0
+
+(e) Q19 filter_acc   
+
+> filter_pre filter_rec
+> filter_f1
+> agg_similarity agg_overlap
+> 0.2 0.4 0.6 0.8 1.0
+
+(f) Q20 
+
+Figure 5: Query Accuracy of Lotus, Sema , Palimpzest and FlockMTL for Q15-Q20 
+
+inefficiencies: it neither leverages vectorized execution nor sup-ports asynchronous execution, leading to inefficient resource usage and slower execution. Palimpzest , while enabling pipeline paral-lelism and asynchronous execution, does not exploit vectorized execution, limiting its ability to benefit from a high-throughput ex-ecution model and consequently constraining overall performance. FlockMTL fails to support queries Q1, Q5, Q19, and Q20 due to the presence of columns containing multiple data types. Palimpzest is unable to execute query Q20, as it currently lacks support for semantic aggregation with SemAgg .
+
+Overall Quality Comparison. Table 3 and Fig. 5 show that Sema ,Lotus and Palimpzest achieve comparable accuracy across most evaluation metrics, with each system demonstrating strengths on different queries. This variation is largely due to the prompt sen-sitivity of LLM outputs, as we observed in the testing that minor differences in prompt handling can lead to noticeable fluctuations in the results. Although the prompt format of Sema is carefully aligned with Lotus to ensure a fair comparison, slight discrepancies remain due to differences in system architecture and execution flow. In general, Sema maintains balanced and competitive performance with Lotus and Palimpzest on both simple and complex queries. In contrast, FlockMTL performs considerably worse across almost all metrics, reflecting the limitations in its model invocation strategy and overall system robustness. 
+
+## 7.3 Execution Optimization Evaluation 
+
+To assess the utility of execution optimizations, we compare the performance of Sema under four configurations: (1) w/o optimiza-tion , (2) w/ prompt batching with a batch size of 16, (3) w/ operator fusion , and (4) w/ batch & fusion . All experiments are conducted using Gemma-3 12B, invoked both remote API and locally. We use four queries, Q8, Q13, Q14 and Q16 with distinct combinations of operators to evaluate the above configurations. The experimental results are summarized in Fig.6, which com-pares the latency, execution cost and output quality of prompt batching and operator fusion across different workloads under both remote and local deployment settings. In terms of latency, both batching and fusion reduce overall execution time in the re-mote setting because they decrease the number of LLM invocations and therefore amortize network and scheduling overhead. Since batching aggregates more requests into a single call, it consistently achieves lower latency than fusion. However, in the local setting, batching and fusion may increase latency. Both techniques trade fewer invocations for longer input and output sequences, while the vLLM continuous batching scheduler is optimized for many short Kangkang Qi et al. Q8 Q13 Q14 Q16                         
+
+> 10 0
+> 10 1
+> Cost (¢)
+> w/o batch & fusion w/ batch w/ fusion w/ batch & fusion Q8 Q13 Q14 Q16
+> 10 1
+> 10 2
+> Latency (s)
+> (a) Latency (local) Q8 Q13 Q14 Q16
+> 10 1
+> 10 2
+> 10 3
+> Latency (s) (b) Latency (remote) Q8 Q13 Q14 Q16
+> 10 0
+> 10 1
+> Cost (¢)
+> (c) Cost (local) Q8 Q13 Q14 Q16
+> 10 0
+> 10 1
+> Cost (¢) (d) Cost (remote) Q8 Q13 Q14 Q16
+> 0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1
+> F1 score
+> (e) F1 (local) Q8 Q13 Q14 Q16
+> 0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1
+> F1 score (f) F1 (remote)
+
+Figure 6: The Effectiveness of Execution Optimizations 
+
+requests rather than fewer long ones, leading to reduced scheduling efficiency. Regarding cost, prompt batching and operator fusion generally lower query execution cost by reducing redundant input tokens processed by the model. An exception appears in Q8, where fusion fails to reduce cost and may even increase it. This is mainly because fusion combines operations involving a filter operator; when the filter predicate’s selectivity is low, additional unneces-sary tokens must still be processed, offsetting potential savings. For output quality, batching consistently degrades performance due to interference among multiple queries handled simultaneously within a single prompt. Fusion shows task-dependent behavior: it improves quality for Q13, Q14, and Q16 but degrades it for Q8. The reason is that Q8 consists of independent tasks, where joint processing introduces interference, whereas Q13, Q14, and Q16 are sequentially dependent tasks whose shared context allows the model to reuse intermediate reasoning and achieve better results. 
+
+## 7.4 Expression Optimization Evaluation 
+
+We conduct effectiveness studies of the two NL expression opti-mizations, expression compression and predicate deduction, on Q3, Q6, Q13, and Q14, and the results are summarized in Table 4. To validate expression compression, we intentionally introduced se-mantically redundant content into the NL expressions of the queries. To validate partial deduction, we rewrote certain SQL predicates as NL expressions to assess whether predicate deduction can ef-fectively achieve deduction. These query variants can be found in Appendix C, Fig. 33-40. 
+
+Table 4: Impact of Expression Optimization. Here, ‘+’ adds the invocation costs in red of the auxiliary LLM)                                                                                                                         
+
+> QOpt. Pre. Rec. F1 Lat. (s) IT (K) OT (K) LLM Calls
+> Q3 w/o EC 1.0000 0.9880 0.9944 95.43 91.24 1.08 401 w/ EC 1.0000 0.9890 0.9945 102.05 72.20+1.69 1.00+0.09 401+1 w/o PD 1.0000 0.9950 0.9975 410.66 191.24 6.08 856 w/ PD 1.0000 0.9950 0.9975 135.11 73.24+1.07 1.07+0.051 492+2 Q6 w/o EC 0.9868 0.9418 0.9637 256.42 9.16 0.15 59 w/ EC 0.9818 0.9795 0.9803 239.32 8.15+1.46 0.14+0.03 59+1 w/o PD 1.0000 0.9072 0.9513 443.66 7.76 0.16 59 w/ PD 1.0000 0.9072 0.9513 447.67 7.76 + 1.13 0.16 + 0.03 59+2 Q13 w/o EC 0.8112 0.4610 0.5878 342.25 38.73 3.98 318 w/ EC 0.7647 0.6569 0.7067 357.97 34.84+3.38 4.28+0.07 318+1 w/o PD 0.8057 0.5293 0.6388 637.30 57.10 4.62 601 w/ PD 0.8182 0.5505 0.6582 346.65 31.64+1.25 3.90+0.03 318+2 Q14 w/o EC 0.5314 0.2744 0.3031 554.89 74.53 8.04 548 w/ EC 0.4603 0.2506 0.2814 556.16 62.47+3.42 9.54+0.08 548+1 w/o PD 0.6134 0.616 0.6147 1055.36 97.15 7.65 1023 w/ PD 0.3787 0.6338 0.4741 548.93 57.78+0.99 8.80+0.02 552+2
+
+Expression compression (EC) primarily targets token effi-ciency by reducing redundancy in NL expressions. Since, EC rewrites verbose NL expressions into more compact yet semantically equiv-alent forms, enabling LLM to operate on shorter prompts, both input and output token consumption are reduced while maintain-ing comparable execution quality. A representative example can be observed in Q3, where the input tokens decrease from 73.24K (w/o EC) to 72.20K and the output tokens decrease from 1.07K to 1.00K after applying EC, while precision, recall, and F1 remain nearly unchanged. Similar patterns can be observed in Q6 and Q13, suggesting that EC effectively improves token efficiency without introducing semantic distortion or degrading result quality. 
+
+Predicate deduction (PD) focuses on decreasing the number of required LLM calls during query execution. PD derives necessary SQL predicates directly from the NL expressions and injects them into the execution process, thereby filtering out tuples before LLM invocation. The benefit is particularly evident in Q13, where intro-ducing PD brings efficiency with fewer calls and reduced overhead while maintaining comparable result quality. 
+
+## 7.5 Breakdown Evaluation of Sema 
+
+To investigate the effectiveness of our AQE framework of Sema , we conduct experiments on queries Q6–Q10 in both remote and local scenarios, each involving multiple semantic filter predicates. We set the fraction of data used for expression exploration and path exploration as 𝛿 1 = 132 and 𝛿 2 = 332 , respectively, and the remaining  
+
+> 28 32
+
+data is processed by the selected path. We use local Gemma-3 12B for LLM inference. We set the MCC threshold for SemFilter 
+
+fusion and 𝜏 acc to 0.5 and 0.80, respectively. Fig. 7 presents the comprehensive query-level metrics and la-tency breakdown for Q6–Q10 under various AQE configurations and two settings (local and remote). The three metrics exhibit sub-stantial differences between the local and remote settings. Overall, the results highlight that batching introduces a cost–latency trade-off in local environments, while fusion can be latency-positive or latency-negative depending on the dataset; in remote deployments, both optimizations become effectively Pareto-improving, demon-strating environment-aware adaptive optimization. In the local setting, both prompt batching and operator fusion consistently reduce total token cost. However, their latency impacts Sema : A High-performance System for LLM-based Semantic Query Processing Q6 Q7 Q8 Q9 Q10                                    
+
+> 1
+> 2
+> 4
+> 8
+> 16
+> Cost (¢)
+> w/o opt. w/ PD w/ reorder lat-first AQE (w/ batch) lat-first AQE (w/ fusion)
+> lat-first AQE (w/ batch & fusion) cost-first AQE (w/ batch) cost-first AQE (w/ fusion) cost-first AQE (w/ batch & fusion) Q6 Q7 Q8 Q9 Q10
+> 0
+> 20
+> 40
+> 60
+> 80
+> Latency (seconds)
+> (a) Query Latency (local) Q6 Q7 Q8 Q9 Q10
+> 1
+> 2
+> 4
+> 8
+> 16
+> Cost (¢) (b) Total Token Cost (local) Q6 Q7 Q8 Q9 Q10
+> 0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> F1 Score (c) F1 (local) Q6 Q7 Q8 Q9 Q10
+> 100
+> 200
+> 400
+> 800
+> 1600
+> 3200
+> Latency (seconds)
+> (d) Query Latency (remote) Q6 Q7 Q8 Q9 Q10
+> 1
+> 2
+> 4
+> 8
+> 16
+> Cost (¢) (e) Total Token Cost (remote) Q6 Q7 Q8 Q9 Q10
+> 0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> F1 Score (f) F1 (remote)
+
+Figure 7: Breakdown Evaluation of Sema regarding Query Latency, Token Cost and F1 Under Local and Remote APIs 
+
+differ: prompt batching increases query latency, while the latency change introduced by operator fusion is dataset-dependent—it may either increase or decrease latency depending on the workload char-acteristics. The effectiveness of these techniques is also affected by the scheduler of vLLM, which is relatively more suitable for more and shorter LLM prompting than for fewer and longer LLM prompting. Therefore, the side-effect of prompt batching and op-erator fusion is that they may degrade the parallelism of Sema ,depending on the length of the prompts. Consequently, under a cost-first AQE objective, the optimizer tends to favor fused and/or batched plans, achieving noticeable cost reductions at the expense of higher latency (primarily due to batching). Under a latency-first AQE objective, the optimizer avoids aggressive batching and ap-plies fusion only when it is latency-beneficial for the given dataset, resulting in limited or inconsistent latency gains over the baseline. In the remote setting, the behavior changes substantially: because network round-trip overhead dominates execution time, reducing the number of remote calls via fusion and batching simultaneously lowers both latency and cost. As a result, both latency-first and cost-first AQE often select similar optimized plans and achieve consistent improvements in both metrics. 
+
+Performance Characteristics: Local vs. Remote. The latency of LLM-based query execution is primarily governed by two factors: the number of LLM calls and the token length per call. However, the dominant factor shifts depending on the environment. For local LLM calls, execution is primarily constrained by local GPU com-putational power and memory size. In this scenario, throughput is relatively fixed. Consequently, latency is highly sensitive to token length per call, while the impact of call counts is less significant. While for remote LLM calls, performance is dominated by network overhead (e.g., round-trip time, handshakes, queue time) and API provider rate limits. In this context, the per-call overhead is sub-stantial, making latency highly sensitive to the number of LLM calls, whereas moderate increases in token length per call have a negligible impact on total time. 
+
+SELECT coins . id AS coin_id FROM coins 
+
+WHERE category = ' coin ' AND description is NOT NULL AND s ' The { description } shows that this cryptocurrency has a big supply amount . '
+
+AND s ' The { description } indicates that this cryptocurrency is still in circulation . '
+
+AND s 'It can be inferred from the { description } that the price of this cryptocurrency is rising . '); 
+
+Figure 8: Q6 for AQE case study Table 5: Micro-execution results of candidate paths for Q6                                    
+
+> Description Path Acc (%) Latency (s) Cost ($) ([𝜎 3,𝜎 1,𝜎 2])𝑝 1100.00 0.997 0.0008 ([𝜎 3,𝜎 1,𝜎 2]) w/ batch b𝑝 194.04 1.936 0.0006
+> [𝜎 2⊕𝜎 3,𝜎 1]𝑝 2100.00 0.504 0.0007
+> [𝜎 2⊕𝜎 3,𝜎 1]w/ batch b𝑝 291.66 1.412 0.0005
+
+Trade-offs Under Multi-objective Strategies. When AQE is con-figured for multi-objective optimization, the results reveal clear and controllable trade-offs between latency and cost, consistent with our design intuition. Latency-first strategies consistently achieve the shortest query runtimes (e.g., 29.64s for Q6 and 51.94s for Q9), whereas cost-first strategies yield the lowest monetary costs (e.g., 2.21 ¢ for Q6 and 3.04 ¢ for Q9). 
+
+Case Study of AQE. We further illustrate AQE dynamics using Q6 (in Fig. 8) with local LLM calls, which retrieves cryptocurrencies with large supply ( 𝜎 1), active circulation ( 𝜎 2), and rising prices ( 𝜎 3). In the Expression Exploration Phase, we independently evaluated three predicates on a 132 subsample (27 rows), estimating reflectivi-ties as 𝑠 (𝜎 1) = 0.66 , 𝑠 (𝜎 2) = 0.77 , and 𝑠 (𝜎 3) = 0.22 . Correlation anal-ysis on MCC reveals MCC (𝜎 1, 𝜎 2) = 0.755 , MCC (𝜎 1, 𝜎 3) = 0.377 .Kangkang Qi et al. 
+
+Table 6: Planning time (in millisecond), and breakdown time for phase 1-3 of AQE (t1, t2, t3 in seconds)                                                                                                          
+
+> Metric Q6 Q7 Q8 Q9 Q10
+> -𝑝 ref 𝑝 base 𝑝 ★
+> latency 𝑝 ★
+> cost 𝑝 ref 𝑝 base 𝑝 ★
+> latency 𝑝 ★
+> cost 𝑝 ref 𝑝 base 𝑝 ★
+> latency 𝑝 ★
+> cost 𝑝 ref 𝑝 base 𝑝 ★
+> latency 𝑝 ★
+> cost 𝑝 ref 𝑝 base 𝑝 ★
+> latency 𝑝 ★
+> cost
+> plan (ms) 30 30 29 30 54 51 52 55 51 55 49 49 54 54 56 50 49 46 56 54
+> t1 (s) 0.00 0.57 0.57 0.57 0.00 0.32 0.33 0.34 0.00 0.59 0.62 0.65 0.00 0.61 0.60 0.64 0.00 1.30 1.35 1.32
+> t2 (s) 0.00 0.00 3.45 4.86 0.00 0.00 1.79 1.81 0.00 0.00 3.93 5.72 0.00 0.00 1.42 1.45 0.00 0.00 3.24 3.24
+> t3 (s) 0.00 24.60 25.61 30.85 0.00 41.49 40.86 71.81 0.00 70.87 70.24 120.05 0.00 39.86 39.30 54.82 0.00 28.75 27.29 26.60
+
+There is a strong positive correlation between 𝜎 1 and 𝜎 2, indicat-ing a potential of operator fusion, and 𝜎 3 is the most selective and relatively independent predicate. Guided by these statistics, Sema 
+
+generates four new execution paths, a base path 𝑝 1 with SemFilter 
+
+reordering ( [𝜎 3, 𝜎 1, 𝜎 2]), a variant of base path 𝑝 2 with operator fu-sion ( [𝜎 2 ⊕ 𝜎 3, 𝜎 1]), and variants of 𝑝 1 and 𝑝 2 with prompt batching, denoted as b𝑝 1 and b𝑝 2, respectively. In the Path Exploration Phase, these candidate paths are micro -executed on a 332 subsample (84 rows here) to compare accuracy (against the base path), latency, and cost. The results of these paths are summarized in Table 5, where the ‘Acc’ here represents the relative Acc. of the path to 𝑝 1.Predicate fusion ( 𝑝 2) substantially reduces token I/O and latency, achieving up to 49% lower latency and 9% lower cost compared to the base path ( 𝑝 1) while retaining full accuracy. In contrast, batch-ing does not always yield latency gains in this case. We observe that batched executions ( b𝑝 1 and b𝑝 1) sometimes incur longer delays than their non-batched counterparts. This difference is likely due to environmental constraints: while reducing LLM requests, batching increases per-request size and reduces concurrency, which length-ens end-to-end processing time in a local setting. Given an accuracy threshold of 𝜏 𝑎𝑐𝑐 = 0.80 , paths b𝑝 1 and 𝑝 2 lie on the Pareto frontier. Under a latency-first strategy, 𝑝 2 is selected as the optimal path 𝑝 ★;under a cost-first strategy, b𝑝 1 is preferred. 
+
+Planning Time . We report the execution time of the three stages in AQE in Table 6. Generally, the planning time is consistently small across all queries and plan variants. The end-to-end overhead is dominated by the final path exploitation phase ( 𝑡 3), while the two exploration phases ( 𝑡 1 and 𝑡 2) incur only modest cost. AQE’s planning/exploration cost remains lightweight relative to exploita-tion, confirming that the framework spends most of its time in exploitation rather than exploration. 
+
+## 8 RELATED WORK 
+
+In-database Machine Learning. Equipping database systems with ML functionalities is a long-standing research topic. Early studies [ 38 , 55 ] use relational algebra to represent linear algebra operations, where ML models can be expressed and executed in SQL within a DBMS. Another line is to implement UDFs and com-putation libraries over matrix and vector primitives. For example, MADlib [ 20 ] is an in-database library providing matrix and vector operations, and both UDFs and UDAs are employed to implement gradient descent [ 10 , 19 ]. To support a variety of statistical models, Monte Carlo database systems [ 11 , 22 ] have been designed, provid-ing specialized UDFs for sampling in the database, thus enabling Bayesian learning through SQL queries. The concept of model-based views [16, 29] has also been introduced to maintain ML models in DBMS following updates of the underlying training data. Nowa-days, many commercial and cloud database systems integrate ML capabilities, such as BigQuery ML [ 2 ], Amazon Redshift ML [ 1], Oracle Data Mining [ 3 ]. More recently, DBMS injects deep learning models into UDFs to deal with complex analytical queries, where LLMs are either invoked in UDFs [ 18 , 36 ], or are used to generate the code of UDFs [54]. 
+
+General ML-based Analytical System. The widespread adoption of ML has driven the development of general ML-based analyt-ical systems. Video database management systems (VDBMS) [ 7,25 , 26 , 28 , 44 , 52 ] are specifically designed for video data analysis, leveraging DL models as UDFs in DBMS for tasks such as image classification and object detection. To efficiently process video ana-lytical queries, these systems incorporate a variety of optimization techniques, including end-to-end optimization of the preprocessing and query pipeline [28], declarative query hints [44], fine-grained model selection [ 12 ], query-agnostic semantic index [ 7], and fast evaluation algorithms for specific operators [ 7, 25 ]. Beyond video analysis, ML-powered probabilistic predicates [ 17 , 37 , 53 ] have been applied in a broader range of applications. These studies construct lightweight proxy models and exploit the correlations between dif-ferent predicates. For hybrid queries that combine ML and relational operators, RAVEN [ 41 ] performs cross optimization of ML and rela-tional operators, exploiting data statistics to select across multiple execution strategies. In addition, some systems also adopt adap-tive query processing by dynamically adjusting query plans and resource allocation, or choosing cheaper proxy models, following runtime statistics. ABAE [ 27 ], InQuest [ 45 ] specialize in optimizing aggregate queries with ML models by introducing sampling-based aggregate algorithms. 
+
+LLM-based Semantic Query Processing. LLMs have introduced a new paradigm in semantic query processing for both structured data [ 18 , 36 ] and unstructured data [ 5 , 48 , 50 ]. Systems such as Do-cETL [ 48 ], ZenDB [ 34 ], DocWanger [ 47 ], Aryn [ 5] and Unify [ 50 ]leverage LLMs for analytics over unstructured text by semantic queries, supporting a broad spectrum of query interfaces including extended SQL dialects [ 34 ], declarative operations [ 48 ] and natural language [ 5, 47 , 50 ]. In these document analytical systems, LLMs also serve as optimization agents during query evaluation, facili-tating tasks such as query planning [ 5], query rewriting, prompt refinement and operation decomposition [ 47 ]. UQE [ 14 ] extends SQL by allowing natural language join and selection predicates, which intrinsically supports semantic join and semantic filter by LLMs. As an LLM-powered analytical system, Palimpzest [ 35 ] pro-vides logical and physical optimizations to reduce the query time and financial cost of LLM invocations. Building on Palimpzest, Abacus [ 46 ] introduces a Pareto optimization algorithm and cost estimation for query planning. Lotus [ 42 ] formulates LLM-based semantic operations over tabular data and proposes optimized al-gorithms for costly semantic operations. [ 4] evaluates semantic Sema : A High-performance System for LLM-based Semantic Query Processing 
+
+query performance of PostgreSQL with pgAI and DuckDB with FlockMTL [ 18 ], highlighting the ongoing challenges in enforcing structured outputs, batch processing, and query planning. To the best of our knowledge, Sema is the first system that supports native semantic operators and implements end-to-end optimization on top of DuckDB. 
+
+Adaptive Query Execution (AQE). Over the past two decades, AQE has progressed from fine-grained tuple routing to robust, domain-specific execution frameworks. The notion of continuous adaptivity was pioneered by Eddies [ 6 ], which replaced static oper-ator trees with real-time tuple routing. This idea was later refined by CBR [ 8], which demonstrated that routing based on data con-tent outperforms simple average statistics. However, to mitigate the high overhead of tuple-level routing, subsequent research has shifted toward more practical, stage-based adaptation. For exam-ple, Polar [ 23 ] mitigates cardinality estimation errors by adaptively switching join orders through plans of least resistance, enabling robust execution without reconstructing the optimizer. More re-cently, AQE has expanded to support the growing prevalence of ML operators in DBMSs. Aero [ 24 ] applies AQE to optimize ML-centric queries, dynamically adjusting the invocation of expensive UDFs and probabilistic models based on runtime data characteristics. In this work, due to the inherent unpredictability and uncertainty of the execution of LLM-based operators, Sema employs AQE in the executor to explore a trade-off between cost, latency, and result quality. 
+
+## 9 CONCLUSION 
+
+In this work, we presented Sema , a high-performance system that integrates semantic operators for LLM-based semantic query pro-cessing in database systems. To optimize such semantic queries, 
+
+Sema introduces natural language expression optimizations for semantic operators at the optimizer stage and incorporates run-time optimization strategies at the executor stage. Considering the inherent uncertainty of LLMs, Sema adopts an adaptive query execution framework to achieve a balanced trade-off among qual-ity, cost, and latency during execution. Our results demonstrate the potential of unifying semantic reasoning with traditional data management for more adaptive and intelligent query processing. An executable version of the system Sema is released in https: //github.com/BITQiKangK/SemaSystem.git. 
+
+## REFERENCES 
+
+[1] [n. d.]. Amazon Redshift ML. https://aws.amazon.com/redshift/features/redshift-ml/. Accessed: 2025-06-06. [2] [n. d.]. BigQuery ML. https://cloud.google.com/bigquery/docs/bqml-introduction. Accessed: 2025-06-06. [3] [n. d.]. Oracle Data Mining. https://www.oracle.com/big-data/technologies/ dataminer/. Accessed: 2025-06-06. [4] Kerem Akillioglu, Anurag Chakraborty, Sairaj Voruganti, and M. Tamer Özsu. 2025. Research Challenges in Relational Database Management Systems for LLM Queries. arXiv:2508.20912 [cs.DB] https://arxiv.org/abs/2508.20912 [5] Eric Anderson, Jonathan Fritz, Austin Lee, Bohou Li, Mark Lindblad, Henry Lindeman, Alex Meyer, Parth Parmar, Tanvi Ranade, Mehul A. Shah, Benjamin Sowell, Dan Tecuci, Vinayak Thapliyal, and Matt Welsh. 2025. The Design of an LLM-powered Unstructured Analytics System. In 15th Conference on Innovative Data Systems Research, CIDR 2025, Amsterdam, The Netherlands, January 19-22, 2025 . www.cidrdb.org. https://vldb.org/cidrdb/2025/the-design-of-an-llm-powered-unstructured-analytics-system.html [6] Ron Avnur and Joseph M. Hellerstein. 2000. Eddies: Continuously Adaptive Query Processing. In Proceedings of the 2000 ACM SIGMOD International Conference on Management of Data, May 16-18, 2000, Dallas, Texas, USA , Weidong Chen, Jeffrey F. Naughton, and Philip A. Bernstein (Eds.). ACM, 261–272. doi:10.1145/ 342009.335420 [7] Jaeho Bang, Gaurav Tarlok Kakkar, Pramod Chunduri, Subrata Mitra, and Joy Arulraj. 2023. SEIDEN: Revisiting Query Processing in Video Database Systems. 
+
+Proc. VLDB Endow. 16, 9 (2023), 2289–2301. doi:10.14778/3598581.3598599 [8] Pedro Bizarro, Shivnath Babu, David J. DeWitt, and Jennifer Widom. 2005. Content-Based Routing: Different Plans for Different Data. In Proceedings of the 31st International Conference on Very Large Data Bases, Trondheim, Norway, August 30 - September 2, 2005 , Klemens Böhm, Christian S. Jensen, Laura M. Haas, Martin L. Kersten, Per-Åke Larson, and Beng Chin Ooi (Eds.). ACM, 757–768. http://www.vldb.org/archives/website/2005/program/paper/thu/p757-bizarro.pdf [9] Matthias Boehm, Berthold Reinwald, Dylan Hutchison, Prithviraj Sen, Alexan-dre V. Evfimievski, and Niketan Pansare. 2018. On Optimizing Operator Fusion Plans for Large-Scale Machine Learning in SystemML. Proc. VLDB Endow. 11, 12 (2018), 1755–1768. doi:10.14778/3229863.3229865 [10] Vinayak R. Borkar, Yingyi Bu, Michael J. Carey, Joshua Rosen, Neoklis Polyzotis, Tyson Condie, Markus Weimer, and Raghu Ramakrishnan. 2012. Declarative Systems for Large-Scale Machine Learning. IEEE Data Eng. Bull. 35, 2 (2012), 24–32. http://sites.computer.org/debull/A12june/declare.pdf [11] Zhuhua Cai, Zografoula Vagena, Luis Leopoldo Perez, Subramanian Arumugam, Peter J. Haas, and Christopher M. Jermaine. 2013. Simulation of database-valued markov chains using SimSQL. In Proceedings of the ACM SIGMOD International Conference on Management of Data, SIGMOD 2013, New York, NY, USA, June 22-27, 2013 , Kenneth A. Ross, Divesh Srivastava, and Dimitris Papadias (Eds.). ACM, 637–648. doi:10.1145/2463676.2465283 [12] Jiashen Cao, Karan Sarkar, Ramyad Hadidi, Joy Arulraj, and Hyesoon Kim. 2022. FiGO: Fine-Grained Query Optimization in Video Analytics. In SIGMOD ’22: International Conference on Management of Data, Philadelphia, PA, USA, June 12 - 17, 2022 , Zachary G. Ives, Angela Bonifati, and Amr El Abbadi (Eds.). ACM, 559–572. doi:10.1145/3514221.3517857 [13] Surajit Chaudhuri, Vivek Narasayya, and Sunita Sarawagi. 2002. Efficient evalu-ation of queries with mining predicates. In Proceedings 18th International Confer-ence on Data Engineering . IEEE, 529–540. [14] Hanjun Dai, Bethany Wang, Xingchen Wan, Bo Dai, Sherry Yang, Azade Nova, Pengcheng Yin, Mangpo Phothilimthana, Charles Sutton, and Dale Schuurmans. 2024. UQE: A Query Engine for Unstructured Databases. Advances in Neural Information Processing Systems 37 (2024), 29807–29838. [15] Naihao Deng, Yulong Chen, and Yue Zhang. 2022. Recent Advances in Text-to-SQL: A Survey of What We Have and What We Expect. In COLING . International Committee on Computational Linguistics, Gyeongju, Republic of Korea. https: //aclanthology.org/events/coling-2022/ [16] Amol Deshpande and Samuel Madden. 2006. MauveDB: supporting model-based user views in database systems. In Proceedings of the ACM SIGMOD International Conference on Management of Data, Chicago, Illinois, USA, June 27-29, 2006 ,Surajit Chaudhuri, Vagelis Hristidis, and Neoklis Polyzotis (Eds.). ACM, 73–84. doi:10.1145/1142473.1142483 [17] Dujian Ding, Sihem Amer-Yahia, and Laks V. S. Lakshmanan. 2022. On Efficient Approximate Queries over Machine Learning Models. Proc. VLDB Endow. 16, 4 (2022), 918–931. doi:10.14778/3574245.3574273 [18] Anas Dorbani, Sunny Yasser, Jimmy Lin, and Amine Mhedhbi. 2025. Beyond Quacking: Deep Integration of Language Models and RAG into DuckDB. Proc. VLDB Endow. 18, 12 (2025), 5415–5418. doi:10.14778/3750601.3750685 [19] Xixuan Feng, Arun Kumar, Benjamin Recht, and Christopher Ré. 2012. Towards a unified architecture for in-RDBMS analytics. In Proceedings of the ACM SIGMOD International Conference on Management of Data, SIGMOD 2012, Scottsdale, AZ, USA, May 20-24, 2012 , K. Selçuk Candan, Yi Chen, Richard T. Snodgrass, Luis Gravano, and Ariel Fuxman (Eds.). ACM, 325–336. doi:10.1145/2213836.2213874 [20] Joseph M. Hellerstein, Christopher Ré, Florian Schoppmann, Daisy Zhe Wang, Eugene Fratkin, Aleksander Gorajek, Kee Siong Ng, Caleb Welton, Xixuan Feng, Kun Li, and Arun Kumar. 2012. The MADlib Analytics Library or MAD Skills, the SQL. Proc. VLDB Endow. 5, 12 (2012), 1700–1711. doi:10.14778/2367502.2367510 [21] Joseph M Hellerstein and Michael Stonebraker. 1993. Predicate migration: Op-timizing queries with expensive predicates. In Proceedings of the 1993 ACM SIGMOD international conference on Management of data . 267–276. [22] Ravi Jampani, Fei Xu, Mingxi Wu, Luis Leopoldo Perez, Chris Jermaine, and Peter J. Haas. 2011. The monte carlo database system: Stochastic analysis close to the data. ACM Trans. Database Syst. 36, 3 (2011), 18:1–18:41. doi:10.1145/ 2000824.2000828 [23] David Justen, Daniel Ritter, Campbell Fraser, Andrew Lamb, Nga Tran, Allison Lee, Thomas Bodner, Mhd Yamen Haddad, Steffen Zeuch, Volker Markl, and Matthias Boehm. 2024. POLAR: Adaptive and Non-invasive Join Order Selection via Plans of Least Resistance. Proc. VLDB Endow. 17, 6 (2024), 1350–1363. doi:10. 14778/3648160.3648175 [24] Gaurav Tarlok Kakkar, Jiashen Cao, Aubhro Sengupta, Joy Arulraj, and Hyesoon Kim. 2025. Aero: Adaptive Query Processing of ML Queries. Proc. ACM Manag. Kangkang Qi et al. 
+
+Data 3, 3 (2025), 174:1–174:27. doi:10.1145/3725408 [25] Daniel Kang, Peter Bailis, and Matei Zaharia. 2019. BlazeIt: Optimizing Declara-tive Aggregation and Limit Queries for Neural Network-Based Video Analytics. 
+
+Proc. VLDB Endow. 13, 4 (2019), 533–546. doi:10.14778/3372716.3372725 [26] Daniel Kang, Edward Gan, Peter Bailis, Tatsunori Hashimoto, and Matei Zaharia. 2020. Approximate Selection with Guarantees using Proxies. Proc. VLDB Endow. 
+
+13, 11 (2020), 1990–2003. http://www.vldb.org/pvldb/vol13/p1990-kang.pdf [27] Daniel Kang, John Guibas, Peter Bailis, Tatsunori Hashimoto, Yi Sun, and Matei Zaharia. 2021. Accelerating Approximate Aggregation Queries with Expensive Predicates. Proc. VLDB Endow. 14, 11 (2021), 2341–2354. doi:10.14778/3476249. 3476285 [28] Daniel Kang, Ankit Mathur, Teja Veeramacheneni, Peter Bailis, and Matei Zaharia. 2020. Jointly Optimizing Preprocessing and Inference for DNN-based Visual Analytics. Proc. VLDB Endow. 14, 2 (2020), 87–100. doi:10.14778/3425879.3425881 [29] Mehmet Levent Koc and Christopher Ré. 2011. Incrementally maintaining classification using an RDBMS. Proc. VLDB Endow. 4, 5 (2011), 302–313. doi:10.14778/1952376.1952380 [30] Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph Gonzalez, Hao Zhang, and Ion Stoica. 2023. Efficient Memory Management for Large Language Model Serving with PagedAttention. In Proc. SOSP . ACM, 611–626. doi:10.1145/3600006.3613165 [31] Viktor Leis, Peter A. Boncz, Alfons Kemper, and Thomas Neumann. 2014. Morsel-driven parallelism: a NUMA-aware query evaluation framework for the many-core age. In International Conference on Management of Data, SIGMOD 2014, Snowbird, UT, USA, June 22-27, 2014 , Curtis E. Dyreson, Feifei Li, and M. Tamer Özsu (Eds.). ACM, 743–754. doi:10.1145/2588555.2610507 [32] Jinyang Li, Binyuan Hui, Ge Qu, Jiaxi Yang, Binhua Li, Bowen Li, Bailin Wang, Bowen Qin, Ruiying Geng, Nan Huo, Xuanhe Zhou, Chenhao Ma, Guoliang Li, Kevin Chen-Chuan Chang, Fei Huang, Reynold Cheng, and Yongbin Li. 2023. Can LLM Already Serve as A Database Interface? A BIg Bench for Large-Scale Database Grounded Text-to-SQLs. In Advances in Neural Infor-mation Processing Systems 36: Annual Conference on Neural Information Pro-cessing Systems 2023, NeurIPS 2023, New Orleans, LA, USA, December 10 - 16, 2023 , Alice Oh, Tristan Naumann, Amir Globerson, Kate Saenko, Moritz Hardt, and Sergey Levine (Eds.). http://papers.nips.cc/paper_files/paper/2023/hash/ 83fc8fab1710363050bbd1d4b8cc0021-Abstract-Datasets_and_Benchmarks.html [33] Jianzhe Lin, Maurice Diesendruck, Liang Du, and Robin Abraham. 2024. Batch-Prompt: Accomplish more with less. In The Twelfth International Conference on Learning Representations . https://openreview.net/forum?id=Agyicd577r [34] Yiming Lin, Madelon Hulsebos, Ruiying Ma, Shreya Shankar, Sepanta Zeighami, Aditya G. Parameswaran, and Eugene Wu. 2024. Towards Accurate and Efficient Document Analytics with Large Language Models. CoRR abs/2405.04674 (2024). doi:10.48550/ARXIV.2405.04674 arXiv:2405.04674 [35] Chunwei Liu, Matthew Russo, Michael Cafarella, Lei Cao, Peter Baile Chen, Zui Chen, Michael Franklin, Tim Kraska, Samuel Madden, Rana Shahout, et al . 2025. Palimpzest: Optimizing ai-powered analytics with declarative query processing. In Proceedings of the Conference on Innovative Database Research (CIDR) . 2. [36] Shu Liu, Asim Biswal, Amog Kamsetty, Audrey Cheng, Luis Gaspar Schroeder, Liana Patel, Shiyi Cao, Xiangxi Mo, Ion Stoica, Joseph E. Gonzalez, and Matei Zaharia. 2025. Optimizing LLM Queries in Relational Data Analytics Workloads. In Eighth Conference on Machine Learning and Systems . https://openreview.net/ forum?id=R7bK9yycHp [37] Yao Lu, Aakanksha Chowdhery, Srikanth Kandula, and Surajit Chaudhuri. 2018. Accelerating Machine Learning Inference with Probabilistic Predicates. In Proceedings of the 2018 International Conference on Management of Data, SIGMOD Conference 2018, Houston, TX, USA, June 10-15, 2018 , Gautam Das, Christopher M. Jermaine, and Philip A. Bernstein (Eds.). ACM, 1493–1508. doi:10.1145/3183713.3183751 [38] Shangyu Luo, Zekai J. Gao, Michael N. Gubanov, Luis Leopoldo Perez, and Christopher M. Jermaine. 2018. Scalable Linear Algebra on a Relational Database System. SIGMOD Rec. 47, 1 (2018), 24–31. doi:10.1145/3277006.3277013 [39] B.W. Matthews. 1975. Comparison of the predicted and observed secondary structure of T4 phage lysozyme. Biochimica et Biophysica Acta (BBA) - Protein Structure 405, 2 (1975), 442–451. doi:10.1016/0005-2795(75)90109-9 [40] Thomas Neumann. 2011. Efficiently Compiling Efficient Query Plans for Modern Hardware. Proc. VLDB Endow. 4, 9 (2011), 539–550. doi:10.14778/2002938.2002940 [41] Kwanghyun Park, Karla Saur, Dalitso Banda, Rathijit Sen, Matteo Interlandi, and Konstantinos Karanasos. 2022. End-to-end Optimization of Machine Learning Prediction Queries. In SIGMOD ’22: International Conference on Management of Data, Philadelphia, PA, USA, June 12 - 17, 2022 , Zachary G. Ives, Angela Bonifati, and Amr El Abbadi (Eds.). ACM, 587–601. doi:10.1145/3514221.3526141 [42] Liana Patel, Siddharth Jha, Melissa Pan, Harshit Gupta, Parth Asawa, Carlos Guestrin, and Matei Zaharia. 2025. Semantic Operators and Their Optimization: Enabling LLM-Based Data Processing with Accuracy Guarantees in LOTUS. 
+
+Proceedings of the VLDB Endowment 18, 11 (2025), 4171–4184. [43] Mark Raasveldt and Hannes Mühleisen. 2019. DuckDB: an Embeddable Analytical Database. In Proceedings of the 2019 International Conference on Management of Data, SIGMOD Conference 2019, Amsterdam, The Netherlands, June 30 - July 5, 2019 , Peter A. Boncz, Stefan Manegold, Anastasia Ailamaki, Amol Deshpande, and Tim Kraska (Eds.). ACM, 1981–1984. doi:10.1145/3299869.3320212 [44] Francisco Romero, Johann Hauswald, Aditi Partap, Daniel Kang, Matei Zaharia, and Christos Kozyrakis. 2022. Optimizing Video Analytics with Declarative Model Relationships. Proc. VLDB Endow. 16, 3 (2022), 447–460. doi:10.14778/ 3570690.3570695 [45] Matthew Russo, Tatsunori Hashimoto, Daniel Kang, Yi Sun, and Matei Zaharia. 2023. Accelerating Aggregation Queries on Unstructured Streams of Data. Proc. VLDB Endow. 16, 11 (2023), 2897–2910. doi:10.14778/3611479.3611496 [46] Matthew Russo, Sivaprasad Sudhir, Gerardo Vitagliano, Chunwei Liu, Tim Kraska, Samuel Madden, and Michael Cafarella. 2025. Abacus: A Cost-Based Optimizer for Semantic Operator Systems. arXiv preprint arXiv:2505.14661 (2025). [47] Shreya Shankar, Bhavya Chopra, Mawil Hasan, Stephen Lee, Björn Hartmann, Joseph M. Hellerstein, Aditya G. Parameswaran, and Eugene Wu. 2025. Steering Semantic Data Processing With DocWrangler. CoRR abs/2504.14764 (2025). doi:10.48550/ARXIV.2504.14764 arXiv:2504.14764 [48] Shreya Shankar, Aditya G. Parameswaran, and Eugene Wu. 2024. DocETL: Agentic Query Rewriting and Evaluation for Complex Document Processing. 
+
+CoRR abs/2410.12189 (2024). doi:10.48550/ARXIV.2410.12189 arXiv:2410.12189 [49] Gemma Team, Aishwarya Kamath, Johan Ferret, Shreya Pathak, Nino Vieil-lard, Ramona Merhej, Sarah Perrin, Tatiana Matejovicova, Alexandre Ramé, Morgane Rivière, Louis Rouillard, Thomas Mesnard, Geoffrey Cideron, Jean bastien Grill, Sabela Ramos, Edouard Yvinec, Michelle Casbon, Etienne Pot, Ivo Penchev, Gaël Liu, Francesco Visin, Kathleen Kenealy, Lucas Beyer, Xiaohai Zhai, Anton Tsitsulin, Robert Busa-Fekete, Alex Feng, Noveen Sachdeva, Ben-jamin Coleman, Yi Gao, Basil Mustafa, Iain Barr, Emilio Parisotto, David Tian, Matan Eyal, Colin Cherry, Jan-Thorsten Peter, Danila Sinopalnikov, Surya Bhu-patiraju, Rishabh Agarwal, Mehran Kazemi, Dan Malkin, Ravin Kumar, David Vilar, Idan Brusilovsky, Jiaming Luo, Andreas Steiner, Abe Friesen, Abhanshu Sharma, Abheesht Sharma, Adi Mayrav Gilady, Adrian Goedeckemeyer, Alaa Saade, Alex Feng, Alexander Kolesnikov, Alexei Bendebury, Alvin Abdagic, Amit Vadi, András György, André Susano Pinto, Anil Das, Ankur Bapna, Antoine Miech, Antoine Yang, Antonia Paterson, Ashish Shenoy, Ayan Chakrabarti, Bilal Piot, Bo Wu, Bobak Shahriari, Bryce Petrini, Charlie Chen, Charline Le Lan, Christopher A. Choquette-Choo, CJ Carey, Cormac Brick, Daniel Deutsch, Danielle Eisenbud, Dee Cattle, Derek Cheng, Dimitris Paparas, Divyashree Shiv-akumar Sreepathihalli, Doug Reid, Dustin Tran, Dustin Zelle, Eric Noland, Er-win Huizenga, Eugene Kharitonov, Frederick Liu, Gagik Amirkhanyan, Glenn Cameron, Hadi Hashemi, Hanna Klimczak-Plucińska, Harman Singh, Harsh Mehta, Harshal Tushar Lehri, Hussein Hazimeh, Ian Ballantyne, Idan Szpek-tor, Ivan Nardini, Jean Pouget-Abadie, Jetha Chan, Joe Stanton, John Wieting, Jonathan Lai, Jordi Orbay, Joseph Fernandez, Josh Newlan, Ju yeong Ji, Jyotinder Singh, Kat Black, Kathy Yu, Kevin Hui, Kiran Vodrahalli, Klaus Greff, Linhai Qiu, Marcella Valentine, Marina Coelho, Marvin Ritter, Matt Hoffman, Matthew Watson, Mayank Chaturvedi, Michael Moynihan, Min Ma, Nabila Babar, Natasha Noy, Nathan Byrd, Nick Roy, Nikola Momchev, Nilay Chauhan, Noveen Sachdeva, Oskar Bunyan, Pankil Botarda, Paul Caron, Paul Kishan Rubenstein, Phil Culli-ton, Philipp Schmid, Pier Giuseppe Sessa, Pingmei Xu, Piotr Stanczyk, Pouya Tafti, Rakesh Shivanna, Renjie Wu, Renke Pan, Reza Rokni, Rob Willoughby, Rohith Vallu, Ryan Mullins, Sammy Jerome, Sara Smoot, Sertan Girgin, Shariq Iqbal, Shashir Reddy, Shruti Sheth, Siim Põder, Sijal Bhatnagar, Sindhu Raghuram Panyam, Sivan Eiger, Susan Zhang, Tianqi Liu, Trevor Yacovone, Tyler Liechty, Uday Kalra, Utku Evci, Vedant Misra, Vincent Roseberry, Vlad Feinberg, Vlad Kolesnikov, Woohyun Han, Woosuk Kwon, Xi Chen, Yinlam Chow, Yuvein Zhu, Zichuan Wei, Zoltan Egyed, Victor Cotruta, Minh Giang, Phoebe Kirk, Anand Rao, Kat Black, Nabila Babar, Jessica Lo, Erica Moreira, Luiz Gustavo Martins, Omar Sanseviero, Lucas Gonzalez, Zach Gleicher, Tris Warkentin, Vahab Mirrokni, Evan Senter, Eli Collins, Joelle Barral, Zoubin Ghahramani, Raia Hadsell, Yossi Matias, D. Sculley, Slav Petrov, Noah Fiedel, Noam Shazeer, Oriol Vinyals, Jeff Dean, Demis Hassabis, Koray Kavukcuoglu, Clement Farabet, Elena Buchatskaya, Jean-Baptiste Alayrac, Rohan Anil, Dmitry, Lepikhin, Sebastian Borgeaud, Olivier Bachem, Armand Joulin, Alek Andreev, Cassidy Hardin, Robert Dadashi, and Léonard Hussenot. 2025. Gemma 3 Technical Report. arXiv:2503.19786 [cs.CL] https://arxiv.org/abs/2503.19786 [50] Jiayi Wang and Jianhua Feng. 2025. Unify: An Unstructured Data Analytics System. In 41st IEEE International Conference on Data Engineering, ICDE 2025, Hong Kong, May 19-23, 2025 . IEEE, 4662–4674. doi:10.1109/ICDE65448.2025.00374 [51] Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Brian Ichter, Fei Xia, Ed H. Chi, Quoc V. Le, and Denny Zhou. 2022. Chain-of-Thought Prompting Elicits Reasoning in Large Language Models. In Advances in Neu-ral Information Processing Systems 35: Annual Conference on Neural Informa-tion Processing Systems 2022, NeurIPS 2022, New Orleans, LA, USA, Novem-ber 28 - December 9, 2022 . http://papers.nips.cc/paper_files/paper/2022/hash/ 9d5609613524ecf4f15af0f7b31abca4-Abstract-Conference.html [52] Ziyang Xiao, Dongxiang Zhang, Zepeng Li, Sai Wu, Kian-Lee Tan, and Gang Chen. 2023. DoveDB: A Declarative and Low-Latency Video Database. Proc. VLDB Endow. 16, 12 (2023), 3906–3909. doi:10.14778/3611540.3611582 Sema : A High-performance System for LLM-based Semantic Query Processing 
+
+[53] Zhihui Yang, Zuozhi Wang, Yicong Huang, Yao Lu, Chen Li, and X. Sean Wang. 2022. Optimizing Machine Learning Inference Queries with Correlative Proxy Models. Proc. VLDB Endow. 15, 10 (2022), 2032–2044. doi:10.14778/3547305. 3547310 [54] Enhao Zhang, Nicole Sullivan, Brandon Haynes, Ranjay Krishna, and Magdalena Balazinska. 2025. Self-Enhancing Video Data Management System for Composi-tional Events with Large Language Models. Proc. ACM Manag. Data 3, 3 (2025), 215:1–215:29. doi:10.1145/3725352 [55] Kangfei Zhao, Jeffrey Xu Yu, Yu Rong, Ming Liao, and Junzhou Huang. 2021. Towards Expectation-Maximization by SQL in RDBMS. In Database Systems for Advanced Applications - 26th International Conference, DASFAA 2021, Taipei, Taiwan, April 11-14, 2021, Proceedings, Part II (Lecture Notes in Computer Science, Vol. 12682) . Springer, 778–794. doi:10.1007/978-3-030-73197-7_53 Kangkang Qi et al. 
+
+## A EXEMPLAR QUERIES 
+
+-- Extract keywords from a content field 
+
+SELECT id , s ' Extract the main keywords from {content } ' AS extracted_keywords 
+
+FROM documents ; -- Create a semantic summary from multiple fields 
+
+SELECT s 'A summary of the event based on { title } and { description } '
+
+AS event_summary FROM news_articles ; 
+
+Figure 9: Example of Semantic Projection 
+
+-- Filter rows based on the sentiment of aspecific field 
+
+SELECT * FROM product_reviews 
+
+WHERE s ' The { review_text } expresses positive sentiment ';
+
+Figure 10: Example of Semantic Filter 
+
+-- Analyze the language style of the conference paper title WITH title_style AS (
+
+SELECT Title , s ' Analyze the language style features of paper title { Title }. Describe the key characteristics such as : formality level , technical terminology usage , length , structure , and word choice . '
+
+AS style_features 
+
+FROM Paper WHERE ConferenceId != 0 AND 
+
+Title IS NOT NULL 
+
+)
+
+SELECT sem_agg (s ' Based on these conference paper titles { Title } and their style analyses { style_features }, summarize the overall language style and terminology characteristics of conference paper titles . ')
+
+FROM title_style ; 
+
+Figure 11: Example of Semantic Aggregate Algorithm 2: Natural Language Expression Reduction 
+
+Input : userInputNLE 
+
+Output : processedNLE  
+
+> 1
+
+reductionStatus ← AssessDbReduction (userInputNLE)  
+
+> 2
+
+if reductionStatus = "not_reducible" then  
+
+> 3
+
+return processedNLE ← cleanedNLE  
+
+> 4
+
+processedNLE ← ExpressionReduction (userInputNLE)  
+
+> 5
+
+return processedNLE 
+
+Algorithm 3: Expression Exploration and Pairwise Simi-larity Estimation 
+
+Input : Σ = {𝜎 1, . . . , 𝜎 𝑛 }, sample chunk D1
+
+Output : Selectivities 𝑠 , result vectors 𝑅 , similarity matrix MCC  
+
+> 1
+
+for 𝑖 ← 1 to 𝑛 do  
+
+> 2
+
+𝑅 [𝑖 ] ← ExecutePredicate (𝜎 𝑖 , D1 ) ; 
+
+> 3
+
+𝑆 [𝑖 ] ← CountTrue (𝑅 [𝑖 ]) |D 1 | ; 
+
+> 4
+
+for 𝑖 ← 1 to 𝑛 do  
+
+> 5
+
+for 𝑗 ← 𝑖 + 1 to 𝑛 do  
+
+> 6
+
+(𝑇 𝑃 ,𝑇 𝑁 , 𝐹 𝑃 , 𝐹 𝑁 ) ← ConfusionCounts (𝑅 [𝑖 ], 𝑅 [ 𝑗 ] ) ; 
+
+> 7
+
+MCC [𝑖 ] [ 𝑗 ] ← Matthews (𝑇 𝑃 ,𝑇 𝑁 , 𝐹 𝑃 , 𝐹 𝑁 ) ; 
+
+> 8
+
+return 𝑆 , 𝑅 , MCC 
+
+-- Join two tables based on semantic similarity of their text fields 
+
+SELECT * FROM news_articles a JOIN blog_posts b
+
+ON s ' the topic of {a. headline } is related to {b . title } ';-- A complex hybrid join with both syntactic and semantic conditions 
+
+SELECT e. employee_id , eh . manager_id 
+
+FROM employees e INNER JOIN employee_hierarchy eh 
+
+ON e. manager_id = eh . employee_id 
+
+AND s ' the {e. title } is a technical role and the hierarchy level { eh . level } < 3 ';
+
+Figure 12: Example of Semantic Join 
+
+## B ALGORITHMS 
+
+Algorithm 3 evaluates each predicate ( 𝜎 𝑖 ∈ Σ ) on the sampled data chunk ( D1) to produce a Boolean result vector 𝑅 [𝑖 ], from which the selectivity 𝑆 [𝑖 ] is estimated as the fraction of tuples satisfying the predicate (line 1-3). Using these result vectors, the algorithm then computes pairwise predicate similarity by deriving a confusion matrix for each predicate pair and applying the Matthews Correlation Coefficient (MCC) to populate the similarity matrix (line 4-7). Algorithm 4 generates a set of candidate execution paths with dynamic pruning guided by predicate correlations. Given a set of predicates Σ, the algorithm first sorts all predicates in ascending order of selectivity to construct a baseline sequential execution path (line 1), which is included in the candidate set P (line 2). It then examines pairwise predicate correlations using a precomputed Sema : A High-performance System for LLM-based Semantic Query Processing 
+
+Algorithm 4: Candidate Path Generation with Dynamic Pruning 
+
+Input :𝑆 , MCC , Σ, 𝜇 thresh 
+
+Output : Candidate paths P 
+
+> 1
+
+𝑝 sorted ← SortAscendingBySelectivity (Σ, 𝑆 ) ; 
+
+> 2
+
+P ← { SeqPath (𝑝 sorted ) } ; 
+
+> 3
+
+F ← ∅ ; 
+
+> 4
+
+for 𝑖 ← 1 to 𝑛 do  
+
+> 5
+
+for 𝑗 ← 𝑖 + 1 to 𝑛 do  
+
+> 6
+
+if MCC [𝑖 ] [ 𝑗 ] > 𝜇 thresh then  
+
+> 7
+
+F ← F ∪ { ( 𝜎 𝑖 , 𝜎 𝑗 ) } ; 
+
+> 8
+
+for each (𝜎 𝑎 , 𝜎 𝑏 ) ∈ F do  
+
+> 9
+
+𝜎 𝑎 ⊕ 𝜎 𝑏 ← Fuse (𝜎 𝑎 , 𝜎 𝑏 ) ; 
+
+> 10
+
+P ← P ∪ { SeqPath (ReplaceOnce (𝑝 sorted , {𝜎 𝑎 , 𝜎 𝑏 } → 
+
+𝜎 𝑎 ⊕ 𝜎 𝑏 ) ) } ; 
+
+> 11
+
+return P
+
+Algorithm 5: Path Exploration and Best-Path Selection 
+
+Input : Paths P, sample chunk D2, threshold 𝜏 acc 
+
+Output : Best path 𝑝 ★ 
+
+> 1
+
+Execute reference path to get ground truth 𝐺 ; 
+
+> 2
+
+for each 𝑝 ∈ P do  
+
+> 3
+
+(lat , cost , sel ) ← Run (𝑝 , D2 ) ; 
+
+> 4
+
+acc ← Accuracy (sel , 𝐺 ) ; 
+
+> 5
+
+F ← ParetoFrontier ( P , lat , cost ) ; 
+
+> 6
+
+𝑝 ★ ← arg min 𝑝 ∈F M [ 𝑝 ].lat ;  
+
+> 7
+
+return 𝑝 ★
+
+Matthews Correlation Coefficient (MCC) matrix. It retains only those predicate pairs whose correlation exceeds a threshold 𝜇 thresh 
+
+in F (line 4-7), effectively pruning weakly related combinations. For each retained pair (𝜎 𝑖 , 𝜎 𝑗 ), the algorithm applies a fusion function to form a fused predicate 𝜎 𝑖 ⊕𝜎 𝑗 and generates a new candidate path by replacing exactly one occurrence of the original predicates in the sorted sequence with the fused predicate, while preserving the relative order of all remaining predicates (line 8-10). All generated paths are collected into P and treated as candidate paths for the subsequent path exploration phase. Algorithm 5 explores the candidate execution paths and selects the best path for the exploitation phase. Given a set of candidate paths P and a sampled data chunk D2, the algorithm first executes the reference path 𝑝 ref to obtain ground-truth results (line 1). Each candidate path is then executed on D2 to measure its latency, exe-cution cost, and selection output, from which accuracy is computed against the ground truth (line 2-4). Based on the collected latency and cost metrics, the algorithm constructs a Pareto frontier to retain only non-dominated paths (line 5). Among these Pareto-optimal candidates, the path with the minimum latency or minimum cost is selected as the final best path 𝑝 ★ and returned for execution (line 6-7). 
+
+## C DATASET & BENCHMARK QUERIES 
+
+Table 8: Profile of Query Set Category Subcategory Query ID 
+
+Single SemFilter /SemProj Single Operators Q1–Q5 Consecutive SemFilter Filter → Filter Q6–Q10 
+
+SemProj -First Proj. → Filter Q11–Q13 Proj. → Proj. Q14–Q15 
+
+SemFilter -First Filter → Proj. Q16–Q18 Filter → Aggregate Q19–Q20 
+
+SELECT id FROM (
+
+SELECT TweetID AS id , sentiment , text FROM 
+
+twitter LIMIT 32768 ) WHERE s ' The sentiment label rules are : - sentiment > 0 -> Positive - sentiment = 0 -> Neutral - sentiment < 0 -> Negative Task : Judge whether the { sentiment } label is consistent with the { text } content . '); 
+
+Figure 13: Q1: Sentiment analysis 
+
+SELECT s ' Classify the given {" Product Name "} into exactly one of these categories : [ Furniture , Office Supplies , Technology ]. Output only the category name , with no explanations , no quotes , and no extra words .Example : Input : Hon Metal Bookcases , Black Output : Furniture Input : AT &T CL2909 Output : Technology Input : Belkin F9S820V06 8 Outlet Surge Output : Office Supplies ' AS predicted_category FROM 
+
+product ; 
+
+Figure 14: Q2: Classify product into one of three categories Kangkang Qi et al. 
+
+Table 7: Datasets and Queries Used in the Experiments       
+
+> Dataset # Tables Table (# Rows) Attributes Queries
+> Appstore 2
+
+user _review (10,840), playstore (64,286) user _review .Translated _Review Q7, Q8 Chicago_Crime 1 IUCR (401) primary _description ,
+
+secondary _description , index _code   
+
+> Q3 Superstore 1
+
+product (5,298) productName , category Q2 Food_Inspection 1 violations (36,050) description , risk _category Q4 Food_Inspection_2 1 violation (525,709) inspector _comment , fine Q5 Social_Media 3 twitter (99,901), user (99,260), location (6,211) twitter .text Q1, Q9, Q16–Q18 Movies_4 7 movie (4,627), country (88), production _country (6,436), 
+
+genre (20), movie _genres (12,160), language (88), 
+
+movie _languages (11,740) 
+
+movie .overview Q10, Q13–Q15 CoinMarketCap 2 coins (8,927), historical (4,441,972) coins .description Q6, Q11, Q12 Authors 5 Paper (2,254,920), Journal (15,151), Conference (4,545), 
+
+Author (247,030), PaperAuthor (2,315,574) 
+
+Paper .Keyword , Paper .Title Q19, Q20 
+
+SELECT iucr_no FROM IUCR 
+
+WHERE s ' The index_code label rules are : - index_code = I -> Indexed ( severe , such as murder , rape , arson , and robbery ) - index_code = N -> Non - Indexed ( less serve , such as vandalism , weapons violations , and peace disturbance ) Task : Determine whether the crime '' s {primary_description } and {secondary_description } indicates this crime is consisted with { index_code } '); 
+
+Figure 15: Q3: Determine whether the crime’s description is consistent with the index code 
+
+SELECT s ' Task : Classify the given violation {description } into exactly one of these categories : - Low Risk - Moderate Risk - High Risk Output only the risk category , with no explanations , no quotes , and no extra words .Example : Input : Inadequate and inaccessible handwashing facilities . Output : Moderate Risk Input : Unclean or degraded floors , walls , or ceilings . Output : Low Risk Input : Unclean or unsanitary food contact surfaces . Output : High Risk ' AS predicated_category , risk_category AS ground_truth FROM 
+
+violations ; 
+
+Figure 16: Q4: Determine the risk degree according to the violation description Sema : A High-performance System for LLM-based Semantic Query Processing 
+
+SELECT inspection_id FROM (
+
+SELECT distinct inspection_id , inspector_comment , fine FROM violation 
+
+WHERE inspector_comment IS NOT NULL AND fine IN [100 , 250 , 500] 
+
+LIMIT 16384 )
+
+WHERE s ' The fine for more serious food safety problems will be higher . The fine label rules are : - fine = 100 -> Minor - fine = 250 -> Serious - fine = 500 -> Critical Fine example : 1. { inspector_comment }: REPAIR THE DRAIN STOPPER FOR THE RIGHT COMPARTMENT OF THE 3COMPARTMENT SINK SO THAT IT CAN BE USED TO HOLD WATER . { fine }: 100 2. { inspector_comment }: NO CHEMICAL TEST STRIPS ON PREMISES - MUST PROVIDE . SERIOUS VIOLATION 7 -38 -030. { fine }: 250 3. { inspector_comment }: FOUND WALK IN COOLER TEMPERATURE AT 45.3 F. CRITICAL VIOLATION .7 -38 -005( A) { fine }: 500 Task : Determine whether the { inspector_comment } is consistent with the { fine }. Output true or false only . ';
+
+Figure 17: Q5: Determine the risk degree according to the violation description 
+
+SELECT coins . id AS coin_id FROM coins 
+
+WHERE category = ' coin ' AND description is NOT NULL AND s ' The { description } shows that this cryptocurrency has a big supply amount . '
+
+AND s ' The { description } indicates that this cryptocurrency is still in circulation . '
+
+AND s 'It can be inferred from the { description } that the price of this cryptocurrency is rising . '
+
+Figure 18: Q6: Find cryptocurrencies that are still in circula-tion and have a huge supply amount with a rising price 
+
+SELECT ur . id AS id 
+
+FROM user_reviews ur 
+
+JOIN playstore p ON ur . App = p. App 
+
+WHERE p. Category = ' TOOLS '
+
+AND s '{ ur . Translated_Review } is a complete sentence and has informative content . '
+
+AND s '{ ur . Translated_Review } is a positive user review . '
+
+AND s '{ ur . Translated_Review } shows that this app is a useful tool . '
+
+Figure 19: Q7: Find positive, complete, and informative user reviews of TOOLS apps that indicate the app is a useful tool 
+
+SELECT ur . id AS id 
+
+FROM user_reviews ur 
+
+JOIN playstore p ON ur . App = p. App 
+
+WHERE p. Category = ' GAME '
+
+AND s '{ Translated_review } is a complete sentence and has informative content . '
+
+AND s '{ Translated_review } is a positive user review . '
+
+AND s '{ Translated_Review } shows that users have a good experience and fun with this app ';
+
+Figure 20: Q8: Find positive, complete, and informative user reviews of GAME apps that indicate users have a good expe-rience and fun with the app 
+
+SELECT ur . id AS id 
+
+FROM user_reviews ur 
+
+JOIN playstore p ON ur . App = p. App 
+
+WHERE p. Category = ' FAMILY '
+
+AND s '{ Translated_Review } is a complete sentence and has informative content . '
+
+AND s '{ Translated_Review } is a positive user review . '
+
+AND s '{ Translated_Review } shows that this app is suitable for kids . ';
+
+Figure 21: Q9: Find positive, complete, and informative user reviews of FAMILY apps that indicate the app is suitable for kids Kangkang Qi et al. 
+
+SELECT m. movie_id 
+
+FROM movie m
+
+WHERE s ' The {m. overview } suggests that the movie is an action movie . '
+
+AND s ' The {m. overview } shows that the movie focuses on a central role . '
+
+AND s ' The {m. overview } shows that the movie is based on historical events ';
+
+Figure 22: Q10: Find action movies that focus on a central role and are based on historical events 
+
+SELECT coin_id FROM 
+
+( SELECT s ' According to {c. description }, introduce the situation of cryptocurrency circulation ' AS circulation , c. id AS 
+
+coin_id 
+
+FROM coins c JOIN historical h ON h. coin_id = c. id 
+
+AND h. date = ' 2019 -01 -09 '
+
+AND c. status IN ( ' untracked ', ' inactive ')
+
+AND c. description IS NOT NULL )
+
+WHERE s '{ circulation } indicates cryptocurrency is under development or in testnet . ';
+
+Figure 23: Q11: Find cryptocurrencies that were inactive or untracked on Jan 9, 2019, had missing price data, and whose description suggests they were still under development or operating on a testnet 
+
+SELECT coin_id FROM 
+
+( SELECT s ' From the description { description }, extract information about the underlying technology of cryptocurrency , focusing on whether it mentions a proprietary blockchain , a native consensus mechanism , or an independent network . Provide aconcise summary of these technological characteristics . ' AS tech_features , coins . id AS coin_id 
+
+FROM coins c JOIN historical h ON h. coin_id = c. id 
+
+WHERE c. platform_id IS NOT NULL AND c. description IS NOT NULL AND h. circulating_supply IS NOT NULL AND h. total_supply IS NOT NULL AND h. date = ' 2019 -01 -10 '
+
+)
+
+WHERE s ' Based on the technological characteristics { tech_features }, determine whether cryptocurrency has its own independent blockchain or consensus mechanism ';
+
+Figure 24: Q12: Find coins whose summarized technological features indicate the cryptocurrency has its own blockchain or consensus mechanism Sema : A High-performance System for LLM-based Semantic Query Processing 
+
+SELECT movie_id FROM 
+
+( SELECT s ' Summarize the geographic and temporal background of the movie according to {overview }. ' AS background , m. movie_id AS 
+
+movie_id 
+
+FROM movie mSEMI JOIN (
+
+SELECT mg . movie_id 
+
+FROM movie_genres mg JOIN genre g ON mg . genre_id = g. genre_id 
+
+WHERE g. genre_name IN ( ' Thriller ', '
+
+Comedy ', ' Western ')) mg ON m. movie_id = mg . movie_id 
+
+WHERE revenue > budget 
+
+AND length ( overview ) < 255 )
+
+WHERE s '{ background } indicates the story is set in modern times rather than historical periods . ';
+
+Figure 25: Q13: Find profitable movies whose background in-dicates the story is set in modern times rather than historical periods with limited genres 
+
+SELECT movie_id , s ' Classify { plot } into one of the following categories : [ Sci -Fi , Crime , Thriller , Romance , Drama , Horror , Comedy , War , Fantasy , Family , Animation , Biography , Other ] Output only the category that best fits the movie , without any other text or reasoning content . ' AS category FROM 
+
+( SELECT s ' Summarize the main plot of { overview } 
+
+' AS plot , movie_id 
+
+FROM movie mSEMI JOIN (
+
+SELECT ml . movie_id 
+
+FROM movie_languages ml 
+
+JOIN language l ON ml . language_id = l. language_id AND l. language_name = '
+
+English '
+
+) ml ON m. movie_id = ml . movie_id AND 
+
+movie_status = ' Released ' AND 
+
+popularity > 10 AND length ( overview ) <255 AND length ( overview ) > 0); 
+
+Figure 26: Q14: Summarize the main plot of English-released popular movies and classify plots into genres 
+
+SELECT movie_id , s ' This is a multi - label classification task . Given the { conflict }, identify what the main character is in conflict with , and classify it in the format " character vs X", where X is one or more of : [ Character , Self , Society , Nature , Technology , Machine , Supernatural , Fate , Other ]. Output only X , as a comma - separated list (e.g., Self , Society ). Do not include explanations or reasoning . ' AS 
+
+categories 
+
+FROM ( SELECT movie_id , s ' Extract all conflicts from movie { overview } as one sentence . ' AS 
+
+conflict 
+
+FROM movie SEMI JOIN 
+
+( SELECT pc . movie_id 
+
+FROM production_country pc JOIN 
+
+country c
+
+ON pc . country_id = c. country_id AND c. country_iso_code = 'US ')pc ON movie . movie_id = pc . movie_id AND (movie . release_date BETWEEN ' 2000 -01 -01 '
+
+AND ' 2015 -12 -31 ') AND movie . vote_average > 6.0 AND length ( overview ) < 255; 
+
+Figure 27: Q15: Extract all conflicts from high-rated movies between 2000 and 2015 and classify conflicts Kangkang Qi et al. 
+
+SELECT s ' From the job posting tweet {t. text }, extract the specific job titles and required skills mentioned . Return them as acomma - separated list (e.g., Software Engineer , Python , AWS , Machine Learning ). Focus on concrete job titles and technical skills ' AS info ,t. TweetID AS twitter_id 
+
+FROM twitter t JOIN user u
+
+On t. UserID = u. UserID 
+
+WHERE user . Gender = ' Female '
+
+AND t. Sentiment = 0.0 
+
+AND t. TweetID IS NOT NULL AND Klout > 50 
+
+AND s ' Tweets with content as { text } are about job postings , recruitment announcements , hiring notices , or career opportunities related to AWS or cloud computing ( has contents like hiring , job opening , career opportunity , we are looking for , join our team , etc .) ';
+
+Figure 28: Q16: Filter neutral tweets which are posted by females and related to recruitment and extract concrete job titles and technical skills. 
+
+SELECT s ' Based on the tweet content :"{ text }" , identify the main type of security or privacy concern being expressed . Classify text like data breach , unauthorized access , encryption weakness , compliance violation , identity theft , service vulnerability , configuration error , monitoring concerns , or other specific security / privacy concern types . ' AS type , twitter . TweetID AS twitter_id 
+
+FROM twitter 
+
+WHERE Sentiment < -2.5 AND Klout > 20 
+
+AND t. TweetID IS NOT NULL AND s ' Tweet "{ text }" discusses security concerns , privacy issues , data protection , cybersecurity threats , authentication problems , or confidentiality matters related to AWS services ';
+
+Figure 29: Q17:Find negative tweets with high influence that are related to potential risks of AWS services and identify the main type of security or privacy concern 
+
+SELECT s ' From this tweet "{ t. text }" , extract the main topic or subject being discussed about programming / development . Return aconcise topic label like performance optimization , learning resources , job opportunities , technical issues , new features , etc . '
+
+twitter . TweetID AS twitter_id 
+
+FROM twitter t JOIN location l
+
+On t. LocationID = l. LocationID 
+
+WHERE l. Country IN ( ' United States ', ' Canada ',
+
+' United Kingdom ')
+
+AND Sentiment >= 3.0 AND Reach >1000 
+
+AND t. TweetID IS NOT NULL 
+
+s ' Filter tweets "{ t. text }" that mention Amazon Web Services or cloud services , including specific AWS products or general cloud computing issues ';
+
+Figure 30: Q18: Filter tweets related to AWS products and extract discussed topics or subjects 
+
+SELECT sem_agg ( ' Summarize the main research theme reflected by the following keywords : {p. Keyword }. Respond with a concise , high -level scientific topic ', Keyword ) FROM Paper p
+
+JOIN Journal j
+
+ON j. Id = P. JournalId 
+
+WHERE p. Year BETWEEN 2000 AND 2011 
+
+AND j. ShortName IN ( ' TODS ', ' VLDB ', ' TKDE ', '
+
+JDM ', ' DKE ')
+
+AND s ' Based on the keywords "{ p. Keyword }" , determine if this paper is related to database systems , data management , or query processing ';
+
+Figure 31: Q19: Find papers of Database journals and related to database systems, data management, or query processing, and aggregate these papers’ keywords to find main research themes Sema : A High-performance System for LLM-based Semantic Query Processing 
+
+SELECT ConferenceId , sem_agg ( ' Identify and summarize the major interdisciplinary research trends from the following keywords : {p. Keyword }. Return only one sentence . ',Keyword ) AS trends 
+
+FROM paper p
+
+JOIN Conference c ON p. ConferenceId = c. Id SEMI JOIN (
+
+SELECT DISTINCT pa . PaperId 
+
+FROM PaperAuthor pa 
+
+WHERE pa . AuthorId IS NOT NULL AND ( LOWER ( COALESCE ( pa . Affiliation , '' )) 
+
+LIKE '% institute % '
+
+OR LOWER ( pa . Affiliation ) LIKE '% laboratory % 
+
+'
+
+OR LOWER ( pa . Affiliation ) LIKE '% research center % ')) filtered_papers 
+
+ON p. Id = filtered_papers . PaperId 
+
+AND p. Keyword IS NOT NULL AND length (p. Keyword ) > 0
+
+WHERE s ' Determine whether the paper with keyword as { Keyword } is related to interdisciplinary methods . '
+
+GROUP BY ConferenceId 
+
+HAVING COUNT (*) >= 3 AND trends IS NOT NULL 
+
+Figure 32: Q20: Find papers whose authors are in institute, laboratory, or research center and identify interdisciplinary research trends 
+
+-- Note : Introduces redundant expressions -repeated field references ({ primary_description }, {secondary_description }, { index_code } each appear twice ) , redundant modifiers (" after reviewing ... again for consistency ") , and complex sentence structures . 
+
+SELECT COUNT (*) FROM chicago_crime . IUCR 
+
+WHERE s ' The index_code label rules are :\ n\ - index_code = I -> Indexed ( severe , such as murder , rape , arson , and robbery )\n\ - index_code = N -> Non - Indexed ( less severe , such as vandalism , weapons violations , and peace disturbance )\n\ Based on these rules , the crime with primary description { primary_description } and secondary description {secondary_description } should be checked against index code { index_code }, and after reviewing the primary description {primary_description } again for consistency , it should be determined whether this crime is consistent with the assigned index code { index_code } according to the established classification criteria . ';
+
+Figure 33: Q3 before Expression Compression 
+
+SELECT iucr_no FROM IUCR 
+
+WHERE s ' The index_code label rules are : - index_code = I -> Indexed ( severe , such as murder , rape , arson , and robbery ) - index_code = N -> Non - Indexed ( less severe , such as vandalism , weapons violations , and peace disturbance ) Task : Determine whether the crime '' s {primary_description } and {secondary_description } indicates this crime is consisted with { index_code } '); 
+
+Figure 34: Q3 before Partial Deduction Kangkang Qi et al. 
+
+-- Note : Introduces repeated field references ({ description } appears three times ) and redundant sentence structures ( repetitive "and the { description } indicates that ..." patterns ). 
+
+SELECT coins . id AS coin_id FROM coins 
+
+WHERE category = ' coin ' AND status = ' active '
+
+AND description is NOT NULL AND s ' The { description } shows that this cryptocurrency has a big supply amount , and the { description } indicates that this cryptocurrency is still in circulation , and the { description } can be used to infer that the price of this cryptocurrency is rising . ';
+
+Figure 35: Q6 before Expression Compression 
+
+SELECT coins . id AS coin_id FROM coins 
+
+WHERE category = ' coin ' AND description is NOT NULL AND s ' The { description } shows that this cryptocurrency has a big supply amount . '
+
+AND s ' The { description } indicates that this cryptocurrency is still in circulation . '
+
+AND s 'It can be inferred from the { description } that the price of this cryptocurrency is rising . '
+
+Figure 36: Q6 before Partial Deduction 
+
+-- Note : Adds redundant modifiers (" which describes the film narrative ") , repeated field references ({ overview } appears twice ) , and complex expressions (" after reviewing ... for temporal clues ") . 
+
+SELECT movie_id FROM 
+
+( SELECT s ' Based on the movie overview {overview } provided , which describes the film narrative , summarize the geographic and temporal background of the movie , including specific locations and time periods mentioned in this overview { overview }. ' AS background , movie_id 
+
+FROM movie SEMI JOIN (
+
+SELECT mg . movie_id 
+
+FROM movie_genres mg JOIN genre g
+
+ON mg . genre_id = g. genre_id 
+
+WHERE g. genre_name IN ( ' Thriller ',
+
+' Comedy ', ' Western ')) mg ON m. movie_id = mg . movie_id 
+
+WHERE revenue > budget 
+
+AND length ( overview ) < 255 )
+
+WHERE s ' The background summary { background } indicates the story is set in modern times rather than historical periods , and after reviewing the background {background } for temporal clues , this setting classification is confirmed . ';
+
+Figure 37: Q13 before Expression Compression Sema : A High-performance System for LLM-based Semantic Query Processing 
+
+-- Note : Replaces originally SQL - expressible numerical comparison predicate revenue >budget with natural language description '
+
+the { revenue } is greater than { budget } '.
+
+SELECT movie_id FROM 
+
+( SELECT s ' Summarize the geographic and temporal background of the movie according to {overview }. ' AS background , movie_id 
+
+FROM movie SEMI JOIN (
+
+SELECT mg . movie_id 
+
+FROM movie_genres mg JOIN genre g ON mg . genre_id = g. genre_id 
+
+WHERE g. genre_name IN ( ' Thriller ', '
+
+Comedy ', ' Western ')) mg ON m. movie_id = mg . movie_id 
+
+WHERE s ' the { revenue } is greater than {budget } '
+
+AND length ( overview ) < 255 )
+
+WHERE s '{ background } indicates the story is set in modern times rather than historical periods . ';
+
+Figure 38: Q13 before Predicate Deduction 
+
+-- Note : Introduces lengthy classification descriptions and repeated field references ({ plot } appears three times ) , adds unnecessary explanatory text . 
+
+SELECT plot ,s ' For genre classification purposes , the plot summary { plot } should be examined , and following a review of this plot { plot }, assignment to one of the predefined categories is required , including : SciFi , CrimeThriller , RomanceDrama , Horror , Comedy , War , Fantasy , FamilyAnimation , Biography , or if none match , classification as Other . ' AS 
+
+category 
+
+FROM 
+
+( SELECT s ' After reading the movie overview {overview }, which provides a description of the film , summarization of the main plot points and key narrative elements from this overview { overview } should be performed in a concise manner . ' AS plot 
+
+FROM movie mSEMI JOIN (
+
+SELECT ml . movie_id 
+
+FROM movie_languages ml 
+
+JOIN " language " l ON ml . language_id = l. language_id AND l. language_name =
+
+' English '
+
+) ml ON m. movie_id = ml . movie_id AND 
+
+movie_status = ' Released ' AND 
+
+popularity > 10 AND length ( overview ) <255 AND length ( overview ) > 0); 
+
+Figure 39: Q14 before Expression Compression Kangkang Qi et al. 
+
+-- Note : Replaces SQL - expressible movie_status = ' Released ' with originally natural language description '{ movie_status } is released '.
+
+SELECT plot ,s ' Classify { plot } into one of : Sci -Fi , Crime , Thriller , Romance , Drama , Horror , Comedy , War , Fantasy , Family , Animation , Biography , Other ' AS category 
+
+FROM 
+
+( SELECT s ' Summarize the main plot of { overview } 
+
+' AS plot 
+
+FROM movie mSEMI JOIN (
+
+SELECT ml . movie_id 
+
+FROM movie_languages ml 
+
+JOIN " language " l ON ml . language_id = l. language_id AND l. language_name =
+
+' English '
+
+) ml ON m. movie_id = ml . movie_id AND s '{movie_status } is released ' AND 
+
+popularity > 10 AND length ( overview ) <255 AND length ( overview ) > 0); 
+
+Figure 40: Q14 before Predicate Deduction 
+
+Prompt used for (partial) predicate deduction 
+
+You are a database optimizer assistant. Your task is to deduce the necessary SQL preconditions (pushdown predicates) for natural language expressions (NLEs), based on the provided column statistics. An NLE is evaluated by an LLM to determine if a row satisfies a certain condition. Because LLM evaluation is expensive, we want to filter out rows that are guaranteed to be false by executing simple SQL predicates on the CPU first. IMPORTANT: Your goal is NOT to convert the NLE into an equivalent SQL statement. Instead, you must find the necessary conditions of the NLE predicate given the column statistics. The provided statistics for each column include: - whether it is nullable - the number of distinct values - the top-5 most frequent values (sampled from a subset of rows) Steps: 1. Understand the semantic meaning of the NLE. 2. Examine the column statistics, especially the top frequent values. 3. Identify values that definitively violate the NLE predicate. For instance, nan, N/A, empty strings, or NULL often represent missing data. If the NLE predicate requires a valid or meaningful value, these missing values can be filtered out. 4. Formulate DuckDB SQL predicates that filter out these violating values. If you can deduce necessary conditions, output them as a valid JSON array of strings. Each string must be a valid DuckDB SQL predicate (e.g., "col != 'nan '"). The final filter will be the logical AND of all strings in the array. If no meaningful necessary condition can be deduced, simply output an empty array. Example: NLE Predicate: Translated\_review is a positive user review Column stats: Translated\_Review: nullable=true, distinct=10537, top5=["nan":711, "Good":13, "Negative":10, "Great":6, "Really good":5] Output: ["Translated\_Review != 'nan '", "Translated\_Review != 'Negative '"] Note: The output MUST be a valid JSON array of strings (or an empty array). Sema : A High-performance System for LLM-based Semantic Query Processing 
+
+Prompt used for (partial) predicate deduction verification 
+
+You are a database optimizer assistant. Your task is to verify whether each candidate SQL predicate is a NECESSARY CONDITION for a set of Natural Language Expressions (NLEs). Background: A semantic filter evaluates NLEs (natural language conditions) on each row. Because LLM evaluation is expensive, we pre-filter rows using cheap SQL predicates. A SQL predicate P is a valid pushdown filter only if it is a NECESSARY CONDITION: whenever P is false, the overall NLE filter is guaranteed to be false. KEY CONCEPT - Necessary vs Sufficient: For each column, some values make NLE FALSE (set A), some make it TRUE (set B). - **Necessary (valid)**: \"column != value\" for values in A. Filtering out violating values is correct. - **Sufficient (invalid)**: \"column = value\" or \"column IN (...)\" for values in B. Whitelisting known-good values is WRONG: it would exclude valid rows whose values are not in the statistics. Output false for such predicates. Definition of necessary condition: SQL predicate P is a necessary condition for NLE set S iff: for every possible row, NOT P => (at least one NLE in S is false) Equivalently: if a row passes all NLEs, it must also satisfy P. Given the original NL Expressions and the candidate SQL Predicates, output a JSON array of booleans (same length as the SQL Predicates list): - true: the SQL predicate IS a valid necessary condition (typically \"column != value\" filtering out violating values) - false: the SQL predicate is NOT valid (too strict, unrelated to NLEs, or a sufficient condition like \"column = value\" / \"column IN (...)\") Example:\n" NL Expressions: [\"{Review} is a positive and meaningful user review\"] SQL Predicates: [\"Review != 'nan '\", \"Review = 
+
+'Good '\", \"Rating > 10\"] Output: [true, false, false] (Review != 'nan ' is necessary: 'nan ' violates the NLE. Review = 'Good ' is NOT necessary: it is a sufficient condition that would wrongly exclude other positive reviews. Rating > 10 is unrelated to the NLE.) Note: Output MUST be a valid JSON array of booleans only.;
