@@ -1,0 +1,790 @@
+Title: MoLoRA: Composable Specialization via Per-Token Adapter Routing
+
+URL Source: https://arxiv.org/pdf/2603.15965v1
+
+Published Time: Wed, 18 Mar 2026 00:23:59 GMT
+
+Number of Pages: 20
+
+Markdown Content:
+# MOLORA: C OMPOSABLE SPECIALIZATION VIA PER -T OKEN 
+
+# ADAPTER ROUTING 
+
+Shrey Shah 
+
+shreyshah@microsoft.com 
+
+Justin Wagle 
+
+justiwag@microsoft.com 
+
+# ABSTRACT 
+
+Multi-adapter serving systems route entire sequences to a single adapter, forcing a choice when requests span multiple domains. This assumption fails in two important settings: (1) multimodal generation, where text and image tokens require different adapters within the same sequence, and (2) mixed-capability requests like “write code to solve this equation,” which need expertise from multiple specialized adapters. We introduce per-token routing , which routes individual tokens to adapters based on either vocabulary structure (for multimodal models) or learned gating (for semantic specialization). Per-token routing is provably optimal, achieving work N for N tokens versus K · N
+
+for per-sequence routing with K adapter types. Our key contribution is MoLoRA (Mixture of LoRA), which enables composable specialization : load multiple domain-specific adapters and let a learned router select the appropriate adapter per-token. We demonstrate that specialization dramatically beats scale : MoLoRA enables Qwen3-1.7B to exceed Qwen3-8B across four reasoning benchmarks while being 4.7 × smaller . This enables modular expertise at inference time: train focused LoRAs independently, combine them without retraining, and add new capabilities by simply loading new adapters. 
+
+# 1 Introduction 
+
+Low-rank adaptation (LoRA) [Hu et al., 2021] enables efficient fine-tuning of large language models by learning low-rank updates to pretrained weights. Multi-adapter serving systems such as S-LoRA [Sheng et al., 2024] and Punica [Chen et al., 2023] extend this to serve multiple adapters concurrently, enabling a single base model deployment to serve many fine-tuned variants. However, existing systems share a fundamental assumption: each request routes to exactly one adapter. Formally, given a batch of N tokens from B sequences, these systems compute the routing function j : [ B] → [K] mapping sequences to adapters, then apply: 
+
+hi = xiW + xiAj(si)Bj(si) (1) where si denotes the sequence containing token i. This per-sequence routing causes two problems: 
+
+Problem 1: Multimodal Efficiency. Frontier models like Gemini [Team, 2025] generate interleaved text and images in a single response—an illustrated recipe where text instructions alternate with generated images. With per-sequence routing, all tokens must use the same adapter, even though text and image tokens should use modality-specialized adapters. This forces either suboptimal adapter selection or expensive sequence splitting ( K forward passes for K
+
+modalities). 
+
+Problem 2: Mixed-Capability Quality. Consider a request like “write Python code to solve this differential equation.” A code adapter excels at syntax but not calculus; a math adapter handles equations but not programming idioms. With per-sequence routing, we must choose one and accept suboptimal quality on the other capability. No single adapter can match multiple specialists. We introduce per-token routing , which generalizes Equation 1 to route individual tokens: 
+
+hi = xiW + xiAr(i)Br(i) (2) 
+
+> arXiv:2603.15965v1 [cs.CL] 16 Mar 2026
+
+MoLoRA: Composable Specialization via Per-Token Adapter Routing                  
+
+> Per-Sequence Routing
+> TIAVTIInput:
+> Adapter 1
+> All tokens →same adapter (suboptimal for mixed content)
+> Per-Token Routing (Ours)
+> TIAVTIInput:
+> Text Image Audio Video
+> Each token →specialized adapter (optimal for multimodal)
+
+Figure 1: Per-sequence routing (left) sends all tokens in a sequence to the same adapter, even when tokens have different modalities (T=text, I=image, A=audio, V=video). Per-token routing (right) routes each token to its modality-specialized adapter within a single forward pass. where r : [ N ] → [C] routes each token to one of C computational targets. Per-token routing solves both problems: it reduces K forward passes to 1 (Problem 1), and enables different tokens to use different specialized adapters within the same sequence (Problem 2). The routing function r can be deterministic (based on vocabulary structure, for multimodal models) or learned (for semantic specialization). 
+
+Contributions. We make three contributions: 1. Per-token routing framework (§3). We formalize per-token routing and prove it is computationally optimal: work N for N tokens versus K · N for per-sequence routing with K adapter types. 2. MoLoRA: Composable specialization (§4). We introduce MoLoRA (Mixture of LoRA), which extends per-token routing with learned gating. MoLoRA enables composable specialization : load multiple domain-specific adapters and let a learned router select per-token. We demonstrate that specialization beats scale :Qwen3-1.7B + MoLoRA exceeds Qwen3-8B (4.7 × larger) on all four reasoning benchmarks—GSM8K (+14%), MATH (+8%), BBH (+2.5%), GPQA (+2.1%). 3. Systems and empirical validation (§5–7). A hot-set memory architecture enables CUDA graph capture, reducing P99 latency by 67 ×. Per-token routing achieves K× improvement for K-modality workloads: 4.1 ×
+
+from pass reduction, compounding to 5.5 × with systems optimizations. 
+
+# 2 Background and Related Work 
+
+2.1 Low-Rank Adaptation 
+
+LoRA [Hu et al., 2021] fine-tunes pretrained weights W ∈ Rd×d via low-rank updates ∆W = AB where A ∈ Rd×r ,
+
+B ∈ Rr×d, and r ≪ d. The forward pass computes h = xW + xAB , adding only 2dr parameters per adapted layer. Extensions include QLoRA [Dettmers et al., 2023] for quantized training and DoRA [Liu et al., 2024] for weight decomposition. 
+
+2.2 Multi-Adapter Serving 
+
+S-LoRA [Sheng et al., 2024] introduced unified paging for adapter weights and KV cache, enabling adapter catalogs that exceed GPU memory. S-LoRA and Punica [Chen et al., 2023] use specialized kernels optimized for the memory-bound regime of small-batch LoRA computation, achieving high throughput through unified memory pools and LRU eviction. LoRAServe [Jaiswal et al., 2025] addresses rank heterogeneity across adapters via dynamic placement and GPU Direct RDMA, but like prior systems assumes per-sequence routing: j : [ B] → [K] maps sequences to adapters, precluding per-token differentiation. Orthogonally, work on LoRA composition addresses blending adapter effects rather than routing requests: MoLE [Wu et al., 2024] learns per-layer gating to weight LoRA outputs, while Multi-LoRA Composition [Zhong et al., 2024] proposes LoRA Switch and LoRA Composite for image generation. Recent work explores per-token adapter selection for model quality : Feng et al. [2023] use cosine similarity to route tokens to adapters for improved generalization, and LLaVA-MoLE [Chen et al., 2024] applies MoE-style routing over LoRA experts during multimodal instruction finetuning. These focus on training or generalization —our work instead targets serving efficiency , introducing systems optimizations (CUDA graphs, hot-set memory) absent from prior per-token approaches. 2MoLoRA: Composable Specialization via Per-Token Adapter Routing 
+
+2.3 Mixture of Experts 
+
+MoE architectures [Shazeer et al., 2017, Fedus et al., 2022, Lepikhin et al., 2021] route tokens to specialized expert networks via learned gating functions. Existing multi-adapter systems route at the sequence level, making them fundamentally different from MoE: one routing decision per sequence versus one per token. Per-token routing bridges this gap—it makes adapter dispatch identical to MoE dispatch at the infrastructure level: 
+
+Component MoE Per-Token Adapters 
+
+Routing granularity Per-token Per-token Routing function Learned gθ (x) Deterministic Rvocab (v)
+
+Post-routing Histogram + scatter-gather Histogram + scatter-gather This structural equivalence has concrete benefits. We adopt adaptive tiling from MoE systems [Gale et al., 2023]: the histogram of tokens per target determines tile sizes in the compute kernel, with small groups using smaller tiles and large groups using larger tiles for better memory bandwidth utilization. More broadly, the dispatch kernel is target-agnostic—optimizations transfer bidirectionally between MoE and multi-adapter systems. 
+
+2.4 Multimodal LLMs and Vocabulary Structure 
+
+Unified multimodal architectures such as Chameleon [Chameleon Team, 2024] process multiple modalities through shared transformer backbones with unified vocabularies. These models encode modality information directly in token indices: text tokens occupy one vocabulary range, image tokens another, and so forth. We exploit this structure for per-token routing: a comparison against vocabulary boundaries determines the appropriate adapter for each token. 
+
+# 3 Per-Token Routing Framework 
+
+We develop a framework for per-token adapter routing, establishing its relationship to per-sequence routing and mixture-of-experts. 
+
+3.1 From Sequences to Tokens 
+
+Let X = {x1, . . . , x N } denote a batch of N tokens with associated vocabulary indices vi ∈ [V ] and sequence memberships si ∈ [B]. Per-sequence routing computes r(i) = j(si) where j : [ B] → [K] assigns adapters to sequences. This constrains all tokens in a sequence to use the same adapter. Per-token routing removes this constraint by defining r : [ N ] → [C] directly on tokens. The key insight is that multimodal vocabularies encode routing information: 
+
+Definition 3.1 (Vocabulary Routing) . Given vocabulary breaks b = ( b0, b 1, . . . , b M ) with b0 = 0 and bM = V , the vocabulary routing function is: 
+
+Rvocab (v) = m ⇐⇒ v ∈ [bm−1, b m) (3) For a multimodal model with M modalities [Chameleon Team, 2024], tokens route to adapters based on their vocabulary range: text tokens to a text adapter, image tokens to an image adapter, audio to audio, video to video, and so forth. The routing decision requires only M − 1 integer comparisons. 
+
+Assumption. This formulation assumes modalities occupy contiguous vocabulary ranges, as in unified multimodal tokenizers. Non-contiguous assignments require an O(V ) lookup table; we focus on the contiguous case which covers Chameleon-family models and similar architectures. 
+
+3.2 Compositional Routing 
+
+Per-token routing enables routing over product spaces , providing exponential expressiveness from independently trained components. 
+
+Definition 3.2 (Compositional Routing) . Given adapter set A and modality set M, compositional routing defines targets C = A × M with routing function: 
+
+r(i) = ( ai, m i) ∈ A × M (4) 
+
+where ai is determined by request metadata (e.g., customer identity) and mi = Rvocab (vi) is determined by vocabulary structure. 
+
+3MoLoRA: Composable Specialization via Per-Token Adapter Routing 
+
+Algorithm 1 Compositional Gating Kernel 
+
+Require: Token features X, vocab indices V , adapter indices A, modality breaks b
+
+Ensure: Histogram h ∈ Z|A|×|M| , row pointers xs , ys  
+
+> 1:
+
+h ← 0|A|×|M|  
+
+> 2:
+
+for token t = 1 , . . . , N in parallel do  
+
+> 3:
+
+a ← A[t] ▷ Adapter from request metadata  
+
+> 4:
+
+m ← FindModality (V [t], b) ▷ Modality from vocabulary  
+
+> 5:
+
+c ← a · |M| + m ▷ Composite target  
+
+> 6:
+
+pos ← atomicAdd (h[c], 1)  
+
+> 7:
+
+xs [c, pos ] ← &X[t]; ys [c, pos ] ← &Y [t] 
+
+> 8:
+
+end for 
+
+The composite target c = a · |M| + m indexes into a weight tensor of shape (|A| , |M| , d, r ), providing |A| · |M| distinct computational paths with a single dispatch operation. The key advantage is unified serving : rather than deploying 
+
+|A| · |M| separate model instances, a single deployment handles all combinations through compositional indexing. 
+
+Example 3.3. With 64 customer adapters and 4 modalities, compositional routing provides 256 computational paths from a single (64 , 4, d, r ) weight tensor, served through unified infrastructure rather than 256 separate deployments. 
+
+The framework extends naturally to additional factors. Token-level specialization T (e.g., routing special tokens differently) yields product space A × M × T .
+
+3.3 Unified Dispatch Infrastructure 
+
+The dispatch kernel that routes tokens to targets in a LoRA setting is equivalent to that of routing tokens to MoE experts. Given routing decisions r ∈ [C]N , the kernel: 1. Constructs a histogram h ∈ ZC counting tokens per target 2. Allocates positions via atomic increment: pos ← atomicAdd (h[r[t]] , 1) 
+
+3. Emits pointer arrays xs [c, pos ], ys [c, pos ] for scatter-gather This three-step pattern is target-agnostic: the kernel operates on abstract routing decisions without knowledge of whether targets represent experts, adapters, or compositional combinations thereof. The histogram enables adaptive tiling in subsequent compute kernels—targets with few tokens use smaller tiles while targets with many tokens use larger tiles for better memory bandwidth utilization (Appendix C). For compositional routing, the kernel computes composite targets by combining adapter indices from request metadata with modality indices from vocabulary structure (Algorithm 1). 
+
+3.4 Theoretical Analysis Theorem 3.4 (Routing Complexity) . Vocabulary routing achieves O(1) per-token routing cost for fixed M , compared to O(E · d) for learned MoE gating over E experts with hidden dimension d.
+
+Vocabulary routing requires M − 1 integer comparisons, which are unrolled at compile time for typical M ≤ 4. Learned gating computes softmax (W x + b) where W ∈ RE×d, requiring E · d multiplications. For d = 4096 and E = 8 , this represents a ∼10,000 × difference in routing overhead. 
+
+Theorem 3.5 (Expressiveness) . When the optimal routing function R∗ satisfies R∗(x) = m iff v(x) ∈ [bm−1, b m),vocabulary routing achieves Rvocab = R∗.
+
+When vocabulary structure determines optimal routing—as in multimodal models where modality determines the appropriate adapter—deterministic routing matches learned routing without parameter overhead. 
+
+3.5 Key Theoretical Results 
+
+We establish two results that distinguish per-token from per-sequence routing: computational optimality and a unification with sparse attention. 4MoLoRA: Composable Specialization via Per-Token Adapter Routing 
+
+Theorem 3.6 (Computational Optimality) . Consider a batch of N tokens with arbitrary modality assignments processed by K adapters. Any correct routing strategy requires work W satisfying: 
+
+Wper-seq ≥ K · N · cpass (per-sequence) (5) 
+
+Wper-tok = N · cpass (per-token) (6) 
+
+where cpass is the cost of processing one token through one adapter. Per-token routing achieves the minimum work 
+
+N · cpass .
+
+Theorem 3.7 (Sparse Attention Equivalence) . Per-token adapter routing with K adapters and vocabulary routing function Rvocab is equivalent to sparse attention with a block-diagonal attention pattern, where the vocabulary partitioning determines the block structure. Proof sketch. Define attention weights αij = 1[Rvocab (vi) = Rvocab (vj )] . The resulting attention pattern is block-diagonal with blocks corresponding to modality groups. The adapter computation xiAm(i)Bm(i) can be written as: X
+
+> j
+
+αij · xj ARvocab (vj )BRvocab (vj ) (7) which is a sparse attention operation where each token attends only to tokens of the same modality, using modality-specific projections. 
+
+Implications. This equivalence unifies per-token adapter routing with the broader sparse attention literature. Opti-mizations developed for sparse attention (e.g., block-sparse patterns, hardware-efficient implementations) directly apply to adapter routing, and vice versa. The block-diagonal structure enables efficient parallel execution: each modality group can be processed independently, achieving perfect load balancing when group sizes are similar. 
+
+# 4 MoLoRA 
+
+We now present MoLoRA (Mixture of LoRA) , which extends per-token routing with learned gating to enable 
+
+composable specialization —the ability to load multiple specialized LoRA adapters simultaneously and route tokens dynamically based on content. 
+
+4.1 Motivation 
+
+Traditional adapter serving requires choosing a single adapter per request: a math LoRA for mathematical reasoning, a code LoRA for programming, a creative LoRA for writing. However, real-world requests often require multiple capabilities. A request like “write Python code to solve this differential equation” needs both mathematical and programming expertise. Per-sequence routing forces a choice, accepting suboptimal quality on one capability. Per-token routing with learned gating eliminates this trade-off. By loading multiple specialized adapters and routing per-token, a single serving endpoint achieves the quality benefits of all fine-tunes combined: • Single-domain tasks : The router selects the specialized adapter, matching single-adapter quality • Mixed-capability tasks : The router selects different adapters for different tokens, combining expertise within a single sequence This enables modular expertise at inference time : train focused LoRAs independently, combine them without retraining, and add new capabilities by loading new adapters. 
+
+4.2 Limitations of Vocabulary Routing 
+
+Deterministic vocabulary routing requires modality information encoded in token indices. We identify four scenarios where this assumption fails, motivating learned routing. 
+
+Scenario 1: Encoder-Based Multimodal Models. Models like LLaVA [Liu et al., 2023], Flamingo [Alayrac et al., 2022], and Qwen-VL [Bai et al., 2023] process images through separate encoders (e.g., CLIP [Radford et al., 2021]) before projecting into the LLM’s embedding space. The resulting “image tokens” occupy the same vocabulary range 
+
+as text tokens. Unlike Chameleon’s disjoint ranges, these models provide no vocabulary-level signal distinguishing modalities. 5MoLoRA: Composable Specialization via Per-Token Adapter Routing 
+
+Logical View (Per-Token)            
+
+> xi
+> Router gθ
+> Top-k
+> A1A2A3A4
+> w1
+> w3××
+> Pwj
+> ∆hi
+> ∆hi=P
+> j∈TopK wij ·xiA(j)B(j)
+
+Physical View (Grouped Dispatch)                 
+
+> x1x2x3x4x5x6
+> →1→2→1→3→1→2
+> Router gθ(batch)
+> Histogram & Group by Adapter
+> A1A2A3
+> Grouped GEMM (parallel)
+> x1, x 3, x 5x2, x 6x4
+> Scatter to original positions
+> Same infrastructure as MoE dispatch
+
+Figure 2: MoLoRA: logical vs. physical execution. Left: Per-token view—a router selects top-k adapters (here 
+
+k=2), which are combined via weighted sum. Right: Batched execution—tokens are grouped by their selected adapter, enabling parallel grouped GEMM using identical infrastructure to MoE systems. 
+
+Scenario 2: Semantic Specialization. Consider adapters specialized for code, mathematical reasoning, creative writing, and technical documentation. These domains share the same vocabulary—the word “function” appears in all four contexts with identical token IDs. Yet optimal adaptation differs: code adapters should emphasize syntax patterns, math adapters logical structure. Vocabulary-based routing cannot distinguish these cases. 
+
+Scenario 3: Sub-Modality Granularity. Even when vocabulary encodes modality, finer-grained specialization may be valuable. Within image tokens, photographs, diagrams, and charts may benefit from different adapters. Vocabulary routing provides only coarse modality-level grouping; learned routing enables arbitrary granularity. 
+
+Scenario 4: Compositional Multi-Attribute Routing. Production settings often require routing along multiple dimensions: modality × domain × task. Vocabulary routing handles only one dimension. Learned routing naturally extends to product spaces by predicting multi-dimensional routing targets. 
+
+4.3 Router Architecture 
+
+Given input x ∈ RB×L×d, the router gθ : Rd → RK produces adapter logits per token. We apply top-k selection followed by softmax: 
+
+wi = softmax (TopK (gθ (xi), k )) , ∆hi = X
+
+> j∈TopK
+
+wi,j · xiA(j)B(j) (8) The router is a 2-layer MLP with hidden dimension 64 and GELU activation: 
+
+gθ (x) = W2 · GELU (W1x + b1) + b2 (9) This adds minimal parameters ( 64 d + 64 K) while enabling input-dependent adapter selection. Following Switch Transformer [Fedus et al., 2022], we add an auxiliary load-balancing loss to encourage uniform adapter utilization. 
+
+4.4 Composable Specialization Results 
+
+We evaluate the central claim: MoLoRA enables composable specialization, where multiple domain-specific adapters combine at inference time to match specialized performance across all domains. 6MoLoRA: Composable Specialization via Per-Token Adapter Routing      
+
+> GSM8K MATH BBH GPQA
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Accuracy (%)
+> 1.7B Base 1.7B + MoLoRA 8B Base
+
+Figure 3: MoLoRA enables small models to exceed larger ones. Qwen3-1.7B with four specialized LoRA adapters and learned routing (blue) exceeds Qwen3-8B (red) on all four reasoning benchmarks, while being 4.7 × smaller. 
+
+Setup. We use Qwen3-1.7B as the base model and train four specialized LoRA adapters (rank=32) using GRPO [Shao et al., 2024] on a filtered general-purpose reasoning corpus spanning different domains: math, logical reasoning, and scientific reasoning. A lightweight router (2-layer MLP) learns to classify tokens and select the appropriate adapter. We evaluate on the standard test splits of GSM8K, MATH, BBH, and GPQA, comparing against Qwen3-8B (4.7 × larger). 
+
+Results. Figure 3 demonstrates that MoLoRA beats scale across all benchmarks :• vs Qwen3-8B: MoLoRA wins on GSM8K (+14%), MATH (+8%), BBH (+2.5%), GPQA (+2.1%) • Composability: A single model with four adapters handles all reasoning domains The 1.7B model with MoLoRA achieves this while being 4.7 × smaller than the 8B model. This validates our core thesis: targeted specialization via composable adapters is far more efficient than scaling model size. 
+
+Learned Routing. MoLoRA’s router learns to distinguish between reasoning domains—grade-school math, com-petition math, logical reasoning, and scientific reasoning—and selects appropriate adapters per-token automatically. Notably, learned routing matches oracle routing (where we manually assign the optimal adapter per domain), demon-strating that the router successfully learns domain-specific patterns. This enables a single deployment to handle diverse reasoning tasks without manual adapter selection. 
+
+Implications. Rather than training larger models, practitioners can achieve better results by training small, focused adapters and combining them via MoLoRA. New capabilities require only training and loading a new LoRA—existing adapters need not be retrained. 
+
+4.5 Production-Grade Infrastructure 
+
+Composable specialization is only practical if it can be deployed efficiently at scale. A key design property of our system is that the same dispatch and compute kernels support both deterministic and learned routing. This means MoLoRA inherits all the systems benefits developed in §5–6: hot-set memory for CUDA graph capture, per-token dispatch for K× pass reduction, and adaptive tiling for grouped computation. MoLoRA replaces vocabulary-based routing with a learned gating function while reusing identical post-routing infrastructure: This validates the MoE/multi-adapter correspondence: once tokens are assigned to targets (via any mechanism), the grouped computation is identical. 
+
+# 5 System Architecture 
+
+Per-token routing enables architectural optimizations unavailable to per-sequence systems. 
+
+5.1 Limitations of Dynamic Paging 
+
+S-LoRA and Punica employ CPU-GPU paging to support adapter catalogs exceeding GPU memory. When a requested adapter is not GPU-resident, the system evicts an LRU adapter and copies the requested adapter from CPU memory. 7MoLoRA: Composable Specialization via Per-Token Adapter Routing Table 1: Infrastructure reuse between vocabulary routing and MoLoRA. Only the routing decision differs; post-routing computation is identical. 
+
+Component Vocabulary Routing MoLoRA 
+
+Routing decision Rvocab (v) TopK (gθ (x)) 
+
+Routing cost O(1) O(64 d + 64 K)
+
+Identical Infrastructure (Reused) 
+
+Histogram computation ✓ ✓
+
+Pointer arrays ✓ ✓
+
+Grouped GEMM dispatch ✓ ✓
+
+Adaptive tiling ✓ ✓
+
+CUDA graph capture ✓ ✓
+
+Paging (S-LoRA) 
+
+CPU Memory (All Adapters)   
+
+> GPU (Paged)
+> A1 A2 A4
+> Page fault
+> Variable latency No CUDA graphs
+
+Hot-Set (Ours) 
+
+Slot Table     
+
+> GPU (Hot-Set)
+> A1 A2 A3 A4 A5
+> Async
+
+CUDA Graph Capture  
+
+> Fixed addresses 67 ×P99 reduction
+
+Figure 4: System architecture comparison. Paging (left) copies adapters on-demand from CPU, causing variable latency and preventing CUDA graph capture. Our hot-set architecture (right) pre-allocates GPU-resident adapters with fixed addresses, enabling graph capture and predictable latency. This design introduces variable latency on the critical path and prevents CUDA graph capture due to data-dependent control flow. 
+
+5.2 Static Hot-Set Memory Model 
+
+We propose a hot-set architecture that pre-allocates S adapter slots on GPU: 
+
+Definition 5.1 (Hot-Set Layout) . Given S adapter slots, M modalities, model dimension d, and LoRA rank r:
+
+Ahot ∈ RS×M ×d×r (10) 
+
+Bhot ∈ RS×M ×r×d (11) 
+
+A slot table σ : [ S] → A maps slots to adapters, maintained asynchronously. 
+
+The static memory layout provides three properties: (1) fixed addresses enabling CUDA graph capture, (2) no paging latency on the critical path, and (3) predictable memory consumption. 
+
+5.3 CUDA Graph Integration 
+
+With static hot-set memory, the forward pass has fixed memory addresses and deterministic control flow, enabling CUDA graph capture. Graph replay eliminates per-kernel launch overhead (5–10 μs per kernel), driver scheduling latency, and Python/C++ boundary crossings. For a multi-adapter forward pass with 10+ kernel launches, graph capture reduces launch overhead from 50–100 μs to <10 μs. 8MoLoRA: Composable Specialization via Per-Token Adapter Routing Table 2: Memory layout comparison using identical operations. 
+
+Adapters Indirect Direct Speedup 
+
+4 0.215ms 0.196ms 1.10 ×
+
+8 0.228ms 0.194ms 1.17 ×
+
+16 0.227ms 0.201ms 1.13 ×
+
+32 0.232ms 0.207ms 1.12 ×
+
+64 0.258ms 0.218ms 1.18 ×
+
+Average 1.14 ×
+
+5.4 Architectural Decomposition 
+
+To understand where improvements originate, we systematically isolate each factor. 
+
+Memory Layout Comparison. Comparing direct indexing (our approach) against indirect indexing (S-LoRA/Punica style) using identical operations, direct memory indexing provides 1.14 × average improvement across adapter counts (Table 2). 
+
+Summary. The hot-set architecture provides two benefits: (1) fixed memory addresses enable CUDA graph capture, yielding 67 × P99 improvement (§7), and (2) direct indexing provides 1.14 × improvement over indirect indexing (Table 2). Combined with per-token routing (35 × average, §7) and kernel optimizations (1.3–2.7 × over S-LoRA at production batch sizes), these architectural choices enable sub-millisecond latencies for multi-adapter serving. 
+
+# 6 Kernel Design 
+
+Post-routing computation applies the LoRA transformation to tokens grouped by target. 
+
+6.1 Kernel Architecture 
+
+Our implementation uses tensor-core HMMA operations with large tiles, multi-stage pipelining, and fused post-operations. Critically, we leverage CUDA graph capture to eliminate kernel launch overhead, achieving near-constant latency regardless of batch size. S-LoRA and Punica use scalar FMA operations (BGMV kernel) optimized for the memory-bound regime (Appendix B). Our tensor-core implementation with CUDA graph capture targets the compute-bound regime where batch size provides sufficient arithmetic intensity for tensor cores to deliver higher throughput. The combination of tensor cores and graph capture is key: tensor cores provide raw compute throughput, while graph capture eliminates the Python/CUDA launch overhead that would otherwise dominate at small batch sizes. 
+
+6.2 Performance Characterization 
+
+Figure 5 shows the crossover at batch size ≈160. Our tensor-core implementation with CUDA graph capture achieves near-constant latency ( ∼0.016ms) across batch sizes, while S-LoRA’s BGMV kernel scales linearly. At batch 512, our kernel is 1.98 × faster; at batch 1024, 2.69 × faster. Modern serving systems using continuous batching [Yu et al., 2022, Agrawal et al., 2024] aggregate tokens from multiple concurrent requests. Under loads targeting high GPU utilization, batch sizes of 256–2048 tokens are typical, where our kernel provides 1.3–2.7 × speedup. 
+
+# 7 Experimental Evaluation 
+
+We evaluate MoLoRA on multimodal throughput, latency predictability, and kernel performance. Configuration details appear in Appendix A. Our central result is that per-token routing reduces K passes to 1 for K-modality workloads, yielding K× improvement . Additional gains from hot-set memory and CUDA graphs compound this to 5.5 × in controlled settings, with workload-dependent variation from 5.8 × to 112 ×.9MoLoRA: Composable Specialization via Per-Token Adapter Routing      
+
+> 128 256 512 1024
+> 0
+> 2
+> 4
+> 6·10 −2
+> Crossover Memory-bound Compute-bound
+> Batch Size
+> Latency (ms)
+> Tensor Core
+> Scalar (BGMV)
+
+Figure 5: Kernel performance comparison. Scalar implementations (S-LoRA’s BGMV) excel in the memory-bound regime (batch <160), while our tensor-core kernel with CUDA graph capture dominates in the compute-bound regime. The crossover occurs at batch size ≈160, with our kernel achieving 1.98 × speedup at batch 512. Table 3: Per-token routing reduces K forward passes to 1. Per-sequence routing requires K passes for K-modality workloads; per-token routing requires exactly one. Configuration: K=4 modalities, 2048 tokens, d=4096, r=64. 
+
+Routing Passes Latency Latency/Pass 
+
+Per-sequence ( K=4) 4 5.88ms 1.47ms Per-token 1 1.43ms 1.43ms 
+
+Speedup 4× 4.1 × —
+
+7.1 Fundamental Speedup from Pass Reduction 
+
+The primary advantage of per-token routing is reducing the number of forward passes. With K modalities interleaved within sequences, per-sequence routing requires K separate passes (one per modality), while per-token routing requires exactly 1. Table 3 shows this directly: per-sequence routing takes 5.88ms (4 passes × 1.47ms each), while per-token routing takes 1.43ms (1 pass). The 4.1 × speedup matches the theoretical K× prediction, confirming that pass reduction is the dominant source of improvement. 
+
+7.2 Ablations 
+
+To understand where gains originate, we incrementally add each optimization to a baseline of per-sequence routing with paging (S-LoRA style). Table 4 shows the breakdown: (1) hot-set memory eliminates paging for 1.3 ×; (2) per-token routing reduces passes for 4.1 ×; (3) CUDA graph capture reduces launch overhead for 1.05 ×. Pass reduction is the dominant gain and represents the core algorithmic contribution; hot-set memory and CUDA graphs are systems optimizations that compound this benefit. 
+
+7.3 Production Model Validation 
+
+To validate that these improvements transfer to production models, we benchmark on Qwen3-4B [Qwen Team, 2025] with 4 LoRA adapters (rank 8) targeting attention projections. Table 5 shows that speedup scales with adapter diversity. With 4 distinct adapters, per-token routing achieves 4.1–4.3 ×
+
+speedup. When all sequences use the same adapter, both approaches achieve parity (1.0 ×)—our approach adds no overhead in this degenerate case. This validates that per-token routing is strictly better: equal or faster in all scenarios. 
+
+7.4 Workload-Dependent Scaling 
+
+The 4.1 × improvement in Table 3 and Table 4 is for a specific configuration. Two factors cause variation across workloads: modality distribution and batch size. 10 MoLoRA: Composable Specialization via Per-Token Adapter Routing Table 4: Incremental improvements from each architectural choice. Same configuration as Table 3. 
+
+Configuration Latency vs Baseline Incremental Source 
+
+Per-seq + Paging 7.48ms 1.0 × — Baseline Per-seq + Hot-set 5.88ms 1.3 × 1.3 × Paging eliminated Per-token + Hot-set 1.43ms 5.2 × 4.1 × Passes: K → 1
+
+Per-token + Graph 1.36ms 5.5 × 1.05 × Launch overhead Table 5: Qwen3-4B benchmark comparing per-sequence (S-LoRA style) vs per-token routing. Speedup depends on adapter diversity. 
+
+Scenario Batch Seq Per-Seq Per-Token Speedup 
+
+Diverse adapters 4 128 179.0ms 41.5ms 4.3 ×
+
+Diverse adapters 8 128 178.7ms 43.4ms 4.1 ×
+
+Uniform (best S-LoRA) 8 256 178.1ms 79.8ms 2.2 ×
+
+Single adapter 8 256 80.3ms 80.0ms 1.0 ×
+
+Modality Distribution. When modalities are interleaved within sequences, per-sequence routing must split at boundaries, incurring maximum overhead. When modalities are separated (each sequence is single-modality), per-sequence routing can batch efficiently. Table 6 shows speedup ranging from 7.5 × (separated, best case for per-sequence) to 52.7 × (interleaved, worst case for per-sequence). The variation reflects per-sequence routing’s sensitivity to token arrangement—per-token routing is constant regardless of distribution. 
+
+Batch Size Scaling. Speedup is highest at small batch sizes (112 × at batch 64) because per-sequence routing overhead dominates. At larger batches, per-sequence routing amortizes overhead better, reducing the gap to 5.8 × (Figure 6). 
+
+7.5 Latency and Variance 
+
+Figure 7 shows CUDA graph capture reduces P99 latency by 67 × on average compared to dynamic paging. To isolate contributions: hot-set memory without graph capture (eager execution) achieves 0.08–0.44ms, while graph capture reduces this to 0.05–0.22ms—a 1–2 × additional improvement. The dominant benefit comes from eliminating paging overhead; graph capture provides incremental latency reduction and, critically, reduces variance (see Appendix D.1). 
+
+7.6 Workload Robustness 
+
+Hot-set latency remains stable (0.084–0.095ms) regardless of access pattern, while paging degrades from 1.28ms (bursty) to 3.42ms (adversarial)—a 15–38 × gap demonstrating predictable performance independent of workload characteristics (Figure 8). 
+
+Summary. At production batch sizes (256–1024), speedup converges to ∼K× from pass reduction. The extreme values (112 × at batch 64, 5.8 × at batch 1024) bound the range. Averaging across distributions and batch sizes yields the 28.7 × reported in Table 6. 
+
+7.7 Full Transformer Latency 
+
+To validate that kernel-level improvements translate to full models, we implement a complete transformer with per-token LoRA routing and measure end-to-end latency. Table 7 shows per-token routing achieves K× speedup where K is the number of adapters. This reflects the fundamental advantage: one forward pass handles all modalities, whereas per-sequence systems require separate passes for each. The kernel-level improvements (26–53 ×) are larger because they isolate the LoRA computation; end-to-end speedup is moderated by the base model computation which dominates at scale. Nonetheless, 4 × end-to-end improvement for 4-modality workloads is significant for production serving. 11 MoLoRA: Composable Specialization via Per-Token Adapter Routing Table 6: Speedup varies with modality distribution. “Interleaved” requires sequence splitting; “separated” allows efficient batching. 
+
+Distribution Per-Token Per-Sequence Speedup 
+
+Interleaved, text-heavy 0.23ms 5.94ms 26.0 ×
+
+Interleaved, balanced 0.24ms 12.79ms 52.7 ×
+
+Separated (control) 0.24ms 1.81ms 7.5 ×
+
+Average 28.7 ×      
+
+> 64 128 256 512 1024
+> 0.1
+> 1
+> 10 Per-Sequence
+> Per-Token
+> 112 ×5.8 ×
+> Batch Size
+> Latency (ms)
+
+Figure 6: Latency comparison across batch sizes. Per-token routing (blue) maintains sub-millisecond latency while per-sequence routing (red) requires sequence splitting, incurring 5.8–112 × higher latency. The gap narrows at larger batches as per-sequence overhead amortizes. 
+
+7.8 Interleaved Multimodal Generation 
+
+To validate on realistic multimodal workloads, we benchmark on Chameleon-style interleaved generation [Chameleon Team, 2024] where text and image tokens alternate within sequences. Following Chameleon’s unified vocabulary design, text and image tokens occupy disjoint, contiguous ranges, enabling deterministic per-token routing. Table 8 shows per-token routing achieves 1.65 × speedup for K=2 modalities (vs. theoretical 2 ×). The gap from theory arises because the base transformer computation is shared—only the LoRA adapter differs between passes. With more modalities ( K=4), speedup approaches 4 × as shown in Table 7. Interleaved multimodal generation is precisely the workload where per-token routing excels, as every token uses its modality-appropriate adapter in a single forward pass. 
+
+# 8 Discussion 
+
+Why Per-Token Routing Enables MoE Unification. Per-sequence routing is fundamentally incompatible with MoE infrastructure: MoE makes one routing decision per token, while per-sequence adapters make one decision per sequence. Per-token routing removes this incompatibility. Once routing operates at token granularity, the downstream infrastructure—histogram construction, pointer-based dispatch, grouped computation—becomes identical whether targets are experts or adapters. We exploit this directly: our adaptive tiling strategy, where histogram counts determine tile sizes, derives from MoE systems [Gale et al., 2023]. MoLoRA (§4) further demonstrates this unification by applying MoE-style learned gating to LoRA adapters. 
+
+Trade-offs. Hot-set architecture trades catalog size for latency predictability. Systems requiring thousands of concurrent adapters may prefer paging despite latency variance. Vocabulary-based routing requires vocabulary structure encoding modality; models without this structure use request-level routing, which per-token routing subsumes. 
+
+# 9 Conclusion 
+
+We introduced per-token routing for multi-adapter serving, addressing two limitations of per-sequence routing: the efficiency overhead of processing interleaved multimodal content, and the quality compromise of forcing a single-adapter choice on mixed-capability requests. 12 MoLoRA: Composable Specialization via Per-Token Adapter Routing    
+
+> 32 64 128 256
+> 0.1
+> 1
+> 10
+> Paging
+> CUDA Graph
+> Batch Size
+> P99 Latency (ms)
+
+Figure 7: P99 latency with variance bands derived from coefficient of variation (CV). CUDA graph capture (blue) achieves 42–108 × lower latency than paging (red). Shaded regions show ±1 std.     
+
+> Uniform Zipfian Bursty Adversarial
+> 0
+> 1
+> 2
+> 3
+> 4
+> 26 ×
+> 20 ×
+> 15 ×
+> 38 ×
+> P99 Latency (ms)  Paging Hot-Set
+
+Figure 8: P99 latency under different access patterns. Hot-set latency remains stable ( ∼0.09ms) regardless of workload, while paging varies 3 × between best-case (bursty) and worst-case (adversarial). Per-token routing solves the efficiency problem: K forward passes reduce to 1 for K-modality workloads, yielding 
+
+K× improvement. Combined with a hot-set architecture enabling CUDA graph capture, our system achieves 67 × P99 latency reduction and sub-millisecond latencies. MoLoRA solves the quality problem: by loading multiple specialized adapters and routing per-token, mixed-capability requests can leverage multiple experts within a single sequence. We demonstrate that specialization beats scale: Qwen3-1.7B with MoLoRA exceeds Qwen3-8B (4.7 × larger) across four reasoning benchmarks, with learned routing matching oracle performance. This enables modular expertise at inference time—new capabilities require only training and loading a new LoRA, with no retraining of existing adapters. As multimodal and multi-capability models become prevalent, per-token routing with composable specialization provides a principled foundation for efficient, high-quality multi-adapter serving. 
+
+# References 
+
+Amey Agrawal, Nitin Kedia, Ashish Panwar, Jayashree Mohan, Nipun Kwatra, Bhargav S Gulavani, Alexey Tumanov, and Ramachandran Ramjee. Taming throughput-latency tradeoff in LLM inference with Sarathi-Serve. arXiv preprint arXiv:2403.02310 , 2024. Jean-Baptiste Alayrac, Jeff Donahue, Pauline Luc, Antoine Miech, Iain Barr, Yana Hasson, Karel Lenc, Arthur Mensch, Katherine Millican, Malcolm Reynolds, et al. Flamingo: a visual language model for few-shot learning. In Advances in Neural Information Processing Systems , volume 35, pages 23716–23736, 2022. Jinze Bai, Shuai Bai, Shusheng Yang, Shijie Wang, Sinan Tan, Peng Wang, Junyang Lin, Chang Zhou, and Jingren Zhou. Qwen-VL: A versatile vision-language model for understanding, localization, text reading, and beyond. arXiv preprint arXiv:2308.12966 , 2023. Chameleon Team. Chameleon: Mixed-modal early-fusion foundation models. arXiv preprint arXiv:2405.09818 , 2024. 13 MoLoRA: Composable Specialization via Per-Token Adapter Routing Table 7: End-to-end transformer latency with per-token routing. Per-sequence simulation runs K forward passes (one per adapter) to handle mixed-modality sequences. Speedup is ∼K× where K = 4 adapters. 
+
+Config Batch Per-Token Per-Seq Sim Speedup 
+
+d=1024, L=2 16 ×512 14.5ms 57.7ms 4.0 ×
+
+d=2048, L=4 4×512 17.3ms 68.8ms 4.0 ×
+
+d=4096, L=4 16 ×512 121.6ms 488.0ms 4.0 ×
+
+Table 8: Chameleon-style interleaved generation benchmark. Full transformer with per-token LoRA ( d=2048, L=4, 
+
+K=2 modalities). Per-sequence routing requires K full forward passes. 
+
+Method Passes Latency Speedup 
+
+Per-Sequence ( K=2) 2 5.18ms 1.0 ×
+
+Per-Token 1 3.14ms 1.65 ×
+
+Lequn Chen, Zihao Ye, Yongji Wu, Danyang Zhuo, Luis Ceze, and Arvind Krishnamurthy. Punica: Multi-tenant LoRA serving. arXiv preprint arXiv:2310.18547 , 2023. Shaoxiang Chen, Zequn Jie, and Lin Ma. LLaVA-MoLE: Sparse mixture of LoRA experts for mitigating data conflicts in instruction finetuning MLLMs. arXiv preprint arXiv:2401.16160 , 2024. Tim Dettmers, Artidoro Pagnoni, Ari Holtzman, and Luke Zettlemoyer. QLoRA: Efficient finetuning of quantized LLMs. arXiv preprint arXiv:2305.14314 , 2023. William Fedus, Barret Zoph, and Noam Shazeer. Switch transformers: Scaling to trillion parameter models with simple and efficient sparsity. In Journal of Machine Learning Research , volume 23, pages 1–39, 2022. Yizhou Feng, Haokun Liu, Colin Raffel, and Hao Yang. Token-level adaptation of LoRA adapters for downstream task generalization. arXiv preprint arXiv:2311.10847 , 2023. Trevor Gale, Deepak Narayanan, Cliff Young, and Matei Zaharia. MegaBlocks: Efficient sparse training with mixture-of-experts. In Proceedings of Machine Learning and Systems , 2023. Edward J Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang, and Weizhu Chen. LoRA: Low-rank adaptation of large language models. arXiv preprint arXiv:2106.09685 , 2021. Shashwat Jaiswal, Shrikara Arun, Anjaly Parayil, Ankur Mallick, Spyros Mastorakis, Alind Khare, Chloi Alverti, Renee St Amant, Chetan Bansal, Victor R ¨uhle, and Josep Torrellas. LoRAServe: Serving heterogeneous LoRA adapters in distributed LLM inference systems. arXiv preprint arXiv:2511.22880 , 2025. Dmitry Lepikhin, HyoukJoong Lee, Yuanzhong Xu, Dehao Chen, Orhan Firat, Yanping Huang, Maxim Krikun, Noam Shazeer, and Zhifeng Chen. GShard: Scaling giant models with conditional computation and automatic sharding. In 
+
+International Conference on Learning Representations , 2021. Haotian Liu, Chunyuan Li, Qingyang Wu, and Yong Jae Lee. Visual instruction tuning. Advances in Neural Information Processing Systems , 36, 2023. Shih-Yang Liu, Chien-Yi Wang, Hongxu Yin, Pavlo Molchanov, Yu-Chiang Frank Wang, Kwang-Ting Cheng, and Min-Hung Chen. DoRA: Weight-decomposed low-rank adaptation. arXiv preprint arXiv:2402.09353 , 2024. Qwen Team. Qwen3 technical report. arXiv preprint arXiv:2505.09388 , 2025. Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya Ramesh, Gabriel Goh, Sandhini Agarwal, Girish Sastry, Amanda Askell, Pamela Mishkin, Jack Clark, et al. Learning transferable visual models from natural language supervision. In 
+
+International Conference on Machine Learning (ICML) , pages 8748–8763, 2021. Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Mingchuan Zhang, Y. K. Li, Y. Wu, and Daya Guo. DeepSeekMath: Pushing the limits of mathematical reasoning in open language models. arXiv preprint arXiv:2402.03300 , 2024. 14 MoLoRA: Composable Specialization via Per-Token Adapter Routing Noam Shazeer, Azalia Mirhoseini, Krzysztof Maziarz, Andy Davis, Quoc Le, Geoffrey Hinton, and Jeff Dean. Outrageously large neural networks: The sparsely-gated mixture-of-experts layer. In International Conference on Learning Representations , 2017. Ying Sheng, Shiyi Cao, Dacheng Li, Coleman Hooper, Nicholas Lee, Shuo Yang, Christopher Chou, Banghua Zhu, Lianmin Zheng, Kurt Keutzer, Joseph E Gonzalez, and Ion Stoica. S-LoRA: Serving thousands of concurrent LoRA adapters. In Proceedings of Machine Learning and Systems (MLSys) , 2024. Gemini Team. Gemini 2.5: Pushing the frontier with advanced reasoning, multimodality, long context, and next generation agentic capabilities, 2025. URL https://arxiv.org/abs/2507.06261 .Xun Wu, Shaohan Huang, and Furu Wei. Mixture of lora experts, 2024. URL https://arxiv.org/abs/2404.13628 .Gyeong-In Yu, Joo Seong Jeong, Geon-Woo Kim, Soojeong Kim, and Byung-Gon Chun. Orca: A distributed serving system for transformer-based generative models. In USENIX Symposium on Operating Systems Design and Implementation (OSDI) , 2022. Ming Zhong, Yelong Shen, Shuohang Wang, Yadong Lu, Yizhu Jiao, Siru Ouyang, Donghan Yu, Jiawei Han, and Weizhu Chen. Multi-LoRA composition for image generation. arXiv preprint arXiv:2402.16843 , 2024. 
+
+# A Experimental Setup 
+
+Hardware. Experiments were conducted on an NVIDIA H100 GPU with CUDA 13.0 and PyTorch 2.9.0. 
+
+Model Configuration. We use model dimension d = 4096 , LoRA rank r = 64 , and 4 modalities. 
+
+Baselines. 
+
+• Per-sequence routing : S-LoRA/Punica-style implementation with specialized kernels • Dynamic paging : LRU eviction with CPU-GPU transfers on cache miss 
+
+Measurement. All latency measurements report the median of 1000 iterations after 100 warmup iterations. 
+
+# B Kernel Implementation Details 
+
+B.1 Adaptive Tiling 
+
+Post-routing computation uses adaptive tile sizes based on histogram counts, since different group sizes benefit from different tile configurations. 
+
+Tile Selection Strategy. Given histogram counts h[k] for each target k, we select tile sizes as: BLOCK M =
+
+
+
+16 h[k] < 64 32 64 ≤ h[k] < 256 64 h[k] ≥ 256 
+
+(12) BLOCK N =
+
+32 h[k] < 128 64 h[k] ≥ 128 (13) Smaller tiles reduce wasted computation when groups are small (avoiding padding overhead), while larger tiles improve memory bandwidth utilization through better cache locality when groups are large. 
+
+Performance Impact. Table 9 shows the benefit of adaptive tiling across different token distributions. The benefit is largest for skewed distributions where some adapters have very few tokens. Fixed 64 ×64 tiles waste computation on small groups; adaptive 16 ×32 tiles reduce this overhead. 
+
+Implementation. We implement adaptive tiling in Triton by dispatching to different kernel configurations based on histogram counts. Each configuration is pre-compiled; the histogram determines which to invoke. This adds minimal overhead ( <1μs for histogram analysis) while providing significant benefits for non-uniform workloads. 15 MoLoRA: Composable Specialization via Per-Token Adapter Routing Table 9: Adaptive vs. fixed tiling. Adaptive selection provides up to 1.4 × improvement for skewed distributions. 
+
+Distribution Fixed (64 ×64) Adaptive Speedup 
+
+Uniform (25% each) 0.412ms 0.398ms 1.04 ×
+
+Skewed (80/10/5/5) 0.456ms 0.389ms 1.17 ×
+
+Extreme (95/2/2/1) 0.521ms 0.372ms 1.40 ×
+
+B.2 Kernel Performance Analysis 
+
+Scalar kernels (S-LoRA’s BGMV) achieve superior small-batch performance through CUDA-specific optimizations: 
+
+cuda::memcpy async for pipelined memory operations, shfl down sync for warp-level reductions, and hand-tuned thread configurations. These optimizations are most effective in the memory-bound regime. Our tensor-core implementation with CUDA graph capture eliminates kernel launch overhead, achieving near-constant latency across batch sizes. At batch sizes ≥160, our kernel outperforms BGMV.      
+
+> 64 128 256 512 1024
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6·10 −2
+> Crossover
+> 1.98 ×
+> 2.69 ×
+> Batch Size
+> Latency (ms)
+> BGMV (Scalar)
+> Ours (Tensor Core)
+
+Figure 9: Kernel comparison: Tensor Core (with CUDA graph) vs BGMV scalar kernel. Our kernel achieves near-constant latency ( ∼0.016ms) while BGMV scales linearly. Crossover at batch 160; at production sizes (512–1024), we achieve 1.98–2.69 × speedup. Benchmarked on H100 NVL with d=4096, r=64, 8 adapters. Figure 9 shows the kernel comparison. The crossover occurs at batch 160, where our tensor-core kernel begins to outperform BGMV. At production batch sizes (512–1024), we achieve 1.98–2.69 × speedup. CUDA graph capture eliminates Python and kernel launch overhead, making our kernel’s latency nearly constant ( ∼0.016ms) while BGMV scales linearly with batch size. 
+
+# C Dispatch Infrastructure Details 
+
+The unified dispatch infrastructure described in §3.3 enables code reuse between MoE and multi-adapter systems. We detail the correspondence and implementation. 
+
+C.1 MoE and Multi-Adapter Correspondence 
+
+Table 10 provides a complete mapping between MoE and multi-adapter serving concepts. Post-routing computation is identical—only the routing decision mechanism differs. 
+
+C.2 Unified Dispatch Algorithm 
+
+Algorithm 2 shows the complete dispatch kernel, which is identical for MoE and multi-adapter serving. The histogram h is then used by the compute kernel for adaptive tiling: targets with few tokens use smaller tiles, while targets with many tokens use larger tiles for better throughput. 16 MoLoRA: Composable Specialization via Per-Token Adapter Routing Table 10: Complete correspondence between MoE and multi-adapter serving. 
+
+Concept MoE Multi-Adapter 
+
+Routing function gθ (x) = softmax (W x + b) j : [ B] → [K] or Rvocab (v)
+
+Routing cost O(E · d) (learned) O(1) (deterministic) Routing decision Per-token, learned Per-sequence or per-token Targets Experts {1, . . . , E } Adapters {1, . . . , K }
+
+Weight shape (E, d in , d out ) (K, d, r ) for A; (K, r, d ) for B
+
+Capacity Expert capacity C Adapter memory budget Load balancing Auxiliary losses Request-level shaping 
+
+Identical Infrastructure 
+
+Histogram h[e] = |{ t : r(t) = e}| h[k] = |{ t : r(t) = k}| 
+
+Pointer arrays xs [e], ys [e] xs [k], ys [k]
+
+Dispatch kernel Target-agnostic Target-agnostic Compute kernel Grouped GEMM Grouped GEMM 
+
+Algorithm 2 Unified Dispatch Kernel (Target-Agnostic) 
+
+Require: Routing decisions r ∈ [C]N , input pointer xptr , output pointer yptr , strides 
+
+Ensure: Histogram h ∈ ZC , pointer arrays xs , ys  
+
+> 1:
+
+h ← 0C 
+
+> 2:
+
+for token t = 1 , . . . , N in parallel do  
+
+> 3:
+
+c ← r[t] ▷ Target index (expert or adapter)  
+
+> 4:
+
+pos ← atomicAdd (h[c], 1) ▷ Allocate position  
+
+> 5:
+
+xs [c, pos ] ← xptr + t · stride x ▷ Input pointer  
+
+> 6:
+
+ys [c, pos ] ← yptr + t · stride y ▷ Output pointer  
+
+> 7:
+
+end for C.3 Implications for System Design 
+
+The dispatch unification has several practical implications: 1. Code reuse : Optimizations developed for MoE dispatch (e.g., MegaBlocks [Gale et al., 2023]) apply directly to multi-adapter serving. 2. Hybrid systems : A single dispatch infrastructure can route some tokens to experts (learned routing) and others to adapters (deterministic routing). 3. Compositional routing : The product space A×M is handled by computing composite indices c = a·|M| +m
+
+before dispatch. 
+
+# D Additional Results 
+
+D.1 Latency Variance 
+
+Table 11: Latency variance comparison (CV = std/mean). 
+
+Batch Eager CV Graph CV Paging CV 
+
+32 0.52 0.03 0.63 64 0.68 0.33 0.32 128 0.34 0.12 0.12 256 0.01 0.07 0.18 
+
+# E Additional MoLoRA Results 
+
+This appendix contains additional MoLoRA experimental results that support the main text findings. 17 MoLoRA: Composable Specialization via Per-Token Adapter Routing 
+
+E.1 Load Balancing Details 
+
+Following Switch Transformer [Fedus et al., 2022], we add an auxiliary loss to encourage uniform adapter utilization: 
+
+Laux = K ·
+
+> K
+
+X
+
+> j=1
+
+fj · pj (14) where fj is the fraction of tokens routed to adapter j (based on top-1 selection) and pj is the mean routing probability for adapter j. This loss penalizes configurations where high-probability adapters also receive many tokens, encouraging balanced utilization. 
+
+E.2 Use Case Taxonomy 
+
+Table 12: MoLoRA use case taxonomy. Vocabulary routing requires modality-encoding vocabulary structure. MoLoRA handles all scenarios through learned routing. 
+
+Scenario Vocab Routing MoLoRA 
+
+Chameleon-style (disjoint vocab) ✓ ✓
+
+Encoder-based multimodal (LLaVA, Flamingo) ✗ ✓
+
+Semantic specialization (code/math/prose) ✗ ✓
+
+Sub-modality granularity (photo/diagram/chart) ✗ ✓
+
+Multi-attribute routing (modality × domain) ✗ ✓
+
+E.3 Synthetic Multimodal Task 
+
+We evaluate MoLoRA on a synthetic multimodal task where each of 3 modalities has a distinct optimal transformation. The task tests whether MoLoRA can learn modality-specialized routing without access to modality labels. 
+
+Setup. We use d = 256 , rank r = 16 , and compare four approaches: (1) Single : one adapter for all tokens; (2) Fixed (Oracle) : ground-truth modality labels determine routing; (3) MoLoRA : learned routing with 4 adapters, top-k = 2 ;(4) MoLoRA-L : 8 adapters, top-k = 3 .Table 13: MoLoRA training results on synthetic multimodal task. MoLoRA learns routing without labels, achieving 35% of oracle improvement. 
+
+Model Adapters top-k Train Loss Val Loss 
+
+Single Adapter 1 – 3.008 3.435 Fixed (Oracle) 3 1 2.588 3.819 MoLoRA 4 2 2.861 3.555 MoLoRA-L 8 3 2.783 3.599 Table 13 shows that MoLoRA reduces training loss by 4.9% over single-adapter (2.861 vs 3.008), achieving 35% of the oracle improvement. The oracle (fixed routing with known labels) achieves 14% improvement, demonstrating the value of modality-specialized adapters. MoLoRA approaches this without access to labels. 
+
+E.4 Emergent Modality Discovery 
+
+Table 14 reveals a surprising finding: MoLoRA’s router automatically discovers modality structure despite never receiving modality labels during training . Starting from random routing (ARI=0.27), the router converges to near-perfect modality clustering (ARI=0.71, NMI=0.84). The confusion matrix shows each adapter specializes to specific modalities:                    
+
+> A0 A1 A2 A3 Modality 0 1.00 0.00 0.00 0.00 Modality 1 0.00 0.00 0.00 1.00
+> Modality 2 0.00 0.08 0.92 0.00 Modality 3 1.00 0.00 0.00 0.00
+
+18 MoLoRA: Composable Specialization via Per-Token Adapter Routing Table 14: MoLoRA discovers modality structure without supervision. ARI (Adjusted Rand Index) and NMI (Normalized Mutual Information) measure alignment between learned routing and true modality labels. Higher is better; 1.0 indicates perfect clustering. 
+
+Epoch ARI NMI Routing Entropy 
+
+0 (random) 0.27 0.37 1.35 20 0.72 0.86 0.09 99 (converged) 0.71 0.84 0.18 This emergent behavior demonstrates that the optimal routing strategy—grouping tokens by modality—is learnable from data alone . When vocabulary structure encodes modality (as in Chameleon), deterministic routing is sufficient. When it does not, MoLoRA provides a path to modality-aware adaptation. 
+
+E.5 Semantic Domain Routing 
+
+To validate that MoLoRA handles semantic specialization when vocabulary provides no signal, we train a router on synthetic code/math/prose embeddings. Critically, all domains share the same vocabulary range—the word “function” has identical token IDs whether appearing in code ( def function(x): ), mathematics (“continuous function f (x)”), or prose (“the function of education”). Vocabulary routing cannot distinguish these cases. Table 15: MoLoRA semantic routing: perfect domain specialization (ARI=1.0) despite shared vocabulary. Each domain routes exclusively to a single adapter. 
+
+Domain Adapter 0 Adapter 1 Adapter 2 
+
+Code 0.0% 100% 0.0% Math 0.0% 0.0% 100% 
+
+Prose 100% 0.0% 0.0% Table 15 shows that MoLoRA achieves perfect specialization (ARI=1.0, NMI=1.0) within 10 epochs. The router learns to distinguish domains from embedding context alone: code embeddings activate syntax-related dimensions, math embeddings activate symbolic/logical dimensions, and prose embeddings activate semantic/narrative dimensions. Despite these patterns being invisible to vocabulary-based routing, the learned router identifies them immediately. This result validates the core claim: MoLoRA enables adapter specialization along any dimension—modality, domain, style, task—without requiring that dimension to be encoded in vocabulary structure. 
+
+E.6 Inference Overhead 
+
+Table 16: MoLoRA inference overhead at d = 4096 , batch=32, seq=128. 
+
+Model Latency (ms) Throughput (M tok/s) Overhead 
+
+Single Adapter 0.082 49.7 1.0 ×
+
+Fixed Routing 0.894 4.6 10.9 ×
+
+MoLoRA k = 1 0.995 4.1 12.1 ×
+
+MoLoRA k = 2 2.267 1.8 27.6 ×
+
+MoLoRA k = 4 4.001 1.0 48.8 ×
+
+Table 16 shows the quality–latency trade-off. MoLoRA with k = 1 has similar overhead to fixed routing (the router MLP is negligible). Higher k improves quality but increases latency linearly, as each selected adapter requires a full LoRA forward pass. For quality-sensitive applications, MoLoRA k = 2 provides a practical operating point. 
+
+E.7 Routing Analysis 
+
+To validate MoLoRA on production models, we train a router on Qwen3-4B [Qwen Team, 2025] embeddings. We construct a multi-domain dataset with code, math, creative writing, and technical content, then train a lightweight router to classify content type. 19 MoLoRA: Composable Specialization via Per-Token Adapter Routing 
+
+Setup. We extract embeddings from Qwen3-4B (hidden size 2560), normalize them for numerical stability, and train a 2-layer router MLP (2560 → 128 → 4) with cross-entropy loss. The router achieves 100% classification accuracy within 100 epochs. 
+
+Per-Token Specialization. Table 17 shows that the router learns strong per-token specialization: code tokens route 98.6% to Adapter 0, math tokens 96.6% to Adapter 1, creative tokens 98.8% to Adapter 2, and technical tokens 99.2% to Adapter 3. This demonstrates that MoLoRA can learn domain-specific routing from real LLM embeddings. Table 17: MoLoRA routing specialization on Qwen3-4B. Each content type routes predominantly to a single adapter, achieving near-perfect specialization. 
+
+Content Type Adapter 0 Adapter 1 Adapter 2 Adapter 3 
+
+Code 98.6% 0.0% 0.0% 1.4% Math 0.0% 96.6% 0.5% 3.0% Creative 0.0% 0.0% 98.8% 1.2% Technical 0.3% 0.3% 0.2% 99.2% Mixed-Content Handling. On multi-domain inputs (e.g., code with mathematical comments), the router correctly assigns different tokens to different adapters within the same sequence. For example, in “ def integrate(f, a, b): ’’’Numerical integration... ”’, function definition tokens route to the Code adapter while “Numerical” routes to Math and “integration” to Technical. This per-token granularity is precisely what enables efficient mixed-content serving. 20
