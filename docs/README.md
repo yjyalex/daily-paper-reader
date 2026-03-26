@@ -6,142 +6,107 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-03-25
-- 运行时间：2026-03-25 20:28:01 UTC
+- 最新运行日期：2026-03-26
+- 运行时间：2026-03-26 19:59:16 UTC
 - 运行状态：成功
-- 本次总论文数：40
-- 精读区：26
+- 本次总论文数：29
+- 精读区：15
 - 速读区：14
 
 ### 今日简报（AI）
-今日精选 40 篇论文，深度聚焦 GRPO 强化学习与 FIPO 深度推理的满分突破。
-重点推荐通过执行反馈优化代码生成，以及利用未来 KL 影响策略来激发模型深层逻辑能力。
-建议优先研读两篇 10 分佳作，掌握智能体在代码与演示文稿生成中的最新演进方向。
-- 详情：[/202603/25/README](/202603/25/README)
+今日精选 29 篇前沿成果，重点聚焦 LLM 智能体自主发现算法与混合蒸馏策略的
+- 详情：[/202603/26/README](/202603/26/README)
 
 ### 精读区论文标签
-1. [Execution-Grounded Credit Assignment for GRPO in Code Generation](/202603/25/2603.16158v1-execution-grounded-credit-assignment-for-grpo-in-code-generation)  
-   标签：评分：10.0/10、query:token
-   evidence：基于执行结果的 Token 级信用分配，用于代码生成的强化学习
-2. [FIPO: Eliciting Deep Reasoning with Future-KL Influenced Policy Optimization](/202603/25/2603.19835v2-fipo-eliciting-deep-reasoning-with-future-kl-influenced-policy-optimization)  
-   标签：评分：10.0/10、query:token
-   evidence：用于深度推理的 Token 级强化学习
-3. [P^2O: Joint Policy and Prompt Optimization](/202603/25/2603.21877v1-p2o-joint-policy-and-prompt-optimization)  
+1. [HDPO: Hybrid Distillation Policy Optimization via Privileged Self-Distillation](/202603/26/2603.23871v1-hdpo-hybrid-distillation-policy-optimization-via-privileged-self-distillation)  
    标签：评分：10.0/10、query:rl-nlplr
-   evidence：协同提示词与策略优化以增强具有可验证奖励的 LLM 推理能力
-4. [Sparse but Critical: A Token-Level Analysis of Distributional Shifts in RLVR Fine-Tuning of LLMs](/202603/25/2603.22446v1-sparse-but-critical-a-token-level-analysis-of-distributional-shifts-in-rlvr-fine-tuning-of-llms)  
-   标签：评分：10.0/10、query:token
-   evidence：RLVR 微调中分布偏移的 Token 级分析
-5. [ABSTRAL: Automatic Design of Multi-Agent Systems Through Iterative Refinement and Topology Optimization](/202603/25/2603.22791v1-abstral-automatic-design-of-multi-agent-systems-through-iterative-refinement-and-topology-optimization)  
-   标签：评分：10.0/10、query:mas-gen
-   evidence：通过迭代优化自动设计多智能体系统
-6. [Rethinking Token-Level Policy Optimization for Multimodal Chain-of-Thought](/202603/25/2603.22847v1-rethinking-token-level-policy-optimization-for-multimodal-chain-of-thought)  
-   标签：评分：10.0/10、query:token
-   evidence：多模态思维链推理的Token级策略优化
-7. [Off-Policy Value-Based Reinforcement Learning for Large Language Models](/202603/25/2603.23355v1-off-policy-value-based-reinforcement-learning-for-large-language-models)  
-   标签：评分：10.0/10、query:token
-   evidence：大模型中带有步骤信号的离策价值强化学习
-8. [SortedRL: Accelerating RL Training for LLMs through Online Length-Aware Scheduling](/202603/25/2603.23414v1-sortedrl-accelerating-rl-training-for-llms-through-online-length-aware-scheduling)  
+   evidence：数学推理的强化学习与 Token 级蒸馏
+2. [From AI Assistant to AI Scientist: Autonomous Discovery of LLM-RL Algorithms with LLM Agents](/202603/26/2603.23951v1-from-ai-assistant-to-ai-scientist-autonomous-discovery-of-llm-rl-algorithms-with-llm-agents)  
    标签：评分：10.0/10、query:rl-nlplr
-   evidence：加速大语言模型推理和长思维链生成的强化学习训练
-9. [Noisy Data is Destructive to Reinforcement Learning with Verifiable Rewards](/202603/25/2603.16140v1-noisy-data-is-destructive-to-reinforcement-learning-with-verifiable-rewards)  
+   evidence：自主发现用于数学推理的LLM强化学习算法
+3. [Towards Effective Experiential Learning: Dual Guidance for Utilization and Internalization](/202603/26/2603.24093v1-towards-effective-experiential-learning-dual-guidance-for-utilization-and-internalization)  
+   标签：评分：10.0/10、query:rl-nlplr
+   evidence：基于可验证奖励的强化学习推理
+4. [Adaptive Decoding via Test-Time Policy Learning for Self-Improving Generation](/202603/26/2603.18428v1-adaptive-decoding-via-test-time-policy-learning-for-self-improving-generation)  
+   标签：评分：9.0/10、query:token
+   evidence：利用强化学习策略优化解码
+5. [OS-Themis: A Scalable Critic Framework for Generalist GUI Rewards](/202603/26/2603.19191v1-os-themis-a-scalable-critic-framework-for-generalist-gui-rewards)  
    标签：评分：9.0/10、query:rl-nlplr
-   evidence：分析带有可验证奖励的强化学习(RLVR)对提升大模型能力的作用
-10. [DyJR: Preserving Diversity in Reinforcement Learning with Verifiable Rewards via Dynamic Jensen-Shannon Replay](/202603/25/2603.16157v1-dyjr-preserving-diversity-in-reinforcement-learning-with-verifiable-rewards-via-dynamic-jensen-shannon-replay)  
+   evidence：用于奖励建模和里程碑分解的多智能体评论框架
+6. [Reasoning Gets Harder for LLMs Inside A Dialogue](/202603/26/2603.20133v1-reasoning-gets-harder-for-llms-inside-a-dialogue)  
+   标签：评分：9.0/10、query:llm-fo
+   evidence：对话格式和约束对LLM推理的影响
+7. [Grounded Chess Reasoning in Language Models via Master Distillation](/202603/26/2603.20510v1-grounded-chess-reasoning-in-language-models-via-master-distillation)  
    标签：评分：9.0/10、query:rl-nlplr
-   evidence：用于可验证奖励强化学习的正则化框架，旨在增强推理多样性
-11. [Do Understanding and Generation Fight? A Diagnostic Study of DPO for Unified Multimodal Models](/202603/25/2603.17044v1-do-understanding-and-generation-fight-a-diagnostic-study-of-dpo-for-unified-multimodal-models)  
+   evidence：将专家推理蒸馏为自然语言思维链
+8. [TAMTRL: Teacher-Aligned Reward Reshaping for Multi-Turn Reinforcement Learning in Long-Context Compression](/202603/26/2603.21663v1-tamtrl-teacher-aligned-reward-reshaping-for-multi-turn-reinforcement-learning-in-long-context-compression)  
+   标签：评分：9.0/10、query:token
+   evidence：多轮强化学习的奖励重塑与时间信用分配
+9. [Privacy-Preserving Reinforcement Learning from Human Feedback via Decoupled Reward Modeling](/202603/26/2603.22563v1-privacy-preserving-reinforcement-learning-from-human-feedback-via-decoupled-reward-modeling)  
    标签：评分：9.0/10、query:rl-nlplr
-   evidence：DPO用于多模态模型对齐的诊断研究
-12. [Discounted Beta--Bernoulli Reward Estimation for Sample-Efficient Reinforcement Learning with Verifiable Rewards](/202603/25/2603.18444v1-discounted-beta--bernoulli-reward-estimation-for-sample-efficient-reinforcement-learning-with-verifiable-rewards)  
+   evidence：通过解耦奖励建模实现隐私保护的RLHF
+10. [ImplicitRM: Unbiased Reward Modeling from Implicit Preference Data for LLM alignment](/202603/26/2603.23184v1-implicitrm-unbiased-reward-modeling-from-implicit-preference-data-for-llm-alignment)  
    标签：评分：9.0/10、query:rl-nlplr
-   evidence：用于大模型推理的高采样效率可验证奖励强化学习
-13. [HISR: Hindsight Information Modulated Segmental Process Rewards For Multi-turn Agentic Reinforcement Learning](/202603/25/2603.18683v1-hisr-hindsight-information-modulated-segmental-process-rewards-for-multi-turn-agentic-reinforcement-learning)  
-   标签：评分：9.0/10、query:rl-nlplr
-   evidence：多轮智能体强化学习的分段过程奖励
-14. [An Empirical Study of SFT-DPO Interaction and Parameterization in Small Language Models](/202603/25/2603.20100v1-an-empirical-study-of-sft-dpo-interaction-and-parameterization-in-small-language-models)  
-   标签：评分：9.0/10、query:rl-nlplr
-   evidence：小语言模型中直接偏好优化（DPO）的实证研究
-15. [Agentic AI and the next intelligence explosion](/202603/25/2603.20639v1-agentic-ai-and-the-next-intelligence-explosion)  
+   evidence：RLHF背景下用于LLM对齐的奖励建模
+11. [Implicit Turn-Wise Policy Optimization for Proactive User-LLM Interaction](/202603/26/2603.23550v1-implicit-turn-wise-policy-optimization-for-proactive-user-llm-interaction)  
+   标签：评分：9.0/10、query:token
+   evidence：用于轮次策略优化的隐式过程奖励模型
+12. [Self-Evolving Multi-Agent Framework for Efficient Decision Making in Real-Time Strategy Scenarios](/202603/26/2603.23875v1-self-evolving-multi-agent-framework-for-efficient-decision-making-in-real-time-strategy-scenarios)  
    标签：评分：9.0/10、query:mas-gen
-   evidence：模拟内部思想社会和认知辩论
-16. [SkillProbe: Security Auditing for Emerging Agent Skill Marketplaces via Multi-Agent Collaboration](/202603/25/2603.21019v1-skillprobe-security-auditing-for-emerging-agent-skill-marketplaces-via-multi-agent-collaboration)  
+   evidence：用于RTS环境高性能决策的协作多智能体框架
+13. [Language-Grounded Multi-Agent Planning for Personalized and Fair Participatory Urban Sensing](/202603/26/2603.24014v1-language-grounded-multi-agent-planning-for-personalized-and-fair-participatory-urban-sensing)  
    标签：评分：9.0/10、query:mas-gen
-   evidence：用于安全审计的多智能体协作
-17. [ORACLE: Optimizing Reasoning Abilities of Large Language Models via Constraint-Led Synthetic Data Elicitation](/202603/25/2603.21140v1-oracle-optimizing-reasoning-abilities-of-large-language-models-via-constraint-led-synthetic-data-elicitation)  
-   标签：评分：9.0/10、query:rl-nlplr
-   evidence：通过合成数据和中间步骤验证优化推理能力
-18. [EvoIdeator: Evolving Scientific Ideas through Checklist-Grounded Reinforcement Learning](/202603/25/2603.21728v1-evoideator-evolving-scientific-ideas-through-checklist-grounded-reinforcement-learning)  
-   标签：评分：9.0/10、query:rl-nlplr
-   evidence：基于清单的大语言模型科学创意演化强化学习
-19. [ROM: Real-time Overthinking Mitigation via Streaming Detection and Intervention](/202603/25/2603.22016v1-rom-real-time-overthinking-mitigation-via-streaming-detection-and-intervention)  
-   标签：评分：9.0/10、query:rl-nlplr
-   evidence：减轻长思维链推理轨迹中的过度思考问题
-20. [A Context Engineering Framework for Improving Enterprise AI Agents based on Digital-Twin MDP](/202603/25/2603.22083v1-a-context-engineering-framework-for-improving-enterprise-ai-agents-based-on-digital-twin-mdp)  
-   标签：评分：9.0/10、query:rl-nlplr
-   evidence：离线强化学习用于改进基于大语言模型的智能体
-21. [From Static Templates to Dynamic Runtime Graphs: A Survey of Workflow Optimization for LLM Agents](/202603/25/2603.22386v1-from-static-templates-to-dynamic-runtime-graphs-a-survey-of-workflow-optimization-for-llm-agents)  
+   evidence：基于LLM的多智能体协作框架
+14. [The Specification Gap: Coordination Failure Under Partial Knowledge in Code Agents](/202603/26/2603.24284v1-the-specification-gap-coordination-failure-under-partial-knowledge-in-code-agents)  
    标签：评分：9.0/10、query:mas-gen
-   evidence：LLM智能体工作流优化与智能体计算图综述
-22. [Lie to Me: How Faithful Is Chain-of-Thought Reasoning in Reasoning Models?](/202603/25/2603.22582v1-lie-to-me-how-faithful-is-chain-of-thought-reasoning-in-reasoning-models)  
-   标签：评分：9.0/10、query:rl-nlplr
-   evidence：评估多种大语言模型家族中思维链推理的忠实度
-23. [Benchmarking Multi-Agent LLM Architectures for Financial Document Processing: A Comparative Study of Orchestration Patterns, Cost-Accuracy Tradeoffs and Production Scaling Strategies](/202603/25/2603.22651v1-benchmarking-multi-agent-llm-architectures-for-financial-document-processing-a-comparative-study-of-orchestration-patterns-cost-accuracy-tradeoffs-and-production-scaling-strategies)  
+   evidence：代码生成中的多智能体协作与任务分解
+15. [Large Language Model Guided Incentive Aware Reward Design for Cooperative Multi-Agent Reinforcement Learning](/202603/26/2603.24324v1-large-language-model-guided-incentive-aware-reward-design-for-cooperative-multi-agent-reinforcement-learning)  
    标签：评分：9.0/10、query:mas-gen
-   evidence：对用于结构化提取的多智能体编排架构进行基准测试
-24. [Empirical Comparison of Agent Communication Protocols for Task Orchestration](/202603/25/2603.22823v1-empirical-comparison-of-agent-communication-protocols-for-task-orchestration)  
-   标签：评分：9.0/10、query:mas-gen
-   evidence：任务编排中智能体间通信协议的比较
-25. [Improving Safety Alignment via Balanced Direct Preference Optimization](/202603/25/2603.22829v1-improving-safety-alignment-via-balanced-direct-preference-optimization)  
-   标签：评分：9.0/10、query:rl-nlplr
-   evidence：用于大语言模型对齐的直接偏好优化 (DPO)
-26. [MemCollab: Cross-Agent Memory Collaboration via Contrastive Trajectory Distillation](/202603/25/2603.23234v1-memcollab-cross-agent-memory-collaboration-via-contrastive-trajectory-distillation)  
-   标签：评分：9.0/10、query:mas-gen
-   evidence：异构LLM智能体间的跨智能体记忆协作框架
+   evidence：大模型引导的多智能体强化学习奖励设计
 
 ### 速读区论文标签
-1. [Agentic AI for SAGIN Resource Management_Semantic Awareness, Orchestration, and Optimization](/202603/25/2603.16458v1-agentic-ai-for-sagin-resource-managementsemantic-awareness-orchestration-and-optimization)  
+1. [EvoGuard: An Extensible Agentic RL-based Framework for Practical and Evolving AI-Generated Image Detection](/202603/26/2603.17343v1-evoguard-an-extensible-agentic-rl-based-framework-for-practical-and-evolving-ai-generated-image-detection)  
    标签：评分：8.0/10、query:mas-gen
-   evidence：将基于LLM的智能体嵌入控制平面以进行协作资源管理
-2. [Rationale Matters: Learning Transferable Rubrics via Proxy-Guided Critique for VLM Reward Models](/202603/25/2603.16600v2-rationale-matters-learning-transferable-rubrics-via-proxy-guided-critique-for-vlm-reward-models)  
+   evidence：基于强化学习的智能体框架，协调多个检测器作为工具
+2. [Efficient Soft Actor-Critic with LLM-Based Action-Level Guidance for Continuous Control](/202603/26/2603.17468v1-efficient-soft-actor-critic-with-llm-based-action-level-guidance-for-continuous-control)  
    标签：评分：8.0/10、query:rl-nlplr
-   evidence：强化学习中用于增强奖励模型的代理引导准则验证
-3. [Learning to Present: Inverse Specification Rewards for Agentic Slide Generation](/202603/25/2603.16839v1-learning-to-present-inverse-specification-rewards-for-agentic-slide-generation)  
+   evidence：基于大模型的强化学习动作级指导
+3. [CodeScout: An Effective Recipe for Reinforcement Learning of Code Search Agents](/202603/26/2603.17829v1-codescout-an-effective-recipe-for-reinforcement-learning-of-code-search-agents)  
    标签：评分：8.0/10、query:rl-nlplr
-   evidence：用于大语言模型智能体生成演示文稿的强化学习环境
-4. [Efficient Exploration at Scale](/202603/25/2603.17378v1-efficient-exploration-at-scale)  
-   标签：评分：8.0/10、query:rl-nlplr
-   evidence：用于高效数据RLHF的在线学习算法
-5. [In Trust We Survive: Emergent Trust Learning](/202603/25/2603.17564v1-in-trust-we-survive-emergent-trust-learning)  
+   evidence：智能体代码搜索的强化学习方案
+4. [AgentFactory: A Self-Evolving Framework Through Executable Subagent Accumulation and Reuse](/202603/26/2603.18000v1-agentfactory-a-self-evolving-framework-through-executable-subagent-accumulation-and-reuse)  
    标签：评分：8.0/10、query:mas-gen
-   evidence：多智能体系统中基于信任的协作控制算法
-6. [RetailBench: Evaluating Long-Horizon Autonomous Decision-Making and Strategy Stability of LLM Agents in Realistic Retail Environments](/202603/25/2603.16453v1-retailbench-evaluating-long-horizon-autonomous-decision-making-and-strategy-stability-of-llm-agents-in-realistic-retail-environments)  
+   evidence：通过可执行子智能体积累的自我进化框架
+5. [CausalRM: Causal-Theoretic Reward Modeling for RLHF from Observational User Feedbacks](/202603/26/2603.18736v1-causalrm-causal-theoretic-reward-modeling-for-rlhf-from-observational-user-feedbacks)  
+   标签：评分：8.0/10、query:token
+   evidence：基于观察性用户反馈的RLHF奖励建模
+6. [MetaClaw: Just Talk -- An Agent That Meta-Learns and Evolves in the Wild](/202603/26/2603.17187v1-metaclaw-just-talk----an-agent-that-meta-learns-and-evolves-in-the-wild)  
    标签：评分：7.0/10、query:mas-gen
-   evidence：将智能体的高层策略推理与底层动作执行分离
-7. [From the Inside Out: Progressive Distribution Refinement for Confidence Calibration](/202603/25/2603.16500v1-from-the-inside-out-progressive-distribution-refinement-for-confidence-calibration)  
+   evidence：用于演化行为技能的LLM智能体框架
+7. [SYMDIREC: A Neuro-Symbolic Divide-Retrieve-Conquer Framework for Enhanced RTL Synthesis and Summarization](/202603/26/2603.17208v1-symdirec-a-neuro-symbolic-divide-retrieve-conquer-framework-for-enhanced-rtl-synthesis-and-summarization)  
    标签：评分：7.0/10、query:rl-nlplr
-   evidence：强化学习中用于置信度校准的自我奖励信号
-8. [Rationale Matters: Learning Transferable Rubrics via Proxy-Guided Critique for VLMReward Models](/202603/25/2603.16600v1-rationale-matters-learning-transferable-rubrics-via-proxy-guided-critique-for-vlmreward-models)  
+   evidence：通过LLM推理将RTL任务分解为符号子目标
+8. [MCoT-MVS: Multi-level Vision Selection by Multi-modal Chain-of-Thought Reasoning for Composed Image Retrieval](/202603/26/2603.17360v1-mcot-mvs-multi-level-vision-selection-by-multi-modal-chain-of-thought-reasoning-for-composed-image-retrieval)  
    标签：评分：7.0/10、query:rl-nlplr
-   evidence：在强化学习中引入代理引导的准则验证以增强奖励模型质量
-9. [When Openclaw Agents Learn from Each Other: Insights from Emergent AI Agent Communities for Human-AI Partnership in Education](/202603/25/2603.16663v2-when-openclaw-agents-learn-from-each-other-insights-from-emergent-ai-agent-communities-for-human-ai-partnership-in-education)  
+   evidence：多模态思维链推理
+9. [AR-CoPO: Align Autoregressive Video Generation with Contrastive Policy Optimization](/202603/26/2603.17461v1-ar-copo-align-autoregressive-video-generation-with-contrastive-policy-optimization)  
+   标签：评分：7.0/10、query:rl-nlplr
+   evidence：通过RLHF对齐自回归生成的对比策略优化
+10. [AgentVLN: Towards Agentic Vision-and-Language Navigation](/202603/26/2603.17670v1-agentvln-towards-agentic-vision-and-language-navigation)  
    标签：评分：7.0/10、query:mas-gen
-   evidence：AI智能体社区与同伴学习行为
-10. [The Cost of Reasoning: Chain-of-Thought Induces Overconfidence in Vision-Language Models](/202603/25/2603.16728v1-the-cost-of-reasoning-chain-of-thought-induces-overconfidence-in-vision-language-models)  
-   标签：评分：7.0/10、query:rl-nlplr
-   evidence：思维链对标记概率和推理的影响
-11. [MoLoRA: Composable Specialization via Per-Token Adapter Routing](/202603/25/2603.15965v1-molora-composable-specialization-via-per-token-adapter-routing)  
-   标签：评分：6.0/10、query:token
-   evidence：针对专业化适配器的逐Token路由
-12. [100x Cost & Latency Reduction: Performance Analysis of AI Query Approximation using Lightweight Proxy Models](/202603/25/2603.15970v2-100x-cost--latency-reduction-performance-analysis-of-ai-query-approximation-using-lightweight-proxy-models)  
+   evidence：在具身导航中将高级语义推理与感知和规划解耦
+11. [ListK: Semantic ORDER BY and LIMIT K with Listwise Prompting](/202603/26/2603.17223v1-listk-semantic-order-by-and-limit-k-with-listwise-prompting)  
    标签：评分：6.0/10、query:llm-fo
-   evidence：LLM语义推理能力与AI查询成本/延迟之间的权衡
-13. [MOSAIC: Composable Safety Alignment with Modular Control Tokens](/202603/25/2603.16210v1-mosaic-composable-safety-alignment-with-modular-control-tokens)  
+   evidence：SQL子句中用于半结构化数据集的语义算子
+12. [Learning When to Attend: Conditional Memory Access for Long-Context LLMs](/202603/26/2603.17484v1-learning-when-to-attend-conditional-memory-access-for-long-context-llms)  
    标签：评分：6.0/10、query:token
-   evidence：针对安全对齐优化的可学习控制Token
-14. [AdaMem: Adaptive User-Centric Memory for Long-Horizon Dialogue Agents](/202603/25/2603.16496v1-adamem-adaptive-user-centric-memory-for-long-horizon-dialogue-agents)  
-   标签：评分：6.0/10、query:mas-gen
-   evidence：对话智能体中用于多步推理的自适应记忆
+   evidence：用于长程推理的逐Token长程记忆访问
+13. [A Unified Language Model for Large Scale Search, Recommendation, and Reasoning](/202603/26/2603.17533v1-a-unified-language-model-for-large-scale-search-recommendation-and-reasoning)  
+   标签：评分：6.0/10、query:rl-nlplr
+   evidence：使LLM能够在多个领域实体上进行联合推理
+14. [Flow Matching Policy with Entropy Regularization](/202603/26/2603.17685v2-flow-matching-policy-with-entropy-regularization)  
+   标签：评分：6.0/10、query:rl-nlplr
+   evidence：带有熵正则化的在线强化学习流匹配策略
 
 
 <div class="dpr-home-promo-card">
