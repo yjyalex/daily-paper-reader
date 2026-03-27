@@ -1,0 +1,769 @@
+Title: UT-ACA: Uncertainty-Triggered Adaptive Context Allocation for Long-Context Inference
+
+URL Source: https://arxiv.org/pdf/2603.18446v1
+
+Published Time: Fri, 20 Mar 2026 00:36:18 GMT
+
+Number of Pages: 20
+
+Markdown Content:
+# UT-ACA: Uncertainty-Triggered Adaptive Context Allocation for Long-Context Inference 
+
+Lang Zhou 1,2 , Shuxuan Li 1, Zhuohao Li 1,2 , Shi Liu 3,2 ,Zhilin Zhao 1,2 , Wei-Shi Zheng 1,2 1Sun Yat-sen University 
+
+> 2
+
+Shenzhen Loop Area Institude 
+
+> 3
+
+Southern University of Science and Technology 
+
+Abstract 
+
+Long-context inference remains challenging for large language models due to attention dilu-tion and out-of-distribution degradation. Con-text selection mitigates this limitation by at-tending to a subset of key-value cache entries, yet most methods allocate a fixed context bud-get throughout decoding despite highly non-uniform token-level contextual demands. To address this issue, we propose Uncertainty-Triggered Adaptive Context Allocation (UT-ACA), an inference-time framework that dy-namically adjusts the context window based on token-wise uncertainty. UT-ACA learns an uncertainty detector that combines semantic embeddings with logit-based confidence while accounting for uncertainty accumulation across decoding steps. When insufficient evidence is indicated, UT-ACA selectively rolls back, ex-pands the context window, and regenerates the token with additional support. Experiments show that UT-ACA substantially reduces aver-age context usage while preserving generation quality in long-context settings. 
+
+1 Introduction 
+
+Large language models (LLMs) are increasingly ex-pected to operate in long-context settings, such as long-document question answering, multiple docu-ment summarization, and evidence-grounded rea-soning over extensive inputs (Zhang et al., 2025b; Wu et al., 2025c; Li et al., 2024a). In these sce-narios, effective long-context handling is pivotal for robust generation, requiring reliable evidence retrieval and globally consistent generation. How-ever, as context length increases, redundant or weakly relevant tokens dilute attention and hin-der precise evidence retrieval. Furthermore, long contexts present Out-Of-Distribution (OOD) de-pendencies and positional patterns diverge from pretraining data, resulting in degraded calibration and unstable reasoning during length extrapolation. KV Cache Context Window 
+
+> No
+> Select
+> Fixed
+> Select
+> Ours
+> Prefilling
+> Uncertainty
+> Detected!
+> Context
+> Reallocation
+> RollBack
+> Decoding
+
+Long Context 
+
+Figure 1: Context management techniques: (1) No Se-lect: complete context. (2) Fixed Select: fixed-size con-text window. (3) Ours: adaptive context window. 
+
+Context selection alleviates long-context issues by attending only to relevant Key-Value (KV) en-tries, thereby reducing attention dilution and com-putational cost. However, most existing meth-ods (Wu et al., 2025b; Hao et al., 2025; Tang et al., 2024) rely on a fixed context budget throughout decoding, implicitly assuming that generation diffi-culty is uniform across tokens. In practice, token-level difficulty varies substantially: many tokens are determined by local context, whereas others require long-range evidence dispersed across the prompt. Consequently, fixed-size context windows are often inefficient and can be insufficient for dif-ficult generation steps, motivating adaptive, token-wise context allocation during decoding. A natural implication is that context require-ments are determined at the token level and ad-justed dynamically during decoding. Token-wise generation difficulty can be inferred from uncer-tainty signals available at inference time, which enables adaptive context control. Following this idea, decoding starts with a small context window and monitors uncertainty at each generation step. When high uncertainty or hallucination tendency is detected, the process reverts to the previous state, expands the context window, and regenerates the 1
+
+> arXiv:2603.18446v1 [cs.CL] 19 Mar 2026
+
+token with additional evidence. In this formulation, uncertainty estimation serves as an active decision signal for selective context enlargement rather than a passive diagnostic measure. Accordingly, we propose an inference-time framework, called Uncertainty-Triggered Adaptive Context Allocation (UT-ACA), that dynamically adjusts the context window based on token-wise un-certainty. As shown in Figure 1, UT-ACA enables selective rollback and regeneration only when in-sufficient contextual evidence is detected, improv-ing both efficiency and robustness. The framework estimates uncertainty using the margin between top two logits as a lightweight confidence signal, avoid-ing the overhead of multi-sample decoding (Khairi et al., 2025; Li et al., 2025a; Kuhn et al., 2023). We construct a synthetic dataset to train and evaluate our uncertainty detector, using hidden states and output logits of LLMs as supervision signals. The detector adopts a dual-encoder architecture to fuse semantic and confidence features, and incorporates temporal modeling (Zhao et al., 2025b; Qiu et al., 2024) to capture uncertainty accumulation during decoding. Experimental results show that UT-ACA generalizes reliably across settings, enabling effec-tive context allocation that improves long-context generation performance while reducing computa-tional cost. 
+
+2 Preliminary 
+
+LLM is typically pretrained on a corpus C =
+
+{s1, s 2, . . . , s n}, where each sequence si consists of tokens (DeepSeek-AI and others, 2025; Dubey et al., 2024; OpenAI, 2024). Given a token se-quence si = ( x1, x 2, . . . , x T ), an autoregressive language model parameterized by θ defines the joint probability 
+
+pθ(x1: T ) = 
+
+> T
+
+Y
+
+> t=1
+
+pθ(xt | x<t ), (1) where x<t = ( x1, . . . , x t−1) and pθ(xt | x<t ) de-notes the next-token prediction distribution. The model is trained by maximizing the log-likelihood of the training data, equivalently minimizing the negative log-likelihood 
+
+L(θ) = −Ex1: T ∼D 
+
+" TX
+
+> t=1
+
+log pθ(xt | x<t )
+
+#
+
+, (2) where D denotes the data distribution. During inference, the model generates tokens autoregressively and relies on self-attention and positional encoding to incorporate contextual in-formation. Since these components are optimized under the sequence-length distribution observed during pretraining, the long-context capability of a pretrained LLM is closely tied to the maximum length and distribution of its training data. When a model trained primarily on short contexts is de-ployed on much longer sequences, it experiences a distribution shift in both long-range dependency patterns and positional representations (Ding et al., 2024; Peng et al., 2024), which can induce OOD behaviors and degrade decoding reliability. 
+
+Inference with KV Cache and Context Window. 
+
+At inference time, LLMs maintain a KV cache that stores intermediate representations of past tokens at each attention layer (Hooper et al., 2024; Liu et al., 2024). At decoding step t, the next-token distribution pθ(xt | x<t ) is computed by attending to a selected KV cache Ct ⊆ { (Ki, V i)}t−1
+
+> i=1
+
+. We refer to Ct as the context window at step t. Im-portantly, the context window denotes the subset of KV entries participating in attention computa-tion, rather than the maximum supported sequence length of the model. Formally, self-attention at step 
+
+t is computed as 
+
+Attn( Qt, Ct) = softmax QtK⊤Ct
+
+√d
+
+!
+
+VCt , (3) where Qt is the query at step t, and d represents the dimension of Qt. KCt , V Ct denote the keys and val-ues in the selected context window. In long-context settings, attending to the full KV cache is com-putationally expensive and often unnecessary (An et al., 2024), motivating adaptive strategies that dynamically adjust the size of Ct.
+
+Rollback and Regeneration. Autoregressive generation of LLMs is susceptible to error accu-mulation (Huang et al., 2024), as uncertainty or incorrect predictions at earlier steps can propagate through the KV cache and affect subsequent de-coding. We denote the decoding state at step t as 
+
+ξt = ( x<t , Ct). When a token is generated under insufficient contextual evidence, its associated KV cache update may degrade later predictions. We therefore consider a rollback-and-regenerate oper-ation at inference time, which restores the decod-ing state from ξt to ξt−1 by discarding the current token xt and its corresponding KV cache entries. 2Adaptive Context Window         
+
+> Alice was married to Bob in 1996.
+> The best friend of Bob is Charlie.
+> Who's the best friend of Alice's husband ?
+
+User Prompt     
+
+> System Instruction
+> David was born on July 25, 1979. David is working for company C.
+> Alice is studying at university U.
+> The birth place of Bob is country T
+> Default Restore Reallocate
+
+Uncertainty Detector              
+
+> LSTM
+> FC
+> GDM Logit Margin
+> Sema ntic Emb
+> The best friend of Alice 's husband is Bob .Rollback Signal
+> Exp anding Signal
+> David
+> Select Expand Expand Select Select
+
+LLM Figure 2: Main workflow of UT-ACA. (a) The user prompt contains the long-context input information. (b) The system instruction specifies the questions or instructions. (c) The uncertainty detector takes the output logits and semantic embeddings to estimate the generation difficulty metric. (d) The adaptive context window receives the detector signal, expands the context window when needed, and triggers regeneration. 
+
+The model then regenerates the token under an expanded context window, allowing rectification when the original context allocation is insufficient. 
+
+3 Method 
+
+Long-context inference is prone to degraded re-liability when LLMs are deployed beyond their pretraining length (Li et al., 2024b; Gao et al., 2024). To address this limitation and enable token-wise adaptive context window, we propose 
+
+Uncertainty-Triggered Adaptive Context Allo-cation (UT-ACA) , an inference-time framework that dynamically adjusts the context window during decoding based on token-level uncertainty detec-tion. Figure 2 illustrates the overall workflow of UT-ACA, including the uncertainty detector and the adaptive context window modules. At each decoding step, UT-ACA first performs a tentative generation with a compact context win-dow. The uncertainty detector then consumes the LLM output logits together with semantic embed-dings extracted from hidden states, and produces a Generation Difficulty Metric (GDM) while ac-counting for uncertainty accumulation across au-toregressive steps. Conditioned on this metric, the 
+
+adaptive context window decides whether to keep the compact window or expand it by retrieving more relevant context blocks. When the metric indicates insufficient evidence or elevated halluci-nation risk, UT-ACA rolls back the tentative to-ken, expands the context window, and regenerates the current step with additional contextual support. Otherwise, UT-ACA accepts the token and con-tinues with a compact window, reducing average context usage while maintaining generation quality in long-context settings. 
+
+3.1 Uncertainty Detector 
+
+To support uncertainty-aware decoding, we design a lightweight token-level uncertainty estimator that operates at each generation step. The estimator takes two complementary signals as input, namely the logit margin and a semantic embedding ex-tracted from model hidden states. It then fuses these signals with a dual-encoder module and mod-els uncertainty accumulation over time with a Long Short-Term Memory (LSTM) layer, producing a three-way generation difficulty metric that is later used to trigger context reallocation. 
+
+Input signals. At decoding step t, let ℓt ∈ RV
+
+denote the output logits, and V is the length of LLM vocabulary. We adopt the logit margin mt as a lightweight confidence signal 
+
+mt = ℓ⟨1⟩ 
+
+> t
+
+− ℓ⟨2⟩ 
+
+> t
+
+, (4) where ℓ⟨1⟩ 
+
+> t
+
+and ℓ⟨2⟩ 
+
+> t
+
+are the largest and second largest logits. Margin alone is not a reliable un-certainty proxy because semantically similar candi-dates may receive relatively identical logits, result-ing in subliminal logit margin during generation. To handle this issue, we extract a token semantic embedding from the LLM inner states. Following prior work on hidden-state analysis (Ferrando et al., 32024; Singh et al., 2024), we use the output em-bedding from the last attention layer as emb t to represent token-level semantic concepts. 
+
+Dual-encoder fusion with temporal modeling. 
+
+We fuse the semantic embedding emb t and the logit margin mt with a dual-encoder module, which preserves the complementary roles of semantic complexity and score-based confidence while align-ing them in a shared space for joint decision mak-ing. Concretely, the two branches map both signals into a d-dimensional representation and yield 
+
+zt = LN[ Weemb t + be + MLP m[mt]] , (5) where MLP m lifts the scalar margin to Rd and 
+
+LN denotes layer normalization. Since uncertainty can propagate across autoregressive steps and com-pound after an early mistake, we apply a LSTM to explicitly model this temporal accumulation and aggregate historical evidence 
+
+ht, ct = LSTM[ zt, ht−1, ct−1] , (6) where the memory state ct captures past uncertainty and the hidden state ht serves as the step-wise generation difficulty representation for downstream prediction. 
+
+Output as generation difficulty metric. We de-fine the generation difficulty metric as a three-way probability vector over token-generation scenarios in Figure 3, namely grounded correct (Correct An-swer), unknown style abstention (Unknown), and content fabrication (Hallucination). This tripartite formulation separates sufficient-evidence genera-tion from two insufficient-evidence behaviors. The prediction head maps ht to the GDM 
+
+pt = softmax[ Wght + bg] ,
+
+pt = [ pt, cor , p t, unk , p t, hal ] ,
+
+pt ∈ R3,
+
+> 3
+
+X
+
+> k=1
+
+pt,k = 1 ,
+
+(7) where pt, cor corresponds to grounded correct gener-ation, pt, unk to unknown style abstention, and pt, hal 
+
+to hallucination. A three-way output is needed be-cause correct tokens and unknown tokens may both look confident under local decoding, and unknown predictions can also result from an overly com-pact context window. In practice, the downstream policy triggers context reallocation when the non-grounded mass is larger 
+
+pt, unk + pt, hal > p t, cor , (8) which expands the context window and regenerates the current token for rectification. Contextual 
+
+> LOGITS
+> LOGITS
+
+Intrinsic           
+
+> Alice ’sHusband Is Unknown .Alice ’sHusband Is David .
+> Alice ’sHusband Is Bob .
+> LOGITS
+> Correct Answer
+> Hallucination Unknown
+> Figure 3: Overview of token-generation scenarios. The axes delineate the sufficiency of contextual versus in-trinsic knowledge, while the logit plots depict the corre-sponding LLM outputs under varying conditions.
+
+3.2 Adaptive Context Window 
+
+Inspired by InfLLM (Xiao et al., 2024), we adopt fixed-size blocks as the basic units of our adaptive context window. During prefilling, we partition the KV representations of the long context into blocks that contain the same number of tokens. For each block, we keep a small set of representative tokens to support efficient relevance estimation. During decoding, the query vector at step t retrieves the top-k most relevant blocks, and attention is computed only over the selected blocks to mitigate long-context OOD behaviors. Since token difficulty varies across steps, the required contextual evidence is non-uniform. UT-ACA therefore starts from a compact window, per-forms a tentative generation, and feeds the output logits together with the semantic embedding into the uncertainty detector to obtain the GDM. When the GDM indicates Unknown or Hallucination as dominant, UT-ACA rolls back the tentative token, expands the context window by retrieving more relevant blocks, and regenerates the current token. Formally, let B be the set of all blocks, r(B) denote the representative keys of block B, and qt be the decoding query at step t. Block retrieval under a budget k is written as 
+
+St(k) = arg max 
+
+> S⊆B |S| =k
+
+X
+
+> B∈S
+
+sim[ qt, r(B)] , (9) and UT-ACA adaptively expand context window when the non-grounded mass is dominant pt, unk +
+
+pt, hal > p t, cor . Subsequently, decoding is per-formed again using St(klarge ) instead of St(ksmall ),4with rollback applied to remove the tentative token before regeneration. Algorithm 1 presents the de-tailed pseudocode for our UT-ACA framework. 
+
+Algorithm 1 UT-ACA Framework 
+
+Require: Model M, Detector D, Input x0 
+
+> 1:
+
+Initialize cache C, context window size k ←
+
+Kmax , t ← 0 
+
+> 2:
+
+while xt̸ = <EOS> do  
+
+> 3:
+
+S ← Snapshot (C) ▷ Save state  
+
+> 4:
+
+// Step1: Tentative Generation  
+
+> 5:
+
+ˆx, ˆC ← M (xt, C, topk = k) 
+
+> 6:
+
+// Step2: Uncertainty Check  
+
+> 7:
+
+is _unsaf e ← D (ˆ x, activations ) 
+
+> 8:
+
+if is _unsaf e then  
+
+> 9:
+
+C ← Restore (S) ▷ Roll back  
+
+> 10:
+
+k ← Kmax ▷ Expand  
+
+> 11:
+
+Regenerate:  
+
+> 12:
+
+xt+1 , C ← M (xt, C, topk = k) 
+
+> 13:
+
+else  
+
+> 14:
+
+xt+1 , C ← ˆx, ˆC 
+
+> 15:
+
+k ← UpdatePolicy (k) ▷ Shrink  
+
+> 16:
+
+end if  
+
+> 17:
+
+t ← t + 1  
+
+> 18:
+
+end while 
+
+4 Experiments 
+
+We assess UT-ACA with a two-stage experimen-tal framework on our synthetic biography dataset. Phase-1: training the uncertainty detector with token-wise LLM output logits, internal states and labels. We conduct eight runs for each training set-ting and select the best-performing detector. Phase-2: pluging the trained detector to evaluate the adap-tive context window on disjoint validation data. We measure uncertainty detection performance using accuracy, recall. And assess UT-ACA applying conceptual accuracy, and computational efficiency (context tokens and latency). Additionally, we pro-vide ablation studies and benchmark results on ∞-Bench (Zhang et al., 2024) and LongBench (Bai et al., 2024). All runs are performed on a single NVIDIA H100 GPU. 
+
+4.1 Dataset and Metrics Dataset. We construct a synthetic biography sum-marization dataset using a summary-first pipeline. We sample an attribute name from a predefined set, randomly generate its value, and construct a ground-truth summary for a fictitious person, which is then padded or extended into a longer biography. All person names are unique and non-overlapping across splits to avoid data leakage. Each training and validation instance consists of a single attribute per person. We construct 10000 
+
+training samples to serve as LLM inputs. By con-straining the context window to be shorter than the summary, unknown or hallucinated tokens are induced designedly. During decoding, we record logits and the semantic embedding for each gener-ated token. Subsequently, we employ GPT-OSS-120B (OpenAI, 2025) to assign one-hot labels (cor-rect, unknown, or hallucinated) based on ground truth summaries, followed by manual verification. The validation set comprises six unseen attributes with 20 summaries each. The long-context test set contains 100 biographies covering all six attributes, extended with Wikipedia text to span lengths from 171k to 400k tokens. Example data instances are provided in Appendix A.2. 
+
+Metrics. We evaluate both the uncertainty detec-tor and the downstream context allocation strategy. For uncertainty estimation, we report mean accu-racy ( mAcc ) on the validation set, along with recall for uncertain and certain samples ( Recall N and 
+
+Recall P ). For generation quality, we apply GPT-OSS-120B as automated evaluator to score the con-ceptual alignment between LLM outputs and the ground-truth, and report the resulting conceptual mean accuracy as mAcc conc , with an illustrative comparison shown in Figure 4. Finally, we quantify efficiency by reporting the mean number of con-text tokens consumed ( mTokens ) and the average per-token decoding latency ( mTime tok ). Concept-Acc-Score F1-Score      
+
+> Prediction
+> Question Which member of the kingsguard is known
+> as “The White Bull ”?
+> Ser Gerold Hightower
+> Ser Barristan Selmy
+> 0.3 0
+> Correct Answer
+> Figure 4: Comparison between f1-score and our concep-tual accuracy score.
+
+4.2 Uncertainty Detection Experiments 
+
+We train and evaluate the uncertainty detector using logits and embeddings extracted from Llama-3.1-8B-Instruct (Dubey et al., 2024). Specifically, we record token-level output logits and internal hidden states, and adopt GPT-OSS-120B to assign token labels. We then evaluate the trained detector on the validation set and compare it with heuristic 5baselines. As summarized in Table 1, the T OP -10 STD baseline uses the standard deviation of the top-10 logits as an uncertainty proxy, while L OGIT 
+
+MARGIN uses the top-1 versus top-2 margin. Both methods tune a decision threshold on the training set and report validation performance. In contrast, our learning-based detector achieves stronger and more balanced performance, obtaining 89 .71% re-call on uncertain tokens.                
+
+> Methods mAcc (%) Recall N(%) Recall P(%)
+> TOP -10 S TD 54.47 44.98 58.30 Logit Margin 62.52 45.69 69.31 UT-ACA 83.43 89.71 81.27
+> Table 1: Comparison between different token-level un-certainty detection methods and UT-ACA.
+
+4.3 Generation Experiments 
+
+We evaluate the generation performance of UT-ACA after the training of the uncertainty detector. We mainly use InfLLM (Xiao et al., 2024) as the baseline and keep the experimental settings con-sistent across methods. For the biography summa-rization task, we report mTokens as the efficiency metric, and conceptual accuracy ( mAcc conc ) as the primary quality metric for generation experiments. 
+
+Validation set. We implement two update rules for UT-ACA after a window expansion. Update: Set.1 
+
+resets the window length to 1 for the next token, and Update: Sub.1 decreases the window length by 1 with a minimum of 1. We set the maximum number of context blocks Kmax = 3 and use a fixed block size of 16 tokens for all methods. The experimental results are summarized in Ta-ble 2, UT-ACA achieves higher generation qual-ity while consuming fewer context tokens on av-erage, reaching 99 .08% mAcc conc with only 29 
+
+context tokens. This gain suggests that uncertainty-triggered expansion allocates additional context only when needed, improving difficult generation steps without increasing average context usage.                 
+
+> Methods Settings mTokens ↓mAcc conc (%)
+> InfLLM K= 2 32 91.37
+> K= 3 48 99.83
+> Update: Set.1 25 96.59 UT-ACA Update: Sub.1 29 99.08
+> Table 2: Comparison of the InfLLM and UT-ACA on the validation set.
+
+Long-context test set. The test set consists of bi-ographies ranging from 171k to 400k tokens, with an average length of 252k, which frequently ex-ceeds the maximum sequence lengths supported by Llama-3.1-8B-Instruct at 128k tokens and Qwen2-7B-Instruct (Yang et al., 2024) at 32k tokens. No-tably, an independent uncertainty detector is trained for the Qwen model following the same procedure as that used for the Llama model. Table 3 reports the average number of context tokens usage ( mTokens ) and the average per-token decoding latency ( mTime tok ), where Ktok denotes the number of tokens selected at each generation step. For LLMLingua-2, Kcom represents the prompt compression ratio. For UT-ACA, Kmax 
+
+denotes the maximum number of selected con-text blocks, with the block size fixed to 16 tokens. Compared to the baselines, UT-ACA achieves im-proved generation quality while consuming fewer context tokens. The rollback mechanism introduces a marginal increase in mTime tok , while enabling earlier identification of uncertain generation steps and mitigating error accumulation. In addition, UT-ACA allows a larger effective context window for difficult tokens while maintaining a compact aver-age window, making it well suited for long-context inference. To further validate this conclusion, we re-evaluate three baselines (RetrievalAttn, SnapKV, and OmniKV) on Llama-3.1-8B-it under identical settings and observed consistent accuracy degrada-tion across all methods, confirming that UT-ACA’s gains are not attributable to backbone advantage (see Appendix D.1 for details). 
+
+4.4 Latency Analysis 
+
+We conduct a detailed latency breakdown of UT-ACA to assess the practical overhead introduced by its uncertainty detection, rollback processing, and regeneration mechanisms. Figure 5 reports end-to-end runtime decomposed into four components across varying MaxBudget settings (block size =16 ). 
+
+Base generation dominates overall latency. 
+
+Across all MaxBudget settings, base generation time accounts for the overwhelming majority of end-to-end latency, ranging from 4.50 s to 10.52 s. All other components remain minor fractions of this baseline, confirming that UT-ACA’s control logic does not alter the fundamental latency profile of the underlying decoder. 
+
+Uncertainty detection introduces negligible over-head. The uncertainty detection step contributes 6Models Methods Settings mTokens ↓ mTime tok (s) ↓ mAcc conc (%) ↑                                                                                  
+
+> Llama-3-8B-it-262k
+> †RetrievalAttn (Zhu et al., 2024) Ktok = 2048 2k 0.026 32.22
+> †SnapKV (Li et al., 2024c) Ktok = 1024 1k 0.208 41.78 OmniKV (Hao et al., 2025) Ktok = 6 .7% 8k -45.83 Llama-3.1-8B-it
+> †LLMLingua-2 (Pan et al., 2024) Kcom = 25% 32k -18.08 TokenSelect (Wu et al., 2025b) Ktok = 1024 1k -39.43 H2O (Zhang et al., 2023) Kcom = 1% 1k 0.123 65.81 InfLLM (Xiao et al., 2024)
+> K= 8 128 0.064 25.81
+> K= 16 256 0.072 51.23
+> K= 32 512 0.080 72.26
+> Kmax = 32 123 0.069 45.23
+> Kmax = 48 218 0.075 62.17
+> Kmax = 64 344 0.082 70.48 UT-ACA (Update: Sub.16)
+> Kmax = 96 498 0.097 74.61
+> Qwen2-7B-it InfLLM (Xiao et al., 2024)
+> K= 8 128 0.061 37.77
+> K= 16 256 0.064 44.39
+> K= 32 512 0.077 54.72
+> Kmax = 16 119 0.059 37.08
+> Kmax = 32 302 0.066 48.33 UT-ACA (Update: Sub.8)
+> Kmax = 48 432 0.079 56.64
+
+Table 3: Comparison of context management methods on the test set. The symbol † indicates methods for which long-context samples either triggered GPU out-of-memory errors on a single NVIDIA H100 or produced incoherent outputs; such samples are excluded from the evaluation of the corresponding methods. Note that Llama-3-8B-it-262k is a long-context adaptation of the original Llama-3-8B-it; substituting it with Llama-3.1-8B-it would unfairly disadvantage the corresponding baselines. 
+
+only 91.3–122.4 ms across all settings, and is largely insensitive to MaxBudget . This is consistent with the lightweight design of the LSTM-based de-tector, which adds only 15.5–21.3 ms of its own computation, as annotated in Figure 5. Neither component scales with budget size. 
+
+Rollback and regeneration overhead is bounded. 
+
+Rollback-based regeneration constitutes the pri-mary additional cost, ranging from 0.83 s to 1.47 s. Crucially, this overhead grows substantially more slowly than base generation as MaxBudget in-creases: generation time scales by 2.34 × from 
+
+MaxBudget =32 to 128, whereas rollback-based re-generation scales by only 1.78 × over the same range. Overall, these results demonstrate that UT-ACA incurs predictable and bounded overhead across all budget settings, supporting practical deployment under varying memory constraints. 
+
+4.5 Ablation Study on Test Set 
+
+We conduct an ablation study on the test set using Llama-3.1-8B-Instruct with Kmax = 64 under the 
+
+Update:Sub16 configuration. The contribution of each component in the uncertainty detector is eval-32 48 64 96 
+
+MaxBudget 
+
+0
+
+2k 
+
+5k 
+
+7k 
+
+> Latency (ms)
+> 825.0
+> 1182.2
+> 1232.9
+> 1380.0
+> 91.3
+> 100.9
+> 116.0
+> 122.4
+> 15.5
+> 20.8
+> 21.3
+> 20.8
+> Generation
+> Rollback & Regeneration
+> Detection
+> LSTM
+
+Figure 5: Latency breakdown of UT-ACA under varying 
+
+MaxBudget settings (block size = 16 ). LSTM forward time values are annotated above the corresponding bars. 
+
+uated by individually removing the Logit Margin branch (LogM), the Semantic Embedding branch (SE), and the LSTM module. The results are reported in Table 4. Remov-ing the Semantic Embedding branch results in substantially degraded uncertainty detection accu-racy, which is insufficient to support reliable con-text reallocation. Consequently, generation perfor-mance under these settings is not reported. Overall, the full model that incorporates all components 7LogM SE LSTM mAcc (%) mAcc conc (%)                         
+
+> ✔✘✘26.82 -
+> ✘✔✘78.95 69.58
+> ✔✘✔53.71 -
+> ✘✔✔80.06 68.58
+> ✔✔✘80.19 69.42
+> ✔✔✔83.43 70.48
+
+Table 4: Ablation analysis of components in our uncer-tainty detector. 
+
+achieves the strongest uncertainty detection perfor-mance and consistently yields the highest gener-ation quality across the evaluated configurations. These results suggest that semantic representations and temporal aggregation provide complementary signals that improve the stability of uncertainty estimation and enhance the reliability of the reallo-cation trigger mechanism. 
+
+4.6 Open-Set Benchmark Experiments 
+
+We further evaluate UT-ACA on open-set long-context benchmarks to assess its generalization behavior under standardized evaluation protocols. These experiments focus on the trade-off between generation quality and context usage when the model is exposed to unseen tasks and substantially extended inputs. 
+
+∞-Bench (Zhang et al., 2024). We evaluate UT-ACA on the ∞-Bench benchmark following the of-ficial experimental settings and evaluation metrics, without using the proposed conceptual accuracy score. The block size is fixed to 128 for all meth-ods, and three maximum block budgets {8, 16 , 32 }
+
+are considered for UT-ACA, paired with Update: Sub.4 , Update: Sub.8 , and Update: Sub.16 , re-spectively. Results on the “Longbook Summary English” and “Longbook QA English” subtasks are reported in Table 6. Across both subtasks, UT-ACA attains comparable accuracy while us-ing a smaller average context window, indicating that uncertainty-triggered expansion concentrates computation on more challenging generation steps while maintaining compact context usage for confi-dent predictions.                                   
+
+> Methods Sum Task QA Task mTokens ↓Score mTokens ↓Score
+> TokenSelect 1024 27.78 1024 13.71 2048 28.29 2048 16.93 4096 28.48 4096 18.44 InfLLM 1024 27.24 1024 16.27 2048 27.87 2048 18.38 4096 28.58 4096 22.09 609 27.46 896 16.58 1610 27.64 1664 18.72 UT-ACA 3508 28.43 3712 21.32
+
+Table 6: Performance comparison on ∞-Bench. 
+
+LongBench (Bai et al., 2024). UT-ACA is fur-ther evaluated on LongBench under the standard evaluation protocols. The block size is fixed to 16 
+
+for all methods, and four maximum block budgets 
+
+{4, 8, 16 , 32 } are examined for UT-ACA, paired with Update: Sub.2 , Update: Sub.4 , Update: Sub.8 ,and Update: Sub.16 , respectively. Results on four LongBench subtasks are presented in Table 5. UT-ACA achieves strong performance across most eval-uated settings. In particular, results on “qmsum” and “samsum” show that the highest performance is obtained with a maximum budget size of 16 ,suggesting that increasing the maximum context budget does not necessarily lead to improved per-formance and that appropriate budget selection de-pends on task characteristics. 
+
+5 Related Work 
+
+Long-context inference has been studied from two complementary directions. One line of work ap-plies training-based methods (Chen et al., 2025; Hu                                                                                 
+
+> Methods Settings multifieldqa narrativeqa qmsum samsum mTokens ↓mAcc mTokens ↓mAcc mTokens ↓mAcc mTokens ↓mAcc
+> InfLLM K=2 32 20.94 32 13.49 32 17.14 32 19.36 K=4 64 25.9 64 14.95 64 18.40 64 20.50 K=8 128 28.5 128 15.75 128 18.62 128 22.30 K=16 256 33.83 256 15.57 256 19.13 256 21.37 Kmax =4 31 25.20 39 15.01 24 17.65 58 20.47 Kmax =8 51 28.9 59 16.11 47 18.66 88 22.95 Kmax =16 95 33.37 109 16.92 102 19.18 138 23.38 UT-ACA
+> Kmax =32 133 32.59 252 17.81 161 17.74 285 22.18
+
+Table 5: Performance comparison between InfLLM and our UT-ACA on LongBench. 
+
+8et al., 2025; Gao et al., 2025; Tian et al., 2025) or improves positional encoding (Ding et al., 2024; Jin et al., 2024; Wang et al., 2024) to extend length generalization, while another line focuses on con-text management to control the effective attention scope and reduce computation (Liskavets et al., 2025; Zhu et al., 2024; Fu et al., 2025, 2024). Since UT-ACA operates at inference time by regulating the usable context, we focus on context manage-ment methods and omit other approaches. 
+
+Context selection. Context selection methods re-tain merely the most relevant tokens or blocks to mitigate attention dilution and reduce memory and compute consumption (Zhang et al., 2025a). In-fLLM (Xiao et al., 2024) is a training-free frame-work that performs block-level retrieval over the KV cache to enable length extrapolation at infer-ence time. TokenSelect (Wu et al., 2025b) further explores dynamic token-level KV selection for ef-ficient long-context decoding. Beyond retrieval, XAttention (Xu et al., 2025) designs block-sparse attention guided by structured scoring to capture long-range dependencies more efficiently, and Om-niKV (Hao et al., 2025) proposes dynamic KV management to balance efficiency and accuracy. These approaches share a common goal of select-ing salient context to reduce unnecessary attention computation. 
+
+Context compression. Context compression meth-ods instead shrink the input or internal represen-tations (Zhao et al., 2025a; Liao et al., 2025). At the prompt level, LLMLingua (Jiang et al., 2023) and LongLLMLingua (Jiang et al., 2024) compress prompts using information-theoretic criteria while preserving key semantics. At the KV-cache level, SnapKV (Li et al., 2024c) prunes cache entries by identifying crucial patterns prior to generation, and SCOPE (Wu et al., 2025a) optimizes KV com-pression to trade off memory savings and genera-tion quality. FocusLLM (Li et al., 2025b) further condenses long-context inputs into compact rep-resentations to support precise understanding in long-context settings. 
+
+6 Conclusion 
+
+This work addresses the problem of attention dilu-tion in long-context language models by rethinking how context is allocated during decoding. Accord-ingly, we propose an uncertainty-triggered adaptive context allocation framework that dynamically ad-justs the effective context window at the token level. The core idea is to apply real-time generation dif-ficulty as a signal to determine when additional contextual evidence is required. During decod-ing, tokens are tentatively generated under a com-pact context window and only regenerated with ex-panded context when high uncertainty is detected. To enable reliable uncertainty estimation, we con-struct a synthetic biography summarization dataset and train uncertainty detectors for Llama-3.1-8B-Instruct and Qwen2-7B-Instruct. Experimental re-sults show that the proposed method significantly reduces context token usage during long-context decoding while maintaining competitive generation quality. 
+
+7 Limitations 
+
+The proposed UT-ACA significantly reduces the average number of context tokens, while the per-token decoding latency does not decrease propor-tionately. We attribute this phenomenon to the computational overhead introduced by the rollback mechanism. Uncertain tokens require regenera-tion after context expansion, leading to increased inference time, particularly when uncertainty is triggered frequently. Exploring alternative decod-ing strategies that reduce rollback frequency or amortize its cost remains an important direction for future research. 
+
+References     
+
+> Shengnan An, Zexiong Ma, Zeqi Lin, Dai Zheng, Shuo Wang, Guolei Chen, Chen Niu, and Jian-Guang Wang. 2024. Make your LLM fully utilize the con-text. In Advances in Neural Information Processing Systems (NeurIPS) , pages 62160–62188. Yushi Bai, Xin Lv, Jiajie Zhang, Hongchang Lyu, Jiankai Tang, Zhidian Huang, Zhengxiao Du, Xiao Liu, Aohan Zeng, Lei Hou, Yuxiao Dong, Jie Tang, and Juanzi Li. 2024. LongBench: A bilingual, multi-task benchmark for long context understanding. In
+> Proceedings of the Association for Computational Linguistics (ACL) , pages 3096–3113. Jianghao Chen, Junhong Wu, Yangyifan Xu, and Jiajun Zhang. 2025. LADM: Long-context training data selection with attention-based dependency measure-ment for LLMs. arXiv preprint arXiv:2503.02502 ,pages 1–15. DeepSeek-AI and others. 2025. DeepSeek-R1: Incen-tivizing reasoning capability in LLMs via reinforce-ment learning. arXiv preprint arXiv:2501.12948 ,pages 1–22.
+
+9Yiran Ding, Li Lyna Zhang, Chengruidong Zhang, Yuanyuan Xu, Ning Shang, Jiahang Xu, Fan Yang, and Mao Yang. 2024. LongRoPE: Extending LLM context window beyond 2 million tokens. In Inter-national Conference on Machine Learning (ICML) ,pages 11091–11104. Abhimanyu Dubey, Akhil Jauhri, Abhinav Pandey, Ab-hishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Amy Yang, Angela Fan, and 1 others. 2024. The Llama 3 Herd of Mod-els. arXiv preprint arXiv:2407.21783 , pages 1–92. Javier Ferrando, Oscar Balcells Obeso, Senthooran Ra-jamanoharan, and Neel Nanda. 2024. Do i know this entity? knowledge awareness and hallucinations in language models. arXiv preprint arXiv:2411.14257 ,pages 1–36. Qidong Fu, Xuzhao Han, Zihan Tang, and 1 others. 2024. LazyLLM: Dynamic token pruning for effi-cient long context LLM inference. arXiv preprint arXiv:2407.14057 , pages 1–12. Zihao Fu, Ran Yang, Junxian He, and 1 others. 2025. Squeezed attention: Accelerating long context length LLM inference. In Proceedings of the Association for Computational Linguistics (ACL) , pages 32631– 32652. Muhan Gao, TaiMing Lu, Kuai Yu, Adam Byerly, and Daniel Khashabi. 2024. Insights into LLM long-context failures: When transformers know but don’t tell. In Conference on Empirical Methods in Natural Language Processing (EMNLP) , pages 7611–7625. Tianyu Gao, Alexander Wettig, Howard Yen, and Danqi Chen. 2025. How to train long-context language models (effectively). In Proceedings of the Associ-ation for Computational Linguistics (ACL) , pages 7376–7399. Jitai Hao, Yuke Zhu, Tian Wang, Jun Yu, Xin Xin, Bo Zheng, Zhaochun Ren, and Sheng Guo. 2025. OmniKV: Dynamic context selection for efficient long-context LLMs. In International Conference on Learning Representations (ICLR) , pages 1–22. Coleman Hooper, Sehoon Kim, Amirali Moham-madzadeh, Michael W. Mahoney, Kurt Keutzer, and Amir Gholami. 2024. KVQuant: Towards 10 mil-lion context length LLM inference with kv cache quantization. In Advances in Neural Information Processing Systems (NeurIPS) , pages 1270–1303. Cheng-Ping Hsieh, Simeng Sun, Samuel Kriman, Shan-tanu Acharya, Dima Rekesh, Fei Jia, Yang Zhang, and Boris Ginsburg. 2024. Ruler: What’s the real context size of your long-context language models? 
+
+arXiv preprint arXiv:2404.06654 , pages 1–27. Zhiyuan Hu, Yuliang Liu, Jinman Zhao, Suyuchen Wang, WangYan WangYan, Wei Shen, Qing Gu, Anh Tuan Luu, See-Kiong Ng, Zhiwei Jiang, and Bryan Hooi. 2025. LongRecipe: Recipe for efficient long context generalization in large language models. In Proceedings of the Association for Computational Linguistics (ACL) , pages 11857–11870. Jie Huang, Xinyun Chen, Swaroop Mishra, Huaixiu Steven Zheng, Adams Wei Yu, Xiny-ing Song, and Denny Zhou. 2024. Large language models cannot self-correct reasoning yet. In Inter-national Conference on Learning Representations (ICLR) , pages 1–17. Huiqiang Jiang, Qianhui Wu, Chin-Yew Lin, Yuqing Yang, and Lili Qiu. 2023. LLMLingua: Compress-ing prompts for accelerated inference of large lan-guage models. In Conference on Empirical Methods in Natural Language Processing (EMNLP) , pages 13358–13376. Huiqiang Jiang, Qianhui Wu, Xufang Luo, Dong-sheng Li, Chin-Yew Lin, Yuqing Yang, and Lili Qiu. 2024. LongLLMLingua: Accelerating and enhanc-ing LLMs in long context scenarios via prompt com-pression. In Proceedings of the Association for Com-putational Linguistics (ACL) , pages 1658–1677. Hongye Jin, Xiaotian Han, Jingfeng Yang, Zhimeng Jiang, Zirui Liu, Chia-Yuan Chang, Huiyuan Fu, Cao Xiao, and Xia Hu Hu. 2024. LLM maybe longlm: Self-extend LLM context window without tuning. 
+
+arXiv preprint arXiv:2401.01325 , pages 1–16. Ammar Khairi, Daniel D’souza, Ye Shen, Julia Kreutzer, and Sara Hooker. 2025. When life gives you sam-ples: The benefits of scaling up inference compute for multilingual LLMs. In Conference on Empirical Methods in Natural Language Processing (EMNLP) ,pages 27547–27571. Lorenz Kuhn, Yarin Gal, and Sebastian Farquhar. 2023. Semantic uncertainty: Linguistic invariances for un-certainty estimation in natural language generation. In International Conference on Learning Representa-tions (ICLR) , pages 1–19. Jiaqi Li, Mengmeng Wang, Zilong Zheng, and Muhan Zhang. 2024a. LooGLE: Can long-context language models understand long contexts? In Proceedings of the Association for Computational Linguistics (ACL) ,pages 16304–16333. Tianle Li, Ge Zhang, Quy Duc Do, Xiang Yue, and Wenhu Chen. 2024b. Long-context LLMs strug-gle with long in-context learning. arXiv preprint arXiv:2404.02060 , pages 1–19. Yiwei Li, Jiayi Shi, Shaoxiong Feng, Peiwen Yuan, Xinglin Wang, Yueqi Zhang, Ji Zhang, Chuyi Tan, Boyuan Pan, Yao Hu, and Kan Li. 2025a. Speculative decoding for multi-sample inference. arXiv preprint arXiv:2503.05330 , pages 1–8. Yuhong Li, Yingbing Huang, Bowen Yang, Aman Gill, Jian Luan, Bin Chen, and 1 others. 2024c. SnapKV: LLM knows what you are looking for before genera-tion. In Advances in Neural Information Processing Systems (NeurIPS) , pages 22947–22970. 
+
+10 Zhenyu Li, Yike Zhang, Tengyu Pan, Yutao Sun, Zhichao Duan, Junjie Fang, Rong Han, Zixuan Wang, and Jianyong Wang. 2025b. FocusLLM: Precise un-derstanding of long context by dynamic condensing. In Proceedings of the Association for Computational Linguistics (ACL) , pages 31087–31101. Zihan Liao, Jun Wang, Hang Yu, Lingxiao Wei, Jian-guo Li, Jun Wang, and Wei Zhang. 2025. E2LLM: Encoder elongated large language models for long-context understanding and reasoning. In Conference on Empirical Methods in Natural Language Process-ing (EMNLP) , pages 19212–19241. Barys Liskavets, Maxim Ushakov, Shuvendu Roy, Mark Klibanov, Ali Etemad, and Shane K. Luke. 2025. Prompt compression with context-aware sentence encoding for fast and improved LLM inference. Pro-ceedings of the AAAI Conference on Artificial Intelli-gence (AAAI) , pages 24595–24604. Akide Liu, Jing Liu, Zizheng Pan, Yefei He, Gholam-reza Haffari, and Bohan Zhuang. 2024. MiniCache: Kv cache compression in depth dimension for large language models. In Advances in Neural Informa-tion Processing Systems (NeurIPS) , pages 139997– 140031. OpenAI. 2024. GPT-4o System Card. arXiv preprint arXiv:2410.21276 , pages 1–33. OpenAI. 2025. OpenAI: gpt-oss-120b & gpt-oss-20b model card. arXiv preprint arXiv:2508.10925 , pages 1–34. Zhuoshi Pan, Qianhui Wu, Huiqiang Jiang, Menglin Xia, Xufang Luo, Jue Zhang, Qingwei Lin, Victor Rühle, Yuqing Yang, Chin-Yew Lin, H. Vicky Zhao, Lili Qiu, and Dongmei Zhang. 2024. LLMLingua-2: Data distillation for efficient and faithful task-agnostic prompt compression. In Proceedings of the Association for Computational Linguistics (ACL) ,pages 963–981. Bowen Peng, Jeffrey Quesnelle, Honglu Fan, and En-rico Shippole. 2024. YaRN: Efficient context win-dow extension of large language models. In Inter-national Conference on Learning Representations (ICLR) , pages 1–20. Yifu Qiu, Zheng Zhao, Yftah Ziser, Anna Korhonen, Edoardo Ponti, and Shay Cohen. 2024. Are large language model temporally grounded? In Proceed-ings of the Association for Computational Linguistics (ACL) , pages 7064–7083. Aaditya K. Singh, Ted Moskovitz, Felix Hill, Stephanie C. Y. Chan, and Andrew M. Saxe. 2024. What needs to go right for an induction head? a mechanistic study of in-context learning circuits and their formation. In International Conference on Machine Learning (ICML) , pages 45637–45662. Jiaming Tang, Yilong Zhao, Kan Zhu, Guangxuan Xiao, Baris Kasikci, and Song Han. 2024. QUEST: Query-aware sparsity for efficient long-context LLM infer-ence. In International Conference on Machine Learn-ing (ICML) , pages 47901–47911. Junfeng Tian, Da Zheng, Yang Chen, Rui Wang, Colin Zhang, and Debing Zhang. 2025. Untie the Knots: An efficient data augmentation strategy for long-context pre-training in language models. In Proceed-ings of the Association for Computational Linguistics (ACL) , pages 1223–1242. Suyuchen Wang, Ivan Kobyzev, Peng Lu, Mehdi Reza-gholizadeh, and Bang Liu. 2024. Resonance RoPE: Improving context length generalization of large lan-guage models. In Proceedings of the Association for Computational Linguistics (ACL) , pages 545–557. Jialong Wu, Zhenglin Wang, Linhai Zhang, Yilong Lai, Yulan He, and Deyu Zhou. 2025a. SCOPE: Optimiz-ing key-value cache compression in long-context gen-eration. In Proceedings of the Association for Com-putational Linguistics (ACL) , pages 10775–10790. Wei Wu, Zhuoshi Pan, Kun Fu, Chao Wang, Liyi Chen, Yunchu Bai, Tianfu Wang, Zheng Wang, and Hui Xiong. 2025b. TokenSelect: Efficient long-context inference and length extrapolation for LLMs via dy-namic token-level kv cache selection. In Conference on Empirical Methods in Natural Language Process-ing (EMNLP) , pages 21275–21292. Yuhao Wu, Ming Shan Hee, Zhiqing Hu, and Roy Ka-Wei Lee. 2025c. LongGenBench: Benchmarking long-form generation in long context LLMs. arXiv preprint arXiv:2409.02076 , pages 1–22. Chaojun Xiao, Pengle Zhang, Xu Han, Guangxuan Xiao, Yankai Lin, Zhengyan Zhang, Zhiyuan Liu, Song Han, and Maosong Sun. 2024. InfLLM: Unveiling the intrinsic capacity of LLMs for understanding ex-tremely long sequences with training-free memory. 
+
+arXiv preprint arXiv:2402.04617 , pages 1–17. Ruyi Xu, Guangxuan Xiao, Haofeng Huang, Junxian Guo, and Song Han. 2025. XAttention: Block sparse attention with antidiagonal scoring. In International Conference on Machine Learning (ICML) , pages 69819–69831. An Yang, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chengyuan Li, Dayiheng Liu, Fei Huang, Haoran Wei, and 1 others. 2024. Qwen2 technical report. arXiv preprint arXiv:2407.10671 ,pages 1–26. Hailin Zhang, Xiaodong Ji, Yilin Chen, Fangcheng Fu, Xupeng Miao, Xiaonan Nie, Weipeng Chen, and Bin Cui. 2025a. PQCache: Product quantization-based kvcache for long context LLM inference. Proc. ACM Manag. Data , 3(3):1–30. Haozhen Zhang, Tao Feng, Pengrui Han, and Jiaxuan You. 2025b. AcademicEval: Live long-context LLM benchmark. arXiv preprint arXiv:2510.17725 , pages 1–32. 
+
+11 Xinrong Zhang, Yingfa Chen, Shengding Hu, Zihang Xu, Junhao Chen, Mokul Hao, Xu Han, Thai Ping Lai, Wasila Dong, Shuo Wang, Zhiyuan Liu, and Maosong Sun. 2024. ∞-Bench: Extending long context evaluation beyond 100k tokens. In Proceed-ings of the Association for Computational Linguistics (ACL) , pages 15262–15277. Zhenyu Zhang, Ying Sheng, Tianyi Zhou, Tianlong Chen, Lianmin Zheng, Ruisi Cai, Zhao Song, Yuandong Tian, Christopher Ré, Clark Barrett, Zhangyang "Atlas" Wang, and Beidi Chen. 2023. H2O: Heavy-hitter oracle for efficient generative in-ference of large language models. In Advances in Neural Information Processing Systems (NeurIPS) ,pages 34661–34710. Yunlong Zhao, Haoran Wu, and Bo Xu. 2025a. Lever-aging attention to effectively compress prompts for long-context LLMs. Proceedings of the AAAI Confer-ence on Artificial Intelligence (AAAI) , pages 26048– 26056. Zhe Zhao, Pengkun Wang, Haibin Wen, Shuang Wang, Liheng Yu, and Yang Wang. 2025b. STEM-LTS: Integrating semantic-temporal dynamics in LLM-driven time series analysis. Proceedings of the AAAI Conference on Artificial Intelligence (AAAI) , pages 22858–22866. Di Zhu, Bingyang Wang, Yi Zhao, and 1 others. 2024. RetrievalAttention: Accelerating long-context LLM inference via vector retrieval. arXiv preprint arXiv:2409.10516 , pages 1–19. 
+
+12 A Dataset Construction Details 
+
+In this section, we detail the construction of the synthetic summaries and subsequent biographies. To provide insight into the data’s format and di-versity, we also present the attribute names and representative examples. Additionally, we include the specific prompts used to generate naturalistic biographies. We intend to release the full dataset publicly in the future. 
+
+A.1 Synthetic Dataset Construction Details 
+
+Our synthetic dataset is designed primarily for the biography summarization task. As illustrated in Figure 7, we employ a fixed pattern to construct the ground truth summaries. Specifically, each summary consists of a sequence with three com-ponents: the person name, the attribute name, and the attribute value. It is important to note that all person names and attribute values are entirely fictitious. Therefore, there are no privacy con-cerns regarding real individuals. To generate the full biography, the summary is extended with filler content or paraphrased into a natural narrative. The dataset is partitioned into training, validation, and test sets, all constructed using synthetic summaries. The birth date of Alice Smith is 20 February, 1998 .  
+
+> Attribute Name Person Name Attribute Value
+
+Figure 7: Standardized pattern of the synthetic summary. This template is applied across the dataset to ensure structural consistency and controllability. 
+
+Training and Validation Set. For the training and validation data construction, each summary is asso-ciated with a single attribute, whereas the test set involves six different attributes. To ensure rigorous evaluation, the attributes used in the training set are distinct from those in the validation and test sets. Table 7 lists all attribute names used in our syn-thetic dataset. Specifically, we utilize 21 attributes for training, and reserve 6 distinct attributes for validation and testing. Additionally, we provide examples for each attribute to demonstrate the di-versity of the data. 
+
+Dataset Attribute Names Example Data Training Set • Marry Date • Job Title • Current City • Email Address • Phone Number • Favorite Color • User Agent • Credit Card Provider • Currency Used • Catch Phrase • Street Address • Vehicle License Plate • Favorite File Extension • Domain Name • Cryptocurrency • Timezone • Isbn Code • Lucky Number • Hobby • Marital Status • Personality Type • The marry date of Laetitia Guyot de Paris is 2010-03-29. • The job title of Franck Jourdan is Magazine features editor. • The current city of Marcial Escalona Yuste is Augerdan. • The email address of Jeremy Wright is cather-ine40@example.com. • The phone number of Clarence Byrd is 07703087971. • The favorite color of Letizia Fagotto is Black. • The user agent of Inés Novoa Sarabia is Mozilla/5.0 • The credit card provider of Douglas Baker is Maestro. • The currency used of Susann Jacobi Jäckel is Bahraini dinar. • The catch phrase of Olga Torre Rodriguez is Interfaccia estesa ... • The street address of Gabriela Jesus is Bährgasse 62. • The vehicle license plate of Erdal Mälzer is GE 3041 CB. • The favorite file extension of Ornella Tomasini is tiff. • The domain name of Théo Macedo is chretien.com. • The cryptocurrency of Anaïs Gilbert du Rousset is Vertcoin. • The timezone of Eutimio Tejada Ibañez is Europe/Paris. • The isbn code of Jeanne-Sabine Brunet is 978-0-456-54959-9. • The lucky number of Zoé Chauvet is 61. • The hobby of María Manuela Guardia Moles is Sleeping. • The marital status of Gustavo Vallés is Widowed. • The personality type of Salvi Toscanini-Ferrabosco is Extrovert. 
+
+Validation Set and Test Set 
+
+• Birth Date • Birth Place • Company • Major • University • Work Place • The birth date of Olivia Garcia is March 22, 1985. • The birth place of Daniel Lee is Seoul, South Korea. • The company of Olivia Chen is Microsoft. • The major of Ethan Clark is Computer Science. • The university of Aiden Gomez is Stanford University. • The work place of Elijah Robinson is Singapore, Singapore. 
+
+Table 7: Data samples from our synthetic dataset. 
+
+13 {"role": "system", "content": ( 
+
+"You are to write a detailed character biography based on the provided information, and you must use the full name of this person all the 
+
+time!!!\n\n" 
+
+"##You will be provided with the following details##: Name: [Person's full name] Birth Date: [Date of birth] Birth Place: [Location where the 
+
+person was born] University: [Educational institution attended] Major: [Field of study/specialization] Work Place: [Current or primary 
+
+workplace] Company: [Organization/company where they work] \n\n"\ 
+
+"##For long biographies (1000+ words)##: Open with engaging anecdote or compelling fact. Describe how birthplace/childhood shaped their 
+
+interests. Detail their university experience and academic achievements. Explain career decisions and transitions. Include specific projects, 
+
+innovations, or contributions. Mention professional philosophy or approach. Add personal interests or community involvement if word count 
+
+allows. Conclude with future goals or ongoing projects.\n\n"\ 
+
+"##Important Notes##: Accuracy: Ensure dates and locations are logically consistent. Originality: Create unique content for each biography; 
+
+avoid repetitive phrases. Cultural sensitivity: Be respectful of all locations and institutions mentioned. Professional standards: Write as if this 
+
+will be published in a professional context. "\ 
+
+"Template: The six information must be described in following template, The [Attribute] of [Name] is [Value].\n\n"\ 
+
+"You must follow the example following , and XXX is the place you can write on your own: The birth date of Bob Dylan is December 29, 1880. 
+
+XXX. The birth place of Bob Dylan is William Hayes. XXX. The university of Bob Dylan is Yale University. XXX. The major of Bob Dylan 
+
+is computer science. XXX. The company of Bob Dylan is Google. XXX. The work place of Bob Dylan is Shenzhen, China. XXX." 
+
+)} Figure 6: The LLM prompt for generating naturalistic biography with ground truth summary. 
+
+File List 1 File List 2 
+
+Architecture Bacteria Art Biology Baroque Black hole Cinema_disambiguated Cell (biology) Classical music Climate change Impressionism DNA_disambiguated Jazz_disambiguated Evolution Literature General relativity Modernism Quantum mechanics Mona Lisa Thermodynamics Painting Virus Photography Communism Poetry Culture Rock music Democracy_disambiguated Sculpture Epistemology The Starry Night Human rights Theatre Law_disambiguated Geometry Logic_disambiguated Mathematics Metaphysics Number Philosophy Sport Psychology Vaccine Republic French Revolution Socialism Maya civilization Ottoman Empire Roman Empire World War II Africa Algorithm Amazon River Artificial intelligence Amazon rainforest Blockchain Antarctica Cryptography Atlantic Ocean Engineering Australia (continent) Internal combustion engine Earth Internet Europe Nanotechnology Great Barrier Reef Robotics Nile Semiconductor Ocean_disambiguated Software Pacific Ocean Steam engine Sahara_disambiguated Technology South America Telecommunication Volcano Agriculture Age of Enlightenment Calendar American Civil War Food Ancient Egypt Light Ancient Greece Medicine British Empire Olympics_disambiguated 
+
+Table 8: Source Wikipedia articles used in the test set. 
+
+Test Set. We employ GPT-OSS-120B to generate naturalistic biographies based on the summaries provided in the test set. It is important to note that this generation process is model-agnostic; there-fore, any capable generative model can be uti-lized for this task. The specific prompt used to construct the biographies is shown in Figure 6 and can be readily copied and applied. After the module generate naturalistic biographies, we in-sert common knowledge texts from Wikipedia to further extend the length of synthetic biographies for test set. As shown in Table 8, we present the Wikipedia files used in our test set extending pro-cess. The original link of these data can be found in https://en.wikipedia.org/wiki .
+
+A.2 Data Examples from Our Dataset 
+
+In our experiments, the training set is utilized to train the uncertainty detector; consequently, the data structure and sequence lengths in this set are relatively simple and short. The validation set is designed to preliminarily evaluate the trained uncer-tainty detector and the downstream adaptive con-text window. While the validation data retains the same format as the training set, it comprises distinct attributes and person names. Finally, the test set is constructed to assess our method in a long-context setting. To achieve this, we insert extensive pas-sages from Wikipedia to extend biography lengths, thereby challenging the long-context handling ca-pabilities of the methods. Table 9 presents examples from our synthetic dataset. While the training and validation sets in-volve processing only a single attribute per instance, the test set requires the simultaneous extraction of 14 Dataset Example Summarization Example Biography Training Set The email address of Jeremy Wright is cather-ine40@example.com. The sky is really blue. ... The email address of Jeremy Wright is catherine40@example.com. ... The sky is really blue.                                         
+
+> Validation Set
+> The birth date of Olivia Garcia is March 22, 1985. The sky is really blue. ... The birth date of Olivia Garcia is March 22, 1985. ... The sky is really blue.
+> Test Set •The birth date of Emma Thompson is 12/29/1880. •The birth place of Emma Thompson is Tokyo, Japan. •The university of Emma Thompson is Harvard University. •The major of Emma Thompson is Computer Sci-ence. •The company of Emma Thompson is Google. •The work place of Emma Thompson is San Francisco Bay Area. ... Emma Thompson was born on December 29, 1880, in the bustling metropolis of Tokyo, Japan. ... She applied to
+> Harvard University and was accepted into the Computer Science program. ... After careful consideration, she chose to join Google, a company known for its innovative cul-ture and cutting-edge technology. ... Emma Thompson’s
+> journey from Tokyo to the San Francisco Bay Area is a testament to her unwavering determination and exceptional talent. ...
+
+Table 9: Representative samples from the training, validation, and test splits. 
+
+six attributes. Furthermore, since the biographies in the test set are composed in natural language, the model must perform multi-step reasoning to derive the correct answers. 
+
+B Implementation Details 
+
+This section first introduces training details and the architecture of our uncertainty detector. Subse-quently, we describe the methodology for extract-ing LLM internal states used in this work. Finally, we detail the selection of network hyperparameters used in our approach. 
+
+B.1 Training Details 
+
+We implement our framework in Python 3.11 using PyTorch 2.4. Training is conducted on a single NVIDIA H100 GPU with eight concurrent runs, each taking approximately 1.5 hours on average. We train up to 10,000 epochs per run with a batch size of 16. For checkpoint selection, we adopt F1 score as the evaluation metric and select the check-point that achieves the highest F1 on the validation set. 
+
+B.2 Architecture of Uncertainty Detector 
+
+The proposed model, termed Uncertainty Detector ,is designed to process sequential data consisting of high-dimensional semantic feature vectors and scalar confidence scores. The architecture com-prises three primary modules: dual-branch feature encoding, temporal modeling, and a residual classi-fication head. 
+
+Input Encoding and Fusion At each time step t,the model accepts two input streams: a feature vec-tor emb t ∈ RDin (where Din = 4096 for Llama-3.1-8B) and a scalar score mt ∈ R. The scalar 
+
+mt represents the logit margin, calculated by sub-tracting the top-2 logit from the top-1 logit of the LLM output. The vector input is processed by the 
+
+VecEncoder , which projects the high-dimensional input to a latent space of dimension dmodel = 64 .This is achieved via a linear transformation fol-lowed by a GELU activation and dropout 
+
+h(t) 
+
+> vec
+
+= Dropout (GELU (Weemb t + be)) (10) where dropout rate is set to 0.5.Simultaneously, the scalar score is processed by the ScoreEncoder , a Multi-Layer Perceptron (MLP) aimed at up-sampling the scalar to match 
+
+dmodel . The MLP consists of two linear layers with an intermediate dimension of 32, utilizing GELU activations and dropout ( p = 0 .1). The ScoreEncoder acts as the uncertainty signal branch, employing the logit margin as a lightweight indicator to gauge the generation difficulty of to-kens. Conversely, the VecEncoder serves as the semantic feature branch, utilizing the hidden states of the LLM to extract conceptual information for enhanced uncertainty estimation. The dual-encoder module aligns the dimensions of these two infor-mation sources, after which the features are fused via element-wise addition to form a joint represen-tation ( zt). 
+
+Temporal Modeling To effectively model the ac-cumulation of uncertainty throughout the genera-tion process, we employ a temporal modeling ap-proach designed to capture the sequential depen-dencies between the current token and its prede-cessors. Specifically, the fused feature sequence 
+
+U = {z1, . . . , zT } serves as input to a standard 15 Long Short-Term Memory (LSTM) layer. Con-figured with a hidden size of dmodel , the LSTM recursively processes the sequence according to LSTM dynamics. For the training phase of the uncertainty detector, we preserve the entire sequence of hidden states as supervision signals. In contrast, during the LLM inference stage, only the final hidden state hT is ex-tracted to predict the category of the current token, as it aggregates the information of the complete sequence. 
+
+Residual Classification Head The output from the LSTM passes through a stack of N = 3
+
+ResidualBlock s. Each block implements a bot-tleneck structure with an expansion factor of 2. For an input h, the block operation is defined as 
+
+ˆh = Dropout (GELU (W1h + b1)) 
+
+hout = h + Dropout (W2 ˆh + b2)
+
+pout = softmax( hout )
+
+(11) Finally, a linear projection layer maps the output of the last residual block to the target class logits (3 classes). 
+
+Hyperparameters The specific configurations for our uncertainty detector are detailed in Table 10. Notably, while most hyperparameters remain con-sistent across different LLMs, certain settings are model-specific. For instance, the feature vector dimension is inherited directly from the eavluated LLM; thus, it is set to 3584 for Qwen2-7B. All other internal parameters of the uncertainty detec-tor are kept uniform to ensure comparability.              
+
+> Component Parameter Value
+> Input Dimensions Vector Dim ( Din )4096 Score Dim 1Hidden Model Dim ( dmodel )64 Encoders Vec Dropout 0.5 Score MLP Inner Dim 32 Residual Head Number of Blocks 3Expansion Factor 2Dropout 0.1 Output Number of Classes 3
+
+Table 10: Hyperparameter configuration for the Llama-3.1-8B uncertainty detector. 
+
+B.3 Inner State Extraction of LLMs 
+
+To train the uncertainty detector, we leverage in-ternal embeddings from the LLM to capture token-level semantic complexity. Following established protocols, we extract features from the final layer of Residual Stream 
+
+> Last
+> Layer
+> Attn Embbing
+> MLP Embbing
+> Res Embbing
+
+MLP 
+
+Attention 
+
+Figure 8: Illustration of extraction points for semantic embeddings. We evaluate features from the final layer (e.g., Layer 32 of Llama-3.1-8B) at three distinct po-sitions: the attention output, the MLP output, and the residual stream. 
+
+LLMs. As illustrated in Figure 8, we consider three primary extraction points: (1) the attention mecha-nism output, (2) the Multi-Layer Perceptron (MLP) block output, and (3) the final residual stream out-put. We evaluate the efficacy of each position by training independent detectors for comparison. Our results indicate that the extraction site has a negligible impact on detection performance. This consistency stems from the additive nature of the residual stream, where the transformations at these sub-layer stages act as incremental refinements to the same underlying representation, making them functionally equivalent for uncertainty detection. 
+
+C Evaluation Metrics Details 
+
+In this section, we detail the implementation of the Conceptual Accuracy Score (CAS) proposed in this study. We then evaluate the reliability of CAS within the context of biography summarization by comparing it against existing evaluation methods and human annotations. Our experimental results demonstrate that CAS exhibits strong alignment with human judgment, establishing it as an efficient, automated, concept-aware metric for evaluating LLM outputs. 
+
+C.1 Details of Conceptual Accuracy Score 
+
+In our work, we employ GPT-OSS-120B, which can theoretically be replaced by any sufficiently ca-pable generative model, to estimate the Conceptual Accuracy Score (CAS). CAS is computed by com-paring the LLM-generated output with the ground-truth summary under the specified attributes. The prompt used for this estimation is shown in Fig-ure 9. The model takes as input the predictions of 16 {"role": "system", "content": (  
+
+> "You are an expert in evaluating the accuracy of large language model predictions. "\
+> Your task is to compare a provided " Answer " with a " Prediction " for a given " Question "and assign an Accuracy Score between 0.0 and 1.0
+> (inclusive). "\
+> "1.0 Score : The prediction is identical to, or a complete and accurate restatement of, the answer. "\
+> "0.5 Score : The prediction contains partially correct information, or is conceptually related but not fully accurate. Also applies if the prediction
+> is semantically correct but phrased very differently, requiring deeper interpretation. "\
+> "0.0 Score : The prediction is completely incorrect, irrelevant, or includes hallucinated information not present in the answer or implied by the
+> question. "
+> )}
+
+Figure 9: The LLM prompt for evaluating conceptual accuracy score with the input LLM prediction, ground truth answer, and question from each subtask. 
+
+the evaluated LLMs, together with the correspond-ing questions and ground-truth answers, and out-puts a floating-point score between 0 and 1, indicat-ing the degree of accuracy of the LLM responses. 
+
+C.2 Evaluations of Conceptual Accuracy Score 
+
+To evaluate the reliability of the proposed CAS, we conduct a human annotation study. Specifically, human annotators are asked to evaluate 30 samples drawn from the real evaluation workload in our test set experiments. The annotators receive the same prompt used with GPT-OSS-120B and are instructed to assign a floating-point score indepen-dently. We then compare the results obtained from three evaluation methods: string-based matching (the standard metric of ∞-Bench and LongBench used in our open-set benchmark experiments), hu-man evaluation, and CAS estimated by GPT-OSS-120B. As each test sample requires the extraction of six attributes, we report both the average ac-curacy scores under the three evaluation settings and the number of correctly identified attributes, as determined by the human annotators. 
+
+Quantitative Evaluation. As reported in Table 11, we randomly select 30 samples from our test set to conduct a comparative analysis. The experimen-tal setup is as follows: we utilize Llama-3.1-8B-Instruct as the model to be evaluated and employ our UT-ACA as the context management method for long-context inference. The specific parameters of the UT-ACA are set to a fixed block size of 16 tokens, with a maximum budget of 96 blocks for the adaptive context allocation. The update policy involves subtracting 16 blocks after the generation of tokens with certainty, maintaining a minimum window size of 1 block. The results demonstrate that our CAS aligns closely with human annotators, showing a difference margin of only 1.3% .
+
+Qualitative Evaluation. Table 12 presents repre-sentative examples that demonstrate the effective-ness of our conceptual accuracy score. Specifically, in the evaluation samples, CAS can automatically detect formatting differences while correctly cap-
+
+ID Name Str CAS Hum Cor ID Name Str CAS Hum Cor 
+
+1 Emma Thompson .000 .000 .000 0/6 16 Lucas Scott .262 1.00 1.00 6/6 2 Liam Carter .127 .167 .167 1/6 17 Harper Coleman .114 .167 .167 1/6 3 Olivia Bennett .230 1.00 1.00 6/6 18 Henry Green .260 .500 .667 3/6 4 Noah Wright .278 .830 .833 5/6 19 Evelyn Perry .308 1.00 1.00 6/6 5 Ava Sullivan .299 .667 .667 4/6 20 Oliver Hughes .358 1.00 1.00 6/6 6 Ethan Brooks .364 .833 .833 5/6 21 Abigail Kelly .333 .833 .833 5/6 7 Sophia Reed .341 .830 1.00 6/6 22 Jack Ross .268 .830 .833 5/6 8 Mason Foster .389 1.00 1.00 6/6 23 Emily Howard .355 1.00 1.00 6/6 9 Isabella Parker .246 .830 .833 5/6 24 Daniel Gray .311 .830 .833 5/6 10 William Hayes .231 .500 .500 3/6 25 Sofia Ellis .159 .330 .417 2/6 11 Mia Evans .181 .830 .830 5/6 26 Matthew Bell .379 1.00 1.00 6/6 12 James Turner .385 .833 .830 5/6 27 Aria Wood .417 1.00 1.00 6/6 13 Amelia Fisher .227 .833 .833 5/6 28 Jacob King .271 .830 .917 5/6 14 Benjamin Ward .350 .500 .500 3/6 29 Scarlett Price .242 .750 .750 4/6 15 Charlotte Morgan .323 .830 .830 5/6 30 Logan Lee .361 .830 .917 5/6 
+
+Avg (1–30): Str=0.279, CAS= 0.779 , Hum= 0.766 , Cor=4.5/6 
+
+Table 11: Evaluation results on 30 test samples using String matching ( Str ), Conceptual accuracy score ( CAS ), and Human annotation ( Hum ). Cor denotes the correct number of six attributes, which is count by human. 
+
+17 Case #3: Olivia Bennett Case #17: Harper Coleman                                                   
+
+> (Str: 0.230, LLM: 1.000, Hum: 1.000) (Str: 0.114, LLM: 0.167, Hum: 0.167)
+> Attr GT Pred. Hum Attr GT Pred. Hum
+> Birth Date 1888-06-03 June 3, 1888 ✔Birth Date 10 Nov, 1907 1976 ✘
+> Birth Place Sydney, NSW Sydney, NSW ✔Birth Place Mexico City Madrid, Spain ✘
+> University MIT Mass. Inst. Tech. ✔University NUS Complutense Madrid ✘
+> Major Medicine Medicine ✔Major Intl. Rel. Chem. Eng. ✘
+> Company Mayo Clinic Mayo Clinic ✔Company UN UN ✔
+> Work Place Beijing, CN Mayo’s Beijing ✔Work Place Seattle, WA Pacific NW ✘
+
+Table 12: Case study comparison. Case #3 demonstrates semantic robustness despite format variations, whereas Case #17 illustrates prediction failures that are accurately identified by our conceptual accuracy score. ( ✔=correct, 
+
+✘=incorrect) 
+
+turing the underlying semantic correctness. For example, in Case #3 , the LLM predicts “1888-06-03” whereas the ground truth is “June 3, 1888”. A string-matching baseline would judge this pre-diction as incorrect (or assign it an artificially low score) due solely to the surface-form discrepancy. In contrast, CAS correctly assigns a score of 1. In Case #17 , CAS accurately identifies genuine semantic errors and appropriately assigns a zero score. 
+
+D Additional Results and Analysis 
+
+D.1 Backbone-Consistent Re-evaluation of KV-Management Baselines 
+
+To address concerns regarding backbone mismatch, we re-evaluate RetrievalAttn, SnapKV, and Om-niKV on Llama-3.1-8B-it, the same backbone used by UT-ACA. While these baselines are orig-inally reported on Llama-3-8B-it-262k—a long-context-adapted variant commonly adopted in prior work—our results show that migrating to Llama-3.1-8B-it leads to non-trivial accuracy degradation across all three methods (Table 13). This confirms that the backbone difference does not favor UT-ACA, and that our Llama-3.1-8B-it evaluation pro-vides a fairer, backbone-consistent comparison.                  
+
+> Method mTokens mTime tok mAcc conc (%) ↑
+> †RetrievalAttn 2k 0.021 15.25 ( ↓16.97)
+> †SnapKV 1k 0.210 23.43 ( ↓18.35) OmniKV 8k —21.32 ( ↓24.51)
+
+Table 13: Re-evaluation of KV-management baselines on Llama-3.1-8B-it under identical settings. Numbers in parentheses denote accuracy change relative to results reported on Llama-3-8B-it-262k. 
+
+D.2 Comparison of InfLLM and UT-ACA on RULER 
+
+To further validate UT-ACA on challenging long-context benchmarks, we conduct additional experi-ments on RULER (Hsieh et al., 2024), comparing against InfLLM (Xiao et al., 2024) under varying token budgets. With the block size fixed at 16 tokens, Table 14 reports the average token con-sumption (mTokens) and conceptual accuracy score (mAcc conc ) on two RULER subtasks: QA-16k and QA-8k. As shown in Table 14, UT-ACA consistently achieves a more favorable efficiency–quality trade-off compared to InfLLM across both subtasks. On QA-16k, UT-ACA attains a comparable peak score (21.65 vs. 21.70) while consuming substan-tially fewer context tokens (385 vs. 512), repre-senting a 24.8% reduction in token budget. On QA-8k, UT-ACA not only surpasses InfLLM’s best score (26.85 vs. 26.75) but also does so under a significantly smaller token budget (352 vs. 512). These results demonstrate that UT-ACA retains task-relevant context more selectively and effec-tively under constrained budgets, providing further evidence for the superiority of our approach over strong baselines on challenging long-context tasks. 
+
+D.3 Ablation Study on Two-Way vs. Three-Way Difficulty Metric 
+
+To examine the contribution of the proposed three-way difficulty metric, we conduct an ablation study in which the Unknown and Hallucination cate-gories are merged into a single class, yielding a two-way difficulty metric. Under this setting, we perform eight independent training runs us-ing the same experimental protocol. For each run, the checkpoint achieving the highest F1 score 18 Method QA-16k QA-8k 
+
+mTokens ↓ mAcc conc (%) ↑ mTokens ↓ mAcc conc (%) ↑
+
+InfLLM 64 9.25 64 12.60 128 14.05 128 14.90 256 18.75 256 24.30 
+
+512 21.70 512 26.75 48 10.09 51 12.60 105 14.65 108 14.40 203 17.90 199 24.85 
+
+UT-ACA 385 21.65 352 26.85 
+
+> Table 14: Comparison of InfLLM and UT-ACA on RULER QA tasks. mTokens denotes the average number of context tokens consumed (in units of 64 tokens). Lower mTokens and higher Score are better. Bold indicates the best result in each column.
+
+on the validation set is retained. The selected detectors are then evaluated on the test set with the following configuration: MaxBudget = 64 ,
+
+block_size = 16 , and SubPolicy = 16 .As shown in Table 15, merging Unknown and 
+
+Hallucination into a single category leads to consis-tent performance degradation across both detection and downstream generation metrics. At the de-tector level, mean accuracy (mAcc) decreases by 0.69 points (83.43% → 82.74%), and the recall for negative samples drops by 1.67 points (89.71% 
+
+→ 88.04%), indicating that the merged category provides a less discriminative training signal. More critically, the degradation propagates to the down-stream generation stage: conceptual generation ac-curacy (mAcc conc ) declines substantially by 2.49 points (70.48% → 67.99%), while average context token consumption remains nearly unchanged (344 vs. 348 tokens). These results demonstrate that preserving the distinction between Unknown and 
+
+Hallucination as separate difficulty levels enables more fine-grained and reliable rollback decisions, ultimately yielding higher-quality generation under the same token budget. The adoption of a three-way difficulty metric is further motivated by the distinct generative regimes underlying Unknown and Hallucination responses. Separating these two categories yields a more infor-mative and less ambiguous supervisory signal than collapsing them into a single binary correctness label. Empirically, under overly compact context windows, the model tends to become disproportion-ately confident in producing Unknown responses, whose logit distributions are often closer to those of correct outputs than to clearly incorrect or hal-lucinated ones. Merging Unknown and Hallucina-tion therefore conflates heterogeneous behaviors, increases label ambiguity, and blurs the decision boundary for the detector, making optimization harder and training less stable. 
+
+D.4 Case Study: Effect of Context Expansion on Token Probability 
+
+To provide a concrete and interpretable analy-sis of how context window expansion affects the model’s predictive confidence, we present a single-generation case study. The example involves ex-tracting the birth date of a person from a long-
+
+Setting mAcc (%) ↑ Recall N (%) ↑ Recall P (%) ↑ mTokens ↓ mAcc conc (%) ↑
+
+Two-Way Metric 82.74 ( ↓0.69) 88.04 ( ↓1.67) 80.60 ( ↓0.67) 348 67.99 ( ↓2.49) Three-Way Metric 83.43 89.71 81.27 344 70.48      
+
+> Table 15: Comparison of two-way and three-way difficulty metrics. mAcc denotes mean accuracy of the detector; Recall Nand Recall Pdenote recall on negative (Unknown/Hallucination) and positive (Normal) samples, respectively; mTokens denotes average context token consumption; mAcc conc denotes conceptual generation accuracy on the test set. ↓differences are relative to the three-way metric baseline.
+
+19 Setting Top-1 Candidate Rank of “29” Log p(“29” ) ↑
+
+Before Expansion ( top-k = 1 , block_size = 16 ) “9” 3rd −5.13 
+
+After Expansion ( top-k = 64 , block_size = 16 ) “29” 1st −4.56  
+
+> Table 16: Token ranking and log-probability for the day token before and after context expansion. The correct token is “29” .
+
+context passage, a task that exhibits a pronounced uncertainty spike at the day token. Under the original compact setting ( top-k = 1 ,
+
+block_size = 16 ), the correct token “29” re-ceives a log-probability of −5.13 and is ranked third among the candidate tokens { “9” , “15” ,
+
+“29” }. After context window expansion ( top-k =64 ), the token “29” becomes the top-ranked candi-date, with its log-probability improving to −4.56 .Table 16 summarizes the token rankings and log-probabilities before and after expansion. This case study illustrates that context expan-sion can effectively mitigate uncertainty by shift-ing probability mass toward the correct token. The improvement in both rank and log-probability of 
+
+“29” after expansion supports the hypothesis that insufficient context leads to degraded token-level confidence, and that restoring broader context al-lows the model to recover a more discriminative distribution over candidates. 20

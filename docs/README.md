@@ -6,107 +6,111 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-03-26
-- 运行时间：2026-03-26 19:59:16 UTC
+- 最新运行日期：2026-03-27
+- 运行时间：2026-03-27 20:30:05 UTC
 - 运行状态：成功
-- 本次总论文数：29
-- 精读区：15
+- 本次总论文数：30
+- 精读区：16
 - 速读区：14
 
 ### 今日简报（AI）
-今日精选 29 篇前沿成果，重点聚焦 LLM 智能体自主发现算法与混合蒸馏策略的
-- 详情：[/202603/26/README](/202603/26/README)
+今日深度解析 30 篇 AI 论文，重点聚焦强化学习中的策略与提示词协同优化及推理加速技术。
+满分论文 P^2O
+- 详情：[/202603/27/README](/202603/27/README)
 
 ### 精读区论文标签
-1. [HDPO: Hybrid Distillation Policy Optimization via Privileged Self-Distillation](/202603/26/2603.23871v1-hdpo-hybrid-distillation-policy-optimization-via-privileged-self-distillation)  
+1. [P^2O: Joint Policy and Prompt Optimization](/202603/27/2603.21877v2-p2o-joint-policy-and-prompt-optimization)  
    标签：评分：10.0/10、query:rl-nlplr
-   evidence：数学推理的强化学习与 Token 级蒸馏
-2. [From AI Assistant to AI Scientist: Autonomous Discovery of LLM-RL Algorithms with LLM Agents](/202603/26/2603.23951v1-from-ai-assistant-to-ai-scientist-autonomous-discovery-of-llm-rl-algorithms-with-llm-agents)  
+   evidence：具有可验证奖励的强化学习用于推理
+2. [Prune as You Generate: Online Rollout Pruning for Faster and Better RLVR](/202603/27/2603.24840v1-prune-as-you-generate-online-rollout-pruning-for-faster-and-better-rlvr)  
    标签：评分：10.0/10、query:rl-nlplr
-   evidence：自主发现用于数学推理的LLM强化学习算法
-3. [Towards Effective Experiential Learning: Dual Guidance for Utilization and Internalization](/202603/26/2603.24093v1-towards-effective-experiential-learning-dual-guidance-for-utilization-and-internalization)  
+   evidence：通过在线采样剪枝加速大模型推理任务的强化学习
+3. [Train at Moving Edge: Online-Verified Prompt Selection for Efficient RL Training of Large Reasoning Model](/202603/27/2603.25184v1-train-at-moving-edge-online-verified-prompt-selection-for-efficient-rl-training-of-large-reasoning-model)  
    标签：评分：10.0/10、query:rl-nlplr
-   evidence：基于可验证奖励的强化学习推理
-4. [Adaptive Decoding via Test-Time Policy Learning for Self-Improving Generation](/202603/26/2603.18428v1-adaptive-decoding-via-test-time-policy-learning-for-self-improving-generation)  
+   evidence：大推理模型的高效强化学习训练
+4. [TAPO: Translation Augmented Policy Optimization for Multilingual Mathematical Reasoning](/202603/27/2603.25419v1-tapo-translation-augmented-policy-optimization-for-multilingual-mathematical-reasoning)  
+   标签：评分：10.0/10、query:rl-nlplr
+   evidence：多语言数学推理的强化学习框架
+5. [Reasoning Topology Matters: Network-of-Thought for Complex Reasoning Tasks](/202603/27/2603.20730v1-reasoning-topology-matters-network-of-thought-for-complex-reasoning-tasks)  
+   标签：评分：9.0/10、query:rl-nlplr
+   evidence：用于复杂推理任务的网络思维 (NoT)
+6. [Enhancing reasoning accuracy in large language models during inference time](/202603/27/2603.21301v1-enhancing-reasoning-accuracy-in-large-language-models-during-inference-time)  
+   标签：评分：9.0/10、query:rl-nlplr
+   evidence：提高推理准确性的推理时技术
+7. [A transformer architecture alteration to incentivise externalised reasoning](/202603/27/2603.21376v1-a-transformer-architecture-alteration-to-incentivise-externalised-reasoning)  
+   标签：评分：9.0/10、query:rl-nlplr
+   evidence：利用强化学习激励外部化推理和自适应计算
+8. [Caterpillar of Thoughts: The Optimal Test-Time Algorithm for Large Language Models](/202603/27/2603.22784v1-caterpillar-of-thoughts-the-optimal-test-time-algorithm-for-large-language-models)  
+   标签：评分：9.0/10、query:rl-nlplr
+   evidence：思维链和回溯的最优测试时算法
+9. [Why Does Self-Distillation (Sometimes) Degrade the Reasoning Capability of LLMs?](/202603/27/2603.24472v1-why-does-self-distillation-sometimes-degrade-the-reasoning-capability-of-llms)  
+   标签：评分：9.0/10、query:rl-nlplr
+   evidence：大语言模型在后训练和自蒸馏过程中推理能力的退化
+10. [When Is Collective Intelligence a Lottery? Multi-Agent Scaling Laws for Memetic Drift in LLMs](/202603/27/2603.24676v1-when-is-collective-intelligence-a-lottery-multi-agent-scaling-laws-for-memetic-drift-in-llms)  
+   标签：评分：9.0/10、query:mas-gen
+   evidence：大语言模型中的多智能体扩展定律与集体推理
+11. [Training LLMs for Multi-Step Tool Orchestration with Constrained Data Synthesis and Graduated Rewards](/202603/27/2603.24709v1-training-llms-for-multi-step-tool-orchestration-with-constrained-data-synthesis-and-graduated-rewards)  
+   标签：评分：9.0/10、query:rl-nlplr
+   evidence：采用分级奖励的强化学习用于多步编排
+12. [Belief-Driven Multi-Agent Collaboration via Approximate Perfect Bayesian Equilibrium for Social Simulation](/202603/27/2603.24973v1-belief-driven-multi-agent-collaboration-via-approximate-perfect-bayesian-equilibrium-for-social-simulation)  
+   标签：评分：9.0/10、query:mas-gen
+   evidence：多智能体系统的信念驱动自适应协作框架
+13. [Bridging Perception and Reasoning: Token Reweighting for RLVR in Multimodal LLMs](/202603/27/2603.25077v1-bridging-perception-and-reasoning-token-reweighting-for-rlvr-in-multimodal-llms)  
    标签：评分：9.0/10、query:token
-   evidence：利用强化学习策略优化解码
-5. [OS-Themis: A Scalable Critic Framework for Generalist GUI Rewards](/202603/26/2603.19191v1-os-themis-a-scalable-critic-framework-for-generalist-gui-rewards)  
-   标签：评分：9.0/10、query:rl-nlplr
-   evidence：用于奖励建模和里程碑分解的多智能体评论框架
-6. [Reasoning Gets Harder for LLMs Inside A Dialogue](/202603/26/2603.20133v1-reasoning-gets-harder-for-llms-inside-a-dialogue)  
-   标签：评分：9.0/10、query:llm-fo
-   evidence：对话格式和约束对LLM推理的影响
-7. [Grounded Chess Reasoning in Language Models via Master Distillation](/202603/26/2603.20510v1-grounded-chess-reasoning-in-language-models-via-master-distillation)  
-   标签：评分：9.0/10、query:rl-nlplr
-   evidence：将专家推理蒸馏为自然语言思维链
-8. [TAMTRL: Teacher-Aligned Reward Reshaping for Multi-Turn Reinforcement Learning in Long-Context Compression](/202603/26/2603.21663v1-tamtrl-teacher-aligned-reward-reshaping-for-multi-turn-reinforcement-learning-in-long-context-compression)  
-   标签：评分：9.0/10、query:token
-   evidence：多轮强化学习的奖励重塑与时间信用分配
-9. [Privacy-Preserving Reinforcement Learning from Human Feedback via Decoupled Reward Modeling](/202603/26/2603.22563v1-privacy-preserving-reinforcement-learning-from-human-feedback-via-decoupled-reward-modeling)  
-   标签：评分：9.0/10、query:rl-nlplr
-   evidence：通过解耦奖励建模实现隐私保护的RLHF
-10. [ImplicitRM: Unbiased Reward Modeling from Implicit Preference Data for LLM alignment](/202603/26/2603.23184v1-implicitrm-unbiased-reward-modeling-from-implicit-preference-data-for-llm-alignment)  
-   标签：评分：9.0/10、query:rl-nlplr
-   evidence：RLHF背景下用于LLM对齐的奖励建模
-11. [Implicit Turn-Wise Policy Optimization for Proactive User-LLM Interaction](/202603/26/2603.23550v1-implicit-turn-wise-policy-optimization-for-proactive-user-llm-interaction)  
-   标签：评分：9.0/10、query:token
-   evidence：用于轮次策略优化的隐式过程奖励模型
-12. [Self-Evolving Multi-Agent Framework for Efficient Decision Making in Real-Time Strategy Scenarios](/202603/26/2603.23875v1-self-evolving-multi-agent-framework-for-efficient-decision-making-in-real-time-strategy-scenarios)  
+   evidence：针对 RLVR 的 Token 级经验分析与重加权
+14. [Trace2Skill: Distill Trajectory-Local Lessons into Transferable Agent Skills](/202603/27/2603.25158v1-trace2skill-distill-trajectory-local-lessons-into-transferable-agent-skills)  
    标签：评分：9.0/10、query:mas-gen
-   evidence：用于RTS环境高性能决策的协作多智能体框架
-13. [Language-Grounded Multi-Agent Planning for Personalized and Fair Participatory Urban Sensing](/202603/26/2603.24014v1-language-grounded-multi-agent-planning-for-personalized-and-fair-participatory-urban-sensing)  
+   evidence：用于自动技能生成的并行子智能体群
+15. [CRAFT: Grounded Multi-Agent Coordination Under Partial Information](/202603/27/2603.25268v1-craft-grounded-multi-agent-coordination-under-partial-information)  
    标签：评分：9.0/10、query:mas-gen
-   evidence：基于LLM的多智能体协作框架
-14. [The Specification Gap: Coordination Failure Under Partial Knowledge in Code Agents](/202603/26/2603.24284v1-the-specification-gap-coordination-failure-under-partial-knowledge-in-code-agents)  
-   标签：评分：9.0/10、query:mas-gen
-   evidence：代码生成中的多智能体协作与任务分解
-15. [Large Language Model Guided Incentive Aware Reward Design for Cooperative Multi-Agent Reinforcement Learning](/202603/26/2603.24324v1-large-language-model-guided-incentive-aware-reward-design-for-cooperative-multi-agent-reinforcement-learning)  
-   标签：评分：9.0/10、query:mas-gen
-   evidence：大模型引导的多智能体强化学习奖励设计
+   evidence：多智能体协作与语用推理基准
+16. [R-C2: Cycle-Consistent Reinforcement Learning Improves Multimodal Reasoning](/202603/27/2603.25720v1-r-c2-cycle-consistent-reinforcement-learning-improves-multimodal-reasoning)  
+   标签：评分：9.0/10、query:rl-nlplr
+   evidence：用于多模态推理一致性的强化学习
 
 ### 速读区论文标签
-1. [EvoGuard: An Extensible Agentic RL-based Framework for Practical and Evolving AI-Generated Image Detection](/202603/26/2603.17343v1-evoguard-an-extensible-agentic-rl-based-framework-for-practical-and-evolving-ai-generated-image-detection)  
+1. [TopoChunker: Topology-Aware Agentic Document Chunking Framework](/202603/27/2603.18409v1-topochunker-topology-aware-agentic-document-chunking-framework)  
    标签：评分：8.0/10、query:mas-gen
-   evidence：基于强化学习的智能体框架，协调多个检测器作为工具
-2. [Efficient Soft Actor-Critic with LLM-Based Action-Level Guidance for Continuous Control](/202603/26/2603.17468v1-efficient-soft-actor-critic-with-llm-based-action-level-guidance-for-continuous-control)  
-   标签：评分：8.0/10、query:rl-nlplr
-   evidence：基于大模型的强化学习动作级指导
-3. [CodeScout: An Effective Recipe for Reinforcement Learning of Code Search Agents](/202603/26/2603.17829v1-codescout-an-effective-recipe-for-reinforcement-learning-of-code-search-agents)  
-   标签：评分：8.0/10、query:rl-nlplr
-   evidence：智能体代码搜索的强化学习方案
-4. [AgentFactory: A Self-Evolving Framework Through Executable Subagent Accumulation and Reuse](/202603/26/2603.18000v1-agentfactory-a-self-evolving-framework-through-executable-subagent-accumulation-and-reuse)  
+   evidence：用于文档分块和任务分解的双智能体架构
+2. [Memento-Skills: Let Agents Design Agents](/202603/27/2603.18743v1-memento-skills-let-agents-design-agents)  
    标签：评分：8.0/10、query:mas-gen
-   evidence：通过可执行子智能体积累的自我进化框架
-5. [CausalRM: Causal-Theoretic Reward Modeling for RLHF from Observational User Feedbacks](/202603/26/2603.18736v1-causalrm-causal-theoretic-reward-modeling-for-rlhf-from-observational-user-feedbacks)  
-   标签：评分：8.0/10、query:token
-   evidence：基于观察性用户反馈的RLHF奖励建模
-6. [MetaClaw: Just Talk -- An Agent That Meta-Learns and Evolves in the Wild](/202603/26/2603.17187v1-metaclaw-just-talk----an-agent-that-meta-learns-and-evolves-in-the-wild)  
-   标签：评分：7.0/10、query:mas-gen
-   evidence：用于演化行为技能的LLM智能体框架
-7. [SYMDIREC: A Neuro-Symbolic Divide-Retrieve-Conquer Framework for Enhanced RTL Synthesis and Summarization](/202603/26/2603.17208v1-symdirec-a-neuro-symbolic-divide-retrieve-conquer-framework-for-enhanced-rtl-synthesis-and-summarization)  
+   evidence：基于记忆的强化学习框架用于智能体设计智能体
+3. [Mi:dm K 2.5 Pro](/202603/27/2603.18788v2-midm-k-25-pro)  
+   标签：评分：8.0/10、query:rl-nlplr
+   evidence：聚焦推理的优化和智能体工作流
+4. [TextReasoningBench: Does Reasoning Really Improve Text Classification in Large Language Models?](/202603/27/2603.19558v1-textreasoningbench-does-reasoning-really-improve-text-classification-in-large-language-models)  
+   标签：评分：8.0/10、query:rl-nlplr
+   evidence：分步推理轨迹和Token成本
+5. [PowerLens: Taming LLM Agents for Safe and Personalized Mobile Power Management](/202603/27/2603.19584v1-powerlens-taming-llm-agents-for-safe-and-personalized-mobile-power-management)  
+   标签：评分：8.0/10、query:mas-gen
+   evidence：用于个性化电源管理的多智能体架构
+6. [AS2 -- Attention-Based Soft Answer Sets: An End-to-End Differentiable Neuro-Soft-Symbolic Reasoning Architecture](/202603/27/2603.18436v1-as2----attention-based-soft-answer-sets-an-end-to-end-differentiable-neuro-soft-symbolic-reasoning-architecture)  
    标签：评分：7.0/10、query:rl-nlplr
-   evidence：通过LLM推理将RTL任务分解为符号子目标
-8. [MCoT-MVS: Multi-level Vision Selection by Multi-modal Chain-of-Thought Reasoning for Composed Image Retrieval](/202603/26/2603.17360v1-mcot-mvs-multi-level-vision-selection-by-multi-modal-chain-of-thought-reasoning-for-composed-image-retrieval)  
+   evidence：用于逻辑推理的可微神经符号架构
+7. [UT-ACA: Uncertainty-Triggered Adaptive Context Allocation for Long-Context Inference](/202603/27/2603.18446v1-ut-aca-uncertainty-triggered-adaptive-context-allocation-for-long-context-inference)  
+   标签：评分：7.0/10、query:token
+   evidence：基于Token级不确定性的动态上下文分配
+8. [EntropyCache: Decoded Token Entropy Guided KV Caching for Diffusion Language Models](/202603/27/2603.18489v1-entropycache-decoded-token-entropy-guided-kv-caching-for-diffusion-language-models)  
+   标签：评分：7.0/10、query:token
+   evidence：基于 Token 熵引导的 KV 缓存解码优化
+9. [ZEBRAARENA: A Diagnostic Simulation Environment for Studying Reasoning-Action Coupling in Tool-Augmented LLMs](/202603/27/2603.18614v1-zebraarena-a-diagnostic-simulation-environment-for-studying-reasoning-action-coupling-in-tool-augmented-llms)  
    标签：评分：7.0/10、query:rl-nlplr
-   evidence：多模态思维链推理
-9. [AR-CoPO: Align Autoregressive Video Generation with Contrastive Policy Optimization](/202603/26/2603.17461v1-ar-copo-align-autoregressive-video-generation-with-contrastive-policy-optimization)  
+   evidence：研究多步推理与动作耦合的诊断环境
+10. [D-Mem: A Dual-Process Memory System for LLM Agents](/202603/27/2603.18631v1-d-mem-a-dual-process-memory-system-for-llm-agents)  
    标签：评分：7.0/10、query:rl-nlplr
-   evidence：通过RLHF对齐自回归生成的对比策略优化
-10. [AgentVLN: Towards Agentic Vision-and-Language Navigation](/202603/26/2603.17670v1-agentvln-towards-agentic-vision-and-language-navigation)  
-   标签：评分：7.0/10、query:mas-gen
-   evidence：在具身导航中将高级语义推理与感知和规划解耦
-11. [ListK: Semantic ORDER BY and LIMIT K with Listwise Prompting](/202603/26/2603.17223v1-listk-semantic-order-by-and-limit-k-with-listwise-prompting)  
-   标签：评分：6.0/10、query:llm-fo
-   evidence：SQL子句中用于半结构化数据集的语义算子
-12. [Learning When to Attend: Conditional Memory Access for Long-Context LLMs](/202603/26/2603.17484v1-learning-when-to-attend-conditional-memory-access-for-long-context-llms)  
-   标签：评分：6.0/10、query:token
-   evidence：用于长程推理的逐Token长程记忆访问
-13. [A Unified Language Model for Large Scale Search, Recommendation, and Reasoning](/202603/26/2603.17533v1-a-unified-language-model-for-large-scale-search-recommendation-and-reasoning)  
-   标签：评分：6.0/10、query:rl-nlplr
-   evidence：使LLM能够在多个领域实体上进行联合推理
-14. [Flow Matching Policy with Entropy Regularization](/202603/26/2603.17685v2-flow-matching-policy-with-entropy-regularization)  
-   标签：评分：6.0/10、query:rl-nlplr
-   evidence：带有熵正则化的在线强化学习流匹配策略
+   evidence：用于LLM智能体长程推理的双过程记忆系统
+11. [Retrieval-Augmented LLM Agents: Learning to Learn from Experience](/202603/27/2603.18272v1-retrieval-augmented-llm-agents-learning-to-learn-from-experience)  
+   标签：评分：6.0/10、query:mas-gen
+   evidence：检索增强的LLM智能体从经验中学习
+12. [MemArchitect: A Policy Driven Memory Governance Layer](/202603/27/2603.18330v1-memarchitect-a-policy-driven-memory-governance-layer)  
+   标签：评分：6.0/10、query:mas-gen
+   evidence：大模型智能体的策略驱动内存治理
+13. [PlanTwin: Privacy-Preserving Planning Abstractions for Cloud-Assisted LLM Agents](/202603/27/2603.18377v1-plantwin-privacy-preserving-planning-abstractions-for-cloud-assisted-llm-agents)  
+   标签：评分：6.0/10、query:mas-gen
+   evidence：云辅助大语言模型智能体协调工具和规划
+14. [Graph-of-Constraints Model Predictive Control for Reactive Multi-agent Task and Motion Planning](/202603/27/2603.18400v1-graph-of-constraints-model-predictive-control-for-reactive-multi-agent-task-and-motion-planning)  
+   标签：评分：6.0/10、query:mas-gen
+   evidence：多智能体任务和运动规划
 
 
 <div class="dpr-home-promo-card">
