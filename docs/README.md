@@ -6,111 +6,100 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-03-27
-- 运行时间：2026-03-27 20:30:05 UTC
+- 最新运行日期：2026-03-28
+- 运行时间：2026-03-28 19:34:27 UTC
 - 运行状态：成功
-- 本次总论文数：30
-- 精读区：16
+- 本次总论文数：26
+- 精读区：12
 - 速读区：14
 
 ### 今日简报（AI）
-今日深度解析 30 篇 AI 论文，重点聚焦强化学习中的策略与提示词协同优化及推理加速技术。
-满分论文 P^2O
-- 详情：[/202603/27/README](/202603/27/README)
+今日聚焦 26 篇 AI 前沿进展，深度拆解了从消除模型偏见到芯片自动化生成的 12 项重磅突破。
+核心推荐关注利用 GRPO 算法攻克 LLM 选择偏见，以及多智能体协作在 Chiplet 快速建模中的工业级应用。
+建议读者重点跟进长文本逻辑优化与工具调用效率提升，以应对日益复杂的智能体实战场景。
+- 详情：[/202603/28/README](/202603/28/README)
 
 ### 精读区论文标签
-1. [P^2O: Joint Policy and Prompt Optimization](/202603/27/2603.21877v2-p2o-joint-policy-and-prompt-optimization)  
-   标签：评分：10.0/10、query:rl-nlplr
-   evidence：具有可验证奖励的强化学习用于推理
-2. [Prune as You Generate: Online Rollout Pruning for Faster and Better RLVR](/202603/27/2603.24840v1-prune-as-you-generate-online-rollout-pruning-for-faster-and-better-rlvr)  
-   标签：评分：10.0/10、query:rl-nlplr
-   evidence：通过在线采样剪枝加速大模型推理任务的强化学习
-3. [Train at Moving Edge: Online-Verified Prompt Selection for Efficient RL Training of Large Reasoning Model](/202603/27/2603.25184v1-train-at-moving-edge-online-verified-prompt-selection-for-efficient-rl-training-of-large-reasoning-model)  
-   标签：评分：10.0/10、query:rl-nlplr
-   evidence：大推理模型的高效强化学习训练
-4. [TAPO: Translation Augmented Policy Optimization for Multilingual Mathematical Reasoning](/202603/27/2603.25419v1-tapo-translation-augmented-policy-optimization-for-multilingual-mathematical-reasoning)  
-   标签：评分：10.0/10、query:rl-nlplr
-   evidence：多语言数学推理的强化学习框架
-5. [Reasoning Topology Matters: Network-of-Thought for Complex Reasoning Tasks](/202603/27/2603.20730v1-reasoning-topology-matters-network-of-thought-for-complex-reasoning-tasks)  
+1. [Mitigating Selection Bias in Large Language Models via Permutation-Aware GRPO](/202603/28/2603.21016v1-mitigating-selection-bias-in-large-language-models-via-permutation-aware-grpo)  
    标签：评分：9.0/10、query:rl-nlplr
-   evidence：用于复杂推理任务的网络思维 (NoT)
-6. [Enhancing reasoning accuracy in large language models during inference time](/202603/27/2603.21301v1-enhancing-reasoning-accuracy-in-large-language-models-during-inference-time)  
-   标签：评分：9.0/10、query:rl-nlplr
-   evidence：提高推理准确性的推理时技术
-7. [A transformer architecture alteration to incentivise externalised reasoning](/202603/27/2603.21376v1-a-transformer-architecture-alteration-to-incentivise-externalised-reasoning)  
-   标签：评分：9.0/10、query:rl-nlplr
-   evidence：利用强化学习激励外部化推理和自适应计算
-8. [Caterpillar of Thoughts: The Optimal Test-Time Algorithm for Large Language Models](/202603/27/2603.22784v1-caterpillar-of-thoughts-the-optimal-test-time-algorithm-for-large-language-models)  
-   标签：评分：9.0/10、query:rl-nlplr
-   evidence：思维链和回溯的最优测试时算法
-9. [Why Does Self-Distillation (Sometimes) Degrade the Reasoning Capability of LLMs?](/202603/27/2603.24472v1-why-does-self-distillation-sometimes-degrade-the-reasoning-capability-of-llms)  
-   标签：评分：9.0/10、query:rl-nlplr
-   evidence：大语言模型在后训练和自蒸馏过程中推理能力的退化
-10. [When Is Collective Intelligence a Lottery? Multi-Agent Scaling Laws for Memetic Drift in LLMs](/202603/27/2603.24676v1-when-is-collective-intelligence-a-lottery-multi-agent-scaling-laws-for-memetic-drift-in-llms)  
+   evidence：使用GRPO（PPO的变体）来提高大语言模型的语义推理一致性
+2. [DS2SC-Agent: A Multi-Agent Automated Pipeline for Rapid Chiplet Model Generation](/202603/28/2603.21190v1-ds2sc-agent-a-multi-agent-automated-pipeline-for-rapid-chiplet-model-generation)  
    标签：评分：9.0/10、query:mas-gen
-   evidence：大语言模型中的多智能体扩展定律与集体推理
-11. [Training LLMs for Multi-Step Tool Orchestration with Constrained Data Synthesis and Graduated Rewards](/202603/27/2603.24709v1-training-llms-for-multi-step-tool-orchestration-with-constrained-data-synthesis-and-graduated-rewards)  
+   evidence：使用LLM进行硬件代码生成的自动化多智能体流水线
+3. [When Models Judge Themselves: Unsupervised Self-Evolution for Multimodal Reasoning](/202603/28/2603.21289v2-when-models-judge-themselves-unsupervised-self-evolution-for-multimodal-reasoning)  
    标签：评分：9.0/10、query:rl-nlplr
-   evidence：采用分级奖励的强化学习用于多步编排
-12. [Belief-Driven Multi-Agent Collaboration via Approximate Perfect Bayesian Equilibrium for Social Simulation](/202603/27/2603.24973v1-belief-driven-multi-agent-collaboration-via-approximate-perfect-bayesian-equilibrium-for-social-simulation)  
-   标签：评分：9.0/10、query:mas-gen
-   evidence：多智能体系统的信念驱动自适应协作框架
-13. [Bridging Perception and Reasoning: Token Reweighting for RLVR in Multimodal LLMs](/202603/27/2603.25077v1-bridging-perception-and-reasoning-token-reweighting-for-rlvr-in-multimodal-llms)  
-   标签：评分：9.0/10、query:token
-   evidence：针对 RLVR 的 Token 级经验分析与重加权
-14. [Trace2Skill: Distill Trajectory-Local Lessons into Transferable Agent Skills](/202603/27/2603.25158v1-trace2skill-distill-trajectory-local-lessons-into-transferable-agent-skills)  
-   标签：评分：9.0/10、query:mas-gen
-   evidence：用于自动技能生成的并行子智能体群
-15. [CRAFT: Grounded Multi-Agent Coordination Under Partial Information](/202603/27/2603.25268v1-craft-grounded-multi-agent-coordination-under-partial-information)  
-   标签：评分：9.0/10、query:mas-gen
-   evidence：多智能体协作与语用推理基准
-16. [R-C2: Cycle-Consistent Reinforcement Learning Improves Multimodal Reasoning](/202603/27/2603.25720v1-r-c2-cycle-consistent-reinforcement-learning-improves-multimodal-reasoning)  
+   evidence：利用自一致性信号进行多模态推理的无监督自我演化
+4. [RoboAlign: Learning Test-Time Reasoning for Language-Action Alignment in Vision-Language-Action Models](/202603/28/2603.21341v1-roboalign-learning-test-time-reasoning-for-language-action-alignment-in-vision-language-action-models)  
    标签：评分：9.0/10、query:rl-nlplr
-   evidence：用于多模态推理一致性的强化学习
+   evidence：使用强化学习优化推理以实现语言-动作对齐
+5. [A transformer architecture alteration to incentivise externalised reasoning](/202603/28/2603.21376v2-a-transformer-architecture-alteration-to-incentivise-externalised-reasoning)  
+   标签：评分：9.0/10、query:rl-nlplr
+   evidence：使用强化学习激励外部化推理和早期退出
+6. [PivotRL: High Accuracy Agentic Post-Training at Low Compute Cost](/202603/28/2603.21383v1-pivotrl-high-accuracy-agentic-post-training-at-low-compute-cost)  
+   标签：评分：9.0/10、query:rl-nlplr
+   evidence：结合SFT效率与RL准确性的智能体后训练框架
+7. [The Efficiency Attenuation Phenomenon: A Computational Challenge to the Language of Thought Hypothesis](/202603/28/2603.22312v1-the-efficiency-attenuation-phenomenon-a-computational-challenge-to-the-language-of-thought-hypothesis)  
+   标签：评分：9.0/10、query:mas-gen
+   evidence：多智能体强化学习用于新兴通信协议
+8. [STEM Agent: A Self-Adapting, Tool-Enabled, Extensible Architecture for Multi-Protocol AI Agent Systems](/202603/28/2603.22359v1-stem-agent-a-self-adapting-tool-enabled-extensible-architecture-for-multi-protocol-ai-agent-systems)  
+   标签：评分：9.0/10、query:mas-gen
+   evidence：用于自适应和工具启用的多智能体AI系统架构
+9. [The Geometric Price of Discrete Logic: Context-driven Manifold Dynamics of Number Representations](/202603/28/2603.23577v1-the-geometric-price-of-discrete-logic-context-driven-manifold-dynamics-of-number-representations)  
+   标签：评分：9.0/10、query:rl-nlplr
+   evidence：LLM中离散逻辑与推理的几何分析
+10. [Environment-Grounded Multi-Agent Workflow for Autonomous Penetration Testing](/202603/28/2603.24221v1-environment-grounded-multi-agent-workflow-for-autonomous-penetration-testing)  
+   标签：评分：9.0/10、query:mas-gen
+   evidence：用于自主任务的环境落地多智能体架构
+11. [Improving Lean4 Autoformalization via Cycle Consistency Fine-tuning](/202603/28/2603.24372v1-improving-lean4-autoformalization-via-cycle-consistency-fine-tuning)  
+   标签：评分：9.0/10、query:rl-nlplr
+   evidence：使用 GRPO 和循环一致性奖励进行强化学习以实现形式化证明
+12. [Reaching Beyond the Mode: RL for Distributional Reasoning in Language Models](/202603/28/2603.24844v1-reaching-beyond-the-mode-rl-for-distributional-reasoning-in-language-models)  
+   标签：评分：9.0/10、query:rl-nlplr
+   evidence：用于分布推理和多答案生成的强化学习
 
 ### 速读区论文标签
-1. [TopoChunker: Topology-Aware Agentic Document Chunking Framework](/202603/27/2603.18409v1-topochunker-topology-aware-agentic-document-chunking-framework)  
+1. [Utility-Guided Agent Orchestration for Efficient LLM Tool Use](/202603/28/2603.19896v1-utility-guided-agent-orchestration-for-efficient-llm-tool-use)  
    标签：评分：8.0/10、query:mas-gen
-   evidence：用于文档分块和任务分解的双智能体架构
-2. [Memento-Skills: Let Agents Design Agents](/202603/27/2603.18743v1-memento-skills-let-agents-design-agents)  
-   标签：评分：8.0/10、query:mas-gen
-   evidence：基于记忆的强化学习框架用于智能体设计智能体
-3. [Mi:dm K 2.5 Pro](/202603/27/2603.18788v2-midm-k-25-pro)  
+   evidence：用于多步推理和工具使用的效用引导编排策略
+2. [The $\mathbf{Y}$-Combinator for LLMs: Solving Long-Context Rot with $λ$-Calculus](/202603/28/2603.20105v1-the-mathbfy-combinator-for-llms-solving-long-context-rot-with--calculus)  
    标签：评分：8.0/10、query:rl-nlplr
-   evidence：聚焦推理的优化和智能体工作流
-4. [TextReasoningBench: Does Reasoning Really Improve Text Classification in Large Language Models?](/202603/27/2603.19558v1-textreasoningbench-does-reasoning-really-improve-text-classification-in-large-language-models)  
+   evidence：用于递归推理的结构化函数式运行时
+3. [Measuring Faithfulness Depends on How You Measure: Classifier Sensitivity in LLM Chain-of-Thought Evaluation](/202603/28/2603.20172v1-measuring-faithfulness-depends-on-how-you-measure-classifier-sensitivity-in-llm-chain-of-thought-evaluation)  
    标签：评分：8.0/10、query:rl-nlplr
-   evidence：分步推理轨迹和Token成本
-5. [PowerLens: Taming LLM Agents for Safe and Personalized Mobile Power Management](/202603/27/2603.19584v1-powerlens-taming-llm-agents-for-safe-and-personalized-mobile-power-management)  
+   evidence：评估LLM思维链推理轨迹的忠实度
+4. [AI Agents Can Already Autonomously Perform Experimental High Energy Physics](/202603/28/2603.20179v1-ai-agents-can-already-autonomously-perform-experimental-high-energy-physics)  
    标签：评分：8.0/10、query:mas-gen
-   evidence：用于个性化电源管理的多智能体架构
-6. [AS2 -- Attention-Based Soft Answer Sets: An End-to-End Differentiable Neuro-Soft-Symbolic Reasoning Architecture](/202603/27/2603.18436v1-as2----attention-based-soft-answer-sets-an-end-to-end-differentiable-neuro-soft-symbolic-reasoning-architecture)  
+   evidence：自主AI智能体用于科学分析和论文起草
+5. [Procedural Refinement by LLM-driven Algorithmic Debugging for ARC-AGI-2](/202603/28/2603.20334v1-procedural-refinement-by-llm-driven-algorithmic-debugging-for-arc-agi-2)  
+   标签：评分：8.0/10、query:rl-nlplr
+   evidence：大模型驱动的算法调试与过程细化
+6. [Hyperagents](/202603/28/2603.19461v1-hyperagents)  
+   标签：评分：7.0/10、query:mas-gen
+   evidence：用于自我提升的自指代理
+7. [Skilled AI Agents for Embedded and IoT Systems Development](/202603/28/2603.19583v1-skilled-ai-agents-for-embedded-and-iot-systems-development)  
+   标签：评分：7.0/10、query:mas-gen
+   evidence：用于嵌入式和物联网系统开发的基于技能的智能体框架
+8. [Demonstrations, CoT, and Prompting: A Theoretical Analysis of ICL](/202603/28/2603.19611v1-demonstrations-cot-and-prompting-a-theoretical-analysis-of-icl)  
    标签：评分：7.0/10、query:rl-nlplr
-   evidence：用于逻辑推理的可微神经符号架构
-7. [UT-ACA: Uncertainty-Triggered Adaptive Context Allocation for Long-Context Inference](/202603/27/2603.18446v1-ut-aca-uncertainty-triggered-adaptive-context-allocation-for-long-context-inference)  
-   标签：评分：7.0/10、query:token
-   evidence：基于Token级不确定性的动态上下文分配
-8. [EntropyCache: Decoded Token Entropy Guided KV Caching for Diffusion Language Models](/202603/27/2603.18489v1-entropycache-decoded-token-entropy-guided-kv-caching-for-diffusion-language-models)  
-   标签：评分：7.0/10、query:token
-   evidence：基于 Token 熵引导的 KV 缓存解码优化
-9. [ZEBRAARENA: A Diagnostic Simulation Environment for Studying Reasoning-Action Coupling in Tool-Augmented LLMs](/202603/27/2603.18614v1-zebraarena-a-diagnostic-simulation-environment-for-studying-reasoning-action-coupling-in-tool-augmented-llms)  
+   evidence：思维链（CoT）提示对泛化影响的理论分析
+9. [Memori: A Persistent Memory Layer for Efficient, Context-Aware LLM Agents](/202603/28/2603.19935v1-memori-a-persistent-memory-layer-for-efficient-context-aware-llm-agents)  
+   标签：评分：7.0/10、query:mas-gen
+   evidence：用于上下文感知大模型智能体的持久记忆层
+10. [ReViSQL: Achieving Human-Level Text-to-SQL](/202603/28/2603.20004v1-revisql-achieving-human-level-text-to-sql)  
    标签：评分：7.0/10、query:rl-nlplr
-   evidence：研究多步推理与动作耦合的诊断环境
-10. [D-Mem: A Dual-Process Memory System for LLM Agents](/202603/27/2603.18631v1-d-mem-a-dual-process-memory-system-for-llm-agents)  
-   标签：评分：7.0/10、query:rl-nlplr
-   evidence：用于LLM智能体长程推理的双过程记忆系统
-11. [Retrieval-Augmented LLM Agents: Learning to Learn from Experience](/202603/27/2603.18272v1-retrieval-augmented-llm-agents-learning-to-learn-from-experience)  
+   evidence：增强大语言模型的SQL推理能力
+11. [ProactiveBench: Benchmarking Proactiveness in Multimodal Large Language Models](/202603/28/2603.19466v1-proactivebench-benchmarking-proactiveness-in-multimodal-large-language-models)  
    标签：评分：6.0/10、query:mas-gen
-   evidence：检索增强的LLM智能体从经验中学习
-12. [MemArchitect: A Policy Driven Memory Governance Layer](/202603/27/2603.18330v1-memarchitect-a-policy-driven-memory-governance-layer)  
+   evidence：多模态大模型中的协作与主动性
+12. [All-Mem: Agentic Lifelong Memory via Dynamic Topology Evolution](/202603/28/2603.19595v1-all-mem-agentic-lifelong-memory-via-dynamic-topology-evolution)  
    标签：评分：6.0/10、query:mas-gen
-   evidence：大模型智能体的策略驱动内存治理
-13. [PlanTwin: Privacy-Preserving Planning Abstractions for Cloud-Assisted LLM Agents](/202603/27/2603.18377v1-plantwin-privacy-preserving-planning-abstractions-for-cloud-assisted-llm-agents)  
+   evidence：交互式智能体的代理长效记忆框架
+13. [Trojan's Whisper: Stealthy Manipulation of OpenClaw through Injected Bootstrapped Guidance](/202603/28/2603.19974v1-trojans-whisper-stealthy-manipulation-of-openclaw-through-injected-bootstrapped-guidance)  
    标签：评分：6.0/10、query:mas-gen
-   evidence：云辅助大语言模型智能体协调工具和规划
-14. [Graph-of-Constraints Model Predictive Control for Reactive Multi-agent Task and Motion Planning](/202603/27/2603.18400v1-graph-of-constraints-model-predictive-control-for-reactive-multi-agent-task-and-motion-planning)  
+   evidence：用于系统交互的自主编码智能体和技能生态系统
+14. [Bounded Coupled AI Learning Dynamics in Tri-Hierarchical Drone Swarms](/202603/28/2603.20333v1-bounded-coupled-ai-learning-dynamics-in-tri-hierarchical-drone-swarms)  
    标签：评分：6.0/10、query:mas-gen
-   evidence：多智能体任务和运动规划
+   evidence：无人机群的多智能体强化学习
 
 
 <div class="dpr-home-promo-card">
