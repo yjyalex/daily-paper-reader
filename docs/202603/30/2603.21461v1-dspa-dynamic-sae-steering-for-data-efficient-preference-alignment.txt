@@ -1,0 +1,805 @@
+Title: DSPA: Dynamic SAE Steering for Data-Efficient Preference Alignment
+
+URL Source: https://arxiv.org/pdf/2603.21461v1
+
+Published Time: Tue, 24 Mar 2026 01:58:56 GMT
+
+Number of Pages: 18
+
+Markdown Content:
+# DSPA: Dynamic SAE Steering for Data-Efficient Preference Alignment 
+
+James Wedgwood Aashiq Muhamed Mona T. Diab Virginia Smith 
+
+Carnegie Mellon University 
+
+{jwedgwoo, amuhamed, mdiab, smithv}@cmu.edu 
+
+Abstract 
+
+Preference alignment is usually achieved by weight-updating training on preference data, which adds substantial alignment-stage com-pute and provides limited mechanistic visibil-ity. We propose Dynamic SAE Steering for Preference Alignment (DSPA), an inference-time method that makes sparse autoencoder (SAE) steering prompt-conditional. From pref-erence triples, DSPA computes a conditional-difference map linking prompt features to generation-control features; during decoding, it modifies only token-active latents, without base-model weight updates. Across Gemma-2-2B/9B and Qwen3-8B, DSPA improves MT-Bench and is competitive on AlpacaEval while preserving multiple-choice accuracy. Under restricted preference data, DSPA remains ro-bust and can rival the two-stage RAHF-SCIT pipeline while requiring up to 4.47 × fewer alignment-stage FLOPs. Finally, we audit the SAE features DSPA modifies, finding that pref-erence directions are dominated by discourse and stylistic signals, and provide theory clari-fying the conditional-difference map estimate and when top-k ablation is principled. 
+
+1 Introduction 
+
+Preference alignment is central to deploying large language models (LLMs), but common pipelines rely on weight-updating training on preference data (e.g., RLHF, DPO (Rafailov et al., 2023)), which can be costly and mechanistically opaque. Inference-time activation interventions (Zou et al., 2023; Kong et al., 2024; Pham and Nguyen, 2024) are cheaper and reversible, but are often defined as dense, global directions; applying the same edit in every context can degrade open-ended generation and yield hard-to-audit tradeoffs (Wolf et al., 2024). Sparse autoencoders (SAEs) offer a more inspectable coordinate system: they decompose hidden states into sparse, named features that can be directly ablated or amplified (Rimsky et al., 2024; Durmus et al., 2024). However, preference alignment for open-ended generation is prompt-dependent. Static SAE feature sets can inject context-irrelevant signal and harm dialogue quality (Bayat et al., 2025a), motivating prompt-conditional feature selection and minimal, targeted edits. We propose Dynamic SAE Steering for Pref-erence Alignment (DSPA) , a prompt-conditional inference-time method that requires no base-model weight updates. DSPA uses an early–mid-layer in-put SAE to featurize the prompt and a late-layer 
+
+output SAE as the intervention space most likely to influence generation (Arad et al., 2025). Of-fline, we compute a sparse conditional-difference map A from preference triples that associates ac-tive prompt features with output features that differ between chosen and rejected responses. At infer-ence, DSPA selects a small set of prompt features, scores output features via A, and steers decoding by ablating and/or augmenting only those output latents that are active on the current token, reducing off-context perturbations relative to static steering. We evaluate DSPA on Gemma-2-2B/9B and Qwen3-8B (Team et al., 2024; Yang et al., 2025) using two open-ended generation benchmarks, MT-Bench (Zheng et al., 2023) and AlpacaEval (Li et al., 2023), and multiple-choice benchmarks. We treat open-ended judge scores as our primary alignment utility metric, track multiple-choice accuracy for capability preservation, and quantify alignment-stage compute/memory and preference-data requirements ( N ) as alignment cost. DSPA improves MT-Bench across all three models; on AlpacaEval, it improves on Gemma-2-2B and Qwen3-8B, with modest changes on multiple-choice metrics. DSPA remains robust under restricted preference data (e.g., 250 samples; stable down to 100 on Gemma-2-2B) and can rival the two-stage RAHF-SCIT pipeline while requiring up to 4.47 × fewer alignment-stage FLOPs. Because 1
+
+> arXiv:2603.21461v1 [cs.LG] 23 Mar 2026
+
+we intervene on named SAE features, we can audit what changes and find that preference directions are dominated by discourse and stylistic signals; our theory characterizes what A estimates and when top-k ablation is a principled selection rule. Our contributions include: 1. We introduce DSPA, a prompt-conditional inference-time method that constructs a sparse association map from prompt SAE features (early/mid-layer) to generation-control SAE fea-tures (late-layer) via a conditional-difference map, and steers decoding by editing only token-active latents. 2. We evaluate DSPA across Gemma-2-2B/9B and Qwen3-8B on open-ended generation bench-marks and multiple-choice benchmarks, show-ing competitive generation quality with mini-mal capability regression and robustness under preference-data restriction. DSPA can rival the two-stage RAHF-SCIT pipeline while requiring up to 4.47 × fewer alignment-stage FLOPs. 3. We audit the SAE features DSPA modifies and find that preference gains are largely me-diated by discourse and stylistic signals; we also provide a theoretical analysis of what the conditional-difference map estimates and why top-k ablation is a principled selection rule. 
+
+2 Background and Related Work 
+
+Sparse Autoencoders. Superposition suggests many features share directions in activation space (Elhage et al., 2022). Sparse autoencoders (SAEs) learn a sparse feature vector and a linear reconstruc-tion of a layer’s activations (Cunningham et al., 2023; Gao et al., 2024a). Concretely, given ac-tivations h ∈ Rdmodel , an SAE encodes f (h) = 
+
+σ(Wenc h+benc ) and decodes ˆh(f ) = Wdec f +bdec ,trained to minimize reconstruction error with a spar-sity penalty. We refer to the activation of feature i
+
+as fi(h); sparse features enable auditable interven-tions by editing a small set of latents and decoding back to hidden-state space (Durmus et al., 2024). 
+
+Preference Alignment. Most preference align-ment methods update model weights using pref-erence data (e.g., RLHF, DPO (Rafailov et al., 2023)), which can be effective but expensive and opaque. Inference-time interventions instead steer activations and are reversible. Represen-tation engineering extracts linear control direc-tions (mean-difference/PCA-style) and exposes alignment–capability tradeoffs (Zou et al., 2023; Wolf et al., 2024), while RAHF learns activity patterns from chosen/rejected data (Liu et al., 2024). Recent work refines steering with geomet-ric and control-theoretic views (Kong et al., 2024; Pham and Nguyen, 2024) and studies category-specific directions for safety (Bhattacharjee et al., 2024). DSPA builds on this inference-time line but makes steering prompt-conditional and operates in a sparse SAE basis for auditability. 
+
+SAEs for Preference Alignment. SAE steering has been used for refusal and safety control (Rim-sky et al., 2024), and static feature sets can work in constrained settings such as multiple-choice calibration (Bayat et al., 2025a). Feature selec-tion remains central: effective steering depends on causal influence, not just activation frequency (Arad et al., 2025). For open-ended generation, prior approaches often rely on learned steering poli-cies or direct optimization in SAE space (Ferrao et al., 2025a; Bounhar et al., 2026). DSPA instead computes a map from prompt features to response-control features without training a steering policy or updating base-model weights. 
+
+3 Dynamic SAE Steering for Preference Alignment 
+
+DSPA is a two-stage inference-time method. In an offline stage, we compute a sparse conditional-difference map A from preference triples, associat-ing prompt features with response-control features that differentiate chosen from rejected continua-tions. At inference, we use the prompt’s active features to retrieve and rank a small set of out-put features and steer decoding by ablating and/or augmenting only token-active latents in the output SAE. Because interventions occur on named SAE features, every edit is directly auditable. 
+
+Relation to representation engineering. DSPA shares the use of chosen/rejected pairs to estimate preference directions (Zou et al., 2023; Liu et al., 2024). If we ignore prompt conditioning and steer along a single dense direction, the construction re-duces to global mean-difference steering. DSPA in-stead builds a prompt-conditional library of sparse templates (via input-feature gating) and applies 
+
+token-conditional edits in an SAE basis, modifying only latents that are active on the current token. 
+
+3.1 Identifying Conditional Preference Features Why two SAEs? The features that are useful to 
+
+condition on need not be the best ones to steer . Fol-2Figure 1: DSPA overview: offline conditional-difference map construction and prompt-conditional SAE steering at inference. Prompts and responses are illustrative. DSPA replaces costly weight updates with prompt- and token-conditional, directly auditable SAE feature edits. 
+
+lowing prior work suggesting that late-layer SAE features have stronger causal influence on genera-tion (Arad et al., 2025), we use an early–mid-layer 
+
+input SAE to featurize the prompt and a late-layer 
+
+output SAE as the intervention space; we validate this choice empirically (Section 4.5). 
+
+Notation. Let D = {(xk, y + 
+
+> k
+
+, y − 
+
+> k
+
+)}Nk=1 be a dataset of preference triples, where x is a prompt and y+, y − are the chosen and rejected responses. Let dSAE be the SAE width (we assume the same width for input and output SAEs). We index input-SAE features by i and output-SAE features by j,and we use a tilde to distinguish output-SAE quan-tities. Let hin  
+
+> t
+
+denote the LLM hidden state at token position t at the input-SAE layer, and hout  
+
+> t
+
+the hid-den state at the output-SAE layer. Then fi(hin  
+
+> t
+
+)
+
+denotes input-SAE feature i and ˜fj (hout  
+
+> t
+
+) denotes output-SAE feature j.
+
+Activation densities. For a prompt x =(x1, . . . , x Tx ) and continuation y = ( y1, . . . , y Ty )
+
+(evaluated under teacher forcing after x), define           
+
+> ρi(x) := 1
+> TxTxX
+> t=1
+> 1
+> h
+> fi(hin
+> t)>0
+> i
+> ,
+> ˜ρj(x, y ) := 1
+> TyTy
+> X
+> t=1
+> 1
+> h˜fj(hout
+> Tx+t)>0
+> i
+> .
+
+That is, ρi(x) is the fraction of prompt tokens acti-vating input feature i, and ˜ρj (x, y ) is the fraction of response tokens activating output feature j when processing the continuation y after x.
+
+Prompt gates. Choose a percentile p ∈ (0 , 100) 
+
+and let τi be the pth percentile of ρi(x) over prompts in D. Define the gate gi(x) := 1[ρi(x) ≥
+
+τi] and the gate vector g(x) ∈ { 0, 1}dSAE .
+
+Conditional-difference map. Let us define 
+
+∆˜ ρ(x, y +, y −) := ˜ρ(x, y +) − ˜ρ(x, y −), where 
+
+˜ρ(x, y ) ∈ [0 , 1] dSAE stacks ˜ρj (x, y ). Write 
+
+∆˜ ρk := ∆˜ ρ(xk, y + 
+
+> k
+
+, y − 
+
+> k
+
+) and compute A := 
+
+> 1
+> N
+
+PNk=1 g(xk) ∆˜ ρ⊤ 
+
+> k
+
+, where A ∈ RdSAE ×dSAE .Entrywise, Ai,j averages the chosen-minus-rejected activation-density difference for output feature j over examples where prompt gate i is active, so Ai,j estimates E[gi(x) ∆˜ ρj ]. Note that 
+
+A is not a learned reward model or steering policy; it is a fixed association map requiring no gradient-based optimization. 
+
+Sparsification. Although A has d2 
+
+> SAE
+
+entries, it is sparse in practice. We zero out entries below a conservative threshold, reducing memory usage by 99.8% (Appendix B). 
+
+3.2 Inference-Time Intervention Prompt feature selection. Given a new prompt 
+
+x, we compute ρi(x) for all input features and select the top kprompt features by density, 
+
+Sprompt (x) := top-kprompt {ρi(x)}. Let ˆg(x) := 
+
+1Sprompt (x) ∈ { 0, 1}dSAE , where 1S denotes the indi-cator vector of a set S.
+
+Scoring output features. We score output fea-tures using the conditional-difference map, s(x) := 
+
+A⊤ ˆg(x). We then select kdiff features to augment and/or ablate: Saugment (x) := top-kdiff {sj (x)} and 
+
+Sablate (x) := bottom-kdiff {sj (x)}.
+
+Token-conditional intervention. Saugment (x)
+
+and Sablate (x) specify which output features to steer for prompt x; token-conditional steering edits only features active on the current token, avoiding off-context activations. At token position t, we compute output-SAE la-tents ˜ft = ˜f (hout  
+
+> t
+
+) and scale the step size by Mt := max j∈[dSAE ] ˜ft,j . For j ∈ Saugment (x) with ˜ft,j > 0,we set ˜ft,j ← ˜ft,j + αM t; for j ∈ Sablate (x) with 
+
+˜ft,j > 0, we set ˜ft,j ← max { ˜ft,j − αM t, 0}, yield-ing edited latents ˜f ′ 
+
+> t
+
+. Let ∆˜ft := ˜f ′ 
+
+> t
+
+− ˜ft; we apply 3the residual edit by hout  
+
+> t
+
+← hout  
+
+> t
+
++ ˜Wdec ∆˜ft. Be-cause our SAEs use ReLU activations, this edits only already-active latents and clamps ablations at zero. In our main experiments we use ablation-only steering unless otherwise stated. 
+
+3.3 Theoretical Analysis 
+
+The preceding procedure is heuristic; we now pro-vide formal justification for why the conditional-difference map recovers meaningful preference directions and why top-k selection is principled. Proofs appear in Appendix A. 
+
+Setup. We use the notation from Section 3.1: x is the prompt and y+, y − are the chosen/rejected re-sponses. For a prompt x, let g(x) ∈ { 0, 1}dSAE 
+
+denote the prompt gate vector with gi(x) := 
+
+1[ρi(x) ≥ τi], where ρi(x) is the input-SAE ac-tivation density and τi is a fixed threshold. For a response y generated after x, let ˜ρ(y) ∈ [0 , 1] dSAE 
+
+denote output-SAE activation densities over the response segment (equivalently ˜ρ(x, y ) in Sec-tion 3.1, suppressing x for brevity). Given a pref-erence triple (x, y +, y −), define ∆˜ ρ := ˜ ρ(y+) −
+
+˜ρ(y−). The population analogue of our conditional-difference map is A := E[g(x) ∆˜ ρ⊤].
+
+Assumption 3.1 (Shared-covariance mean shift) .
+
+There exist a positive semidefinite matrix Σ, a scalar c > 0, and a prompt-dependent vector β(x)
+
+such that, conditional on x, E[∆˜ ρ | x] = c Σβ(x).
+
+Assumption 3.2 (Additive gating) . There exists a matrix B ∈ RdSAE ×dSAE such that β(x) = B g (x).Let M := E[g(x) g(x)⊤] denote the gate Gram matrix. 
+
+Theorem 3.3 (Factorization of A). Under Theo-rems 3.1 and 3.2, A⊤ = c Σ B M . Consequently, rows of A mix multiple preference templates when gates co-activate. On subspaces where M is invert-ible, Σ−1A⊤M −1 ∝ B.
+
+The mixing is controlled when co-activation probabilities are small: 
+
+Corollary 3.4 (Weak co-activation bound) . Fix gate i and let πi′|i := Pr( gi′ = 1 | gi =1) . Then ∥E[∆˜ ρ | gi = 1] − c Σβ(i)∥2 ≤
+
+c ∥Σ∥2→2
+
+P  
+
+> i′̸=i
+
+πi′|i∥β(i′)∥2.
+
+Connection to DSPA. At inference, DSPA com-putes s(x) := A⊤ ˆg(x) where ˆg(x) is a truncated indicator over active prompt features. By The-orem 3.3, s(x) = c Σ B M ˆg(x), a mixed esti-mate of the prompt-conditional preference direc-tion. When M ≈ diag( p), this reduces to a reweighted sum of per-gate templates. Under a linear utility model, selecting output features with the most negative scores for ablation is optimal for a fixed budget (Theorem A.4; Appendix A). 
+
+Implications. These results justify several design choices. First, the factorization A⊤ = c Σ B M 
+
+shows that A is a principled estimator of prompt-conditional preference directions even though it is constructed by simple averaging, not optimiza-tion. Second, Theorem 3.4 explains why trunca-tion to the top kprompt gates is reasonable: when prompt features activate approximately indepen-dently, each row of A approximates a clean per-gate preference template with bounded contami-nation from co-activating gates. This also clari-fies why static (non-prompt-conditional) steering is brittle for open-ended generation: it ignores co-activation structure entirely. Third, Theorem A.4 justifies top-k ablation as the optimal selection rule under a linearized utility model. Finally, the finite-sample concentration result (Theorem A.5, Ap-pendix A) connects to our data-efficiency findings: frequently activated gates yield stable conditional estimates even with limited data, while rare gates are noisy, motivating our percentile thresholding and conservative sparsification of A.
+
+4 Experiments and Results 
+
+4.1 Models, Data, and SAEs 
+
+Figure 2 shows a qualitative example illustrating how DSPA changes open-ended responses. 
+
+Training Data We use a binarized version of Ul-traFeedback (Cui et al., 2024) (61K prompts with chosen/rejected responses). 1 We use these prefer-ence pairs to construct A and, where applicable, to train weight-updating baselines (DPO/RAHF) and derive inference-time steering controls (RepE direction; Static-SAE feature set). 
+
+Models Following common alignment setups (Ouyang et al., 2022; Liu et al., 2024), we start from supervised fine-tuned (SFT) base models on HH-RLHF (Bai et al., 2022) for Gemma-2-2B/9B and Qwen3-8B (Team et al., 2024; Yang et al., 2025). 2
+
+We use these architectures because high-quality open SAEs are available; “Base Model” refers to the HH-RLHF SFT checkpoint. 
+
+SAEs We use SAEs fine-tuned on HH-RLHF (Appendix G), which yields better-aligned fea-  
+
+> 1HF: argilla/ultrafeedback-binarized-preferences-cleaned .
+> 2HF: Anthropic/hh-rlhf .
+
+4Figure 2: MT-Bench (turn 1) example on Gemma-2-9B: Base Model vs. DSPA. DSPA can improve open-ended response quality over the SFT base without weight updates. 
+
+tures. For Gemma, we fine-tune Gemma Scope JumpReLU SAEs (Lieberum et al., 2024; Raja-manoharan et al., 2024); for Qwen, we use released BatchTopK SAEs (Bussmann et al., 2024). 3
+
+Baselines We include the HH-RLHF supervised fine-tuned starting point (“Base Model”) as a reference, and compare DSPA to four baselines: DPO (Rafailov et al., 2023) fine-tuned on Ul-traFeedback chosen/rejected pairs (Cui et al., 2024), a dense representation-engineering control direction (RepE) estimated from chosen/rejected data (Zou et al., 2025), a static SAE steering baseline that edits a fixed globally selected feature set (Static-SAE) (Ferrao et al., 2025b; Bayat et al., 2025b), and an instruction-style prompt prefix (Prompt Eng) (Liu et al., 2024; Wu et al., 2025). DPO updates base-model weights, whereas DSPA/RepE/Static-SAE are inference-time activation interventions. In Section 4.4, we addi-tionally compare against RAHF-SCIT (Liu et al., 2024), a two-stage fine-tuning pipeline, under a restricted-data setting. Full hyperparameters and implementation details are in Appendix D.2. 
+
+4.2 Main Results: Open-Ended and Multiple-Choice Benchmarks 
+
+We evaluate open-ended generation with MT-Bench (Zheng et al., 2023) and AlpacaE-val (Li et al., 2023), both using LLM-as-a-judge protocols. We use GPT-4o as the MT-Bench judge; for AlpacaEval, we use the 
+
+alpaca_eval_llama3_70b_fn annotator, so abso-lute AlpacaEval scores are not directly comparable to leaderboards that use different judges. To mon-itor general capability, we report multiple-choice benchmarks (MMLU, Arc-Easy, TruthfulQA-MC2, HellaSwag, Winogrande) via the Language Model Evaluation Harness (Gao et al., 2024b) using stan-dard settings (Appendix D). Table 1 summarizes results (open-ended scores averaged over three generation seeds; small differ-ences should be interpreted cautiously). On MT- 
+
+> 3HF: adamkarvonen/qwen3-8b-saes .
+
+Bench, DSPA improves over the Base Model and over other inference-time baselines for all three models, and it matches or slightly exceeds DPO on Gemma-2-2B without weight updates. On Al-pacaEval, DSPA improves over the Base Model on Gemma-2-2B and Qwen3-8B, but underperforms both Prompt Eng and the Base Model on Gemma-2-9B. Static-SAE consistently degrades open-ended scores, supporting the need for prompt-conditional feature selection rather than a fixed global feature set. Multiple-choice metrics change only modestly across methods, suggesting limited capability re-gression. In Appendix E, we further break down MT-Bench scores by category. 
+
+4.3 Anatomy of Preference in SAE Space 
+
+A distinctive advantage of DSPA over dense steer-ing and fine-tuning methods is that every interven-tion is directly inspectable: because we operate on named SAE features, we can characterize the latent factors that drive preference gains. This anal-ysis is consistent with the theoretical expectation from Section 3.3: because A averages over many prompts, the features that emerge most strongly are high-frequency, broadly reusable interactional signals rather than prompt-specific content. We approximate frequently steered output fea-tures by ranking columns j of A by P 
+
+> i
+
+Ai,j :the top/bottom 50 form “augment”/“ablate” sets (Gemma-2-9B, ℓoutput = 39 ). We find that these ac-count for most features steered in practice: on the first turn of MT-Bench, the ablated features form a strict subset of our ablate set. In an auxiliary augment+ablate pass used only for this coverage check, all but four augmented features belong to the augment set. We generate an explanation for each of these features via an interpretability pipeline using 
+
+gpt-5-mini as a judge (see Appendix G.1). As these interpretations are LLM-generated and have not been systematically validated by humans, they should be treated as approximate. Descriptions of the top five augment and ablate set features, or-5Table 1: Open-ended and multiple-choice results (higher is better). Open-ended scores are averaged over three generation seeds; multiple-choice scores are deterministic. Bold = best; underlined = second best within each model group. Arc = Arc-Easy; TQA = TruthfulQA-MC2. DSPA improves MT-Bench across all three models with minimal multiple-choice regression, outperforming other inference-time baselines. See Appendix D. 
+
+Open-ended Multiple-choice 
+
+MT-Bench AlpacaEval MMLU Arc TQA HellaSwag Winogrande 
+
+> Gemma-2-2B
+
+DSPA (ours) 4.39 19.30 48.1 80.4 40.4 74.2 65.0 DPO 4.36 15.82 47.9 81.0 39.8 74.3 65.2 RepE 4.32 16.94 48.0 80.3 40.3 74.3 65.1 Static-SAE 3.49 9.33 48.0 80.6 39.5 74.2 65.7 
+
+Prompt Eng 3.84 15.28 47.8 80.8 41.0 74.0 64.3 Base Model 3.91 17.54 47.9 80.4 40.2 74.2 65.7 
+
+> Gemma-2-9B
+
+DSPA (ours) 5.02 20.00 60.6 83.8 45.4 77.3 72.5 
+
+DPO 5.05 17.39 60.4 83.6 44.1 77.3 72.5 
+
+RepE 4.36 18.88 60.4 83.8 45.5 77.5 72.5 
+
+Static-SAE 4.33 13.56 60.6 83.6 44.1 77.6 72.5 Prompt Eng 4.60 22.51 60.0 83.7 47.2 77.4 71.9 Base Model 4.39 21.12 60.0 83.7 45.5 77.4 71.9 Qwen3-8B  DSPA (ours) 4.86 17.83 71.2 84.3 42.4 72.6 73.8 DPO 5.52 24.60 72.6 85.5 45.9 73.0 73.4 RepE 4.48 12.95 71.2 84.4 41.0 71.7 73.1 Static-SAE 3.24 8.58 71.2 84.1 42.4 72.7 74.0 
+
+Prompt Eng 3.88 11.74 71.0 84.4 42.6 71.7 72.8 Base Model 4.12 13.47 71.1 84.4 40.9 71.6 72.0 
+
+Table 2: Top five ablate/augment-set features, with gpt-5-mini interpretations. Highly ranked preference features are dominated by discourse and stylistic cues. 
+
+Feature Interpretation 
+
+> Ablate
+
+11569 Filler phrases used to smooth conversation and request clarification 10776 Questions or statements involving illegal or clearly harmful activities 6345 Polite opening phrases that frame what follows 11287 First-person statements expressing personal views or experiences 12550 Short connective phrases linking ideas across clauses Augment  141 Common function words and grammatical connectors without semantic content 9825 Clarification and intent-seeking phrases linking questions and follow-ups 10075 Topic-naming or subject-introducing words and phrases 1030 Short list items and connectors enumerating entities or phrases 11031 Affirmative explanatory openings that introduce a helpful continuation 
+
+dered by magnitude |P 
+
+> i
+
+Ai,j |, appear in Table 2. We also prompt gpt-5-mini to categorize each feature into one of four categories: 1. Content: Topic-bearing or referential language with substantive semantic meaning 2. Discourse: Language that manages conversa-tional flow or interaction rather than content 3. Grammatical: Grammatical function words with minimal standalone meaning 4. Structure: Tokens whose primary role is posi-tional or structural rather than semantic Table 3 shows the breakdown by category for augment and ablate sets, compared to a sample of 50 random features as a baseline. Preference direc-tions are dominated by discourse and style markers: both the augment and ablate sets contain far more 
+
+Table 3: Category breakdown for ablate/augment sets (50 each) vs. 50 random SAE features. DSPA’s fre-quently steered features concentrate on discourse/style rather than topical content. 
+
+Category Ablate Augment Random 
+
+Content 5 7 18 Discourse 34 28 15 Grammatical 10 10 11 Structure 1 5 6
+
+Discourse and far fewer Content features than the random set. This is consistent with the view that preference-relevant signals for open-ended gener-ation are primarily interactional — tone, hedging, clarification — rather than about specific concepts. Notably, relatively few features in either set are 6Figure 3: MT-Bench score (higher is better) vs. pref-erence triples N under data restriction (Gemma-2-2B): DSPA vs. RAHF-SCIT. DSPA degrades gracefully down to N =100 , while RAHF-SCIT drops sharply. 
+
+Structure features, indicating that DSPA relies on conversational signals rather than formatting like lists or code. This contrasts with another recent SAE steering method, FSRL (Ferrao et al., 2025b), which primarily relies on features related to “struc-tural presentation elements.” Safety-specific signal is limited: the only directly safety-related feature is the second-most ablated one, index 10776, rep-resenting Questions or statements involving illegal or clearly harmful activities .
+
+4.4 Data Efficiency and Compute Cost 
+
+To study data efficiency, we subsample N =250 
+
+preference triples from UltraFeedback and recom-pute A; for weight-updating methods, we train on the same subset. We compare against DPO and RepE, as well as RAHF-SCIT (Liu et al., 2024), a strong but computationally heavy two-stage fine-tuning pipeline. Using standard FLOP accounting (Brown et al., 2020; Chowdhery et al., 2022), we estimate that the alignment stage of RAHF-SCIT is approximately 4.47 × as compute-intensive as DSPA’s A construction. In practice, on Gemma-2-9B on a single Nvidia H200, RAHF-SCIT takes 11 .5× longer wall-clock with peak memory 140.8 GB versus 33.1 GB (Appendix C). This comparison counts only additional alignment computation beyond the shared SFT base. Table 4 reports results at N =250 . In this setting, DSPA achieves the highest MT-Bench scores on Gemma-2-9B and Qwen3-8B and is within 0.02 of the best method on Gemma-2-2B. Both DSPA and RAHF-SCIT outperform DPO and RepE un-der data restriction. Figure 3 further sweeps N
+
+for Gemma-2-2B: DSPA remains stable even with as few as N =100 preference triples, while RAHF-SCIT’s score declines sharply. This robustness is consistent with the concentration analysis in Ap-pendix A: because the most frequently steered fea-tures (Section 4.3) are broadly reusable discourse signals, their conditional estimates in A stabilize quickly even with limited data. 
+
+4.5 Ablations 
+
+In the preceding experiments, we selected a con-sistent set of hyperparameters that yields strong results across all base models. In particular, we use 
+
+kprompt = 32 , k diff = 16 , α = 0 .2, and we ablate dispreferred SAE features as opposed to augment-ing preferred ones. We set ℓinput = 7 , ℓ output = 24 
+
+for Gemma-2-2B, ℓinput = 9, ℓ output = 39 for Gemma-2-9B, and ℓinput = 9, ℓ output = 18 for Qwen3-8B. Moreover, as discussed in Section 4.1, we use custom SAEs fine-tuned on HH-RLHF. In this section, we justify our choice of input and out-put layer, mode (ablate vs. augment), and the use of custom SAEs in a series of ablation experiments run on the two Gemma models. For ablations, we use MT-Bench judged by GPT-OSS-120B (much cheaper than GPT-4o); these scores are not directly comparable to our main MT-Bench results and are generally lower.         
+
+> Figure 4: Layer choice ablations (MT-Bench with GPT-OSS-120B judge; higher is better). A. Gemma-2-2B score vs. (ℓinput , ℓ output )(ablate only). B. Gemma-2-9B score vs. (ℓinput , ℓ output )(ablate only; augment+ablate). Dashed = Base Model. An early–mid input layer and a late output layer yield the strongest scores.
+
+Which layers matter? We examine the effect of different choices of ℓinput and ℓoutput in Fig-ure 4A for Gemma-2-2B and in Figure 4B for Gemma-2-9B. We observe that for Gemma-2-2B 
+
+ℓinput has a stronger impact on score than ℓoutput ,with ℓinput = 7 outperforming the other input layers surveyed. ℓinput = 7 , ℓ output = 24 has marginally better performance than other output layers choices; we also prefer a late output layer because late-layer SAE features are more likely to be interpretable. For Gemma-2-9B, we observe stronger depen-dence on both input and output layer, particularly when both augmenting and ablating features. The best score is achieved in both cases for ℓinput =9, ℓ output = 39 . This is consistent with our choice 7Table 4: Restricted-data results ( N =250 preference triples; higher is better). Open-ended scores are averaged over three generation seeds; multiple-choice scores are deterministic. Bold = best; underlined = second best within each model. 2B = Gemma-2-2B; 9B = Gemma-2-9B; Qwen = Qwen3-8B. Under severe data restriction, DSPA remains competitive with the two-stage RAHF-SCIT pipeline while using far less alignment compute (Appendix C).                                                                                            
+
+> Open-ended Multiple-choice
+> MT-Bench AlpacaEval MMLU Arc TQA HellaSwag Winogrande
+> 2B  DSPA 3.95 16.81 48.0 80.4 40.4 74.2 65.0 RAHF-SCIT 3.71 19.13 45.8 78.7 40.6 68.8 66.3
+> DPO 3.91 15.42 47.9 80.8 39.6 74.0 64.6 RepE 3.97 15.80 48.0 80.5 40.3 74.3 65.0 9B  DSPA 4.82 21.27 60.9 83.8 45.4 77.5 72.5 RAHF-SCIT 4.63 22.64 58.8 82.6 45.4 73.6 72.4 DPO 4.10 16.52 60.5 84.6 44.8 77.6 72.8
+> RepE 4.47 20.62 60.5 83.9 45.5 77.3 72.4 Qwen  DSPA 4.69 18.20 71.1 84.3 42.3 72.5 73.7
+> RAHF-SCIT 4.52 23.48 71.3 84.6 48.2 72.4 73.0 DPO 4.34 16.84 71.3 84.5 41.1 71.7 72.4 RepE 4.51 14.34 71.2 84.2 41.0 71.6 72.1
+
+of layers for Gemma-2-2B: in both cases we use an early–mid input layer and a late output layer. 
+
+Figure 5: Steering-mode and SAE ablations (MT-Bench with GPT-OSS-120B judge; higher is better). A. Score by steering mode (ablate/augment/both). 2B-Chosen and 9B-Chosen use the best (ℓinput , ℓ output ) per model; 9B-Average averages over the layer grid in Figure 4B. B. 
+
+Base Gemma Scope SAE vs. HH-RLHF fine-tuned SAE. Ablation-only is most reliable, and finetuned SAEs im-prove steering performance. 
+
+Ablate, augment, or both? A key decision point in applying DSPA is whether to augment desirable features, ablate undesirable ones, or do both; Fig-ure 5A summarizes the impact of this choice. We find that for both models only augmenting features leads to subpar results. For Gemma-2-2B, only ablating features is consistently better than either of the other modes. For Gemma-2-9B, under cer-tain layer combinations including our main choice of ℓinput = 9 , ℓ output = 39 , both augmenting and ablating yields a better score than ablating only, but this is not consistent across layer choices. For consistency, we only ablate features throughout. 
+
+Does fine-tuning the SAE help? In Figure 5B, we assess the impact of steering the base Gemma Scope SAEs (Lieberum et al., 2024) versus the custom SAEs fine-tuned on HH-RLHF which we have used throughout. We report results across both models and all three modes, keeping all other parameters constant. We observe smaller variance in score for the base SAE across modes, with per-formance comparable to the fine-tuned SAE for Gemma-2-2B and for Gemma-2-9B when augment-ing features. Conversely, the advantage of the fine-tuned SAE is strongest when using Gemma-2-9B and either ablating or both augmenting and ablating features. See Appendix B for more details. 
+
+Figure 6: Hyperparameter sensitivity (MT-Bench with GPT-OSS-120B judge; higher is better). A. Score vs. 
+
+kdiff (ablate only). B. Score vs. α (ablate only; aug-ment+ablate). Performance peaks near kdiff =16 and 
+
+α≈0.2, and overly strong augment+ablate can degrade quality. 
+
+How many features to steer? Figure 6A shows the impact of modifying the parameter kdiff , the number of differential features to augment and/or ablate. We find that for both models, among the values surveyed, the best results are obtained for 
+
+kdiff = 16 .
+
+How strong should steering be? In Figure 6B, we investigate the score obtained for various values of α, the factor that controls the steering strength. We observe a sharp decline in performance for high 
+
+α values when both augmenting and ablating fea-tures, whereas there is only a modest decline when ablating only for Gemma-2-9B and little effect at 8all for Gemma-2-2B. This is related to the fact that we clamp ablated feature values from below by 0, whereas there is no cap for augmented features, allowing them to be overexpressed in the high-α
+
+regime. We find that α = 0 .2 yields the best re-sults for Gemma-2-2B (ablate only) and Gemma-2-9B (augment and ablate) while maintaining high quality for other configurations; this motivates our choice of α = 0 .2 throughout. 
+
+5 Conclusion 
+
+We introduced DSPA, a prompt-conditional, inference-time preference-alignment method that steers decoding by modifying sparse SAE fea-tures via a conditional-difference map from prefer-ence data. Across MT-Bench and AlpacaEval on Gemma-2-2B/9B and Qwen3-8B, DSPA is compet-itive with strong inference-time baselines while pre-serving multiple-choice accuracy. DSPA remains robust under preference-data restriction and com-petitive with heavier pipelines while using far less alignment compute (up to 4.47 × fewer alignment-stage FLOPs than RAHF-SCIT). Because interven-tions occur in named SAE features, DSPA supports direct audits of what changes, and we find that preference gains are dominated by discourse and stylistic signals. Future work should test transfer to other safety and long-horizon tasks, and further explore de-mixing/whitening variants suggested by our theoretical analysis (Appendix A). 
+
+Limitations 
+
+SAE availability. DSPA requires SAEs for both input and output layers, and we find that SAEs fine-tuned on preference-relevant data yield sub-stantially better results than off-the-shelf SAEs (Section 4.5). As high-quality open-source SAEs become available for more model families, the ap-plicability of DSPA will broaden accordingly. 
+
+Evaluation scope. Our open-ended generation evaluations rely on LLM-as-a-judge protocols (MT-Bench with GPT-4o, AlpacaEval with Llama-3-70B), which have known biases including prefer-ences for length and style. Extending evaluation to safety-specific benchmarks and longer-form gener-ation is an important direction for future work. 
+
+Interpretability pipeline. Feature interpreta-tions and category assignments are generated by 
+
+gpt-5-mini without systematic human validation. While the resulting descriptions are plausible and consistent with observed steering behavior, they should be treated as approximate characterizations. 
+
+Ethical Considerations 
+
+Scope and intended use. DSPA is an inference-time preference-alignment technique that modifies internal activations using SAE features. It does not provide formal safety guarantees and should not be treated as a substitute for safety training, refusal policies, or content filtering. 
+
+Risks and misuse. Because DSPA is modular and reversible, it can lower the barrier to experi-menting with alignment interventions, but it could also be used to deliberately steer models toward harmful behavior by targeting the same mechanism. We recommend using DSPA only in conjunction with established safety mitigations and validating behavior changes on the intended distribution. 
+
+Data and bias. DSPA is derived from preference datasets (UltraFeedback, HH-RLHF) and evaluated using LLM-as-a-judge protocols, both of which may encode normative biases about what consti-tutes a “good” response; DSPA may inherit these biases. We do not conduct demographic fairness analyses, and we caution against interpreting bench-mark improvements as universally desirable. 
+
+Evaluation and interpretability limitations. 
+
+Our open-ended results rely on automated judges and our feature descriptions and category assign-ments are generated by gpt-5-mini ; these signals should not be interpreted as ground truth. We do not evaluate safety-specific benchmarks, so re-ported gains are benchmark- and judge-dependent. 
+
+Use of AI assistants. We used gpt-5-mini 
+
+for feature interpretation and categorization (Sec-tion 4.3, Appendix G.1); GPT-4o and GPT-OSS-120B served as MT-Bench judges. 
+
+Reproducibility. All code, fine-tuned SAEs, and model checkpoints will be made publicly available upon acceptance. 
+
+References  
+
+> Dana Arad, Aaron Mueller, and Yonatan Belinkov. 2025. Saes are good for steering – if you select the right features. In Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing ,page 10252–10270. Association for Computational Linguistics.
+
+9Yuntao Bai, Andy Jones, Kamal Ndousse, Amanda Askell, Anna Chen, Nova DasSarma, Dawn Drain, Stanislav Fort, Deep Ganguli, Tom Henighan, Nicholas Joseph, Saurav Kadavath, Jackson Kernion, Tom Conerly, Sheer El-Showk, Nelson Elhage, Zac Hatfield-Dodds, Danny Hernandez, Tristan Hume, and 12 others. 2022. Training a helpful and harmless assistant with reinforcement learning from human feedback. Preprint , arXiv:2204.05862. Reza Bayat, Ali Rahimi-Kalahroudi, Mohammad Pezeshki, Sarath Chandar, and Pascal Vincent. 2025a. Steering large language model activations in sparse spaces. arXiv preprint arXiv:2503.00177 .Reza Bayat, Ali Rahimi-Kalahroudi, Mohammad Pezeshki, Sarath Chandar, and Pascal Vincent. 2025b. Steering large language model activations in sparse spaces. Preprint , arXiv:2503.00177. Amrita Bhattacharjee, Shaona Ghosh, Traian Rebedea, and Christopher Parisien. 2024. Towards inference-time category-wise safety steering for large language models. arXiv preprint arXiv:2410.01174 .Abdelaziz Bounhar, Rania Hossam Elmohamady El-badry, Hadi Abdine, Preslav Nakov, Michalis Vazir-giannis, and Guokan Shang. 2026. Yapo: Learnable sparse activation steering vectors for domain adapta-tion. arXiv preprint arXiv:2601.08441 .Tom B. Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared Kaplan, Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, Sandhini Agarwal, Ariel Herbert-Voss, Gretchen Krueger, Tom Henighan, Rewon Child, Aditya Ramesh, Daniel M. Ziegler, Jeffrey Wu, Clemens Winter, and 12 others. 2020. Lan-guage models are few-shot learners. Preprint ,arXiv:2005.14165. Bart Bussmann, Patrick Leask, and Neel Nanda. 2024. Batchtopk sparse autoencoders. Preprint ,arXiv:2412.06410. Aakanksha Chowdhery, Sharan Narang, Jacob Devlin, Maarten Bosma, Gaurav Mishra, Adam Roberts, Paul Barham, Hyung Won Chung, Charles Sutton, Sebastian Gehrmann, Parker Schuh, Kensen Shi, Sasha Tsvyashchenko, Joshua Maynez, Abhishek Rao, Parker Barnes, Yi Tay, Noam Shazeer, Vin-odkumar Prabhakaran, and 48 others. 2022. Palm: Scaling language modeling with pathways. Preprint ,arXiv:2204.02311. Ganqu Cui, Lifan Yuan, Ning Ding, Guanming Yao, Bingxiang He, Wei Zhu, Yuan Ni, Guotong Xie, Ruobing Xie, Yankai Lin, Zhiyuan Liu, and Maosong Sun. 2024. Ultrafeedback: Boosting lan-guage models with scaled ai feedback. Preprint ,arXiv:2310.01377. Hoagy Cunningham, Aidan Ewart, Logan Riggs, Robert Huben, and Lee Sharkey. 2023. Sparse autoencoders find highly interpretable features in language models. 
+
+arXiv preprint arXiv:2309.08600 .Esin Durmus, Alex Tamkin, Jack Clark, Jerry Wei, Jonathan Marcus, Joshua Batson, Kunal Handa, Liane Lovitt, Meg Tong, Miles McCain, and 1 oth-ers. 2024. Evaluating feature steering: A case study in mitigating social biases. URL https://anthropic. com/research/evaluating-feature-steering .Nelson Elhage, Tristan Hume, Catherine Olsson, Nicholas Schiefer, Tom Henighan, Shauna Kravec, Zac Hatfield-Dodds, Robert Lasenby, Dawn Drain, Carol Chen, and 1 others. 2022. Toy models of su-perposition. arXiv preprint arXiv:2209.10652 .Jeremias Ferrao, Matthijs van der Lende, Ilija Lichkovski, and Clement Neo. 2025a. The anatomy of alignment: Decomposing preference optimiza-tion by steering sparse features. arXiv preprint arXiv:2509.12934 .Jeremias Ferrao, Matthijs van der Lende, Ilija Lichkovski, and Clement Neo. 2025b. The anatomy of alignment: Decomposing preference optimization by steering sparse features. Preprint ,arXiv:2509.12934. Leo Gao, Tom Dupré la Tour, Henk Tillman, Gabriel Goh, Rajan Troll, Alec Radford, Ilya Sutskever, Jan Leike, and Jeffrey Wu. 2024a. Scaling and evaluating sparse autoencoders. arXiv preprint arXiv:2406.04093 .Leo Gao, Jonathan Tow, Baber Abbasi, Stella Bider-man, Sid Black, Anthony DiPofi, Charles Foster, Laurence Golding, Jeffrey Hsu, Alain Le Noac’h, Haonan Li, Kyle McDonell, Niklas Muennighoff, Chris Ociepa, Jason Phang, Laria Reynolds, Hailey Schoelkopf, Aviya Skowron, Lintang Sutawika, and 5 others. 2024b. The language model evaluation harness. Lingkai Kong, Haorui Wang, Wenhao Mu, Yuanqi Du, Yuchen Zhuang, Yifei Zhou, Yue Song, Rongzhi Zhang, Kai Wang, and Chao Zhang. 2024. Aligning large language models with representation editing: A control perspective. Advances in Neural Information Processing Systems , 37:37356–37384. Xuechen Li, Tianyi Zhang, Yann Dubois, Rohan Taori, Ishaan Gulrajani, Carlos Guestrin, Percy Liang, and Tatsunori B. Hashimoto. 2023. Alpacaeval: An au-tomatic evaluator of instruction-following models. 
+
+https://github.com/tatsu-lab/alpaca_eval .Tom Lieberum, Senthooran Rajamanoharan, Arthur Conmy, Lewis Smith, Nicolas Sonnerat, Vikrant Varma, János Kramár, Anca Dragan, Rohin Shah, and Neel Nanda. 2024. Gemma scope: Open sparse autoencoders everywhere all at once on gemma 2. 
+
+Preprint , arXiv:2408.05147. Wenhao Liu, Xiaohua Wang, Muling Wu, Tianlong Li, Changze Lv, Zixuan Ling, Zhu JianHao, Cenyuan Zhang, Xiaoqing Zheng, and Xuan-Jing Huang. 2024. 
+
+10 Aligning large language models with human prefer-ences through representation engineering. In Pro-ceedings of the 62nd Annual Meeting of the Associa-tion for Computational Linguistics (Volume 1: Long Papers) , pages 10619–10638. Long Ouyang, Jeff Wu, Xu Jiang, Diogo Almeida, Car-roll L. Wainwright, Pamela Mishkin, Chong Zhang, Sandhini Agarwal, Katarina Slama, Alex Ray, John Schulman, Jacob Hilton, Fraser Kelton, Luke Miller, Maddie Simens, Amanda Askell, Peter Welinder, Paul Christiano, Jan Leike, and Ryan Lowe. 2022. Training language models to follow instructions with human feedback. Preprint , arXiv:2203.02155. Van-Cuong Pham and Thien Huu Nguyen. 2024. House-holder pseudo-rotation: A novel approach to activa-tion editing in llms with direction-magnitude perspec-tive. arXiv preprint arXiv:2409.10053 .Rafael Rafailov, Archit Sharma, Eric Mitchell, Christo-pher D Manning, Stefano Ermon, and Chelsea Finn. 2023. Direct preference optimization: Your language model is secretly a reward model. Advances in neural information processing systems , 36:53728–53741. Senthooran Rajamanoharan, Tom Lieberum, Nicolas Sonnerat, Arthur Conmy, Vikrant Varma, János Kramár, and Neel Nanda. 2024. Jumping ahead: Im-proving reconstruction fidelity with jumprelu sparse autoencoders. arXiv preprint arXiv:2407.14435 .Nina Rimsky, Nick Gabrieli, Julian Schulz, Meg Tong, Evan Hubinger, and Alexander Turner. 2024. Steer-ing llama 2 via contrastive activation addition. In 
+
+Proceedings of the 62nd Annual Meeting of the As-sociation for Computational Linguistics (Volume 1: Long Papers) , pages 15504–15522. Gemma Team, Morgane Riviere, Shreya Pathak, Pier Giuseppe Sessa, Cassidy Hardin, Surya Bhupati-raju, Léonard Hussenot, Thomas Mesnard, Bobak Shahriari, Alexandre Ramé, and 1 others. 2024. Gemma 2: Improving open language models at a practical size. arXiv preprint arXiv:2408.00118 .Yotam Wolf, Noam Wies, Dorin Shteyman, Binyamin Rothberg, Yoav Levine, and Amnon Shashua. 2024. Tradeoffs between alignment and helpfulness in lan-guage models with representation engineering. arXiv preprint arXiv:2401.16332 .Zhengxuan Wu, Aryaman Arora, Atticus Geiger, Zheng Wang, Jing Huang, Dan Jurafsky, Christopher D. Manning, and Christopher Potts. 2025. Axbench: Steering llms? even simple baselines outperform sparse autoencoders. Preprint , arXiv:2501.17148. An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, Chujie Zheng, Day-iheng Liu, Fan Zhou, Fei Huang, Feng Hu, Hao Ge, Haoran Wei, Huan Lin, Jialong Tang, and 41 others. 2025. Qwen3 technical report. Preprint ,arXiv:2505.09388. Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan Zhuang, Zhanghao Wu, Yonghao Zhuang, Zi Lin, Zhuohan Li, Dacheng Li, Eric P. Xing, Hao Zhang, Joseph E. Gonzalez, and Ion Stoica. 2023. Judg-ing llm-as-a-judge with mt-bench and chatbot arena. 
+
+Preprint , arXiv:2306.05685. Thomas P. Zollo, Andrew Wei Tung Siah, Naimeng Ye, Ang Li, and Hongseok Namkoong. 2025. Per-sonalllm: Tailoring llms to individual preferences. 
+
+Preprint , arXiv:2409.20296. Andy Zou, Long Phan, Sarah Chen, James Campbell, Phillip Guo, Richard Ren, Alexander Pan, Xuwang Yin, Mantas Mazeika, Ann-Kathrin Dombrowski, Shashwat Goel, Nathaniel Li, Michael J. Byun, Zifan Wang, Alex Mallen, Steven Basart, Sanmi Koyejo, Dawn Song, Matt Fredrikson, and 2 others. 2025. Representation engineering: A top-down approach to ai transparency. Preprint , arXiv:2310.01405. Andy Zou, Long Phan, Sarah Chen, James Campbell, Phillip Guo, Richard Ren, Alexander Pan, Xuwang Yin, Mantas Mazeika, Ann-Kathrin Dombrowski, and 1 others. 2023. Representation engineering: A top-down approach to ai transparency. arXiv preprint arXiv:2310.01405 .
+
+A Proofs and Additional Theory 
+
+A.1 Full Assumptions Assumption A.1 (Shared-covariance mean shift, full statement) . There exist a positive semidefinite matrix Σ ∈ RdSAE ×dSAE , a scalar c > 0, and a prompt-dependent vector β(x) ∈ RdSAE such that, conditional on x,
+
+˜ρ(y+) ∼  μ(x) + c 
+
+> 2
+
+Σβ(x), Σ,
+
+˜ρ(y−) ∼  μ(x) − c 
+
+> 2
+
+Σβ(x), Σ,
+
+for some prompt-dependent mean μ(x). Equiva-lently, E[∆˜ ρ | x] = c Σβ(x).
+
+Assumption A.2 (Additive gating, full statement) .
+
+There exists a matrix B ∈ RdSAE ×dSAE such that 
+
+β(x) = B g (x). Let M := E[g(x) g(x)⊤] ∈
+
+RdSAE ×dSAE denote the gate Gram matrix. Write the ith column of B as β(i).
+
+A.2 Proof of Theorem 3.3 
+
+Proof. By iterated expectation and Theorem 3.1, 
+
+A⊤ = E
+
+h
+
+∆˜ ρ g(x)⊤i
+
+= E
+
+h
+
+E[∆˜ ρ | x] g(x)⊤i
+
+=
+
+c Σ E
+
+h
+
+β(x) g(x)⊤i
+
+.
+
+Using Theorem 3.2, β(x) = Bg (x), so 
+
+E[β(x) g(x)⊤] = E[Bg (x)g(x)⊤] =
+
+B E[g(x)g(x)⊤] = BM , giving A⊤ = c Σ B M .Multiplying by Σ−1 on the left and M −1 on the right yields Σ−1A⊤M −1 ∝ B.11 Interpretation. Equation A⊤ = c Σ B M shows that rows of A generally mix multiple templates when gates co-activate: Ai, : is proportional to 
+
+Σ P 
+
+> i′
+
+Mii ′ β(i′), not Σβ(i) unless M is approxi-mately diagonal. 
+
+A.3 Proof of Theorem 3.4 
+
+Proof. By Theorems 3.1 and 3.2, conditioning on 
+
+gi = 1 :
+
+E[∆˜ ρ | gi = 1] = c Σ E[β(x) | gi = 1] = 
+
+c Σ E[Bg (x) | gi = 1] = 
+
+c Σ
+
+β(i) + X 
+
+> i′̸=i
+
+πi′|iβ(i′)
+
+ .
+
+The norm bound follows from triangle inequality and submultiplicativity: 
+
+∥Σ X 
+
+> i′̸=i
+
+πi′|iβ(i′)∥2 ≤ ∥ Σ∥2→2
+
+X 
+
+> i′̸=i
+
+πi′|i∥β(i′)∥2.
+
+If additionally ∥β(i)∥2 > 0 and P  
+
+> i′̸=i
+
+πi′|i∥β(i′)∥2 ≤ ϵ∥β(i)∥2, the relative error is bounded by ϵ · ∥ Σ∥2→2∥β(i)∥2/∥Σβ(i)∥2.
+
+A.4 DSPA Scoring and Optional De-mixing 
+
+At inference time, DSPA constructs an active set 
+
+Sprompt (e.g., the top kprompt indices by ρi(x)) and uses the truncated indicator ˆg(x) := 1Sprompt ∈{0, 1}dSAE . The score is 
+
+s(x) := A⊤ ˆg(x) = c Σ B M ˆg(x),
+
+where the ideal unmixed preference direction would be c Σ B g (x). DSPA makes two approx-imations: (i) replacing g(x) by a truncated in-dicator ˆg(x), and (ii) ignoring the off-diagonal co-activation structure encoded in M . When 
+
+M ≈ diag( p) (weak gate dependence), s(x) ≈
+
+c Σ B diag( p) ˆ g(x).
+
+Optional de-mixing on the active subspace. Al-though M is too large to invert globally, DSPA only uses a small active set. Let S := Sprompt 
+
+and MS := E[gS g⊤ 
+
+> S
+
+] ∈ R|S|×| S|. If MS is well-conditioned, a de-mixed score is 
+
+sdb (x) := A⊤ 
+
+> S, :
+
+M −1 
+
+> S
+
+gS (x) ≈ c Σ BS gS (x).
+
+A.5 Optimality of Top-k Ablation Assumption A.3 (Small ablation model in den-sity space) . For a fixed prompt x, ablating a set 
+
+S ⊂ [dSAE ] of size k produces an expected change 
+
+∆˜ ρ(y) ≈ − δ 1S for some fixed δ > 0.
+
+Theorem A.4 (Top-k ablation is optimal for lin-ear utility) . Under Theorem A.3 with linear util-ity U (x, y ) = β(x)⊤ ˜ρ(y), the expected utility im-provement among all sets S with |S| = k is max-imized by choosing the k smallest coordinates of 
+
+β(x).Proof. Under Theorem A.3, ˜ρ shifts by −δ1S ,so E[U (x, y edited ) − U (x, y )] = −δ P 
+
+> j∈S
+
+βj (x).With fixed k, this is maximized by selecting the k
+
+smallest βj (x).
+
+Relating s(x) to β(x). Under Theorem 3.1, the mean difference direction is c Σβ(x), so scoring coordinates by s(x) targets (a mixed approximation of) Σβ(x). If Σ is diagonal with nearly constant en-tries, rankings are preserved; otherwise, whitening by Σ−1 before selection may improve results. 
+
+A.6 Finite-Sample Concentration 
+
+Because ∆˜ ρj ∈ [−1, 1] and gi ∈ { 0, 1}, each sum-mand in ˆAi,j is bounded. Let Ni := PNk=1 gi(xk)
+
+be the number of training prompts with gi(x) = 1 .
+
+Lemma A.5 (Row-wise concentration) . Condi-tional on Ni, for any ϵ > 0,
+
+Pr  | ˆAi,j − Ai,j | ≥ ϵ | Ni
+
+ ≤ 2 exp  − 12 Niϵ2 .
+
+By a union bound, with probability at least 1 − δ,
+
+max  
+
+> j∈[dSAE ]
+
+| ˆAi,j − Ai,j | ≤ 
+
+q 2 log(2 dSAE /δ ) 
+
+> Ni
+
+.
+
+Implication. Rare gates (small Ni) yield noisy conditional estimates, motivating (i) percentile thresholding to control gate frequency and (ii) con-servative sparsification of A to remove entries dom-inated by estimation noise. 
+
+B Preference Feature Identification: Base vs. Fine-Tuned SAE 
+
+Let Abase denote the conditional-difference map (Section 3.1) computed using the base Gemma Scope SAEs, and Acustom the same map computed using the custom fine-tuned SAEs, in both cases using Gemma-2-9B with ℓinput = 9 , ℓ output = 39 .As an approximation for the features most likely to be augmented or ablated under DSPA, we con-sider the top kdiff = 16 output feature indices j for a given input feature i, sorting by Ai,j descend-ing for augment features or ascending for ablate features. Denote by Ai, (k) the kth largest and by 12 Ai, (−k) the kth smallest element of the row Ai;taking the union overall all i yields 
+
+Sbase augment = [
+
+> i∈[dSAE ]
+
+{j : Abase  
+
+> i,j
+
+≥ Abase 
+
+> i, (16)
+
+},Sbase ablate = [
+
+> i∈[dSAE ]
+
+{j : Abase  
+
+> i,j
+
+≤ Abase 
+
+> i, (−16)
+
+}
+
+and likewise for Scustom augment and Scustom ablate . We find that |Sbase augment | = 183 , |Sbase ablate | = 186 , |Scustom augment | =76 , |Scustom ablate | = 83 . Intuitively, the set of features most likely to be modified for the fine-tuned SAE is several times smaller than that for the base SAE, in-dicating a stronger concentration of features along generalized preference axes in the fine-tuned case. Interestingly, we find that many of the in-dices contained in these sets overlap between the base and fine-tuned SAE; concretely, |Sbase augment ∩
+
+Scustom augment | = 40 , |Sbase ablate ∩ Scustom ablate | = 49 . Despite this, the generated interpretations do not always match; for example, feature 10776 is interpreted as 
+
+Questions or statements involving illegal or clearly harmful activities for the fine-tuned SAE, and as 
+
+Hedging or clarification language expressing un-certainty or confusion for the base SAE. This small number of candidate features for the fine-tuned SAE is the grounds for our assertion in Section 3.1 that the matrix Acustom is sparse in practice. Let τ = min {| Acustom  
+
+> i,j
+
+| : Acustom  
+
+> i,j
+
+≥
+
+Acustom  
+
+> i, (16)
+
+or Acustom  
+
+> i,j
+
+≤ Acustom 
+
+> i, (−16)
+
+}. If we set en-tries of Acustom to 0 as long as |Acustom  
+
+> i,j
+
+| < τ ,then the number of nonzero entries is approxi-mately 0.002 d2 
+
+> SAE
+
+and Acustom  
+
+> i,j
+
+= 0 for all j /∈
+
+Scustom augment ∪ Scustom ablate . Generating responses to all first-turn MT-Bench questions and both ablating and augmenting features, we discover that the ablated features are a strict subset of Scustom ablate and the aug-mented features are a strict subset of Scustom augment , vali-dating this approximation. 
+
+C Training Compute Cost Comparison: DSPA vs. RAHF-SCIT 
+
+We compare the cost of DSPA matrix construction against the two-stage RAHF-SCIT pipeline (Liu et al., 2024) under the assumptions used in our restricted-data analysis. Following standard dense-transformer FLOP accounting (Brown et al., 2020; Chowdhery et al., 2022), we approximate one for-ward token by 2P FLOPs and one training token (forward + backward) by 6P FLOPs for a dense 
+
+P -parameter model, ignoring the smaller attention correction and implementation overhead. We take 
+
+P = 8 × 10 9 (an 8B-class model), and for DSPA use conservative estimates prompt/chosen/rejected lengths, setting p = c = r = 1000 .For DSPA, each preference triple requires three forward-only passes: one over the prompt, one over prompt+chosen, and one over prompt+rejected. Hence 
+
+FDSPA (N ) = 2 P N (3 p + c + r).
+
+Under our length estimates, this becomes 
+
+FDSPA (N ) = 8 × 10 13 N. 
+
+For RAHF step 1, the analyzed configuration consumes 4N effective training examples (two epochs over duplicated chosen/rejected variants), each with two gradient-tracked passes at effective length L1 = 768 , following the hyperparameter configuration in (Liu et al., 2024). This gives 
+
+Fstep1 (N ) = 48 P N L 1 = 2 .95 × 10 14 N. 
+
+For RAHF step 2, each example performs three no-grad forward passes and one gradient-tracked pass, for an effective cost of roughly 12 P FLOPs/-token. With effective optimizer-step batch B = 64 ,sequence length L2 = 512 , and max_steps =0.02 N ,
+
+Fstep2 (N ) = 12 P (BL 2)(0 .02 N ) = 6 .29 ×10 13 N. 
+
+Therefore 
+
+FRAHF (N ) = Fstep1 (N ) + Fstep2 (N ) = 3.58 × 10 14 N, 
+
+so the modeled compute ratio is 
+
+FRAHF (N )
+
+FDSPA (N ) ≈ 4.47 .
+
+These are model-FLOP estimates rather than measured hardware utilization, so the wall-clock ra-tio can be larger. In our Gemma-2-9B runs on a sin-gle Nvidia H200, DSPA matrix construction took 46 minutes with peak memory 33.1 GB, whereas the full RAHF pipeline took 8 hours 50 minutes with peak memory 140.8 GB. Thus, the observed wall-clock gap was 11 .5×, substantially larger than the 4.47 × modeled FLOP ratio. This extra gap is consistent with implementation overheads that are not captured by the simple FLOP model, including fixed-length padding, gradient checkpointing, and the more complex multi-pass training loop used by RAHF. 13 D Experimental Setup 
+
+D.1 Evaluations 
+
+We obtain MT-Bench results using FastChat ( http s://github.com/lm-sys/FastChat ), AlpacaE-val results using the official repository ( https: //github.com/tatsu- lab/alpaca_eval ), and MCQ benchmark results using the Language Model Evaluation Harness ( https://github.com /EleutherAI/lm-evaluation-harness ). Cus-tom code is used for response and loglikelihood generation for each of these, while the provided code is used for evaluations. We use the com-mon leaderboard settings and metrics for all MCQ benchmarks, as shown in Table 5. 
+
+Table 5: Multiple-choice benchmark settings.             
+
+> Benchmark Few-shot Metric
+> MMLU 5acc Arc-Easy 25 acc_norm TruthfulQA 0mc2 HellaSwag 10 acc_norm Winogrande 5acc
+
+D.2 Baselines 
+
+Table 6 lists the hyperparameter configurations for our baselines. For single-layer interventions, we use the same output layer as with DSPA, namely 
+
+ℓoutput = 24 for Gemma-2-2B and ℓoutput = 39 
+
+for Gemma-2-9B. For step 2 of RAHF, we run LoRA on layers {8, 10 , 12 , 14 } for Gemma-2-2B and {10 , 12 , 14 , 16 , 18 } for Gemma-2-9B, attempt-ing to choose layers analogous to those used in the original paper for the given models. When per-forming our data ablation experiments, we scale down the max steps parameter on step 2 proportion-ately to avoid overfitting. Open-ended results are averaged over three generation seeds, and we did not conduct an extensive per-model hyperparame-ter sweep for training baselines (especially DPO); stronger baseline performance may be achievable with additional tuning. 
+
+Table 6: Baseline hyperparameters.                                               
+
+> Baseline Hyperparameter Value
+> DPO Epochs 1DPO Learning rate 5×10 −6
+> DPO Beta 0.1 DPO Optimizer AdamW RepE Layer ℓoutput
+> RepE Directions 16 RepE Scale 0.5 Static-SAE Layer ℓoutput
+> Static-SAE Scale 0.5 RAHF Mode SCIT RAHF (step 1) Epochs 64 RAHF (step 1) Learning rate 2×10 −5
+> RAHF (step 1) Warmup ratio 0.1 RAHF (step 2) Learning rate 3×10 −4
+> RAHF (step 2) Max steps 450 RAHF (step 2) LoRA rank 8RAHF (step 2) LoRA alpha 16 RAHF (step 2) LoRA dropout 0.05 RAHF (step 2) Alpha 5
+
+E MT-Bench Category Breakdown 
+
+For more detailed inspection of the strengths and weakness of DSPA relative to our baselines, we pro-vide a breakdown of MT-Bench scores by category across the surveyed methods, shown in Table 7. We find that DSPA is competitive across categories. Likely due to adjusting style and tone features, it scores the best on the Roleplay category for both models, while maintaining performance on more objective tasks such as Math and Coding. Indeed, it also performs the best of any method studied on Math for both models, although scores are low across the board there for the small models in ques-tion. 
+
+F Personalization Experiment 
+
+We also tested whether DSPA’s interpretable latent interventions can support lightweight personaliza-tion. We use Gemma-2-9B with the same output SAE as in the main experiments. We curate 200 prompts containing varied content from the Person-alLLM dataset (Zollo et al., 2025), with an 80/20 train-test split. On the train set, we measure how ablating each candidate latent changes eight deter-ministic style axes relative to the base model, as shown in Table 10. We then construct persona-specific interventions either by selecting the top five latents with the highest estimated utility gain or by ablating all latents with positive estimated gain. Evaluation is performed on the test set, where 14 Table 7: MT-Bench scores by category.                                                                                                        
+
+> Coding Extraction Humanities Math Reasoning Roleplay STEM Writing
+> Gemma-2-2B  DSPA (ours) 2.20 3.20 5.92 2.40 3.00 6.60 5.72 6.05
+> DPO 3.10 4.38 6.67 2.00 3.02 4.95 5.65 5.09 RepE 1.93 4.97 5.90 2.30 2.95 5.25 5.96 5.26 Static-SAE 1.48 4.00 4.60 2.15 2.10 4.58 4.49 4.50 Prompt Eng 2.05 3.20 5.90 2.40 2.15 5.03 5.72 4.05 Base Model 2.30 3.80 5.90 2.20 2.90 4.05 5.92 4.17
+> Gemma-2-9B  DSPA (ours) 3.55 5.05 6.78 2.35 3.77 5.55 7.17 5.35 DPO 3.30 6.12 5.67 2.25 3.90 5.10 6.67 6.50
+> RepE 2.90 4.08 6.70 1.95 3.55 5.10 6.15 5.35 Static-SAE 2.15 5.15 5.53 2.00 2.95 5.10 6.50 5.25 Prompt Eng 3.10 5.10 6.55 1.85 3.27 4.68 6.53 5.70 Base Model 3.33 3.90 5.86 1.95 3.45 5.12 6.55 4.92
+
+we report two complementary scoring protocols. First, we use a deterministic axis rubric: each re-sponse is scored on the eight axes and aggregated into a scalar utility under a fixed persona-specific weight vector. Second, we evaluate against the ten reward models released with PersonalLLM (Zollo et al., 2025), reporting mean judge z-scores (Ta-ble 9). For the latter method, we test two variants of the DSPA-based method, judge-axis and judge-contrast. Judge-axis DSPA selects latents using the deterministic eight-axis personalization rubric: we estimate how each latent shifts the hand-designed style axes, then rank latents by their predicted util-ity under a judge-specific preference profile de-rived from those axes. Judge-contrast DSPA in-stead selects latents directly from paired reward differences, favoring latents whose ablation most improves responses preferred by a given Person-alLLM judge over responses it disfavors, without going through the intermediate axis decomposition. We test against the following baselines: 1. Instruction. For each persona, we provide the model with a short natural-language description of that user’s preferences and ask it to answer in a way that matches those preferences, without retrieving any example responses or modifying the model’s activations. 2. Few-shot ICL. Following the most successful intervention from prior work (Zollo et al., 2025), we prepend one or five persona-matched exam-ple prompt-response pairs to the test prompt and then decode normally, without any latent inter-vention. The pairs are selected from the train-ing set based on cosine similarity to the current prompt. Across both protocols, latent ablation shows promise as a complementary personalization mech-anism, though prompt-based baselines remain strong overall. On the deterministic rubric, DSPA alone (top 5) improves over the base model but trails both instruction-based and few-shot ICL methods; however, combining DSPA with 5-shot ICL yields the best results (3.173), suggesting that latent interventions and retrieval-based methods capture complementary signals. On the reward-model protocol, DSPA-based methods outperform instruction prompting but do not reach the perfor-mance of few-shot ICL. These results indicate that DSPA’s stylistic interventions can augment other personalization strategies but are not yet a stan-dalone substitute for retrieval-based approaches. 
+
+Table 8: Personalization: deterministic utility (higher is better).         
+
+> Method Mean utility Base model 2.400 DSPA (unconstrained) 2.431 DSPA (top 5) 2.539 Instruction 2.573 5-shot ICL 2.875 5-shot ICL + DSPA (top 5) 2.888 5-shot ICL + DSPA (unconstrained) 3.173
+
+Table 9: PersonalLLM reward-model evaluation (mean judge z-score over 10 reward models; higher is better).        
+
+> Method Mean judge z-score Instruction -2.239 Judge-axis DSPA (top 5) -2.128 Judge-contrast DSPA (top 5) -2.061 1-shot ICL -1.973 5-shot ICL -1.853
+
+Table 10 shows the five single-latent ablations with the largest total absolute shift across the eight deterministic axes on the train split. The dominant patterns are broad discourse/style effects rather than clean one-axis controls: for example, latent 15 6345 most strongly shifts conciseness and proactiv-ity, while latent 3491 strongly increases structure. This supports the view that DSPA personalization operates through reusable stylistic features. 
+
+G Feature Interpretation 
+
+G.1 Prompts 
+
+We use the following prompt to generate human-readable feature interpretations from gpt-5-mini :
+
+System: You are an interpretability researcher focused on overall trends. Use the provided snippets as evidence, and tolerate some counterexamples. Only mark a feature as unreliable if you are genuinely unsure. User: Latent {latent_idx} in an SAE. Provide a concise explanation (<=2 sentences). If you are genuinely unsure, return reliable=false. In the snippets, tokens wrapped in [[double brackets]] are where the latent is active; use surrounding context to interpret what the latent represents. It is OK if the pattern has some exceptions. Return JSON with keys: reliable (bool), explanation (string or null), evidence ( string). High-activation snippets: {snippets} 
+
+We again use gpt-5-mini with the following prompt to assign categories to each interpretation. Because the Safety and Intent categories had rel-atively few members, for clarity, we folded those into Content and Discourse respectively when re-porting results in Section 4.3. 
+
+You are given a short description of a language feature (an SAE latent interpretation). Assign it to exactly one of the following categories based on its primary function. If multiple categories seem plausible, choose the most dominant one. Return only the category name, with no explanation. Categories: Safety - Language related to harm, illegality, sensitive activities, private data, refusal, caution, or policy-related framing (e.g. illegal activities, self-harm, drugs, personal data requests). Discourse - Language that manages conversational flow or interaction rather than content (e. g. polite lead-ins, acknowledgements, hedging, topic shifts, explanation onsets). Intent - Language that frames what kind of action or response is being requested or provided (e.g. asking for instructions, step -by-step guidance, advice framing, question vs answer signaling). Structure - Tokens whose primary role is positional or structural rather than semantic (e.g. sentence-initial markers, clause boundaries, list markers, punctuation -adjacent or formatting tokens). Grammatical - Closed-class or near-closed-class grammatical function words with minimal standalone meaning (e.g. articles, pronouns, auxiliaries, conjunctions, generic connectors). Content - Topic-bearing or referential language with substantive semantic meaning (e.g. named entities, domains like politics or health, concrete objects or actions, lexical patterns like words starting with a specific prefix). Feature description: {description} 
+
+G.2 Ablate and Augment Set Features 
+
+Interpretations for the 50 ablate set and 50 augment set features identified in Section 4.3 are shown in Table 11 and Table 12, respectively. 16 Table 10: Mean train-set axis shift ∆ after ablating the five most influential latents (positive toward the left side of each axis). 
+
+Axis 6345 3491 1077 13585 4260 Conciseness vs. verbosity -0.106 0.000 -0.044 0.019 0.044 Friendliness vs. professionalism 0.031 -0.025 0.019 0.031 0.031 Directness vs. diplomacy -0.056 -0.081 -0.062 -0.100 -0.069 Structure vs. freeform 0.100 0.219 -0.050 0.050 0.000 Task focus vs. relational focus -0.019 -0.019 -0.069 -0.038 -0.044 Proactive vs. minimal scope -0.094 -0.006 -0.019 -0.069 -0.056 Certainty vs. caveating -0.044 -0.075 -0.075 -0.056 -0.081 Creativity vs. literalism 0.006 -0.013 -0.050 0.013 -0.025 
+
+Table 11: Ablate-set features (50), with gpt-5-mini interpretations. 
+
+Feature Interpretation 
+
+11569 Filler phrases used to smooth conversation and request clarification 10776 Questions or statements involving illegal or clearly harmful activities 6345 Polite opening phrases that frame what follows 11287 First-person statements expressing personal views or experiences 12550 Short connective phrases linking ideas across clauses 1077 Introductory phrases that set up a question or topic 1810 Brief acknowledgements and generic conversational replies 10995 Common opening phrases that ease into an explanation 4260 Discourse markers that signal a shift or continuation in thought 6167 Phrases that signal an explanation or reasoning is about to follow 8646 General noun phrases referring to people, roles, or categories 5681 Conjunctions commonly used at the start of multi-part statements 3107 Direct address phrases used at the beginning of a reply 14500 Very common function words and basic grammatical glue 13585 Requests asking for instructions or methods to achieve something 6782 Topic-introducing phrases that mark a new segment of thought 11172 Frequently used lead-in phrases starting an explanation 15059 Conversational opening phrases that introduce a question or new topic 3491 Common everyday words and short phrases spanning many unrelated topics 15061 Prefatory phrases that clarify, hedge, or gently frame what follows 13208 Short topical phrases that mark what is being asked about or explained 3869 Friendly, polite conversational lead-ins and transitional phrases 11799 Very common short words used to open questions or continue dialogue 5327 Requests asking for step-by-step instructions or practical guidance 5705 Small grammatical connectors linking clauses or introducing verb phrases 3605 Structural framing phrases that set up how information will be presented 15907 Compact noun or verb phrases carrying the main focus of a statement 13819 Discourse cue words that introduce, reference, or frame content 15659 Signals marking the start of a substantive explanatory continuation 3142 Food, cooking, and hosting-related language and recipe contexts 14408 Short function words and connective fragments near punctuation 12655 Generic introductory phrases that begin an explanation or transition 4456 Engaging, agreeable openings that signal readiness to explain or list 15107 General action- or advice-framing language introducing recommendations 15168 Very common function words with minimal standalone semantic content 6909 Clear explanatory or instructional language answering a question 11641 Sentence-initial grammatical tokens marking basic structure 8180 Clarifying lead-ins that refine or follow up 10118 Short grammatical tokens like pronouns and auxiliaries 5688 Sentence-opening filler with little consistent meaning 9580 Openings of short, direct questions 13493 Small connective words linking clauses 437 Question-framing cue words and auxiliaries 5811 High-level framing words introducing a topic or question 8003 Common pronouns and conjunctions as grammatical glue 2842 Pronouns and short connectors common in conversation 4035 Short determiners, pronouns, and auxiliaries 14791 Generic conversational utility phrases 9631 First-person statements expressing intentions or requests 11855 Connective function words continuing phrases 
+
+17 Table 12: Augment-set features (50), with gpt-5-mini interpretations. 
+
+Feature Interpretation 
+
+141 Common function words and grammatical connectors without semantic content 9825 Clarification and intent-seeking phrases linking questions and follow-ups 10075 Topic-naming or subject-introducing words and phrases 1030 Short list items and connectors enumerating entities or phrases 11031 Affirmative explanatory openings that introduce a helpful continuation 8244 Contractions and possessive markers using apostrophes 15634 Sentence- or clause-initial tokens marking utterance beginnings 4891 Polite request openings introducing questions or actions 13301 Conversational scaffolding words framing dialogue or transitions 2969 Everyday life topics and general practical advice contexts 6268 Clause-initial function words like articles and auxiliaries 11779 Hedging or softening discourse openings before explanations 7569 Turn-initial or sentence-initial position markers 6509 Place names, locations, and location-focused references 6586 Very short replies handling brief or provocative inputs 2135 Prompts ending with a focused keyword or target phrase 9304 Response-leading fragments introducing explanations or suggestions 5314 Question phrasing and self-referential statements expressing personal perspective 5049 Auxiliary verbs and short grammatical continuations at clause boundaries 13656 Introductory interjections and brief discourse markers near turn starts 8172 Location and containment references like "in", "in my area", "address" 4263 Key topical noun phrases defining the main semantic focus 12827 Frequent topical nouns and short subject phrases across contexts 866 Common connectors like "or/of/the" in lists or alternatives 6143 Clause-beginning tokens and common connectors near sentence starts 1820 Very common function words and generic everyday connective tokens 8543 Conversational lead-ins introducing instructions or explanations 15344 High-frequency stopwords and short boundary tokens like "the/from/to" 1477 Concise direct question forms often beginning with wh-words 7375 High-frequency grammatical connectors like "are/this/the/but/is" 12366 Short glue phrases and function words near sentence or turn boundaries 8229 Initial tokens of named entities and multiword noun phrases 16271 Generic conversational openings and short transition phrases 14204 Salient topical keywords and notable content-bearing terms 5426 Informal conversational lead-ins, hedges, and smalltalk-style discourse markers 16033 Polite explanatory framing phrases introducing clarification or help 13130 Introductory phrases that open a new question or topic 6532 Very common function words and generic connective fillers 3594 Tokens marking clause boundaries and new structural segments 5416 Openings that begin or continue an explanatory reply 9670 Common connective words used during explanation or elaboration 13329 Direct question phrasing signaling a request for information 2610 Utterance-initial phrases starting a new topic or inquiry 613 Openings that introduce explanations, lists, or examples 7264 Words referencing the main topic or subject under discussion 15264 Short grammatical connectors like prepositions and determiners 3895 Utterance-initial tokens marking the very start of a clause 14998 Short function words anchoring clause starts or discourse pivots 2208 Sentence beginnings introducing concrete advice or factual responses 10754 Tokens marking the start of a new question or request 
+
+18
