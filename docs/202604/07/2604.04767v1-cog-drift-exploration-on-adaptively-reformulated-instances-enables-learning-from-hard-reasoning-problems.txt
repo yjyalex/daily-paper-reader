@@ -1,0 +1,616 @@
+Title: Cog-DRIFT: Exploration on Adaptively Reformulated Instances Enables Learning from Hard Reasoning Problems
+
+URL Source: https://arxiv.org/pdf/2604.04767v1
+
+Published Time: Tue, 07 Apr 2026 01:53:08 GMT
+
+Number of Pages: 22
+
+Markdown Content:
+Preprint. Under review. 
+
+# Cog-DRIFT: Exploration on Adaptively Reformulated Instances Enables Learning from Hard Reasoning Problems 
+
+Justin Chih-Yao Chen Archiki Prasad Zaid Khan Joykirat Singh Runchu Tian Elias Stengel-Eskin Mohit Bansal 
+
+UNC Chapel Hill 
+
+## Abstract 
+
+Reinforcement learning from verifiable rewards (RLVR) has improved the reasoning abilities of large language models (LLMs), yet a fundamental limitation remains: models cannot learn from problems that are too difficult to solve under their current policy, as these yield no meaningful reward signal. This creates a performance ceiling where further training yields diminishing returns. We propose a simple yet effective solution based on task reformulation. We transform challenging open-ended problems into cognitively simpler variants – such as multiple-choice and cloze formats – that preserve the original answer while reducing the effective search space and providing denser learning signals. These reformulations span a spec-trum from discriminative to generative tasks, which we exploit to bootstrap learning: models first learn from structured, easier formats, and this knowl-edge transfers back to improve performance on the original open-ended problems. Building on this insight, we introduce Cog-DRIFT, a framework that automatically constructs reformulated variants and organizes them into an adaptive curriculum based on difficulty. Training progresses from easier to harder formats as the model improves, enabling the model to learn from problems that previously yielded zero signal under standard RL post-training. Cog-DRIFT not only improves on the originally unsolvable hard problems (+10.11% for Qwen and +8.64% for Llama in absolute gains), but also generalizes well to other held-out datasets. Across two models and six challenging reasoning benchmarks, our method consistently outperforms standard GRPO and strong guided-exploration baselines. On average, Cog-DRIFT shows +4.72% (Qwen) and +3.23% (Llama) improvements over the second-best baseline. We further show that Cog-DRIFT improves pass@k at test time, and the curriculum improves sample efficiency. Overall, our results highlight task reformulation and curriculum learning as an effective paradigm for overcoming the exploration barrier in LLM post-training. 1
+
+## 1 Introduction 
+
+Learning from problems that exceed a learner’s current capacity is inherently difficult. This challenge is not unique to models: in human learning, the Zone of Proximal Development 
+
+(Vygotsky et al., 1978) describes how learning is maximized when tasks are neither too easy nor too difficult, but instead lie just beyond the learner’s current capabilities and can be solved with appropriate scaffolding (Wood et al., 1976; Berk & Winsler, 1995). Educational psychology further shows that problem format plays a central role in shaping cognitive load and learning dynamics. Structured formats such as multiple-choice (MCQs) (Kelly, 1916; Cantor et al., 2014) and fill-in-the-blank (cloze) tasks (Taylor, 1953; Polat, 2020) have been used to reduce cognitive load and scaffold learning (Sweller, 1988; Cantor et al., 2014; Gog et al., 2004). Theoretically, constraining the effective search space and transforming generation into recognition reduces cognitive load (Ko, 2010; Howard et al., 2017). Over time, repeated exposure to such scaffolded tasks supports learning and facilitates transfer to more 
+
+> 1
+
+Code is available at: https://github.com/dinobby/Cog-DRIFT 
+
+1
+
+> arXiv:2604.04767v1 [cs.LG] 6 Apr 2026
+
+Preprint. Under review. Anxiety Zone Anxiety Zone                        
+
+> Out of reach
+> Hard Open -ended Problem (Pass@64=0)
+> Q
+> Hin
+> 🙂
+> 🙂
+> Sources Types of Hint
+> Self Teacher Ans.
+> …
+> Expl .Abstract Cue Partial Steps
+> MCQ Problem (More Discriminative)
+> Cloze Problem (More Generative)
+> Reformulation (MCQ / Cloze)
+> (A) Reformulating problems reduces
+> cognitive load, as well as difficulty
+> 121 * 369 / 66 = ? (Answer: 676.5)
+> 121 * 369 / 66 = ?
+> (A) 660.5 (B) 676.5 (C) 680.0 (D) 693.5
+> 121 * 369 / 66 = ?
+> The answer should be like: 67_._
+> (B) Learning from cog. load -reduced
+> problems transfer back to hard ones
+> Instruct GRPO Ours
+> Held -out Pass @64=0 Test Set
+> Train on Reformulated Problems
+> Accuracy (%)
+> 0.0 0.0
+> 8.6
+> (Pass@64=0)
+> (Fails to learn)
+> (C) Learning from hard problems
+> improves other held -out datasets
+> Accuracy (%)
+> Instruct GRPO Ours
+> OmniMATH GPQA
+> 5.1
+> 15.3
+> 4.3
+> 12.0
+> 7.0
+> 23.3
+> Train on Reformulated Problems
+> 15.3
+
+Figure 1: (A) If a problem is too hard (e.g., pass@64=0), the model cannot learn from it. Reformulation into an MCQ or a cloze task can effectively reduce cognitive load, as well as difficulty for the model. (B) We find that learning from cognitive-load-reduced tasks transfers back to the original hard questions (i.e., learning from MCQ/cloze also improves open-ended questions). (C) These improvements on the original hard questions also generalize to held-out datasets. Results in (B) and (C) are based on Llama3.2-3B-Instruct. complex, open-ended problems (Gog et al., 2004; Sweller et al., 1998). Taken together, these insights from human learning suggest a compelling analogy for training large language models (LLMs): when a problem is too difficult to learn from directly, reformulating it into structured variants might bring it into the model’s Zone of Proximal Development, enabling learning signals that would otherwise be inaccessible. This perspective is particularly relevant for Reinforcement Learning with Verifiable Reward (RLVR). While RLVR has become a dominant learning paradigm to improve LLM reasoning (Guo et al., 2025), a key limitation remains in commonly used algorithms such as PPO (Schulman et al., 2017) and GRPO (Shao et al., 2024), which we visualize in Figure 1(A): when models are trained directly on difficult problems, on-policy RL often fails to obtain any positive reward signal, leading to zero advantages and no meaningful updates. Here, we define “difficult” as pass@64=0, following past work (Jiang et al., 2026). This failure mode resembles the “out of the Zone of Proximal Development” setting in human learning, where tasks are too difficult for learning to occur. Prior work has attempted to address this issue in two main ways: either by leveraging stronger models to generate expert trajectories for guidance (Qu et al., 2025), or by using the same policy to generate either easier problems or hints to reduce problem difficulty (Sundaram et al., 2026; Chen et al., 2025a; Li et al., 2025b; Wang et al., 2025). However, stronger models are not always available, and soliciting expert guidance can be costly, limiting its scalability. Moreover, hard problems often represent the ceiling of capacity, so obtaining solutions from an expert model or human may not be feasible (i.e., even too hard for experts). Self-generated hints can be effective, but are also limited by the model’s overall capabilities, leaving room for improvement (c.f. Section 2). We instead propose task reformulation as a practical solution. By rewriting open-ended questions (OEQ) as multiple-choice (MCQ) or fill-in-the-blank (cloze) tasks, the output space is dramatically constrained and learning signals become far denser. Importantly, these reformulations span a spectrum between discriminative and generative learning tasks. MCQs are more discriminative, turning the task into one of ranking or selection. Cloze tasks are partially generative, requiring the model to produce missing components of the answer. OEQs lie at the most generative extreme. Our approach leverages this spectrum by using discriminative tasks to bootstrap learning: generative tasks teach models to avoid shortcuts (e.g., skipping reasoning steps, outputting the correct answer choice with partial input) (Balepur et al., 2025; Chandak et al., 2025; Li et al., 2025a) while discriminative tasks are easier to learn (Geirhos et al., 2020). In Figure 1(B) and Section 3, we find that once the model learns on the reformulated tasks, it can transfer back to the original open-ended setting. However, we find that naively using a single reformulation is insufficient for generalization. Empirically, performance improvements on held-out datasets only emerge when models are exposed to multiple reformulations simultaneously, suggesting 2Preprint. Under review. that diversity in difficulty is key. This observation motivates Cog-DRIFT, a framework that reformulates hard problems into a spectrum of variable difficulty problems, and organizes them into an adaptive curriculum analogous to cognitive scaffolding approaches in human education. 2 Concretely, given a challenging open-ended question, we generate a family of cognitively simplified variants (e.g., multiple-choice with varying numbers of options, cloze-style questions), all of which preserve the original answer and thus maintain verifiable correctness. Rather than viewing these reformulations as isolated augmentations, we interpret them as forming a difficulty spectrum to enable ordered progression. This design also aligns with the Zone of Proximal Development in human learning, where learners benefit most from tasks that are appropriately difficult. Cog-DRIFT leverages this structure by adaptively advancing the model from easier to harder variants based on empirical accuracy (i.e., progressing to the next level once a target accuracy threshold is reached), thereby automating curriculum construction. We show that compared to static mixtures of reformulations, this adaptive curriculum yields more sample-efficient training. We evaluate Cog-DRIFT on six benchmarks, including BigMath-Hard (Albalak et al., 2025), OmniMATH-Hard (Gao et al., 2024), AIME2024/2025 (AIME, 2025), GPQA-Diamond (Rein et al., 2024) and Date Understanding (Srivastava et al., 2022) with two models: Qwen3-4B-Instruct-2507 (Team, 2025) and Llama3.2-3B-Instruct (Grattafiori et al., 2024). Results demonstrate that reformulating hard problems to reduce cognitive load successfully unlocks learning where standard methods fail: we find that directly training on the hard problems using GRPO is not stable with sparse reward signals, and can harm generalization on held-out tasks. In contrast, Cog-DRIFT yields consistent gains across benchmarks: compared to the second-best baseline, our method shows an absolute +4.72% average improvement for Qwen, and +3.23% for Llama. Moreover, Cog-DRIFT also improves pass@k over both the base model and the GRPO-trained variant, suggesting that it enables the acquisition of new reasoning capabilities from hard examples that initially lie beyond the model’s capacity. We conduct extensive analyses and highlight two critical factors driving this success: (1) exposing the model to a diverse mixture of reformulations (such as combining multiple-choice and cloze formats) is essential for transferring reasoning skills back to open-ended tasks, and (2) an instance-level curriculum that progressively scales problem difficulty significantly boosts sample efficiency and prevents performance plateaus. 
+
+## 2 Related Work 
+
+Reinforcement Learning with Verifiable Rewards (RLVR). RLVR has emerged as a domi-nant paradigm for training large language models on reasoning tasks by utilizing objective, rule-based feedback rather than human preferences (Lambert et al., 2024; Guo et al., 2025; Team et al., 2025; Zeng et al., 2025). By employing deterministic verifiers (e.g., binary re-wards based on final answer correctness), RLVR is particularly effective for mathematics and code generation where ground truth is unambiguous. Extending this paradigm to unverifiable domains, Lu et al. (2026) demonstrate that large-scale internet text can be transformed into structured formats such as multiple-choice and masked prediction tasks to enable RLVR. Central to the current discourse is whether RLVR enables the genuine discovery of new reasoning abilities or primarily performs ”distribution sharpening” by amplifying high-reward paths already present in the model’s latent space (Zhang et al., 2025a; Zhao et al., 2025; Shenfeld et al., 2025). While some studies suggest RLVR mainly improves sampling efficiency (pass@1) without increasing the total knowledge (pass@ k)(Yue et al., 2025; He et al., 2025), others argue that RL can indeed foster new skills through the strategic combination of existing ones (Yuan et al., 2025) or by balancing the entropy-reward trade-off to prevent premature convergence (Wu et al., 2025). Although with a sufficiently large k (e.g., vocab size seq len ), even a randomly initialized model could achieve near-perfect pass@ k, RLVR operates under a rollout budget, so how to improve the model within a limited sampling budget, where k must remain small relative to the total number of rollouts becomes the real question (Yu et al., 2026; Nath et al., 2025). 
+
+> 2We use the term “cognitive” to draw an analogy to human learning, referring specifically to structured progression in task difficulty rather than implying human-like cognition in models.
+
+3Preprint. Under review. 
+
+Learning from the Hard Problems. A challenge in RLVR occurs when problems are excessively difficult such that on-policy sampling fails to discover any correct solutions, i.e., the model cannot get any non-zero reward (Qu et al., 2025). To bridge this gap, research has shifted toward sophisticated exploration strategies and hybrid optimization. One line of work focuses on ”nudging” the model through self-generated hints, critiques, or partial solutions to reduce problem difficulty and expand the reasoning boundary (Li et al., 2025b; Zhang et al., 2025b; Chen et al., 2025a; Wang et al., 2025). Ma et al. (2025) interleave SFT to learn from hard questions that RLVR cannot. Sundaram et al. (2026) train the teacher policy for generating question-answer pairs based on the improvement of the student policy. Other approaches leverage privileged information or offline trajectories to provide a learning signal in sparse-reward environments (Lu et al., 2025; Yan et al., 2025), such as POPE, which uses offline prefixes from a stronger model to guide exploration into reachable reward regions (Qu et al., 2025). In parallel, Sun et al. (2025) propose a “grokking” recipe for RLVR by showing that staged warm-ups, experience replay, and a curriculum enable learnability on previously unsolvable problems. Together, these advancements suggest that scaling RLVR requires moving beyond pure on-policy exploration toward self-improvement mechanisms and careful curriculum design (Shi et al., 2025; Parashar et al., 2025; Bae et al., 2026). Despite their differences, these approaches share a common principle: they aim to make hard problems learnable by injecting additional signal – either through stronger supervision, guided exploration, or richer training dynamics. Our approach takes a fundamentally different perspective. We introduce cognitive load as a unifying lens and show that reformulating problems into simpler variants enables the model to access reward signals that are otherwise unreachable under standard RLVR. Crucially, this is coupled with an adaptive curriculum that dynamically schedules these reformulations based on the model’s learning progress, ensuring that training remains within a learnable regime while gradually increasing difficulty. Empirically, this leads to a substantial increase in the rate of hard problems during training that become solvable, reaching up to 18.9%, compared to the 1-4% range reported by prior methods (Chen et al., 2025a; Sundaram et al., 2026). 
+
+## 3 Problem Statement 
+
+Let Mθ denote a language model with parameters θ. We consider a dataset of open-ended problems D = {(xi, yi)}Ni=1, where xi is a problem prompt and yi is the corresponding exact answer. 3 The model can generate k independent samples { ˆy(j) 
+
+> i
+
+}kj=1 for a specific xi, and the commonly used pass@ k metric evaluates whether at least one of the k generations is correct: pass@ k(xi) = I[∃j ∈ { 1, . . . , k} such that ˆ y(j) 
+
+> i
+
+= yi].We define the set of hard problems as the subset of examples on which the model fails to produce a correct answer even after 64 samples: Dhard = {(xi, yi) ∈ D | pass@64 (xi) = 0}.This definition has an important implication for RL training with rollout-based objectives (e.g., GRPO): if pass@64 (xi) = 0, then the probability of sampling a correct trajectory is extremely low (requiring ≫ 64 samples) given the same policy. Consequently, the reward signal is generally non-existent: all sampled trajectories receive zero reward, leading to zero variance in the advantage estimates. This in turn prevents meaningful gradient updates, as no trajectory is preferred over others (Qu et al., 2025; Yu et al., 2025). Empirically, we show in Section 6 that directly applying GRPO on Dhard yields little to no improvement because the model rarely explores the correct trajectory in an unconstrained, open-ended output space. Moreover, training on Dhard wastes computational effort performing rollouts on solutions with no hope of being correct. To address this, we introduce a task reformulation function 
+
+T : (x, y) → (x′, y) that converts an open-ended problem into a cognitively simplified format while preserving the underlying solution. A successful reformulation should meet three criteria shown in Takeaway 1: 
+
+> 3We use “open-ended” to denote problems with unconstrained output length, in contrast to multiple-choice or short-form tasks, while still assuming a well-defined correct answer.
+
+4Preprint. Under review. OEQ 4-MCQ 10-MCQ Cloze             
+
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Accuracy (%)
+> All formats reduce problem difficulty
+> 0.0
+> 33.8
+> 26.1 21.2
+> Reducing cognitive load in hard
+> open-ended questions (OEQ)
+> makes them easier
+> (a) Reformulating Problems
+> OEQ 4-MCQ 10-MCQ Cloze
+> Training with different formats transfers
+> 0.0
+> 11.1 15.5 18.9
+> Format-specific training
+> transfers back to original tasks
+> (b) Evaluation on original OEQ
+> OEQ 4-MCQ 10-MCQ Cloze
+> Only modest drop on the held-out dataset
+> 78.8 77.2 75.0 74.4
+> (c) Evaluation on MATH 500
+> Rejection Fine-tune (RFT)
+> on Reformulated Tasks
+
+Figure 2: (a) Reformulating open-ended math problems into alternative formats consistently increases accuracy by easing structural constraints. (b) After Rejection Fine-Tuning (RFT), these performance gains successfully transfer back to the original open-ended problems used for training. (c) On the unseen MATH 500 benchmark, the model trained with an easier format incurs only a modest drop. 
+
+Takeaway 1: Three Criteria for an Ideal Reformulation 
+
+1. Answer preservation: must have the same correct answer as the original. 2. Reduced difficulty: should make the problem empirically easier for the model. 3. Transferability: Learning from the reformulated problem should improve perfor-mance on the original problem. We explore several instantiations of T , utilizing an LLM (Qwen3-4B-Instruct-2507) to gener-ate the reformulated dataset D′ 
+
+> hard
+
+= {(x′ 
+
+> i
+
+, yi) | (xi, yi) ∈ D hard }. We provide the prompt for reformulation in Appendix C. The formats we consider include: (1) 4-Choice: The original question is combined with four answer options, where the gold answer appears in exactly one option. (2) 10-Choice: Same as above, but we expand the number of option choices to ten. (3) Cloze: The original question is combined with a partially masked answer. For example, if the answer is 101, we append “The answer should look like: 1 ”. Example 1 is an example of an open-ended problem reformulated into a 4-choice format, and other examples for 10-choice and cloze can be found in Appendix D. Crucially, even after refor-mulation, the model must output the full answer value (e.g., 21) rather than just the option letter (e.g., B) for better transferability. 
+
+Example 1: An Example of T (Open-ended to Four Choice) Question (x): What is the largest number of cells in a 9 × 9 board that can be cut along both diagonals without the board falling into pieces? Answer (y): 21 Reformulated Question (x’): What is the largest number of cells in a 9 × 9 board that can be cut along both diagonals without the board falling into pieces? A. 18 B. 21 C. 24 D. 15 Answer (y): 21 
+
+3.1 Evaluating Difficulty Reduction 
+
+By definition, all of our chosen reformulations satisfy criterion (1) by sharing the original gold answer in Takeaway 1. To evaluate criterion (2), we measure zero-shot performance on the reformulated dataset D′
+
+> hard
+
+, as shown in Figure 2(a). Because we exclusively sampled problems where pass@64 = 0, the baseline performance on the original open-ended questions is strictly 0.0. However, upon applying format changes, performance immediately surpasses the random guessing baseline. For instance, the 4-choice MCQ reformulation achieves 33.8% accuracy, well above the 25% random baseline. Similar trends hold for the 10-choice and cloze formats. We also observe that task reformulations induce a consistent ordering of empirical difficulty: MCQ 4 ≤ MCQ 10 ≤ Cloze ≤ Open-ended. 5Preprint. Under review. 
+
+3.2 Transferability and Generalization 
+
+Having established that these formats reduce difficulty, we evaluate criterion (3) in Take-away 1: whether a model can learn from the converted problems and transfer those gains back to the original open-ended ones. To test this, we use D′ 
+
+> hard
+
+for rejection fine-tuning (RFT) (Yuan et al., 2023), as depicted in Figure 2(b). Specifically, we use D′ 
+
+> hard
+
+to elicit correct chain-of-thought (Wei et al., 2022) reasoning trajectories, perform supervised fine-tuning (SFT) on the correct {x′, y} pairs, and then evaluate the trained model on the original open-ended dataset Dhard . While acquiring correct reasoning chains directly from Dhard is not possible, the reduced difficulty of D′ 
+
+> hard
+
+allows us to successfully extract valid trajectories. The results show that models trained on D′ 
+
+> hard
+
+successfully transfer their learning back to 
+
+Dhard . Interestingly, in Figure 2(b), we also observe that the more the task is generative, the better the transfer back to the open-ended problem. For example, on the original Dhard ,model trained with 4-choice achieves 11.1%, 10 choice achieves 15.5%, and cloze achieves 18.9% accuracy. To isolate genuine reasoning capabilities from memorization, we evaluate the format-specific trained models on the unseen MATH500 benchmark (Lightman et al., 2023; Hendrycks et al., 2021). As shown in Figure 2(c), models trained with different refor-mulations maintain fairly robust performance on this held-out dataset. Overall, the MCQ and cloze formats meet the criteria in Takeaway 1, and successfully (1) preserve the original answer, (2) reduce empirical difficulty, and (3) encourage the model to learn transferable, generalizable reasoning. Therefore, we select these formats for our main experiments. 
+
+## 4 Cognitive Demand Reduction via Incremental Format Transitions 
+
+We build on the observation from Section 3 that different task reformulations form an order of empirical difficulty: MCQ 4 ≤ MCQ 10 ≤ Cloze ≤ Open-ended . We leverage this structure to design a curriculum that adaptively increases problem difficulty based on the model’s competence. Specifically, given a hard problem (xi, yi) ∈ D hard , we construct a sequence of reformulated variants: {x(1) 
+
+> i
+
+, x(2) 
+
+> i
+
+, x(3) 
+
+> i
+
+, x(4) 
+
+> i
+
+}, where each level corresponds to a format of increasing difficulty: 
+
+x(1) 
+
+> i
+
+: 4-choice MCQ, x(2) 
+
+> i
+
+: 10-choice MCQ, x(3) 
+
+> i
+
+: Cloze, x(4) 
+
+> i
+
+: Open-ended. All variants share the same ground-truth answer yi and are generated via T introduced in Section 3. We verify each reformulation deterministically via verification scripts to ensure correctness and validity. For MCQ, we verify that: (1) the gold answer appears among the options, and (2) it is uniquely correct (i.e., no other option corresponds to the gold answer). For cloze, we ensure that: (1) the masked span is non-trivial (i.e., not equivalent to the full gold answer), and (2) each revealed digit is consistent with the gold answer. For example, a gold answer of 101 and mask of 1 0 would constitute a failure case. 
+
+Instance-level Curriculum. We associate each training example with a difficulty level 
+
+di ∈ { 1, 2, 3, 4 }, initialized to the easiest level di = 1. During training, the model Mθ
+
+generates m samples for the current format: { ˆy(j) 
+
+> i
+
+}mj=1 ∼ M θ (· | x(di ) 
+
+> i
+
+). We estimate the empirical accuracy at level di as: ˆai = 1 
+
+> m
+
+∑mj=1 I[ ˆy(j) 
+
+> i
+
+= yi]. If ˆai ≥ τ, we promote the example to the next difficulty level. We adopt τ = 0.5 in our experiments following past work (Chen et al., 2025b; Foster et al., 2025). Otherwise, the example remains at the current level. This creates a per-sample curriculum that adapts to the model’s evolving capability, ensuring that training focuses on the most informative difficulty for each problem. 
+
+GRPO Training Objective. Given recent advancements driven by RLVR, we optimize the model using Group Relative Policy Optimization (GRPO) with rule-based rewards (Guo et al., 2025; Shao et al., 2024). For each input x(di ) 
+
+> i
+
+, we sample a group of m responses and compute rewards for each sample. Let r(j) 
+
+> i
+
+denote the reward for ˆy(j) 
+
+> i
+
+. GRPO normalizes rewards within the group, and the objective is: 
+
+LGRPO (θ) = −Ei,j
+
+h
+
+˜r(j) 
+
+> i
+
+log Mθ ( ˆy(j) 
+
+> i
+
+| x(di ) 
+
+> i
+
+)
+
+i
+
+6Preprint. Under review. which encourages the model to assign higher probability to relatively better samples within each group. Our reward function combines correctness and format compliance: r(j) 
+
+> i
+
+=
+
+rcorrect ( ˆy(j) 
+
+> i
+
+, yi) + rformat ( ˆy(j) 
+
+> i
+
+), where rcorrect ∈ [0, 1 ] indicates whether the predicted answer matches the ground truth, rformat ∈ [0, 0.2 ] measures whether the output follows the required format, i.e., whether the final answer is found in \boxed {} (Guo et al., 2025). 
+
+## 5 Experimental Setup 
+
+Models. We evaluate Cog-DRIFT on two models: Llama3.2-3B-Instruct (Grattafiori et al., 2024) and Qwen3-4B-Instruct-2507 (Team, 2025). 4 We consider these two models because they show different behaviors in post-training (Shao et al., 2025). 
+
+Dataset. For training, we use the BigMath dataset (Albalak et al., 2025) due to its diversity and inclusion of difficulty annotation. Specifically, it contains 251k samples along with the pass rate using Llama3-8B, making it easier to start with a harder subset with a lower pass rate, and sample 64 reasoning chains to obtain our Dhard . We start with the hardest 20% samples (37.5k), and let Qwen sample 64 reasoning chains, only keeping the samples for which none of the 64 chains have reached the correct solution . Since Qwen is generally outperforming Llama, we use Qwen to obtain Dhard and use the same Dhard for Llama. This results in 8.9k samples. We notice that using pass@64 alone causes selection bias to include problems that are actually unsolvable, such as incomplete questions or referring to a figure that does not exist (examples shown in Appendix E). To alleviate this, we keep problems for which GPT5.4’s majority answer over three runs agrees with the gold answer (OpenAI, 2026). This leads to our final filtered training data, consisting of 958 hard problems (more details in Section 6). For evaluation, we test Cog-DRIFT on six benchmarks, including (1) BigMathHard (BMH) , (2) OmniMATH-Hard , (3) AIME 24/25 , (4) GPQA Diamond , (5) Date Understanding . Details on each evaluation dataset are provided in Appendix B. 
+
+Baselines. We mainly compare with baselines that do not need privileged information or require a stronger teacher model: (1) Zero-shot: We prompt the model to think step-by-step and provide the answer within \boxed {} (Kojima et al., 2022). (2) Few-shot: Besides prompting the model to think step-by-step, we include 8 in-context learning samples. (3) 
+
+Rejection sampling Fine-Tuning (RFT): We prompt the model with cloze reformulated problems, and use the correct trajectories to perform supervised fine-tuning (Yuan et al., 2023). We choose fill-in-the-blank here because it performs the best (c.f. Figure 2). (4) 
+
+GRPO : Train on Dhard using outcome correctness as the reward (Guo et al., 2025). (5) NuRL (Abstract) : we use abstract cues that are generated from answer explanations using Dhard to hint the model during GRPO (Chen et al., 2025a). (6) NuRL (Prefix) : we use partial steps as hints instead, similar to POPE (Qu et al., 2025) except the steps are also self-generated. 
+
+Implementation Details. We evaluate all methods using pass@1. Results are averaged over 16 runs for AIME, and 3 runs for other datasets. We adopt verl (Sheng et al., 2024) as the backbone, and utilize vllm (Kwon et al., 2023) to speed up rollout generation and inference. To verify equivalence between predictions and references, we use Math-Verify. 5
+
+Other hyperparameters and details can be found in Appendix A and in our code. 
+
+## 6 Results and Analysis 
+
+Reformulation enables learning from the hard problems. In Table 1, zero-shot baselines achieve 0% performance on BigMath-Hard (BMH), as expected for a pass@64=0 dataset. As discussed in Section 3, while RFT improves BMH performance, it generalizes poorly due to distribution shift from cloze-style training. In principle, GRPO should not yield learning gains when trained on samples with pass@64 = 0. However, with Qwen, we observe a +6.37% improvement on BMH. This may be attributed to the spurious reward effect specific to Qwen (Shao et al., 2025), where learning can occur even under weak or uninformative 
+
+> 4Hereafter, we refer to them as Llama and Qwen, respectively.
+> 5https://github.com/huggingface/Math-Verify
+
+7Preprint. Under review. 
+
+BMH Omni-Hard AIME24 AIME25 GPQA Date Avg. 
+
+Qwen3-4B-Instruct-2507 
+
+Zero-shot 0.0 15.67 46.92 41.71 23.57 87.71 35.93 Few-shot 0.0 16.31 44.78 37.98 26.12 88.37 35.59 RFT 4.32 15.13 40.06 34.88 23.04 85.11 33.76 GRPO 6.37 16.37 31.87 27.29 31.81 89.53 33.87 NuRL (Abstract) 7.73 16.03 44.81 36.44 24.72 87.48 36.20 NuRL (Prefix) 6.51 15.69 45.31 38.81 22.27 84.17 35.46 Cog-DRIFT 10.11 18.58 51.74 40.28 36.01 88.75 40.92 Llama3.2-3B-Instruct 
+
+Zero-shot 0.0 5.09 3.75 0.42 15.32 54.87 13.24 Few-shot 0.0 5.74 3.33 0.33 17.89 55.63 13.82 RFT 2.47 6.52 1.67 0.00 16.13 50.31 12.85 GRPO 0.0 4.32 0.68 0.42 12.03 38.85 9.92 NuRL (Abstract) 1.38 6.67 4.17 1.11 16.98 56.72 14.51 NuRL (Prefix) 1.04 7.19 3.33 0.42 15.79 54.91 13.49 Cog-DRIFT 8.64 7.04 4.17 0.42 23.34 62.82 17.74 
+
+Table 1: Performance comparison on six benchmarks. We bold the best and underline the second-best results. Cog-DRIFT achieves the strongest overall results, improving avg. accuracy by +4.72% (Qwen) and +3.23% (Llama). Crucially, it unlocks gains on BMH (0 →
+
+10.11% on Qwen / 8.64% on Llama), where all the problems are collected with pass@64=0. 20 21 22 23 24 25 26 27                
+
+> 20
+> 40
+> 60
+> 80
+> Pass@k
+> AIME 2024
+> 2021222324252627
+> 20
+> 40
+> 60
+> 80
+> AIME 2025
+> 2021222324252627
+> 20
+> 30
+> 40
+> 50
+> GPQA
+> Qwen GRPO Cog-DRIFT
+
+Figure 3: When training on hard open-ended problems and evaluating on AIME24, AIME25, and GPQA using Qwen, Cog-DRIFT generally achieves higher pass@k compared to both the base Qwen model and the GRPO-trained model, particularly as k increases. reward signals. Another hypothesis is that occasional successful rollouts (arising from stochastic exploration) introduce sparse but amplified reward signals, causing the model to overfit to a narrow subset of problems without learning transferable reasoning strategies. In contrast, Llama shows no improvement under GRPO, with BMH performance remaining at 0% after training. Despite gains on Qwen, GRPO harms generalization, causing drops across held-out benchmarks. NuRL with abstract hints (Abstract) or partial solutions (Prefix) provides a middle ground: it yields modest BMH gains and occasional improvements on held-out datasets, likely due to preserving format and leveraging in-domain, self-generated hints. By contrast, Cog-DRIFT outperforms all baselines, improving BMH by an absolute +10.11% (Qwen) and +8.64% (Llama), while also boosting five held-out benchmarks with average gains of 4.72% and 3.23%, respectively. This demonstrates that reformulation enables effective learning with strong cross-task generalization. 8Preprint. Under review. 
+
+Cog-DRIFT improves pass@k. In Table 1, we observe that Cog-DRIFT consistently out-performs baseline methods in terms of pass@1. Because our approach specifically targets problems with pass@64 = 0 – i.e., problems that are unsolvable under standard training and therefore contain knowledge inaccessible to the model – we hypothesize that successful learning from these examples should also manifest as improvements in pass@ k for larger values of k, reflecting the acquisition of new knowledge. To test this hypothesis, we plot pass@ k for k ∈ 1, 2, . . . , 128 in Figure 3 using Qwen. On AIME2024, AIME2025, and GPQA, Cog-DRIFT consistently achieves higher pass@ k as k increases, outperforming both the base instruct model and the GRPO-trained model. At k = 128, Cog-DRIFT improves over the base model by +3.33%, +3.33%, and +2.02% on AIME2024, AIME2025, and GPQA, respec-tively. In contrast, GRPO again exhibits degraded performance, echoing the finding that directly training on hard problems fails to generalize. These results indicate that learning from reformulated problems reshapes the model’s output distribution, making correct solu-tions more accessible under sampling. Overall, the gains in pass@ k provide further evidence that training on reformulated hard problems can effectively learn reasoning capabilities.                   
+
+> Data Source Omni MATH
+> -15.67 78.80 OEQ 14.16 76.20 4-MCQ 14.82 79.80 Cloze 16.15 80.20 4-MCQ + Cloze 18.36 82.60
+> OEQ + 4-MCQ 12.39 75.40 OEQ + Cloze 12.61 79.80 OEQ + 4-MCQ + Cloze 18.42 82.20
+
+Table 2: Combining multiple reformula-tions (e.g., 4 Choice + Cloze, or Original + 4 Choice + Cloze) leads to the largest gains, suggesting that diversity of reformulations is critical for learning from hard problems .
+
+Using multiple reformulations is crucial. To better understand the transfer effect from reformulated variants to the original open-ended problems, we analyze how different data mixtures influence performance. Specifi-cally, we remove the curriculum setup and instead rejection fine-tune (RFT) the mod-els on various combinations of problem types. Table 2 reports the performance on OmniMATH-Hard and MATH500 under dif-ferent mixtures. The first three rows show that training with a single reformulation does not improve over no training. Notably, train-ing solely on 4 Choice + Cloze without any open-ended data achieves improved perfor-mance, and it is comparable to mixtures that include open-ended problems. Therefore, we conclude that diversity in problem represen-tation is critical for effective transfer and for learning from hard problems, and that including more discriminative formats (e.g., 4 Choice + Cloze ) is crucial. 
+
+Instance-Level curriculum improves sample efficiency. In Table 2, we show that training on a mixture of multiple reformulations is already effective for learning from hard problems. However, each reformulation increases the dataset size linearly; for example, combining OEQ, 4-choice MCQ, and Cloze triples the number of training samples. Since these refor-mulations largely share the same underlying information (differing primarily in structure and cognitive load), we hypothesize that a more adaptive curriculum can improve sample efficiency. In Figure 4, we present both the proportion of each problem type during training and the corresponding test performance on OmniMATH-Hard, comparing settings with and without our instance-level curriculum. We refer to this approach as instance-level because progression is determined per instance: once an instance achieves an average accuracy above 50%, it is automatically advanced to the next difficulty level. As a result, the proportion of 4-choice MCQ (the easiest format) steadily decreases over training, while intermediate formats (10-choice MCQ and Cloze) first increase and then decline, and open-ended questions grow steadily as the final stage of the curriculum. In contrast, without the curriculum, the proportion of each problem type remains uniform throughout training (25% each). Importantly, the curriculum leads to continued improvements in test performance on OmniMATH-Hard, whereas performance without the curriculum tends to plateau. 
+
+Estimating problem difficulty with pass@k can introduce selection bias. While using pass@k is a common way to estimate problem difficulty (Yuan et al., 2025; Jiang et al., 2026; Yu et al., 2025), it also comes naturally with selection bias, which includes problems that are “truly unsolvable” not just because the model is not capable of. In particular, we observe that our initial dataset Dhard contains a substantial number of flawed samples, including 9Preprint. Under review. 200 400 600 800 1000         
+
+> Training Step
+> 0%
+> 20%
+> 40%
+> 60%
+> 80%
+> 100%
+> Problem Mix
+> With Curriculum (Adaptively Progressing)
+> 200 400 600 800 1000
+> Training Step
+> No Curriculum (Uniform 25% Each Type)
+> 5.0%
+> 6.0%
+> 7.0%
+> 8.0%
+> 9.0%
+> 10.0%
+> 11.0%
+> 12.0%
+> Test Accuracy
+> 5.0%
+> 6.0%
+> 7.0%
+> 8.0%
+> 9.0%
+> 10.0%
+> 11.0%
+> 12.0%
+> Test Accuracy
+> Four-Choice Ten-Choice Cloze Open-ended
+
+Figure 4: Left: Instance-level curriculum adaptively reallocates samples from easier (MCQ) to harder (OEQ) reformulations based on per-instance accuracy, leading to improved sample efficiency and continued performance gains. Right: A static uniform mixture (always 25% for each format) shows stagnated performance improvement. Test accuracy is reported on open-ended questions from OmniMATH-Hard. incomplete or unanswerable questions, as well as instances with incorrect ground-truth labels. To quantify the impact of data quality, we evaluate two filtering strategies: (1) 
+
+Binary Filter , where GPT-5.4 (OpenAI, 2026) is prompted to determine whether a question is complete and answerable, and only samples labeled as solvable are retained – without requiring the model to produce a solution; and (2) Silver Answer Filter , where GPT-5.4 generates three independent solutions and we retain only those samples whose ground-truth answer agrees with the majority vote. The resulting dataset statistics and corresponding performance are summarized in Table 3. The Silver Answer Filter is highly selective, removing a large fraction of the data, whereas the Binary Filter yields a more moderate reduction. Despite these differences, Qwen shows to be less sensitive to data quality: its performance on MATH500 remains largely unchanged across filtering strategies, with only minor variation on GPQA. We suspect that this might be relevant to its unique characteristics that can even improve with random reward (Shao et al., 2025). In contrast, Llama is more sensitive to dataset quality, showing a wider performance range across settings and a consistent trend of improved results with cleaner data. Therefore, we apply the Silver Answer Filter by default. Notably, GPT-5.4 is used solely to approximate the filtering of noisy question–answer pairs; we do not use its reasoning traces for any form of distillation. # Data Qwen-MATH Qwen-GPQA Llama-MATH Llama-GPQA Original Dhard 8922 82.2 33.1 24.2 20.7 Binary Filter 5922 81.8 34.7 28.0 22.8 Silver Ans Filter 958 81.6 36.0 32.2 23.3 Table 3: Impact of data quality filtering on model performance. While the Silver Answer Filter is more selective and substantially reduces dataset size, it consistently improves performance for Llama and slightly for Qwen on GPQA. Overall, Llama is more sensitive to data quality, whereas Qwen is less affected by variations in data quality. 
+
+## 7 Conclusion 
+
+In this work, we investigate how to enable language models to learn effectively from prob-lems that lie beyond their current capabilities. Drawing inspiration from theories of human learning, we leverage cognitive load as a principled mechanism for adjusting problem diffi-culty, thereby bringing challenging tasks within a model’s Zone of Proximal Development. To this end, we propose Cog-DRIFT, a framework that reformulates hard, open-ended 10 Preprint. Under review. questions into cognitively simplified variants that preserve the same correct answer and knowledge tested, while making them more tractable. Across two models and six chal-lenging benchmarks, we show that Cog-DRIFT not only improves pass@1 performance over strong baselines, but also generalizes effectively, and with gains extending to higher values of k. This suggests that the model is genuinely learning from problems that naive approaches fail to exploit. Furthermore, we demonstrate that curriculum design plays a critical role in sample efficiency: our instance-level curriculum continues to yield improve-ments over time, whereas static data mixtures quickly plateau. Overall, our results highlight problem reformulation as a simple yet powerful strategy for reducing task difficulty, offering a practical pathway to unlock learning from previously intractable problems. 
+
+## Acknowledgments 
+
+This work was supported by NSF-CAREER Award 1846185, NSF AI Engage Institute DRL-2112635, Capital One Research Award, Apple PhD Fellowship, and NDSEG PhD Fellowship. The views contained in this article are those of the authors and not of the funding agency. 
+
+## References 
+
+AIME. Aime. aime problems and solutions., 2025. URL https://artofproblemsolving.co m/wiki/index.php?title=AIME Problems and Solutions .Alon Albalak, Duy Phung, Nathan Lile, Rafael Rafailov, Kanishk Gandhi, Louis Castricato, Anikait Singh, Chase Blagden, Violet Xiang, Dakota Mahan, et al. Big-math: A large-scale, high-quality math dataset for reinforcement learning in language models. arXiv preprint arXiv:2502.17387 , 2025. Sanghwan Bae, Jiwoo Hong, Min Young Lee, Hanbyul Kim, JeongYeon Nam, and Donghyun Kwak. Online difficulty filtering for reasoning oriented reinforcement learning. In 
+
+Proceedings of the 19th Conference of the European Chapter of the Association for Computational Linguistics (Volume 1: Long Papers) , pp. 700–719, 2026. Nishant Balepur, Rachel Rudinger, and Jordan Lee Boyd-Graber. Which of these best describes multiple choice evaluation with llms? a) forced b) flawed c) fixable d) all of the above. In Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pp. 3394–3418, 2025. Laura E Berk and Adam Winsler. Scaffolding Children’s Learning: Vygotsky and Early Childhood Education. NAEYC Research into Practice Series. Volume 7. ERIC, 1995. Allison Cantor, Andrea Eslick, Elizabeth Marsh, Robert Bjork, and Elizabeth Bjork. Multiple-choice tests stabilize access to marginal knowledge. Memory & cognition , 43, 09 2014. doi: 10.3758/s13421-014-0462-6. Nikhil Chandak, Shashwat Goel, Ameya Prabhu, Moritz Hardt, and Jonas Geiping. Answer matching outperforms multiple choice for language model evaluation. arXiv preprint arXiv:2507.02856 , 2025. Justin Chih-Yao Chen, Becky Xiangyu Peng, Prafulla Kumar Choubey, Kung-Hsiang Huang, Jiaxin Zhang, Mohit Bansal, and Chien-Sheng Wu. Nudging the boundaries of llm reasoning. arXiv preprint arXiv:2509.25666 , 2025a. Xiaoyin Chen, Jiarui Lu, Minsu Kim, Dinghuai Zhang, Jian Tang, Alexandre Pich ´e, Nicolas Gontier, Yoshua Bengio, and Ehsan Kamalloo. Self-evolving curriculum for llm reasoning. 
+
+arXiv preprint arXiv:2505.14970 , 2025b. Thomas Foster, Anya Sims, Johannes Forkel, Mattie Fellows, and Jakob Foerster. Learning to reason at the frontier of learnability. arXiv preprint arXiv:2502.12272 , 2025. Bofei Gao, Feifan Song, Zhe Yang, Zefan Cai, Yibo Miao, Qingxiu Dong, Lei Li, Chenghao Ma, Liang Chen, Runxin Xu, et al. Omni-math: A universal olympiad level mathematic benchmark for large language models. arXiv preprint arXiv:2410.07985 , 2024. 11 Preprint. Under review. Robert Geirhos, J ¨orn-Henrik Jacobsen, Claudio Michaelis, Richard Zemel, Wieland Brendel, Matthias Bethge, and Felix A Wichmann. Shortcut learning in deep neural networks. 
+
+Nature Machine Intelligence , 2(11):665–673, 2020. Tamara Van Gog, Fred Pass, and Jeroen J.G. van Merri ¨enboer. Process-oriented worked ex-amples: Improving transfer performance through enhanced understanding. Instructional Science , 32(1/2):83–98, 2004. ISSN 00204277, 15731952. URL http://www.jstor.org/stab le/41953638 .Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Alex Vaughan, et al. The llama 3 herd of models. arXiv preprint arXiv:2407.21783 , 2024. Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Ruoyu Zhang, Runxin Xu, Qihao Zhu, Shirong Ma, Peiyi Wang, Xiao Bi, et al. Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement learning. arXiv preprint arXiv:2501.12948 , 2025. Andre He, Daniel Fried, and Sean Welleck. Rewarding the unlikely: Lifting grpo beyond distribution sharpening. arXiv preprint arXiv:2506.02355 , 2025. Dan Hendrycks, Collin Burns, Saurav Kadavath, Akul Arora, Steven Basart, Eric Tang, Dawn Song, and Jacob Steinhardt. Measuring mathematical problem solving with the math dataset. NeurIPS , 2021. Steven J. Howard, Hana Burianov ´a, Amie Calleia, Shannon Fynes-Clinton, Lisa Kervin, and Stephen Bokosmaty. The method of educational assessment affects children’s neural processing and performance: behavioural and fmri evidence. npj Science of Learning , 2(1): 10, August 2017. doi: 10.1038/s41539-017-0010-9. Jiedong Jiang, Wanyi He, Yuefeng Wang, Guoxiong Gao, Yongle Hu, Jingting Wang, Nailin Guan, Peihao Wu, Chunbo Dai, Liang Xiao, and Bin Dong. Fate: A formal benchmark series for frontier algebra of multiple difficulty levels, 2026. URL https://arxiv.org/ab s/2511.02872 .Frederick James Kelly. The kansas silent reading tests. Journal of Educational Psychology , 7: 63–80, 1916. URL https://api.semanticscholar.org/CorpusID:144270245 .Myong Hee Ko. A comparison of reading comprehension tests: Multiple-choice vs. open-ended. English Teaching , 65(1), 2010. Takeshi Kojima, Shixiang Shane Gu, Machel Reid, Yutaka Matsuo, and Yusuke Iwasawa. Large language models are zero-shot reasoners. Advances in neural information processing systems , 35:22199–22213, 2022. Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph E. Gonzalez, Hao Zhang, and Ion Stoica. Efficient memory management for large language model serving with pagedattention. In Proceedings of the ACM SIGOPS 29th Symposium on Operating Systems Principles , 2023. Nathan Lambert, Jacob Morrison, Valentina Pyatkin, Shengyi Huang, Hamish Ivison, Faeze Brahman, Lester James V Miranda, Alisa Liu, Nouha Dziri, Shane Lyu, et al. Tulu 3: Pushing frontiers in open language model post-training. arXiv preprint arXiv:2411.15124 ,2024. Alexander C Li, Ananya Kumar, and Deepak Pathak. Generative classifiers avoid shortcut solutions. arXiv preprint arXiv:2512.25034 , 2025a. Jiazheng Li, Hongzhou Lin, Hong Lu, Kaiyue Wen, Zaiwen Yang, Jiaxuan Gao, Yi Wu, and Jingzhao Zhang. Questa: Expanding reasoning capacity in llms via question augmentation. 
+
+arXiv preprint arXiv:2507.13266 , 2025b. Hunter Lightman, Vineet Kosaraju, Yuri Burda, Harrison Edwards, Bowen Baker, Teddy Lee, Jan Leike, John Schulman, Ilya Sutskever, and Karl Cobbe. Let’s verify step by step. In The Twelfth International Conference on Learning Representations , 2023. 12 Preprint. Under review. Fanbin Lu, Zhisheng Zhong, Shu Liu, Chi-Wing Fu, and Jiaya Jia. Arpo: End-to-end policy optimization for gui agents with experience replay. arXiv preprint arXiv:2505.16282 , 2025. Ximing Lu, David Acuna, Jaehun Jung, Jian Hu, Di Zhang, Shizhe Diao, Yunheng Zou, Shaokun Zhang, Brandon Cui, Mingjie Liu, et al. Golden goose: A simple trick to synthe-size unlimited rlvr tasks from unverifiable internet text. arXiv preprint arXiv:2601.22975 ,2026. Lu Ma, Hao Liang, Meiyi Qiang, Lexiang Tang, Xiaochen Ma, Zhen Hao Wong, Junbo Niu, Chengyu Shen, Runming He, Yanhao Li, et al. Learning what reinforcement learning can’t: Interleaved online fine-tuning for hardest questions. arXiv preprint arXiv:2506.07527 ,2025. Vaskar Nath, Elaine Lau, Anisha Gunjal, Manasi Sharma, Nikhil Baharte, and Sean Hendryx. Adaptive guidance accelerates reinforcement learning of reasoning models. arXiv preprint arXiv:2506.13923 , 2025. OpenAI. Introducing gpt - 5.4, 2026. URL https://openai.com/index/introducing-gpt-5 -4/ .Shubham Parashar, Shurui Gui, Xiner Li, Hongyi Ling, Sushil Vemuri, Blake Olson, Eric Li, Yu Zhang, James Caverlee, Dileep Kalathil, et al. Curriculum reinforcement learning from easy to hard tasks improves llm reasoning. arXiv preprint arXiv:2506.06632 , 2025. Murat Polat. Analysis of multiple-choice versus open-ended questions in language tests according to different cognitive domain levels. Novitas-ROYAL (Research on Youth and Language) , 14(2):76–96, 2020. Yuxiao Qu, Amrith Setlur, Virginia Smith, Ruslan Salakhutdinov, and Aviral Kumar. Learning to reason on hard problems with privileged on-policy exploration. In The 5th Workshop on Mathematical Reasoning and AI at NeurIPS 2025 , 2025. URL https: //openreview.net/forum?id=zKn6mVwPZE .David Rein, Betty Li Hou, Asa Cooper Stickland, Jackson Petty, Richard Yuanzhe Pang, Julien Dirani, Julian Michael, and Samuel R Bowman. Gpqa: A graduate-level google-proof q&a benchmark. In First Conference on Language Modeling , 2024. John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. Proximal policy optimization algorithms. arXiv preprint arXiv:1707.06347 , 2017. Rulin Shao, Shuyue Stella Li, Rui Xin, Scott Geng, Yiping Wang, Sewoong Oh, Simon Shaolei Du, Nathan Lambert, Sewon Min, Ranjay Krishna, et al. Spurious rewards: Rethinking training signals in rlvr. arXiv preprint arXiv:2506.10947 , 2025. Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan Zhang, YK Li, Yang Wu, et al. Deepseekmath: Pushing the limits of mathe-matical reasoning in open language models. arXiv preprint arXiv:2402.03300 , 2024. Idan Shenfeld, Jyothish Pari, and Pulkit Agrawal. Rl’s razor: Why online reinforcement learning forgets less. arXiv preprint arXiv:2509.04259 , 2025. Guangming Sheng, Chi Zhang, Zilingfeng Ye, Xibin Wu, Wang Zhang, Ru Zhang, Yanghua Peng, Haibin Lin, and Chuan Wu. Hybridflow: A flexible and efficient rlhf framework. 
+
+arXiv preprint arXiv: 2409.19256 , 2024. Taiwei Shi, Yiyang Wu, Linxin Song, Tianyi Zhou, and Jieyu Zhao. Efficient reinforcement finetuning via adaptive curriculum learning. arXiv preprint arXiv:2504.05520 , 2025. Aarohi Srivastava, Abhinav Rastogi, Abhishek Rao, Abu Awal Md Shoeb, Abubakar Abid, Adam Fisch, Adam R Brown, Adam Santoro, Aditya Gupta, Adri `a Garriga-Alonso, et al. Beyond the imitation game: Quantifying and extrapolating the capabilities of language models. arXiv preprint arXiv:2206.04615 , 2022. 13 Preprint. Under review. Yiyou Sun, Yuhan Cao, Pohao Huang, Haoyue Bai, Hannaneh Hajishirzi, Nouha Dziri, and Dawn Song. Rl grokking recipe: How does rl unlock and transfer new algorithms in llms? 
+
+arXiv preprint arXiv:2509.21016 , 2025. Shobhita Sundaram, John Quan, Ariel Kwiatkowski, Kartik Ahuja, Yann Ollivier, and Julia Kempe. Teaching models to teach themselves: Reasoning at the edge of learnability. arXiv preprint arXiv:2601.18778 , 2026. Mirac Suzgun, Nathan Scales, Nathanael Sch ¨arli, Sebastian Gehrmann, Yi Tay, Hyung Won Chung, Aakanksha Chowdhery, Quoc V Le, Ed H Chi, Denny Zhou, , and Jason Wei. Challenging big-bench tasks and whether chain-of-thought can solve them. arXiv preprint arXiv:2210.09261 , 2022. John Sweller. Cognitive load during problem solving: Effects on learning. Cognitive Science , 12(2):257–285, 1988. doi: https://doi.org/10.1207/s15516709cog1202 \ 4. URL 
+
+https://onlinelibrary.wiley.com/doi/abs/10.1207/s15516709cog1202 4 .John Sweller, Jeroen JG Van Merrienboer, and Fred GWC Paas. Cognitive architecture and instructional design. Educational psychology review , 10(3):251–296, 1998. Wilson L Taylor. “cloze procedure”: A new tool for measuring readability. Journalism quarterly , 30(4):415–433, 1953. Kimi Team, Angang Du, Bofei Gao, Bowei Xing, Changjiu Jiang, Cheng Chen, Cheng Li, Chenjun Xiao, Chenzhuang Du, Chonghua Liao, et al. Kimi k1. 5: Scaling reinforcement learning with llms. arXiv preprint arXiv:2501.12599 , 2025. Qwen Team. Qwen3 technical report, 2025. URL https://arxiv.org/abs/2505.09388 .Lev S Vygotsky, Michael Cole, Vera John-Steiner, S Scribner, and Ellen Souberman. The development of higher psychological processes, 1978. Jiayu Wang, Yifei Ming, Zixuan Ke, Caiming Xiong, Shafiq Joty, Aws Albarghouthi, and Frederic Sala. Beyond accuracy: Dissecting mathematical reasoning for llms under reinforcement learning. arXiv preprint arXiv:2506.04723 , 2025. Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, brian ichter, Fei Xia, Ed H. Chi, Quoc V Le, and Denny Zhou. Chain of thought prompting elicits reasoning in large language models. In Alice H. Oh, Alekh Agarwal, Danielle Belgrave, and Kyunghyun Cho (eds.), Advances in Neural Information Processing Systems , 2022. URL https://openre view.net/forum?id= VjQlMeSB J .David Wood, Jerome S. Bruner, and Gail Ross. The role of tutoring in problem solving. 
+
+Journal of Child Psychology and Psychiatry , 17(2):89–100, 1976. doi: https://doi.org/10.111 1/j.1469-7610.1976.tb00381.x. URL https://acamh.onlinelibrary.wiley.com/doi/abs/ 10.1111/j.1469-7610.1976.tb00381.x .Fang Wu, Weihao Xuan, Ximing Lu, Mingjie Liu, Yi Dong, Zaid Harchaoui, and Yejin Choi. The invisible leash: Why rlvr may or may not escape its origin. arXiv preprint arXiv:2507.14843 , 2025. Jianhao Yan, Yafu Li, Zican Hu, Zhi Wang, Ganqu Cui, Xiaoye Qu, Yu Cheng, and Yue Zhang. Learning to reason under off-policy guidance. arXiv preprint arXiv:2504.14945 ,2025. Qiying Yu, Zheng Zhang, Ruofei Zhu, Yufeng Yuan, Xiaochen Zuo, Yu Yue, Weinan Dai, Tiantian Fan, Gaohong Liu, Lingjun Liu, et al. Dapo: An open-source llm reinforcement learning system at scale. arXiv preprint arXiv:2503.14476 , 2025. Zhiqi Yu, Zhangquan Chen, Mengting Liu, Heye Zhang, and Liangqiong Qu. Unveil-ing implicit advantage symmetry: Why grpo struggles with exploration and difficulty adaptation. arXiv preprint arXiv:2602.05548 , 2026. 14 Preprint. Under review. Lifan Yuan, Weize Chen, Yuchen Zhang, Ganqu Cui, Hanbin Wang, Ziming You, Ning Ding, Zhiyuan Liu, Maosong Sun, and Hao Peng. From f (x) and g(x) to f (g(x)) : Llms learn new skills in rl by composing old ones, 2025. URL https://arxiv.org/abs/2509.25123 .Zheng Yuan, Hongyi Yuan, Chengpeng Li, Guanting Dong, Keming Lu, Chuanqi Tan, Chang Zhou, and Jingren Zhou. Scaling relationship on learning mathematical reasoning with large language models, 2023. URL https://arxiv.org/abs/2308.01825 .Yang Yue, Zhiqi Chen, Rui Lu, Andrew Zhao, Zhaokai Wang, Shiji Song, and Gao Huang. Does reinforcement learning really incentivize reasoning capacity in llms beyond the base model? arXiv preprint arXiv:2504.13837 , 2025. Weihao Zeng, Yuzhen Huang, Qian Liu, Wei Liu, Keqing He, Zejun Ma, and Junxian He. Simplerl-zoo: Investigating and taming zero reinforcement learning for open base models in the wild. arXiv preprint arXiv:2503.18892 , 2025. Kaiyan Zhang, Yuxin Zuo, Bingxiang He, Youbang Sun, Runze Liu, Che Jiang, Yuchen Fan, Kai Tian, Guoli Jia, Pengfei Li, Yu Fu, Xingtai Lv, Yuchen Zhang, Sihang Zeng, Shang Qu, Haozhan Li, Shijie Wang, Yuru Wang, Xinwei Long, Fangfu Liu, Xiang Xu, Jiaze Ma, Xuekai Zhu, Ermo Hua, Yihao Liu, Zonglin Li, Huayu Chen, Xiaoye Qu, Yafu Li, Weize Chen, Zhenzhao Yuan, Junqi Gao, Dong Li, Zhiyuan Ma, Ganqu Cui, Zhiyuan Liu, Biqing Qi, Ning Ding, and Bowen Zhou. A survey of reinforcement learning for large reasoning models, 2025a. URL https://arxiv.org/abs/2509.08827 .Xiaoying Zhang, Hao Sun, Yipeng Zhang, Kaituo Feng, Chaochao Lu, Chao Yang, and Helen Meng. Critique-grpo: Advancing llm reasoning with natural language and numerical feedback. arXiv preprint arXiv:2506.03106 , 2025b. Rosie Zhao, Alexandru Meterez, Sham Kakade, Cengiz Pehlevan, Samy Jelassi, and Eran Malach. Echo chamber: Rl post-training amplifies behaviors learned in pretraining. arXiv preprint arXiv:2504.07912 , 2025. 15 Preprint. Under review. 
+
+## Appendix A Implementation Details 
+
+All methods are run on 4 A6000 GPUs. During training, we use a temperature of 1.0 and set the clip-high parameter ϵ to 0.28 (Yu et al., 2025). The rollout number is 8 for every GRPO-based method. We cap the output length at 8192 tokens for both training and testing. At inference, we fix the temperature to 0.7. Token limits and inference temperature are aligned across all baselines for evaluation. We report the detailed hyperparameters in Table 4. 
+
+Llama Qwen 
+
+num train samples 958 958 max prompt length 1024 1024 max response length 8192 8192 lr 1e-6 1e-6 clip ratio low 0.2 0.2 clip ratio high 0.28 0.28 rollout temperature 1 1rollout n 8 8kl coef 0.01 0.01 train batch size 8 8Table 4: Configurations and hyperparameters we use for training. 
+
+## B Dataset Statistics and Licenses 
+
+Cog-DRIFT is tested across a diverse set of reasoning-intensive tasks spanning STEM and other domain-specific areas, including: (1) BigMathHard (BMH) , a pass@64=0 test split with 192 samples from BigMath (Albalak et al., 2025). (2) OmniMATH-Hard , the hardest (difficulty ≥ 7.5) 452 Olympiad-level math problems from OmniMATH (Gao et al., 2024); (3) AIME 24/25 , 30 mathematics problems from the 2024/2025 AIME competition (AIME, 2025); 
+
+(4) GPQA Diamond , 198 PhD-level questions covering biology, physics, and chemistry (Rein et al., 2024); (5) Date Understanding , 369 date and time arithmetic tasks from Big-Bench (Srivastava et al., 2022). Some of the analyses are also run on MATH500 , a subset 500 problems from the MATH benchmark (Hendrycks et al., 2021) curated by Lightman et al. (2023); Note that GPQA and Date Understanding consist of multiple choice questions, but we evaluate the model with answer match (Chandak et al., 2025), i.e., the generated answer should match the ground truth answer, instead of just comparing the option choice. This mitigates the tendency to generate a shortcut answer or memorize the option choice. For Date Understanding which questions are easier, we remove option choices to make it fully open-ended. We provide the sample sizes and licenses of the datasets used in this work in Table 5. All the datasets are in English and all datasets are used in a fashion consistent with their intended use. 16 Preprint. Under review. Sample Size License BigMath (Train) (Albalak et al., 2025) 958 Apache License BigMath (Test) (Albalak et al., 2025) 192 Apache License OmniMATH (Gao et al., 2024) 452 Apache License AIME 2024 (AIME, 2025) 30 CC0 AIME 2025 (AIME, 2025) 30 CC0 MATH500 (Lightman et al., 2023; Hendrycks et al., 2021) 500 MIT License GPQA-Diamond (Rein et al., 2024) 198 MIT License Date Understanding (Suzgun et al., 2022) 369 Apache License Table 5: The statistics and licenses of the datasets used in this study. Unless otherwise specified, like BigMath has a train split, all the datasets are used for evaluation. 
+
+## C Prompts for Reformulation 
+
+We use the following prompts to conduct problem reformulation: 
+
+Prompt for Open-ended → Four Choice MCQ 
+
+Please create a multiple-choice question with 4 options (A, B, C, D) based on the following math problem and its correct answer. Original Question: {question }
+
+Correct Answer: {gold answer }
+
+Requirements: 
+
+1. Keep the original question 2. Add 4 options (A, B, C, D) 3. One option should be the correct answer 4. The other 3 options should be plausible but incorrect distractors 5. Randomly place the correct answer among the options 
+
+Output format: 
+
+Question: [the question] A. [option A] B. [option B] C. [option C] D. [option D] Correct Answer: [letter of correct option] Only output in this exact format, nothing else. 17 Preprint. Under review. 
+
+Prompt for Open-ended → Ten Choice MCQ 
+
+Please create a multiple-choice question with 10 options (A, B, C, D, E, F, G, H, I, J) based on the following math problem and its correct answer. Original Question: {question }
+
+Correct Answer: {gold answer }
+
+Requirements: 
+
+1. Keep the original question 2. Add 10 options (A, B, C, D, E, F, G, H, I, J) 3. One option should be the correct answer 4. The other 9 options should be plausible but incorrect distractors 5. Randomly place the correct answer among the options 
+
+Output format: 
+
+Question: [the question] A. [option A] B. [option B] C. [option C] D. [option D] E. [option E] F. [option F] G. [option G] H. [option H] I. [option I] J. [option J] Correct Answer: [letter of correct option] Only output in this exact format, nothing else. 
+
+Prompt for Open-ended → Cloze 
+
+Your task is to produce a masked version of the correct answer by replacing some digits with underscores ( ). 
+
+Requirements: 
+
+1. Masked answer is the correct answer with some digits replaced by underscores ( ) 2. Preserve LaTeX formatting in the masked answer (e.g., if answer is \frac {1}{ 2},mask it as \frac {1}{ } or similar) 3. Mask approximately 50-80% of the digits, keeping at least one digit visible 4. Only mask numbers, not letters or latex symbols 
+
+Output format: \boxed {[masked answer with underscores only] }
+
+Examples: If the answer is 1003, output: \boxed {1 3} or \boxed { 03 }
+
+If the answer is \frac {5}{ 8}, output: \boxed {\ frac {5}{ }} or \boxed {\ frac { }{ 8}} 
+
+Only output the masked answer in \boxed {} , nothing else. Original Question: {question }
+
+Correct Answer: {gold answer }
+
+Masked Answer: 18 Preprint. Under review. 
+
+## D Examples of Different Problem Formats 
+
+Example 2: Open-ended Problem Question (x): What is the largest number of cells in a 9 × 9 board that can be cut along both diagonals without the board falling into pieces? Answer (y): 21 
+
+Example 3: Four Choice Problem Reformulated Question (x’): What is the largest number of cells in a 9 × 9 board that can be cut along both diagonals without the board falling into pieces? A. 18 B. 21 C. 24 D. 15 Answer (y): 21 
+
+Example 4: Ten Choice Problem Reformulated Question (x’): What is the largest number of cells in a 9 × 9 board that can be cut along both diagonals without the board falling into pieces? A. 4 B. 6 C. 7 D. 9 E. 12 F. 15 G. 18 H. 21 I. 24 J. 27 Answer (y): 21 
+
+Example 5: Cloze Problem Reformulated Question (x’): What is the largest number of cells in a 9 × 9 board that can be cut along both diagonals without the board falling into pieces? The answer should look like: 2 . Fill the blank by giving the full answer. Answer (y): 21 
+
+## E Example of Truly Unsolvable Problems 
+
+When using pass@k to collect our Dhard , we find that a large portion of the dataset contains truly unsolvable problems. Below we list two of them: 
+
+Example 6: Incorrect Gold Answer Question: The cube root of a number is equal to the square root of the number. What is the number? Gold Answer: 0 (Should be 0 or 1) 
+
+Example 7: Incomplete or Ambiguous Question Question: Using five sixes, arithmetic operations, and exponentiation, form numbers from 1 to 14. Gold Answer: 1-14 
+
+Example 8: Lack of Figures Question: As shown in the figure, in a rectangle with an area of 10,000 square cen-timeters, a large semicircle and two equal small semicircles are cut out. The remaining shaded area is square centimeters. (Take π as 3.14) Gold Answer: 2150 19 Preprint. Under review. 
+
+## F Qualitative Examples of Baselines and Cog-DRIFT Outputs 
+
+Example 9: Output from Qwen3-4B-Instruct-2507 Question: When 4444 4444 is written in decimal notation, the sum of its digits is A. Let 
+
+B be the sum of the digits of A. Find the sum of the digits of B (A and B are written in decimal notation.) Gold Answer: 7 Reasoning: We are given the number 4444 4444 ,and we are to compute the sum of the digits of this number, call that A, then the sum of the digits of A is B, and finally, we are to find the sum of the digits of B. Let’s go step-by-step. Step 1: Understand what we are dealing with 4444 4444 is an enormous number. We cannot compute it directly. Instead, we need to find the digit sum of this number, then digit sum of that, then digit sum again. A ≡ 4444 4444 (mod 9) B ≡ A
+
+(mod 9) Then the sum of digits of B is ≡ B (mod 9), and since the digit sum of a number is congruent to the number mod 9, we can use that to find the final answer. Moreover, since the sum of digits of a number is at most a certain value, and we are repeatedly taking digit sums (like in the process of reducing a number to its digital root), we can use the concept of digital root. Step 2: The digital root of a number is the iterative sum of digits until a single digit is obtained. Digital root of 4444 4444 
+
+is A → B → (sum of digits of B) So the final answer is the digital root of 4444 4444 .Therefore, we just need to compute: 4444 4444 mod 9 Then, if the result is 0, the digital root is 9; otherwise, it’s the remainder. Step 3: Compute 4444 mod 9 We can compute 4444 mod 9 by summing digits: Digits of 4444: 4 + 4 + 4 + 4 = 16 Then 1 + 6 = 7 So 4444 
+
+equiv 7 (mod 9) Therefore: 4444 4444 ≡ 74444 (mod 9) Now we need to compute 7 4444 
+
+mod 9 Step 4: Let’s compute powers of 7 modulo 9: 7 1 = 7 mod 9 = 7 7 2 = 49 mod 9 = 49 − 54 = −5 ≡ 4 mod 9 7 3 = 7 · 72 = 7 · 4 = 28 mod 9 = 1 7 4 = 7 · 1 = 7mod 9 Pattern: 7, 4, 1, 7, 4, 1, . . . Cycle of length 3: 7, 4, 1 So the cycle is period 3 . Step 5: Find 4444 
+
+mod 3 Sum of digits of 4444: 4 + 4 + 4 + 4 = 16, 1 + 6 = 7, 7 mod 3 = 1 So 4444 ≡ 1 (mod 3) Therefore, in the cycle (7, 4, 1 ), since exponent 4444 ≡ 1 (mod 3),it corresponds to the first position. Step 6: Digital root is 7. So the digital root of 4444 4444 is 7. This means: A ≡ 7 (mod 9) B ≡ 7 (mod 9). The sum of digits of B is ≡ 7 (mod 9) Step 7: Estimate the number of digits of 4444 4444 Number of digits of a number N is ⌊log 10 N⌋ + 1. First compute 4444 × 3.643 Break it down: 4444 × 3 = 13332 4444 × 0.6 = 2666.4 4444 × 0.04 = 177.76 4444 × 0.003 = 13.332 Add them: 13332 + 2666.4 = 15998.4, +177.76 = 16176.16, +13.332 = 16189.492 So total log 16189.492 Thus, number of digits 16190 So 4444 4444 has about 16,190 digits Now, the maximum possible digit sum A is 9 × 16190 = 145, 710 So A ≤ 145, 710 Now, B is the sum of digits of A. Since A ≤ 145, 710, which is a 6-digit number. So 
+
+B ≤ 9 + 9 + 9 + 9 + 9 + 9 = 54 So B ≤ 54 Now, B ≡ 7 (mod 9). So possible values of B: 7, 16, 25, 34, 43, 52. Now, for each, compute the sum of digits: 7: sum = 7 16: 1 + 6 = 7, 25: 2 + 5 = 7, 34: 3 + 4 = 7, 43: 4 + 3 = 7, 52: 5 + 2 = 7 All of them have digit sum = 7! So regardless of which one it is, the sum of the digits of B is 7 Final Answer: 7
+
+20 Preprint. Under review. 
+
+Example 10: Output from Qwen trained with GRPO Question: Let a, b, c, d be real numbers such that b − d ≥ 5 and all zeros x1, x2, x3, and 
+
+x4 of the polynomial P(x) = x4 + ax 3 + bx 2 + cx + d are real. Find the smallest value the product (x21 + 1)( x22 + 1)( x23 + 1)( x24 + 1) can take. Gold Answer: 16 Reasoning: We are given a polynomial P(x) = x4 + ax 3 + bx 2 + cx + d with all real roots x1, x2, x3, x4,and the condition that b − d ≥ 5. We are to minimize the product (x21 + 1)( x22 + 1)( x23 +
+
+1)( x24 + 1), given this constraint. Step 1: Understand the expression. We are to minimize 
+
+∏4
+
+> i=1
+
+(x2 
+
+> i
+
++ 1).. We can write this in terms of symmetric functions. Note that: (x2 
+
+> i
+
++ 1) = (xi − i)( xi + i), so the full product becomes: ∏4
+
+> i=1
+
+(x2 
+
+> i
+
++ 1) = ∏4
+
+> i=1
+
+(xi − i)( xi + i) = 
+
+∏4
+
+> i=1
+
+(xi − i) · ∏4
+
+> i=1
+
+(xi + i) = P(i) · P(−i).. So, ∏(x2 
+
+> i
+
++ 1) = P(i) · P(−i) = |P(i)|2.. Key observation: The product (x21 + 1)( x22 + 1)( x23 + 1)( x24 + 1) = |P(i)|2. So, we want to minimize |P(i)|2 over real roots x1, x2, x3, x4 such that b − d ≥ 5. Step 2: Express 
+
+b − d in terms of roots. Given polynomial with real roots x1, x2, x3, x4, we write: P(x) = (x − x1)( x − x2)( x − x3)( x − x4).. We are given b − d ≥ 5. So we must minimize 
+
+|P(i)|2 subject to ∑i<j xi xj − x1 x2 x3 x4 ≥ 5.. So symmetric even roots don’t satisfy the constraint. We need asymmetric roots. Try three equal roots and one different? Or two equal, and two symmetric others? Alternatively, suppose two roots are equal, and the other two are symmetric. But instead, let’s suppose three roots are equal, and the fourth is different. But let’s try to assume symmetry between two pairs with different signs. Suppose the roots are p, q, −p, −q. That’s symmetric, but we just saw that gives negative b − d. Wait, we must have b − d ≥ 5, and b − d = ∑i<j xi xj − ∏ xi. So we want the sum of products of pairs minus the product of all four to be at least 5. Let’s denote: s1 = ∑ xi- s2 = ∑i<j xi xj- s3 = ∑i<j<k xi xj xk- s4 = x1 x2 x3 x4. So now, we have: Minimize (1 − b + d)2 + ( c − a)2 Subject to b − d ≥ 5. Let x = b − d ≥ 5. Then 
+
+d = b − x. So 1 − b + d = 1 − b + ( b − x) = 1 − x. So (1 − b + d)2 = ( 1 − x)2. Now, the second term is minimized when x = 5. Thus, the smallest possible value of the expression is (5 − 1)2 = 16. So the product (x21 + 1)( x22 + 1)( x23 + 1)( x24 + 1) = |P(i)|2
+
+can be as small as 16, when b − d = 5, and c = a. Step 4: Construct a polynomial with real roots, satisfying b − d = 5, c = a. We now try to construct such a polynomial. We want: b − d = 5- a = c. We are free to choose the roots as long as they are real. Let us suppose two roots are equal, and the other two symmetric. Try roots: p, p, q, q. So symmetric. Then the polynomial is: (x − p)2(x − q)2 = ( x2 − 2px + p2)( x2 − 2qx + q2).Assume p + q ≥ 0, divide both sides:1 = pq . So pq = 1. Now, b − d = 5. We compute b − d: b = p2 + 4pq + q2 = p2 + q2 + 4- d = p2q2 = ( pq )2 = 1. So b − d =
+
+p2 + q2 + 4 − 1 = p2 + q2 + 3. Set equal to 5: p2 + q2 + 3 = 5 ⇒ p2 + q2 = 2. But 
+
+pq = 1, so we have: p2 + q2 = 2- pq = 1. Try p = q = 1. Then roots: 1, 1, 1, 1, all equal. Polynomial: (x − 1)4. Check a, b, c, d: a = −4- b = 6- c = −4- d = 1. So 
+
+b − d = 6 − 1 = 5. And c = −4, a = −4, a = c. Perfect! Now compute the product: 
+
+(x21 + 1)( x22 + 1)( x23 + 1)( x24 + 1) = ( 12 + 1)4 = ( 2)4 = 16. Exactly what we wanted! And all roots are real (in fact, all equal). And b − d = 5, which satisfies the condition. Therefore, the minimal value is achievable. Final Answer: 16 21 Preprint. Under review. 
+
+Example 11: Output from Qwen trained with Cog-DRIFT Question: Let n be a positive integer. Find all n × n real matrices A with only real eigenvalues satisfying A + Ak = AT for some integer k ≥ n. Gold Answer: 0
+
+Reasoning: We are given a condition for an n × n real matrix A: A + Ak = AT for some integer k ≥ n, and we are to find all such matrices with real eigenvalues. Step 1: Understand the given equation Given:. A + Ak = AT (1) . Rewriting it: AT = A + Ak. So the transpose of A is equal to A plus a higher power of A
+
+Analyze the equation: Since we are told that k ≥ n, we are dealing with a high-order power (at least the size of the matrix) The transpose is expressed in terms of the matrix and its power. Step 2: Use transpose properties. From equation (1): AT = A + Ak, take the transpose of both sides: A = AT + ( Ak)T = ( A + Ak)T = AT + ( Ak)T = AT + AkT
+
+. But 
+
+(Ak)T = ( AT )k, so: A = AT + ( AT )k. But from original, AT = A + Ak, so substitute that in: A = ( A + Ak) + ( AT )k = A + Ak + ( AT )k.. Now subtract A from both sides: 0 = Ak + ( AT )k. So we are led to the key identity: Ak + ( AT )k = 0 (2) . Now use this key equation. Given that Ak + ( AT )k = 0, we write: Ak = −(AT )k.. Now observe that 
+
+(AT )k = ( Ak)T , so: Ak = −(Ak)T . So the matrix Ak is skew-symmetric! Important property: Ak is skew-symmetric. But we are told that A is a real matrix with real eigenvalues. So the eigenvalues of A are real. But the matrix Ak is skew-symmetric. Skew-symmetric matrices have purely imaginary eigenvalues (in general), unless zero. So: Ak is skew-symmetric. A has real eigenvalues. Now, for a real matrix with real eigenvalues, Ak will also have real eigenvalues (since real powers of real matrices are real). But skew-symmetric real matrices have purely imaginary eigenvalues. So we have: Ak is skew-symmetric eigenvalues are ±i × real . But Ak has real eigenvalues (since A has real eigenvalues). So the only way both happen is: Ak = 0 Because zero matrix is both symmetric and skew-symmetric. So we conclude: Ak = 0 Then from original equation: A + 0 = AT ⇒ AT = ASo A is symmetric! But we must verify if this is the only solution. So: Ak = 0 for some k ≥ n - and AT = A
+
+Therefore, we are to find symmetric real matrices with zero power for some k ≥ n.But symmetric matrices are diagonalizable over real numbers. So if A is symmetric and nilpotent, then: Ak = 0 for some k ≥ 1. But for diagonalizable matrix, Ak = 0implies all eigenvalues are 0. So A = 0. So is the zero matrix a solution? Check: 
+
+A + Ak = 0 + 0 = 0 - AT = 0. So yes, 0 = 0: true. But are there other solutions? We derived that Ak is skew-symmetric and has real eigenvalues must be zero. So Ak = 0, and then AT = A So the matrix is symmetric and nilpotent. Therefore, the only such matrix is the zero matrix. So, conclusion: The only real matrix with real eigenvalues satisfying A + Ak = AT for some k ≥ n is the zero matrix. But let’s verify this. Verification: Let A = 0- A + Ak = 0 + 0 = 0 - AT = 0 So it works. Are there other matrices? Suppose A is symmetric and Ak = 0Then A is diagonalizable with eigenvalues 0 so A = 0 So only zero matrix. But what about other values of k? For example, if A2 = 0, and A + A2 = AT , then: A + 0 = AT ⇒ AT = A So again, symmetric and nilpotent. So for any k ≥ n, if Ak is skew-symmetric and eigenvalues are real only zero. So the condition forces: AT = A - Ak = 0 for some k ≥ n Therefore, only the zero matrix. So final boxed answer: 0 . 22
