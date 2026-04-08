@@ -1,0 +1,769 @@
+Title: Not All Turns Are Equally Hard: Adaptive Thinking Budgets For Efficient Multi-Turn Reasoning
+
+URL Source: https://arxiv.org/pdf/2604.05164v1
+
+Published Time: Wed, 08 Apr 2026 00:12:21 GMT
+
+Number of Pages: 20
+
+Markdown Content:
+# Not All Turns Are Equally Hard: Adaptive Thinking Budgets For Efficient Multi-Turn Reasoning 
+
+Neharika Jali, Anupam Nayak & Gauri Joshi 
+
+Carnegie Mellon University 
+
+{njali, anupamn, gaurij }@andrew.cmu.edu 
+
+## Abstract 
+
+As LLM reasoning performance plateau, improving inference-time com-pute efficiency is crucial to mitigate overthinking and long thinking traces even for simple queries. Prior approaches including length regularization, adaptive routing, and difficulty-based budget allocation primarily focus on single-turn settings and fail to address the sequential dependencies inherent in multi-turn reasoning.In this work, we formulate multi-turn reasoning as a sequential compute allocation problem and model it as a multi-objective Markov Decision Process. We propose TAB: Turn-Adaptive Budgets, a budget allocation policy trained via Group Relative Policy Opti-mization (GRPO) that learns to maximize task accuracy while respecting global per-problem token constraints. Consequently, TAB takes as input the conversation history and learns to adaptively allocate smaller bud-gets to easier turns and save appropriate number of tokens for the crucial harder reasoning steps. Our experiments on mathematical reasoning bench-marks demonstrate that TAB achieves a superior accuracy-tokens tradeoff saving up to 35% tokens while maintaining accuracy over static and off-the-shelf LLM budget baselines. Further, for systems where a plan of all sub-questions is available apriori, we propose TAB All-SubQ, a budget allocation policy that budgets tokens based on the conversation history and all past and future sub-questions saving up to 40% tokens over baselines. 
+
+## 1 Introduction SubQ                
+
+> HARD
+> q2
+> SubQ
+> EASY
+> q1SubQ
+> MEDIUM
+> q3SubQ
+> EASY
+> q4
+> Tokens
+> Tokens
+> Turns Turns
+> Uniform Budgets Adaptive Budgets
+> User’s
+> Conversation
+> Trajectory
+> x={q1,y1,…}
+> Solver
+> RL-learnt
+> Budget
+> Allocation
+> Policy
+> SubQ qt
+> [x1:t−1,qt]Response yt
+> Allotted
+> Budget bt
+> [x1:t−1,qt]
+> Answer
+> Verifier
+> Reward rT
+> x1:T
+> Included during Post-Training
+
+Figure 1: On the left is a multi-turn reasoning trajectory with a sub-question of varying difficulty presented at every turn. Adaptive difficulty level based per-turn token budget allocations result in improved utilization of compute. On the right is a multi-turn system where at every turn t at inference (colored blocks), the user presents a sub-question qt, the budget allocation policy allots a token budget bt based on the conversation history x1: t−1
+
+and qt to the solver which then generates a response yt. The Budgeter is trained via GRPO with a reward function that is a combination of accuracy and number of tokens used. 1
+
+> arXiv:2604.05164v1 [cs.LG] 6 Apr 2026
+
+As recent gains in LLM reasoning increasingly come from test-time computation (Wu et al., 2025; Muennighoff et al., 2025; Snell et al., 2024), a central deployment question is no longer only how to scale inference, but how to spend that inference budget well. Efficient reasoning matters not only because it reduces cost, but also because it enables more effective test-time scaling under fixed resources. The same compute budget can be used more productively by reserving deeper reasoning for the steps that matter most, or by supporting more candidate solutions and more requests overall. This also matters at the systems level. Under real-world multi-user serving workloads, unnecessary reasoning increases latency, memory use, and long-context processing costs, which reduces throughput (Agrawal et al., 2024; Sun et al., 2024). Prior systems work further shows that these serving bottlenecks become more pronounced for longer sequences and long-context inference (Kwon et al., 2023; Hooper et al., 2025). Current approaches to efficient test-time reasoning largely follow a common philosophy. They first estimate the difficulty of a problem, then allocate an appropriate amount of compute, and finally solve the problem under that budget (Wang et al., 2025b; Shen et al., 2025; Zhang et al., 2025b). In this sense, most existing methods treat efficient reasoning as a one-shot allocation problem at the level of an entire instance. Multi-turn reasoning, often introduced via task or sub-question decomposition to improve performance, makes efficient compute allocation even more important. In single-turn settings, wasted compute is local and an unnecessarily long trace only slows and increases the cost of one response. In multi-turn settings, however, inefficiency compounds over time (Jeong & Ahn, 2025; Gao et al., 2024). Tokens generated early become part of later context, increasing memory, bandwidth, and long-context serving costs as the interaction proceeds (Agrawal et al., 2024; Qin et al., 2025). This is especially problematic in decomposed pipelines, where some sub-questions are routine while others are decisive (Zeng et al., 2025); uniform or myopic per-turn budgets can therefore waste compute on bookkeeping steps and under-invest in the turns that matter most. Yet, compared with single-turn efficient reasoning, multi-turn budget allocation remains relatively underexplored. In this work, we cast multi-turn reasoning as a distinct sequential compute allocation prob-lem. This setting is challenging for several reasons. First, it is characterized by strong 
+
+temporal dependency across turns. A budget decision at the current turn affects not only the immediate response quality, but also the remaining compute, the downstream reasoning trajectory, and the final task outcome, all without visibility into future sub-questions. Sec-ond, feedback is delayed. Since rewards are observed, or correctness is verified, only at the end of the trajectory, the problem involves difficult credit assignment across turn-level decisions. Finally, the objective is inherently multi-objective . A successful approach must jointly optimize task accuracy and token efficiency over entire reasoning trajectories. To-gether, these properties make multi-turn budget allocation fundamentally different from single-turn budget selection and render existing single-turn efficiency methods non-trivial to extend to this setting. 
+
+Main Contributions. We address the problem of compute efficiency in multi-turn reason-ing in the following manner. 1. We formulate multi-turn reasoning as a sequential compute allocation problem, for-malized as a multi-objective Markov Decision Process (MDP). We propose TAB: Turn-Adaptive Budgets, a budget allocation policy trained via Group Relative Policy Optimiza-tion (GRPO) that learns to maximize task accuracy while respecting global per-problem token constraints. 2. We demonstrate that TAB achieves a superior accuracy-tokens tradeoff compared to static and off-the-shelf LLM-Judge baselines saving up to 35% tokens while improving or maintaining accuracy on math reasoning benchmarks. 3. For systems where a plan of all sub-questions is available apriori, we propose a variant TAB All-SubQ, a budget allocation policy that allots tokens as a function of the conversa-tion trajectory thus-far and all sub-questions. It saves up to 40% tokens over baselines strengthening our claim of multi-turn reasoning efficiency being a planning problem rather than an individual difficulty-estimation problem. 22 Related Works 
+
+Inference Time Budget Adaptation Methods. Inference-time interventions are increasingly used to improve reasoning efficiency by allocating computation more selectively. One common strategy is model routing, which directs easier queries to smaller or specialized LLMs while reserving larger models for more difficult instances (Ding et al., 2024; Zhang et al., 2025a; Shao et al., 2024; Ong et al., 2025; Patel et al., 2025). Related work has also explored token-level routing, which enables finer-grained compute allocation within a single generation rather than only at the query level (Kapoor et al., 2026). These ideas have further been extended to agentic settings, where routing decisions must additionally account for downstream execution costs (Zhang et al., 2026; Qian et al., 2025). Another line of work focuses on estimating question difficulty before assigning a reasoning budget (Wang et al., 2025b; Shen et al., 2025; Huang et al., 2025), while other approaches dynamically switch between thinking and non-thinking modes based on estimated difficulty (Zhang et al., 2025b). More recently, adaptive budget forcing methods have been proposed, using signals such as confidence or token entropy to decide whether additional reasoning is needed (Yuan et al., 2025; Li et al., 2026). However, most of these methods are designed for single-turn interactions and do not naturally support planning or budget allocation across multi-turn settings, where reasoning costs must be managed adaptively over the course of an interaction. Further, methods for model routing in multi-turn conversations often incur significant infrastructure overheads of hosting multiple model variants, the prefill and/or decode latency associated with cross-model transitions and cost of extra model invocations. 
+
+Inference Time Planning. Complementary to the budget adaptation methods are task Task decomposition (TD) methods that aim to improve performance by decomposing difficult problems into simpler subproblems that can be solved sequentially. Well before GRPO-style post-training became prevalent, prompting-based TD methods had already shown substantial benefits from explicitly structuring intermediate reasoning (Wei et al., 2022; Rad-hakrishnan et al., 2023; Wang et al., 2023; Khot et al., 2023). More recent reasoning-oriented work has revisited this paradigm by using a stronger model to generate a decomposition or plan and a smaller model to execute the corresponding subtasks (Lin et al., 2026; Xin et al., 2025). This strategy has also been widely adopted in agent-based frameworks (Qian et al., 2025; Erdogan et al., 2025). More recently, hierarchical RL approaches have sought to endow models with subgoal decomposition capabilities through training (Wang et al., 2025a; Ge et al., 2025; Ren et al., 2025). Nevertheless, the primary focus of most of these methods has been on improving task performance, rather than on enabling more efficient reasoning. 
+
+Training Efficient Reasoners. Following the observation that GRPO-based post-training tends to increase the average length of model responses as training progresses, a growing body of work has sought to mitigate overthinking in LLMs and improve token-efficient reasoning, especially on easier problems. One prominent line of research modifies the training objective by incorporating length penalties or related mechanisms to encourage shorter reasoning traces (Arora & Zanette, 2025; Aggarwal & Welleck, 2025; Ayoub et al., 2026; Liu et al., 2026; Qi et al., 2025). Other approaches rely on oversampling and training on shorter responses (Shrivastava et al., 2025), adopt two-stage training procedures (Song & Zheng, 2025; Fatemi et al., 2025). More recently, several works have also explored training efficient reasoners through self-distillation (Zhao et al., 2026; Sang et al., 2026). The central challenge is to reduce unnecessary verbosity without making the model overly conservative, which can hinder exploration at test time. These works can be seen as developing efficient low-level solvers that may be leveraged as a part of a bigger system at inference time. 
+
+## 3 TAB: Turn-Adaptive Budgets 
+
+In this section, we formulate the efficient multi-turn reasoning problem as a sequential compute allocation problem instead of a single-response length-control problem. We model this as a multi-objective Markov decision process and propose TAB: Turn-Adaptive Budgets ,a budget allocation policy learned via the GRPO algorithm with a reward function that is a convex combination of the accuracy and adherence to global token budget. 33.1 Problem Setting Notation. In this work, we study multi-turn reasoning under a global per-problem token budget. Consider a large language model fθ (·) with a set of token budgets B that gener-ates response y to query q by respecting the allotted token budget b ∈ B as y ∼ fθ (q; b)
+
+(Aggarwal & Welleck, 2025). A multi-turn problem instance x consists of a sequence of turns, t ∈ [T], with sub-questions qt presented to the language model and its responses yt
+
+as x = ( q1, y1, q2, y2, . . . , qT , yT ) where T is the total number of turns in the conversation episode. Denote the conversation up to turn t by x1: t = ( q1, y1, . . . , qt, yt). If at each turn 
+
+t, a budget allocation policy πϕ, parameterized by ϕ, selects how much reasoning com-pute bt ∈ B to allocate to the solver LLM, the response generated can be represented as 
+
+yt ∼ fθ (x1: t−1, qt; bt).
+
+Need for Sequential Decision Making in Multi-Turn Systems. Current reasoning models are prone to overthinking and spending far too many tokens on easy turns of a multi-turn conversation leaving little budget for later harder turns. Unlike for single-turn tasks, as demonstrated in Figure 2, static and context-unaware individual sub-question difficulty based token budget policies are ineffective in the multi-turn setting which present the following set of challenges. First is the temporal dependency and its inherently sequential nature where compute allocation decisions at the current turn made without seeing the future sub-questions determine the future resources remaining, downstream reasoning trajectory and eventual problem accuracy in addition to the quality of the immediate response. Second is the challenge of delayed feedback where rewards presented or accuracy verifiable only at the end of the trajectory resulting in the credit-assignment problem making it difficult to discern which specific turn-level budget decisions contributed to the final outcome. Finally, the problem requires a multi-objective optimization algorithm that can optimize over sequential trajectories to effectively learn the accuracy-tokens tradeoff. 
+
+3.2 Multi-Turn Reasoning as a Markov Decision Process 
+
+We frame the sequential allocation of token budgets as a scalarized multi-objective MDP as follows (Roijers et al., 2013; Van Moffaert & Now ´e, 2014). Consider a Markov decision process M. The state at turn t represents the problem trajectory so far including all the previous sub-questions and responses and the current sub-question st = [ x1: t−1, qt]. The action represents the token budget chosen bt ∼ πϕ(·| x1: t−1, qt ). The transition to the next state consists of concatenating the response generated by the solver LLM yt to the problem trajectory as x1: t = ( q1, y1, . . . , qt, yt). Consider reasoning tasks with verifiable rewards and represent accuracy of the generated solution as acc (x) = 1yT =y⋆ 
+
+> T
+
+where y⋆ 
+
+> T
+
+represents the ground truth label. The objective of the MDP, thus, is to find an optimal budget allocation policy π⋆ 
+
+> ϕ
+
+that maximizes the expected accuracy of the reasoning task subject to a global token budget B modelled as a soft penalty as 
+
+π⋆ 
+
+> ϕ
+
+= arg max 
+
+> π
+
+Ex,π
+
+"
+
+acc (x) − λ max 0, 
+
+> T
+
+# ∑
+
+> t=1
+
+bt − B
+
+!# 
+
+, (1) where the budget violation penalty weight λ characterizes the trade-off between accuracy and token efficiency. Alternative reward scalarizations can also be designed to promote concise reasoning, including exact-target, maximum-length, and smoother sigmoid-based penalties (Aggarwal & Welleck, 2025; Arora & Zanette, 2025; Ayoub et al., 2026). We use a hinge penalty because our goal is not to match a target length, but to discourage violating a global per-problem budget. This formulation aligns closely with the deployment objective and is less susceptible than naive additive penalties to pathological under-allocation. 
+
+3.3 Training Turn-Adaptive Budget Allocation Policy via GRPO Reward Function. We learn the optimal budget allocation policy π⋆
+
+> ϕ
+
+(bt|x1: t−1, qt) where 
+
+bt ∈ B using the Group Relative Policy Optimization (GRPO) algorithm (Shao et al., 2024) 4as follows. Note that we adopt GRPO over Proximal Policy Optimization (PPO) (Schul-man et al., 2017) as it eliminates the need for a learned value function, which is noto-riously difficult to estimate accurately in long-horizon, sparse-reward settings such as multi-turn reasoning. Now, for each training problem i, we sample a group of G multi-turn trajectories {x(i,g)}Gg=1. Recall that for every turn t of a trajectory, the budget allocator observes the current conversation state, [x(i,g)
+
+> 1: t−1
+
+, q(i,g) 
+
+> t
+
+], chooses the budget tokens by sam-pling b(i,g) 
+
+> t
+
+∼ πϕ(·| x(i,g)
+
+> 1: t−1
+
+, q(i,g) 
+
+> t
+
+) and supplies it to the LLM, which generates the response 
+
+y(i,g) 
+
+> t
+
+∼ fθ (x(i,g)
+
+> 1: t−1
+
+, q(i,g) 
+
+> t
+
+; b(i,g) 
+
+> t
+
+). After the final synthesis step, each trajectory receives a single terminal reward r(i,g) that scalarizes correctness and token efficiency. We design the reward function 1 to learn the optimal policy (1) as 
+
+r(i,g) 
+
+x(i,g)
+
+= acc 
+
+
+
+x(i,g)
+
+− λ max 0, 
+
+> T
+
+# ∑
+
+> t=1
+
+b(i,g) 
+
+> t
+
+− B
+
+!
+
+(2) where acc (x) ∈ { 0, 1 } denotes the correctness of the generated solution, B is the target global token budget and λ is a penalty weight. 
+
+Advantage Estimation and Policy Optimization. Following GRPO, rewards are normal-ized within each group G and advantages estimated as ˆA(i,g) = r(i,g) − μ(i)
+
+σ(i) where μ(i) = mean 
+
+
+
+{r(i,g)}Gg=1
+
+
+
+, σ(i) = std 
+
+
+
+{r(i,g)}Gg=1
+
+
+
+.Note that since the reward is terminal and obtained at the end of the trajectory, the same trajectory-level advantage ˆA(i,g) is assigned to all turns t in x(i,g). We then maximize a clipped policy objective over all turn-level actions, without a value network as 
+
+JGRPO (ϕ) = Ex(i,g)
+
+ 1
+
+|b(i,g) 
+
+> t
+
+| 
+
+> |b(i,g)
+> t|
+
+# ∑
+
+> k=1
+
+min 
+
+
+
+ρ(i,g) 
+
+> t,<k
+
+ˆA(i,g), clip 
+
+
+
+ρ(i,g) 
+
+> t,<k
+
+, 1 − ϵ, 1 + ϵ
+
+ ˆA(i,g) (3) where ρ(i,g) 
+
+> t,<k
+
+= πϕ
+
+
+
+b(i,g) 
+
+> t,<k
+
+|x(i,g)
+
+> 1: t−1
+
+, qt
+
+
+
+πϕold 
+
+
+
+b(i,g) 
+
+> t,<k
+
+|x(i,g)
+
+> 1: t−1
+
+, qt
+
+ ,and πϕ, πϕold refer to the policy in the current and previous step of training respectively. Optionally, we add a reference-policy regularizer to limit policy drift with β ≥ 0 leading to the composite loss function 
+
+J (ϕ) = JGRPO (ϕ) − β DKL (πϕ|| πre f ).
+
+3.4 Inference in Multi-Turn Reasoning System with TAB 
+
+As demonstrated in Figure 1, a problem presented to the multi-turn reasoning system at inference time is processed as follows. At every turn t ∈ [T], a sub-question qt is presented to the solver LLM. The TAB budget allocation policy takes as input the conversation trajectory thus-far and the current sub-question and allots a token budget as bt ∼ πϕ(·| x1: t−1, qt). The solver LLM then generates a response as yt ∼ fθ (x1: t−1, qt; bt). Further, for model real-world applications where a high-level reasoning plan is generated at the outset and sub-questions corresponding to all sequential steps are known apriori, we propose a variant TAB All-SubQ. TAB All-SubQ is a budget allocation policy that allots tokens based on the conversation trajectory thus-far and all sub-questions past and future as bt ∼ πϕ(·| x1: t−1, q1, . . . , qT ).
+
+> 1
+
+Note that while training, we use the number of tokens actually used by the solver LLM at every turn instead of the number of tokens allotted by the budget policy. 
+
+54 Experiments 
+
+4.1 Setup Multi-Turn Reasoning and Models. Our multi-turn math reasoning system consists of three large language models (LLMs) interacting with each other as demonstrated in Figure 1 and described as follows. (a) User : an LLM that acts as a proxy for a human user in a multi-turn interaction by taking as input a math reasoning problem i and breaking it down into appropriate sub-questions {q(i) 
+
+> 1
+
+, . . . , q(i) 
+
+> T
+
+}. The turns in our multi-turn setup correspond to solving these sub-questions sequentially and no new external user sub-questions are introduced during execution. (b) Budgeter : the budget allocation policy LLM πϕ that takes as input the conversation trajectory and sub-questions and outputs a token budget for every turn as b(i) 
+
+> t
+
+∼ πϕ
+
+
+
+·| x(i)
+
+> 1: t−1
+
+, q(i)
+
+> t
+
+
+
+. In our work, we consider a discrete set of available budgets 
+
+B ∈ { 256, 512, 1024, 2048, 4096 }. (c) Solver : the solver LLM fθ that solves the sub-question and generates the response at every turn as y(i) 
+
+> t
+
+∼ fθ
+
+
+
+x(i)
+
+> 1: t−1
+
+, q(i) 
+
+> t
+
+; b(i)
+
+> t
+
+
+
+.In our experimental evaluation, we use Qwen3-8B, Qwen3-1.7B (Yang et al., 2025) and L1-Qwen3-8B-Exact (Aggarwal & Welleck, 2025) models for the User, Budgeter and Solver LLMs respectively. Note L1-Qwen3-8B-Exact is an open-source model RL-trained to adhere to user-specified length constraints and we choose it as our Solver model as it enables control over the number of response tokens generated with choices from a discrete set. 2 We note here that our algorithm is general and the budget control mechanism can be swapped out modularly. The exact prompts to all the models are listed in Section C. 
+
+Datasets and Baselines. We evaluate the performance of our method, TAB, on the test splits of the math reasoning datasets - MATH-500 (Lightman et al., 2024), AMC23 (math-ai, 2024), MATH Level-5 (Hendrycks et al., 2021), OlympiadBench (He et al., 2024) and AIME25 (Zhang & Team, 2025). We compare TAB against the following three baselines. • Static : each turn gets the same budget from the set B = {256, 512, 1024, 2048, 4096 } as 
+
+bt = b ∈ B ∀ t ∈ [T].• LLM-Judge Individual : the budget allocation policy is an off-the-shelf LLM with the input as the individual sub-question corresponding to the current turn bt ∼ πϕ(·| qt).• LLM-Judge Multi-Turn : the budget allocation policy is an off-the-shelf LLM with the input as a concatenation of the conversation trajectory so far and the sub-question correspond-ing to the current turn bt ∼ πϕ(·| x1: t−1, qt).
+
+Budget Allocation Policy Training. As depicted in Figure 1, we RL-train our Qwen3-1.7B Budgeter, πϕ, using the GRPO-based algorithm explained in Section 3.3. We set the budget penalty weight λ = 0.001 in the reward eq. (2). We choose the training problems as Level 5 question in train split of MATH dataset (Hendrycks et al., 2021). Instead of full-finetuning, we opt to LoRA finetune (Shao et al., 2024) the model with parameters rank r = 64 and 
+
+α = 128 for 125 steps with a learning rate of 10 −5, batch size of 64 (8 × 8) and temperature 0.6. We set maximum context length to 32k and response at each turn limited to 4k tokens. 
+
+4.2 Results Accuracy-tokens tradeoff. Figure 2 (tabular repsentation in Section A) illustrates the accuracy-total tokens used tradeoff across five math reasoning benchmarks for our budget policy TAB trained with budget penalties B ∈ { 3k, 5 k, 8 k, 10 k} against static and LLM-Judge budget policies. Across all benchmarks, TAB consistently defines a superior accuracy-tokens tradeoff saving up to 35% tokens improving upon or maintaining accuracy over baselines. For instance, on the Macro Average across all datasets, TAB with B = 5k achieves 
+
+> 2While a higher allocated token limit pushes the model towards generating a longer reasoning and answer, the allocated budget may not always be used in its entirety by the generated response.
+
+62000 4000 6000 8000 10000 
+
+Tokens 
+
+> 80
+> 82
+> 84
+> 86
+> Accuracy
+
+MATH-500     
+
+> 2000 4000 6000 8000 10000
+
+Tokens 
+
+> 60
+> 65
+> 70
+> 75
+> 80
+> Accuracy
+
+AMC23     
+
+> 2000 4000 6000 8000 10000
+
+Tokens 
+
+> 42
+> 44
+> 46
+> 48
+> 50
+> 52
+> 54
+> Accuracy
+
+OlympiadBench     
+
+> 2000 4000 6000 8000 10000
+
+Tokens 
+
+> 60 .0
+> 62 .5
+> 65 .0
+> 67 .5
+> 70 .0
+> 72 .5
+> 75 .0
+> 77 .5
+> 80 .0
+> Accuracy
+
+MATH Level-5      
+
+> 2000 4000 6000 8000 10000 12000
+
+Tokens 
+
+> 12 .5
+> 15 .0
+> 17 .5
+> 20 .0
+> 22 .5
+> 25 .0
+> 27 .5
+> 30 .0
+> Accuracy
+
+AIME25     
+
+> 2000 4000 6000 8000 10000
+
+Tokens 
+
+> 50
+> 52
+> 54
+> 56
+> 58
+> 60
+> 62
+> 64
+> 66
+> Accuracy
+
+Macro Average 
+
+Static LLM-Judge Individual LLM-Judge Multi-Turn Ours: TAB LLM-Judge Multi-Turn All-SubQ Ours: TAB All-SubQ Figure 2: Accuracy-tokens tradeoff of our RL-learned budget allocation policy TAB formed by training policies with budget penalties B ∈ { 3k, 5 k, 8 k, 10 k} saves up to 35% total tokens (User + Budgeter + Solver tokens) over baselines across 5 math reasoning datasets. Futher, TAB All-SubQ with the Budgeter given as input all sub-questions, past and future, along with the conversation history beats a Budgeter without access to future sub-questions. TAB All-SubQ with B = 10 k saves 12% tokens over TAB and up to 40% tokens over baselines while maintaining accuracy. comparable accuracy to the Static (2048 per-turn), LLM-Judge Individual and LLM-Judge Multi-Turn baselines while using 40% fewer tokens. Similarly, TAB with B = 8k achieves a 4.4 percentage-point higher accuracy compared to the baselines while saving 8.5% of the total tokens. Further, we observe lower savings achieved by TAB over baselines at lower global per-problem budgets B = 3k due to limited budget buckets for adaptive allocation (also see Figure 3b) and increasing savings as global per-problem budget B increases. Number of LLM-Judge TAB % token Questions (B=5k) Multi-Turn savings 1535 Correct Correct 39.0 145 Incorrect Correct 36.7 
+
+199 Correct Incorrect 32.1 
+
+689 Incorrect Incorrect 35.8 Table 1: Comparing tokens used by TAB with B = 5k
+
+(58.5% accuracy) against LLM-Judge Multi-Turn (59.1% accuracy) aggregated over all datasets and broken down across buckets where each problem continues to be answered correctly or flips to incor-rect when using TAB. Only 7.7% of the total prob-lems are pushed to being incorrect under TAB due to a reduced token budget. 
+
+Budget Allocation Policy Character-istics. Figure 3a analyzes if TAB ex-hibits the intended behavior of sav-ing tokens on easier turns to spend later on harder turns by representing the histograms of allotted token per-turn and comparing it against those of the baseline LLM-Judge policies. While LLM-Judge baselines tend to cluster their allocations around high-compute values of 2048 tokens per turn, TAB learns to adaptively allo-cate tokens better, leading to a higher accuracy while saving total tokens. Figure 3b further illustrates that as the global budget B increases, the pol-7LLM-Judge Individual LLM-Judge Multi-Turn TAB (B=8k)  
+
+> 020 40 60 80 100
+> Percentage (%)
+> 6.7 23.4 10.0 21.0 33.9 89.3 58.7 21.4 6.5 20.1
+
+Budget 256 512 1024 2048 4096 Acc: 58.3 Tok: 6124 Acc: 59.1 Tok: 5803 Acc: 62.7 Tok: 5606 (a) TAB (B=3k) TAB (B=5k) TAB (B=8k) TAB (B=10k)    
+
+> 020 40 60 80 100
+> Percentage (%)
+> 30.6 25.3 23.4 31.3 68.9 6.0 68.5 33.9 6.1 21.4 20.1 59.7
+
+Budget 256 512 1024 2048 4096 Acc: 53.6 Tok: 2586 Acc: 58.5 Tok: 3555 Acc: 62.7 Tok: 5606 Acc: 65.8 Tok: 7798 (b) 
+
+Figure 3: Composition-bar plots of allotted tokens per-turn aggregated over all math reasoning datasets with the accuracy and total tokens used corresponding to each policy listed above their bars. On the left, TAB learns to adaptively allocate tokens better leading to 4.4 percentage-point higher accuracy while saving 8.5% total tokens. On the right, are TAB policies trained with budget penalties B ∈ { 3k, 5 k, 8 k, 10 k} and as per-problem global budget B increases, the learned policy shifts towards allotting higher per-turn budgets. icy smoothly shifts this distribution to higher per-turn allocations without collapsing to a uniform high-budget allocation and retaining a heterogeneous allocation pattern even at larger budgets. We also illustrate these characteristics using qualitative examples in Section B. 
+
+TAB All-SubQ: Planning and Value of Future Context. Recall the variant TAB All-SubQ (see Section 3.4) where the budgeter has access to the full sequence of sub-questions along with the current conversation trajectory and predicts budgets as bt ∼
+
+πϕ (·|{ q1, . . . , qT }; x1: t−1). As illustrated in Figure 2, TAB All-SubQ defines an improved accuracy-tokens tradeoff compared to the standard sequential policy TAB. With B = 10 k, it saves 12% tokens over TAB and up to 40% tokens over baselines without loss in accuracy. This performance gap highlights that while our sequential model successfully identifies easy turns to save tokens, having explicit knowledge of future hard steps allows for more precise allocation. These results validate our formulation of multi-turn reasoning as a se-quential allocation problem, demonstrating that the ability to forsee the future token budget requirements significantly enhances the efficiency of the accuracy-compute trade-off. 2000 4000 6000 8000 10000 
+
+Tokens 
+
+> 38
+> 39
+> 40
+> 41
+> 42
+> Accuracy
+
+TheoremQA      
+
+> Static LLM-Judge Individual LLM-Judge Multi-Turn Ours: TAB
+> 2000 4000 6000 8000 10000 12000
+
+Tokens 
+
+> 14
+> 15
+> 16
+> 17
+> 18
+> Accuracy
+
+BBEH-Mini     
+
+> Static LLM-Judge Individual LLM-Judge Multi-Turn Ours: TAB
+> 2000 4000 6000 8000 10000
+
+Tokens 
+
+> 14
+> 15
+> 16
+> 17
+> 18
+> 19
+> 20
+> 21
+> Accuracy
+
+GPQA-Main 
+
+> Static LLM-Judge Individual LLM-Judge Multi-Turn Ours: TAB
+
+Figure 4: TAB continues to beat baselines on out-of-distribution harder theorem-level math, algorithmic, graduate-level scientific reasoning datasets while being trained on the MATH dataset as evidenced by an improved accuracy-tokens tradeoff. 82000 4000 6000 8000 10000 
+
+Tokens 
+
+> 80
+> 82
+> 84
+> 86
+> Accuracy
+
+MATH-500     
+
+> 2000 4000 6000 8000 10000
+
+Tokens 
+
+> 60
+> 65
+> 70
+> 75
+> 80
+> Accuracy
+
+AMC23     
+
+> 2000 4000 6000 8000 10000
+
+Tokens 
+
+> 42
+> 44
+> 46
+> 48
+> 50
+> 52
+> 54
+> Accuracy
+
+OlympiadBench     
+
+> 2000 4000 6000 8000 10000
+
+Tokens 
+
+> 60 .0
+> 62 .5
+> 65 .0
+> 67 .5
+> 70 .0
+> 72 .5
+> 75 .0
+> 77 .5
+> 80 .0
+> Accuracy
+
+MATH Level-5      
+
+> 2000 4000 6000 8000 10000 12000
+
+Tokens 
+
+> 12 .5
+> 15 .0
+> 17 .5
+> 20 .0
+> 22 .5
+> 25 .0
+> 27 .5
+> 30 .0
+> Accuracy
+
+AIME25 
+
+Static LLM-Judge Individual 1.7B LLM-Judge Multi-Turn 1.7B Ours: TAB 1.7B LLM-Judge Individual 4B LLM-Judge Multi-Turn 4B Ours: TAB 4B Figure 5: TAB with Qwen3-4B Budgeter outperforms Qwen3-1.7B Budgeter. 
+
+Out of Distribution Problems. To test the robustness of the learned budget policy, we evaluate TAB trained on Level 5 questions in the train split of the MATH dataset on three harder, out of distribution benchmarks containing theorem-level math in TheoremQA (Chen et al., 2023), algorithmic reasoning in BIG-Bench Extra Hard (Kazemi et al., 2025) and graduate-level scientific reasoning in GPQA (Rein et al., 2024). As shown in Figure 4, our policy TAB maintains its enhanced accuracy-tokens tradeoff albeit with lower savings in compute demonstrating that TAB learns to predict reasoning difficulty rather than just memorizing math specific patterns. 
+
+Budget Model Scaling. In Figure 5 in Section A, we compare TAB with a Qwen3-4B Budgeter against a Qwen3-1.7B Budgeter and observe the 4B Budgeter outperforms the 1.7B model. This agrees with the intuition of a more-capable model being better at interpreting conversation trajectories producing improved difficulty estimates and refined allocation. 
+
+## 5 Conclusion 
+
+In this work, we studied efficient multi-turn reasoning under a global per-problem token budget and argued that, unlike single-turn budget adaptation, this setting is fundamentally a sequential compute allocation problem. The key challenges arise from temporal dependency across turns, delayed terminal feedback that creates a credit-assignment problem, and the need to optimize the accuracy-efficiency tradeoff over entire trajectories. To address this, we formulated multi-turn reasoning as a scalarized multi-objective MDP and proposed TAB, a Turn-Adaptive Budgets policy trained with GRPO, along with TAB All-SubQ for settings where all sub-questions are available apriori. Across math reasoning benchmarks, TAB achieved a superior accuracy-tokens tradeoff over static and off-the-shelf LLM-Judge baselines, saving up to 35% tokens while maintaining or improving accuracy, while TAB All-SubQ saved up to 40% tokens. Our experiments suggest that efficient multi-turn reasoning is fundamentally a planning problem rather than an isolated difficulty-estimation problem, that the learned policy allocates compute adaptively across turns, and that stronger budgeter models yield better allocation decisions. Directions of future work include extension to agentic settings with external tools and non-verifiable rewards, developing richer reward formulations and stronger credit-assignment methods for longer horizons, and jointly learn planning, solving, and budget allocation within a unified framework. 9Acknowledgments 
+
+This work was partially supported by NSF grants CCF 2045694, CCF 2428569, CNS-2112471, CPS-2111751, and an AI2C Seed grant. This work used Bridges-2 GPU at the Pittsburgh Su-percomputing Center through allocation CIS260008 from the Advanced Cyberinfrastructure Coordination Ecosystem: Services & Support (ACCESS) program, which is supported by NSF grants #2138259, #2138286, #2138307, #2137603, and #2138296. 
+
+## References 
+
+Pranjal Aggarwal and Sean Welleck. L1: Controlling how long a reasoning model thinks with reinforcement learning. In Second Conference on Language Modeling , 2025. Amey Agrawal, Nitin Kedia, Ashish Panwar, Jayashree Mohan, Nipun Kwatra, Bhargav Gulavani, Alexey Tumanov, and Ramachandran Ramjee. Taming throughput-latency tradeoff in llm inference with sarathi-serve. In 18th USENIX symposium on operating systems design and implementation (OSDI 24) , pp. 117–134, 2024. Daman Arora and Andrea Zanette. Training language models to reason efficiently. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. Alex Ayoub, Kavosh Asadi, Dale Schuurmans, Csaba Szepesvari, and Karim Bouyarmane. Learning to reason efficiently with discounted reinforcement learning. In The Fourteenth International Conference on Learning Representations , 2026. Wenhu Chen, Ming Yin, Max Ku, Pan Lu, Yixin Wan, Xueguang Ma, Jianyu Xu, Xinyi Wang, and Tony Xia. Theoremqa: A theorem-driven question answering dataset. In Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing , 2023. Dujian Ding, Ankur Mallick, Chi Wang, Robert Sim, Subhabrata Mukherjee, Victor R ¨uhle, Laks V. S. Lakshmanan, and Ahmed Hassan Awadallah. Hybrid LLM: Cost-efficient and quality-aware query routing. In The Twelfth International Conference on Learning Representations , 2024. Lutfi Eren Erdogan, Nicholas Lee, Sehoon Kim, Suhong Moon, Hiroki Furuta, Gopala Anumanchipalli, Kurt Keutzer, and Amir Gholami. Plan-and-act: Improving planning of agents for long-horizon tasks. In International Conference on Machine Learning , pp. 15419–15462. PMLR, 2025. Mehdi Fatemi, Banafsheh Rafiee, Mingjie Tang, and Kartik Talamadupula. Concise reasoning via reinforcement learning. arXiv preprint arXiv:2504.05185 , 2025. Bin Gao, Zhuomin He, Puru Sharma, Qingxuan Kang, Djordje Jevdjic, Junbo Deng, Xingkun Yang, Zhou Yu, and Pengfei Zuo. {Cost-Efficient } large language model serving for multi-turn conversations with {CachedAttention }. In 2024 USENIX annual technical conference (USENIX ATC 24) , pp. 111–126, 2024. Renee Ge, Qianli Liao, and Tomaso Poggio. Hierarchical reasoning models: Perspectives and misconceptions. arXiv preprint arXiv:2510.00355 , 2025. Chaoqun He, Renjie Luo, Yuzhuo Bai, Shengding Hu, Zhen Thai, Junhao Shen, Jinyi Hu, Xu Han, Yujie Huang, Yuxiang Zhang, et al. Olympiadbench: A challenging benchmark for promoting agi with olympiad-level bilingual multimodal scientific problems. In 
+
+Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , 2024. Dan Hendrycks, Collin Burns, Saurav Kadavath, Akul Arora, Steven Basart, Eric Tang, Dawn Song, and Jacob Steinhardt. Measuring mathematical problem solving with the math dataset. In Proceedings of the Neural Information Processing Systems Track on Datasets and Benchmarks , 2021. 10 Coleman Richard Charles Hooper, Sehoon Kim, Hiva Mohammadzadeh, Monishwaran Maheswaran, Sebastian Zhao, June Paik, Michael W Mahoney, Kurt Keutzer, and Amir Gholami. Squeezed attention: Accelerating long context length llm inference. In Proceed-ings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pp. 32631–32652, 2025. Shijue Huang, Hongru Wang, Wanjun Zhong, Zhaochen Su, Jiazhan Feng, Bowen Cao, and Yi R Fung. Adactrl: Towards adaptive and controllable reasoning via difficulty-aware budgeting. arXiv preprint arXiv:2505.18822 , 2025. Jinwoo Jeong and Jeongseob Ahn. Accelerating llm serving for multi-turn dialogues with efficient resource management. In Proceedings of the 30th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 2 , pp. 1–15, 2025. Vansh Kapoor, Aman Gupta, Hao Chen, Anurag Beniwal, Jing Huang, and Aviral Kumar. TRIM: Hybrid inference via targeted stepwise routing in multi-step reasoning tasks. In 
+
+The Fourteenth International Conference on Learning Representations , 2026. Mehran Kazemi, Bahare Fatemi, Hritik Bansal, John Palowitch, Chrysovalantis Anastasiou, Sanket Vaibhav Mehta, Lalit K Jain, Virginia Aglietti, Disha Jindal, Yuanzhu Peter Chen, et al. Big-bench extra hard. In Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , 2025. Tushar Khot, Harsh Trivedi, Matthew Finlayson, Yao Fu, Kyle Richardson, Peter Clark, and Ashish Sabharwal. Decomposed prompting: A modular approach for solving complex tasks. In The Eleventh International Conference on Learning Representations , 2023. Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph Gonzalez, Hao Zhang, and Ion Stoica. Efficient memory management for large language model serving with pagedattention. In Proceedings of the 29th symposium on operating systems principles , pp. 611–626, 2023. Yulin Li, Tengyao Tu, Li Ding, Junjie Wang, Hui-Ling Zhen, Yixin Chen, Yong Li, and Zhuotao Tian. Efficient reasoning with balanced thinking. In The Fourteenth International Conference on Learning Representations , 2026. Hunter Lightman, Vineet Kosaraju, Yuri Burda, Harrison Edwards, Bowen Baker, Teddy Lee, Jan Leike, John Schulman, Ilya Sutskever, and Karl Cobbe. Let’s verify step by step. In The Twelfth International Conference on Learning Representations , 2024. URL https: //openreview.net/forum?id=v8L0pN6EOi .Junhong Lin, Xinyue Zeng, Jie Zhu, Song Wang, Julian Shun, Jun Wu, and Dawei Zhou. Plan and budget: Effective and efficient test-time scaling on reasoning large language models. In The Fourteenth International Conference on Learning Representations , 2026. Wei Liu, Ruochen Zhou, Yiyun Deng, Yuzhen Huang, Junteng Liu, Yuntian Deng, Yizhe Zhang, and Junxian He. Learn to reason efficiently with adaptive length-based reward shaping. In The Fourteenth International Conference on Learning Representations , 2026. math-ai. Amc23 dataset. https://huggingface.co/datasets/math-ai/amc23 , 2024. Niklas Muennighoff, Zitong Yang, Weijia Shi, Xiang Lisa Li, Li Fei-Fei, Hannaneh Hajishirzi, Luke Zettlemoyer, Percy Liang, Emmanuel Cand `es, and Tatsunori B Hashimoto. s1: Simple test-time scaling. In Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing , pp. 20286–20332, 2025. Isaac Ong, Amjad Almahairi, Vincent Wu, Wei-Lin Chiang, Tianhao Wu, Joseph E. Gonzalez, M Waleed Kadous, and Ion Stoica. RouteLLM: Learning to route LLMs from preference data. In The Thirteenth International Conference on Learning Representations , 2025. Shivam Patel, Neharika Jali, Ankur Mallick, and Gauri Joshi. Proxrouter: Proximity-weighted llm query routing for improved robustness to outliers. arXiv preprint arXiv:2510.09852 , 2025. 11 Penghui Qi, Zichen Liu, Tianyu Pang, Chao Du, Wee Sun Lee, and Min Lin. Optimizing anytime reasoning via budget relative policy optimization. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. Cheng Qian, Zuxin Liu, Shirley Kokane, Akshara Prabhakar, Jielin Qiu, Haolin Chen, Zhiwei Liu, Heng Ji, Weiran Yao, Shelby Heinecke, Silvio Savarese, Caiming Xiong, and Huan Wang. xrouter: Training cost-aware llms orchestration system via reinforcement learning, 2025. URL https://arxiv.org/abs/2510.08439 .Ruoyu Qin, Zheming Li, Weiran He, Jialei Cui, Feng Ren, Mingxing Zhang, Yongwei Wu, Weimin Zheng, and Xinran Xu. Mooncake: Trading more storage for less computation—a 
+
+{KVCache-centric } architecture for serving {LLM } chatbot. In 23rd USENIX conference on file and storage technologies (FAST 25) , pp. 155–170, 2025. Ansh Radhakrishnan, Karina Nguyen, Anna Chen, Carol Chen, Carson Denison, Danny Hernandez, Esin Durmus, Evan Hubinger, Jackson Kernion, Kamil ˙e Luko ˇsi ¯ut ˙e, Newton Cheng, Nicholas Joseph, Nicholas Schiefer, Oliver Rausch, Sam McCandlish, Sheer El Showk, Tamera Lanham, Tim Maxwell, Venkatesa Chandrasekaran, Zac Hatfield-Dodds, Jared Kaplan, Jan Brauner, Samuel R. Bowman, and Ethan Perez. Question decomposition improves the faithfulness of model-generated reasoning, 2023. David Rein, Betty Li Hou, Asa Cooper Stickland, Jackson Petty, Richard Yuanzhe Pang, Julien Dirani, Julian Michael, and Samuel R Bowman. Gpqa: A graduate-level google-proof q&a benchmark. In First conference on language modeling , 2024. ZZ Ren, Zhihong Shao, Junxiao Song, Huajian Xin, Haocheng Wang, Wanjia Zhao, Liyue Zhang, Zhe Fu, Qihao Zhu, Dejian Yang, et al. Deepseek-prover-v2: Advancing formal mathematical reasoning via reinforcement learning for subgoal decomposition. arXiv preprint arXiv:2504.21801 , 2025. Diederik M Roijers, Peter Vamplew, Shimon Whiteson, and Richard Dazeley. A survey of multi-objective sequential decision-making. Journal of Artificial Intelligence Research , 2013. Hejian Sang, Yuanda Xu, Zhengze Zhou, Ran He, Zhipeng Wang, and Jiachen Sun. On-policy self-distillation for reasoning compression. arXiv preprint arXiv:2603.05433 , 2026. John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. Proximal policy optimization algorithms. arXiv preprint arXiv:1707.06347 , 2017. Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan Zhang, YK Li, Yang Wu, et al. Deepseekmath: Pushing the limits of mathe-matical reasoning in open language models. arXiv preprint arXiv:2402.03300 , 2024. Yi Shen, Jian Zhang, Jieyun Huang, Shuming Shi, Wenjing Zhang, Jiangze Yan, Ning Wang, Kai Wang, Zhaoxiang Liu, and Shiguo Lian. Dast: Difficulty-adaptive slow-thinking for large reasoning models. In Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing: Industry Track , pp. 2322–2331, 2025. Vaishnavi Shrivastava, Ahmed Awadallah, Vidhisha Balachandran, Shivam Garg, Harkirat Behl, and Dimitris Papailiopoulos. Sample more to think less: Group filtered policy optimization for concise reasoning. arXiv preprint arXiv:2508.09726 , 2025. Charlie Snell, Jaehoon Lee, Kelvin Xu, and Aviral Kumar. Scaling llm test-time compute opti-mally can be more effective than scaling model parameters. arXiv preprint arXiv:2408.03314 ,2024. Mingyang Song and Mao Zheng. Walk before you run! concise llm reasoning via reinforce-ment learning. arXiv preprint arXiv:2505.21178 , 2025. Biao Sun, Ziming Huang, Hanyu Zhao, Wencong Xiao, Xinyi Zhang, Yong Li, and Wei Lin. Llumnix: Dynamic scheduling for large language model serving. In 18th USENIX symposium on operating systems design and implementation (OSDI 24) , pp. 173–191, 2024. 12 Kristof Van Moffaert and Ann Now ´e. Multi-objective reinforcement learning using sets of pareto dominating policies. The Journal of Machine Learning Research , 2014. Guan Wang, Jin Li, Yuhao Sun, Xing Chen, Changling Liu, Yue Wu, Meng Lu, Sen Song, and Yasin Abbasi Yadkori. Hierarchical reasoning model. arXiv preprint arXiv:2506.21734 ,2025a. Lei Wang, Wanyu Xu, Yihuai Lan, Zhiqiang Hu, Yunshi Lan, Roy Ka-Wei Lee, and Ee-Peng Lim. Plan-and-solve prompting: Improving zero-shot chain-of-thought reasoning by large language models. In Proceedings of the 61st annual meeting of the association for computational linguistics (volume 1: long papers) , pp. 2609–2634, 2023. Xinglin Wang, Shaoxiong Feng, Yiwei Li, Peiwen Yuan, Yueqi Zhang, Chuyi Tan, Boyuan Pan, Yao Hu, and Kan Li. Make every penny count: Difficulty-adaptive self-consistency for cost-efficient reasoning. In Findings of the Association for Computational Linguistics: NAACL 2025 , pp. 6904–6917, 2025b. Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Fei Xia, Ed Chi, Quoc V Le, Denny Zhou, et al. Chain-of-thought prompting elicits reasoning in large language models. Advances in neural information processing systems , 2022. Yangzhen Wu, Zhiqing Sun, Shanda Li, Sean Welleck, and Yiming Yang. Inference scaling laws: An empirical analysis of compute-optimal inference for llm problem-solving. In 
+
+The Thirteenth International Conference on Learning Representations , 2025. Ran Xin, Zeyu Zheng, Yanchen Nie, Kun Yuan, and Xia Xiao. Scaling up multi-turn off-policy rl and multi-agent tree search for llm step-provers. arXiv preprint arXiv:2509.06493 ,2025. An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, Chujie Zheng, Dayiheng Liu, Fan Zhou, Fei Huang, Feng Hu, Hao Ge, Haoran Wei, Huan Lin, Jialong Tang, Jian Yang, Jianhong Tu, Jianwei Zhang, Jianxin Yang, Jiaxi Yang, Jing Zhou, Jingren Zhou, Junyang Lin, Kai Dang, Keqin Bao, Kexin Yang, Le Yu, Lianghao Deng, Mei Li, Mingfeng Xue, Mingze Li, Pei Zhang, Peng Wang, Qin Zhu, Rui Men, Ruize Gao, Shixuan Liu, Shuang Luo, Tianhao Li, Tianyi Tang, Wenbiao Yin, Xingzhang Ren, Xinyu Wang, Xinyu Zhang, Xuancheng Ren, Yang Fan, Yang Su, Yichang Zhang, Yinger Zhang, Yu Wan, Yuqiong Liu, Zekun Wang, Zeyu Cui, Zhenru Zhang, Zhipeng Zhou, and Zihan Qiu. Qwen3 technical report, 2025. URL https://arxiv.org/abs/2505.09388 .Dun Yuan, Di Wu, and Xue Liu. Reasoning at the right length: Adaptive budget forcing for efficient and accurate LLM inference, 2025. URL https://openreview.net/forum?id= ieBgxTG7Mt .Siliang Zeng, Quan Wei, William Brown, Oana Frunza, Yuriy Nevmyvaka, Yang Katie Zhao, and Mingyi Hong. Reinforcing multi-turn reasoning in llm agents via turn-level credit assignment. In ICML 2025 Workshop on Computer Use Agents , 2025. Caiqi Zhang, Menglin Xia, Xuchao Zhang, Daniel Madrigal, Ankur Mallick, Samuel Kessler, Victor Ruehle, and Saravan Rajmohan. Budget-aware agentic routing via boundary-guided training. arXiv preprint arXiv:2602.21227 , 2026. Haozhen Zhang, Tao Feng, and Jiaxuan You. Router-r1: Teaching LLMs multi-round routing and aggregation via reinforcement learning. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025a. Jiajie Zhang, Nianyi Lin, Lei Hou, Ling Feng, and Juanzi Li. Adaptthink: Reasoning models can learn when to think. In Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing , pp. 3716–3730, 2025b. Yifan Zhang and Math-AI Team. American invitational mathematics examination (aime) 2025, 2025. 13 Siyan Zhao, Zhihui Xie, Mengchen Liu, Jing Huang, Guan Pang, Feiyu Chen, and Aditya Grover. Self-distilled reasoner: On-policy self-distillation for large language models. arXiv preprint arXiv:2601.18734 , 2026. 14 Appendix LLM Usage 
+
+We used LLMs minimally in writing for grammar checks and rephrasing to fit page limits. We used LLM Code Agents (Claude Agent / CoPilot) for writing code. 
+
+## A Experiment Results 
+
+Below, we present a tabular numerical representation of the results presented in Figure 2, Figure 4 and Figure 5 in Section 4 above. MATH-500 AMC23 OlympiadBench Math Level-5 AIME25 Acc. Tokens Acc. Tokens Acc. Tokens Acc. Tokens Acc. Tokens Static (4096) 85.8 10468 82.5 11269 53.4 11090 74.6 11058 30.0 12701 Static (2048) 83.2 5543 72.5 6110 48.8 6097 70.1 5901 22.5 6784 Static (1024) 81.0 3697 62.5 4053 45.4 4122 66.6 3986 17.5 4616 Static (512) 80.0 2322 60.0 2708 43.3 2717 63.2 2660 15.0 3119 Static (256) 78.6 1746 57.5 2209 42.6 2129 60.8 2013 12.5 2483 L-J Individual 83.4 5418 67.5 6054 48.8 6139 69.3 5961 22.5 7084 L-J Multi-Turn 82.0 4951 70.0 5923 50.3 5758 70.8 5588 22.5 6795 TAB ( B = 10 k) 86.6 6350 80.0 8212 54.7 7668 77.6 7333 30.0 9429 TAB ( B = 8k) 84.4 4987 77.5 5587 51.5 5680 76.8 5473 23.3 6304 TAB ( B = 5k) 83.2 3018 72.5 3392 48.7 3669 68.1 3498 20.0 4202 TAB ( B = 3k) 80.5 2226 60.5 2436 45.3 2690 65.0 2516 16.7 3063 L-J Multi-Turn All-SubQ 84.0 5245 70.0 5882 49.6 5992 71.2 5744 23.3 6837 TAB All-SubQ ( B = 10 k) 87.2 5424 79.5 6945 53.9 6705 76.8 6311 30.0 8567 TAB All-SubQ ( B = 8k) 84.0 5224 77.5 6018 52.5 6309 75.8 5901 26.7 7921 TAB All-SubQ ( B = 5k) 83.4 2742 72.5 3485 50.6 3345 70.4 3255 23.3 4116 TAB All-SubQ ( B = 3k) 81.0 2326 61.0 2603 45.4 2761 65.4 2636 16.7 3203 L-J Individual 4B 82.8 3573 71.0 4660 48.5 4686 69.3 4318 20.0 6286 L-J Multi-Turn 4B 82.8 3686 70.0 4675 49.5 4719 69.5 4324 22.5 6140 TAB 4B ( B = 10 k) 86.2 6032 80.5 6916 54.6 7314 77.8 6895 30.0 9222 TAB 4B ( B = 8k) 85.8 4420 79.8 5846 53.4 6003 77.0 5531 26.7 6813 TAB 4B ( B = 5k) 83.8 3315 73.0 3731 48.8 3793 69.1 3697 23.3 5018 TAB 4B ( B = 3k) 81.0 2229 62.5 2561 46.6 2730 65.6 2596 20.0 4089 Table 2: Accuracy and total tokens used across math reasoning benchmarks. TheoremQA BBEH-Mini GPQA-Main Acc. Tokens Acc. Tokens Acc. Tokens Static (4096) 42.1 10754 17.8 12428 20.8 10994 Static (2048) 40.3 5988 16.5 6984 17.4 5910 Static (1024) 40.0 3975 15.4 4394 16.7 3929 Static (512) 39.5 2578 14.6 2909 14.7 2544 Static (256) 38.1 1778 13.7 2054 14.3 1822 LLM-Judge Individual 39.8 5916 13.9 2152 17.4 5940 LLM-Judge Multi-Turn 40.8 5375 13.9 1949 18.1 5712 TAB ( B = 10 k) 42.3 6566 17.0 5236 19.4 6415 TAB ( B = 8k) 41.5 4987 15.7 4644 17.2 4843 TAB ( B = 5k) 40.9 3141 15.4 3867 16.5 2971 TAB ( B = 3k) 39.9 2320 14.6 2238 15.6 2258 Table 3: Accuracy and total tokens used on out-of-distribution algorithmic and scientific reasoning benchmarks. 15 B Multi-Turn Reasoning Trajectory Examples 
+
+To better understand the strengths of our budget allocation policy TAB against static and off-the-shelf LLM-Judge baselines, we present two qualitative examples that highlight key characteristics of the learned policy. 
+
+B.1 Token Savings via Adaptive Allocation 
+
+In this example, we demonstrate that TAB spends only 2605 tokens to solve the problem accurately as it correctly identifies the difficulty of a sub-questions and allots the right number of tokens compared to the LLM-Judge Multi-Turn baseline policy that ends up (over)-spending 6063 tokens. 
+
+Problem: 
+
+Find the remainder when $(5x + 9)ˆ{611} + (x + 5)ˆ{11} + (x - 1)ˆ{11} + 3xˆ2 + 1$ is divided by $x + 2.$ 
+
+TAB Trajectory (Budget: 256 | Actual: 243 tokens): 
+
+Subquestion: How can we simplify (x + 5)ˆ11 evaluated at x = -2? Response: <think> Okay, let 's tackle this. The expression is (x + 5)ˆ11 evaluated at x = -2. First, substitute x = -2 into the base: (-2 + 5) = 3. So now it becomes 3ˆ11. Wait, 3ˆ11 is a big number. The simplest form is just 3ˆ11. </think> To simplify $(x + 5)ˆ{11}$ at $x = -2$, substitute $x = -2$: $$(-2 + 5)ˆ{11} = 3ˆ{11}$$ **Answer:** The simplified value is $\boxed{3ˆ{11}}$. 
+
+LLM-Judge Multi-Turn Trajectory (Budget: 1024 | Actual: 1,049 tokens): 
+
+Subquestion: How can we simplify (x + 5)ˆ11 evaluated at x = -2? Response: <think> Okay, let 's tackle this sub-question. The user is asking to simplify (x + 5)ˆ11 when x = -2 ... Let me compute that: -2 + 5 is 3. Expression simplifies to 3ˆ11. Wait, but why is this important? Well, in the context of the main problem, we 're evaluating the entire polynomial at x = -2. But let me double-check... Now, the user might be wondering if there 's a way to compute 3ˆ11 without a calculator... Let me compute it step by step. 3ˆ1 = 3, 3ˆ2 = 9, 3ˆ3 = 27, 3ˆ4 = 81, 3ˆ5 = 243, 3ˆ6 = 729, 3ˆ7 = 2187, 3ˆ8 = 6561, 3ˆ9 = 19683, 3ˆ10 = 59049, 3ˆ11 = 177147. So, 3ˆ11 equals 177,147. However, in the context of the main problem, when we add (x + 5)ˆ11 and (x - 1)ˆ11, which becomes 3ˆ11 + (-3)ˆ11... Since 11 is odd... therefore, they cancel each other out. </think> To simplify the expression $(x + 5)ˆ{11}$... [Continues for another 200 words] ... It’s worth noting that in the context of the main problem, this term combines with $(x - 1)ˆ{11}$... leaving no contribution to the final result. However, this sub-question focuses only on simplifying $(x + 5)ˆ{11}$, not its interaction... **Final Answer:** $\boxed{3ˆ{11}}$ 
+
+16 B.2 Effect of Early-Stage Budgets on Later Quality 
+
+In this example, we demonstrate that the Static baseline with a uniform 512 token allocation for every turn allots too few tokens to a crucial step early in the trajectory leading to compounding errors in subsequent steps and eventually get the answer wrong even though it spends a comparable number of total tokens of 3198 on the problem. In the step shown below, the baseline hits its generation limit mid-thought and results in a wrong algebraic simplification which propagates and results in ’No valid solution.’. On the hand, our policy TAB allots the appropriate number of tokens (1024) to the step shown below, simplifies the equation correctly and in the end solves the question using a total of 3548 tokens. 
+
+Problem: 
+
+Solve $\sqrt{x + \sqrt{3x + 6}} + \sqrt{x - \sqrt{3x + 6}} = 6.$ 
+
+Static (512) Baseline Trajectory (Tokens hit strict cutoff at ∼600 tokens) 
+
+Subquestion: Square both sides of the equation to eliminate outer roots. Response: <think> Let me denote A = sqrt((yˆ2 + 3y -6)/3) and B = sqrt((yˆ2 - 3y -6)/3). So the equation is A + B = 6. Squaring both sides gives (A + B)ˆ2 = 36... Now compute Aˆ2 and Bˆ2. Aˆ2 = (yˆ2 + 3y -6)/3. Bˆ2 = (yˆ2 - 3y -6)/3. Adding Aˆ2 and Bˆ2: (2yˆ2 - 12)/3. ... [Generates exactly 653 tokens before hitting the step cutoff limit] ... </think> Expanding the left-hand side: $$ \frac{yˆ2 + 3y - 6}{3} + \frac{yˆ2 - 3y - 6}{3} + 2\sqrt{\frac{(yˆ2 + 3y - 6)(yˆ2 - 3y - 6)}{9}} = 36 $$ Thus, the equation becomes: $$ \frac{2yˆ2 - 12}{3} + \frac{2}{3}\sqrt{(yˆ2 - 9)(yˆ2 - 6)} = 36 $$ \boxed{\frac{2yˆ2 - 12}{3} + \frac{2}{3}\sqrt{(yˆ2 - 9)(yˆ2 - 6)} = 36} 
+
+TAB Trajectory (Budget: 1024 | Actual: 865 tokens) 
+
+Subquestion: Square both sides of the equation to eliminate outer roots. Response: <think> ... [800+ tokens of rigorous expansion, substitutions, polynomial isolation] ... After squaring both sides, we simplify and derive the equation: $$ yˆ4 - 21yˆ2 + 36 = 9\left(400 - \frac{40}{3}yˆ2 + \frac{1}{9}yˆ4\right) $$ Simplifying further leads to: 99yˆ2 - 3564 = 0 \implies yˆ2 = 36 \implies y = 6 Substituting back, $ y = \sqrt{3x + 6} = 6 \implies 3x + 6 = 36 \implies x = 10 $. </think> Answer: The squared equation simplifies to yˆ2 = 36, giving x = 10. 
+
+17 C Prompts 
+
+Recall that User LLM (Qwen3-8B) breaks down the task problem into sub-questions qt
+
+and presents it to the Solver. The Budgeter LLM (Qwen3-1.7B) takes as input the con-versation trajectory and sub-questions and outputs a token budget for every turn as 
+
+b(i) 
+
+> t
+
+∼ πϕ
+
+
+
+·| x(i)
+
+> 1: t−1
+
+, q(i)
+
+> t
+
+
+
+. The Solver LLM (L1-Qwen3-8B-Exact) that solves the sub-question and generates the response at every turn as y(i) 
+
+> t
+
+∼ fθ
+
+
+
+x(i)
+
+> 1: t−1
+
+, q(i) 
+
+> t
+
+; b(i)
+
+> t
+
+
+
+. We use the standard chat-based message formats with System, User and Assisstant blocks for all our implemen-tation. It is important to note that the User block in the chat template is different for the User LLM that we use as a component of our Multi-Turn System. Note that the User prompt below is inspired by the Planner prompt in (Lin et al., 2026). During implementation of the Bud-geter LLM, we ask the LLM to predict a difficulty level 0 − 4 for each sub-question which we then map to the discrete token budget levels as {0 : 256, 1 : 512, 2 : 1024, 3 : 2048, 4 : 4096 }.User LLM 
+
+System Prompt: 
+
+-Goal-You are an experienced expert in math and exam question designer. Your role is to help students break down challenging math problems into a series of simpler, high-level sub-questions. We don’t want too many detailed sub-questions, which are not beneficial for testing students’ ability in an exam. Each sub-question should build on the previous one so that, once all have been answered, the complete solution is clear. Your output should be a list of sub-questions with brief hints explaining the purpose of each step, but you should not reveal your internal chain-of-thought or the final solution. Instructions for Decomposition: First, analyze the problem and identify the key ideas needed to solve it. Then, generate a series of 2 to 5 sub-questions based on the difficulty of question that lead the student step by step to the complete solution. Ideally, we want fewer sub-questions for easy problems and more sub-questions for challenging problems. Do NOT perform reasoning, directly output those sub-questions based on your gut feelings; only output the list of sub-questions with brief hints for each. Your answer should be a list of numbered sub-questions. Each sub-question should have a brief accompanying hint that explains what the student will achieve by answering that part. 
+
+User Prompt: 
+
+A student has presented you with the following math problem: Problem: problem **REMEMBER**, you are not allowed to think about it, please directly generate the answer in the following format: Decomposed Sub-questions: 18 Budgeter LLM (TAB) 
+
+System Prompt: 
+
+-Goal-You are an expert at assessing the difficulty of mathematical sub-problems within a multi-step problem-solving conversation. You will be given: 1. A math problem 2. The conversation history showing how a solver has worked through previous sub-questions (each turn contains the sub-question and the solver’s answer) 3. The next sub-question that needs a difficulty assessment Your role is to predict the difficulty level (0-4) of the next sub-question, informed by the problem context and the solver’s progress so far. Consider these factors: - How the solver handled previous sub-questions (errors, complexity of responses) - Whether the next sub-question builds on previous answers - The algebraic manipulations and reasoning steps required - The risk of computational errors Format your response as EXACTLY a single number (0, 1, 2, 3, or 4). Nothing else. 
+
+User Prompt: 
+
+Here is a math problem being solved step by step: **Problem:** {problem }
+
+**Conversation History (previous sub-questions and solver answers):** 
+
+{conversation-history }
+
+**Next Sub-question to rate:** Sub-question {target-idx }: {target-subquestion }
+
+Based on the problem, the solver’s progress so far, and the complexity of the next sub-question, rate its difficulty on a scale of 0-4. Output ONLY a single number. 
+
+19 Solver LLM 
+
+System Prompt: 
+
+You are an expert mathematician solving a complex problem step by step. You will be given sub-questions one at a time with a thinking budget constraint. For each sub-question: 1. Think carefully about what is being asked 2. Use any previous answers and context provided 3. Provide a clear, detailed solution within the token budget 4. State your answer clearly at the end When presenting the final answer to the original problem, you MUST format it as 
+
+boxed {answer }. Be precise with calculations and show your reasoning within the given token limit. 
+
+Initial User Prompt: I need help solving the following math problem. I will break it down into sub-questions and ask you one at a time. **Main Problem:** problem Please acknowledge that you understand the problem, and I will present the first sub-question. 
+
+Initial Assistant Prompt: 
+
+I understand the problem. I’m ready to solve it step by step within the given thinking budgets. Please present the first sub-question. 
+
+User Prompt at every turn: 
+
+**Sub-question idx:** subquestion Please solve this sub-question. Show your work and state your answer clearly. Think for exactly budget tokens. 
+
+Final Synthesis Prompt: 
+
+Based on all your work on the sub-questions above, please provide the final answer to the original problem. Present your final answer in the format: 
+
+boxed {answer }
+
+**Final Answer:** 
+
+20
