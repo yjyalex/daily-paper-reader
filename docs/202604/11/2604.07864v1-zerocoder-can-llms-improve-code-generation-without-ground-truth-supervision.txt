@@ -1,0 +1,685 @@
+Title: ZeroCoder: Can LLMs Improve Code Generation Without Ground-Truth Supervision?
+
+URL Source: https://arxiv.org/pdf/2604.07864v1
+
+Published Time: Fri, 10 Apr 2026 00:37:27 GMT
+
+Number of Pages: 12
+
+Markdown Content:
+# ZeroCoder: Can LLMs Improve Code Generation Without Ground-Truth Supervision? 
+
+# Lishui Fan 
+
+Zhejiang University The State Key Laboratory of Blockchain and Data Security China flscode@zju.edu.cn 
+
+# Mouxiang Chen 
+
+Zhejiang University The State Key Laboratory of Blockchain and Data Security China chenmx@zju.edu.cn 
+
+# Tingwei Zhu 
+
+Zhejiang University The State Key Laboratory of Blockchain and Data Security China chenmx@zju.edu.cn 
+
+# Kui Liu 
+
+HuaWei China brucekuiliu@gmail.com 
+
+# Xin Xia 
+
+Zhejiang University China xin.xia@acm.org 
+
+# Shanping Li 
+
+Zhejiang University The State Key Laboratory of Blockchain and Data Security China shan@zju.edu.cn 
+
+# Zhongxin Liu ∗
+
+Zhejiang University The State Key Laboratory of Blockchain and Data Security China liu_zx@zju.edu.cn 
+
+## Abstract 
+
+Code generation is an important task in software engineering, and Reinforcement Learning with Verifiable Rewards (RLVR) has emerged as a powerful paradigm for improving it through execution-based feedback. However, most RLVR pipelines rely on human-curated unit tests as verifiers, making further progress bottlenecked by the cost and scarcity of supervision. Existing work has tried to use self-generated tests to ground rewards, but the effect is con-strained by the lack of discriminative tests due to the sub-optimal performance of the model on test generation. Our idea is to improve code generation without ground-truth supervision by co-evolving both code and test generation, so that their interactions produce progressively more informative supervision. To this end, we present ZeroCoder, a fully label-free co-evolutionary framework that jointly trains a Coder, which generates solutions, and a Tester, that gen-erates tests, using only execution feedback from self-generated code–test interactions. For each problem, ZeroCoder executes sam-pled solutions against sampled tests to form a passing matrix, iden-tifies a consensus subset of likely-correct solutions and consistent tests via a pluggable selection algorithm, and derives role-specific rewards accordingly. To ensure reward quality, ZeroCoder filters low-information instances via rank-based pre-filtering and trains the Tester with a curriculum balancing validity and mutation-driven discriminativeness. We further identify selector drift, the progres-sive miscalibration of fixed selection rules during co-evolution, and introduce 𝐷𝑦 B4, a Bayesian selector that uses as few as 10 labeled instances to dynamically recalibrate its priors. Across three model families and six benchmarks, ZeroCoder consistently improves both 
+
+> ∗Corresponding author
+
+code generation and test generation. In the fully label-free setting, ZeroCoder yields strong gains. For example, on Qwen2.5-Coder-7B-Instruct, it improves code generation by up to 14.5% over the base model. With 𝐷𝑦 B4, the gain reaches 21.6%, while test generation improves by 24.3%, approaching oracle-supervised performance. 
+
+## 1 Introduction 
+
+Code generation is an important task in software engineering [ 43 ,50 ]. Reinforcement Learning with Verifiable Rewards (RLVR) has emerged as a dominant paradigm for improving it, delivering sub-stantial gains by optimizing large language models (LLMs) against execution-based feedback [ 8 , 41 ]. Yet this success still depends heavily on the availability of ground-truth supervision: in practice, RLVR pipelines typically rely either on human-curated unit tests or on tests automatically generated from reference solutions as verifiers [ 6 , 22 , 25 ], both requiring substantial manual effort and high-quality guarantees. As these resources become increasingly expensive to scale [ 6, 37 ], further progress is bottlenecked by super-vision scarcity. This raises a pressing question: can LLMs improve code generation without relying on ground-truth supervision? 
+
+A growing line of work has explored self-rewarding mechanisms to improve LLM reasoning without external labels, where models generate their own feedback to serve as a training signal. One line constructs rewards from model-side self-assessment signals, such as confidence or entropy [ 15 , 29 , 48 ]; another derives supervision from consensus-based selection over multiple self-generated candi-dates, such as majority voting [ 11 , 53 ]. Although different in form, both depend on internal model agreement as a proxy for correct-ness, which may reinforce spurious yet self-consistent trajectories and even induce performance collapse [ 32 ]. For code generation, 
+
+> arXiv:2604.07864v1 [cs.SE] 9 Apr 2026 Lishui Fan, Mouxiang Chen, Tingwei Zhu, Kui Liu, Xin Xia, Shanping Li, and Zhongxin Liu
+
+a more objective proxy is program execution. Rather than rely-ing on internal model agreement, one can assess solution quality by whether the code actually runs correctly. Along this direction, recent work uses self-generated tests and execution feedback to evaluate candidate programs [ 4, 36 ]. However, this route remains fundamentally bottlenecked by the quality of self-generated tests: due to the inherent scarcity of high-quality tests compared to code in training corpora [ 21 , 30 ], self-generated tests often lack discrim-inative power, allowing spurious solutions to pass and yielding noisy, low-information reward signals. Consequently, in the ab-sence of ground-truth supervision, improving code generation re-quires strengthening the model’s test-generation capability. Since code generation and test generation are dual tasks rely-ing on a shared understanding of the code problem [ 3, 39 ], our idea is to co-evolve the two tasks during reinforcement learning. A single model alternates between two roles, acting as a coder to produce candidate solutions and as a tester to produce candidate tests. Rather than treating one role as fixed while optimizing the other, both roles are jointly trained and mutually improve through role-specific reward signals derived from the resulting code-test interactions: stronger tests place greater pressure on the coder to produce correct solutions, and a stronger coder, in turn, raises the bar for the tester to generate more discriminative tests. Crucially, in our label-free setting, these code-test interactions are the only source of supervision. The success of co-evolution, therefore, de-pends on whether they can yield informative reward signals for both roles. Realizing this idea requires addressing two challenges. From the training data perspective, problems that are too easy or too hard lead to degenerate code-test interactions with nearly iden-tical rewards (e.g, either all pass or fail), driving group-normalized advantages toward zero and resulting in vanishing policy gradients that destabilize training [ 41 , 44 ]. From the training process perspec-tive, since the model’s ability as a tester is initially weaker than as a coder, naively optimizing both roles together may fail to bootstrap the tester into a reliable and discriminative verifier. In this paper, we propose ZeroCoder, a fully label-free frame-work that improves code generation by learning from self-generated code-test interactions, without relying on any ground-truth super-vision. For each problem, ZeroCoder samples candidate solutions from the coder and tests from the tester, and executes them to form a passing matrix that summarizes pairwise execution outcomes. Based on this matrix, a selection algorithm, which we refer to as a 
+
+selector , identifies a consensus subset of likely-correct solutions and consistent tests, i.e., a subset in which solutions exhibit mutually consistent execution behavior with respect to the selected tests, and ZeroCoder derives role-specific rewards for both the coder and the tester. To address the two challenges above, ZeroCoder incorporates two mechanisms. First, ZeroCoder performs an offline rank-based pre-filtering step before training, retaining only problems whose passing matrices exhibit sufficient interaction diversity measured by matrix rank. Second, ZeroCoder introduces a mutation-based reward for tester training, which is integrated into a curriculum designed to balance validity and discriminativeness. This curricu-lum rewards tests for agreeing with selector-induced consensus solutions, and gradually shifts emphasis toward mutation-based discriminativeness by encouraging tests to expose subtly faulty implementations. Built on ZeroCoder, we instantiate three representative selectors, namely MaxPass [ 20 ], which selects solutions with the highest pass counts, CodeT [ 3], which leverages agreement between generated solutions and tests, and B4 [5 ], which ranks candidate solutions us-ing Bayesian posterior estimates derived from execution outcomes. We find that ZeroCoder already improves both code generation and test generation in a fully label-free setting. However, through further analysis, we identify the selector drift phenomenon: exist-ing selectors encode fixed inductive biases (e.g., MaxPass assumes sufficiently reliable tests [ 5 ]), which may become miscalibrated as the reliability of the coder and tester drifts during co-evolutionary training, eventually yielding increasingly noisy reward signals. To mitigate this issue, the selector should be recalibrated as training progresses. We therefore propose Dynamic B4 (𝐷𝑦 B4), a dynam-ically calibrated variant of B4. Whereas the original B4 relies on fixed prior assumptions when forming posterior estimates, 𝐷𝑦 B4
+
+updates its prior hyperparameters using a very small labeled cali-bration set (e.g., as few as 10 labeled instances) to maintain selector quality throughout training. Extensive evaluations demonstrate the effectiveness of ZeroCoder and 𝐷𝑦 B4 across four code-generation and two test-generation benchmarks on three models (i.e., Qwen2.5-1.5B-Instruct [ 12 ], Qwen3-4B [ 41 ], and Qwen2.5-Coder-7B-Instruct [ 42 ]). Taking Qwen2.5-Coder-7B-Instruct as an example, in the fully label-free setting, ZeroCoder with the selector B4 [5 ] achieves 14.5% and 15.6% rela-tive improvements over the base model in code generation and test generation, respectively. Equipping ZeroCoder with 𝐷𝑦 B4 yields further improvements of 21.6% and 24.3%, which is competitive with oracle training that relies on ground-truth supervision. In summary, our main contributions are as follows: 
+
+• ZeroCoder . A label-free co-evolutionary RLVR framework that jointly improves code/test generation from self-generated code-test interactions. By improving the informativeness of self-generated rewards through rank-based pre-filtering and discriminative tester optimization, ZeroCoder delivers consistent gains without ground-truth supervision. 
+
+• Selector Drift Analysis & 𝐷𝑦 B4. We identify selector drift, the progressive miscalibration of fixed selection rules under co-evolution, as a key source of reward noise. We propose 𝐷𝑦 B4, a dynamically calibrated Bayesian selector that uses a small labeled set to maintain selection quality throughout training. 
+
+• Empirical Validation & Analysis . On average across three rep-resentative models and six benchmarks, ZeroCoder with 𝐷𝑦 B4
+
+improves code generation and test generation by 18.8% and 62.7% over the base models, respectively, matching oracle-supervised performance. Further analysis confirms that both the offline-filtering and mutation-driven discriminativeness reward compo-nents are critical. 
+
+## 2 Preliminaries 
+
+Problem Formulation. We study label-free training for code gen-eration and test generation. We employ a single language model 𝜋 𝜃 ,which alternates between two roles via prompting during training: a coder 𝜋 coder  
+
+> 𝜃
+
+and a tester 𝜋 tester  
+
+> 𝜃
+
+.Given a problem 𝑥 , the coder samples 𝑁 candidate solutions S =
+
+{𝑠 𝑖 }𝑁 𝑖 =1 with 𝑠 𝑖 ∼ 𝜋 coder  
+
+> 𝜃
+
+(· | 𝑥 ) and the tester samples 𝑀 candidate ZeroCoder: Can LLMs Improve Code Generation Without Ground-Truth Supervision? 
+
+tests T = {𝑡 𝑗 }𝑀 𝑗 =1 with 𝑡 𝑗 ∼ 𝜋 tester  
+
+> 𝜃
+
+(· | 𝑥 ). The interaction between 
+
+S and T is captured by executing every pair (𝑠 𝑖 , 𝑡 𝑗 ). We define the execution result as 𝑒 𝑖 𝑗 = I(exec (𝑠 𝑖 , 𝑡 𝑗 ) = pass ), where I(·) is the indicator function. The aggregation of these outcomes forms a passing matrix 𝐸 = {𝑒 𝑖 𝑗 }𝑁 ×𝑀 ∈ { 0, 1}𝑁 ×𝑀 , where the entry 𝑒 𝑖 𝑗 
+
+indicates whether solution 𝑠 𝑖 passes test 𝑡 𝑗 .A selector Sel maps 𝐸 to a selected consensus subset of solutions and tests: 
+
+Sel (𝐸 ) = (C 𝑆 , C𝑇 ), C𝑆 ⊆ S , C𝑇 ⊆ T 
+
+In this paper, we consider representative selectors, including Max-Pass, CodeT, and B4, which differ in how they select C𝑆 and C𝑇 
+
+from the execution matrix 𝐸 . In particular, we primarily use C𝑆 as a proxy set of higher-quality solutions for reward construction. 
+
+Reinforcement Learning with Verifiable Rewards (RLVR). Standard RLVR for code generation assumes a supervised dataset Dsup =
+
+{( 𝑥,𝑇 ∗)} , where 𝑇 ∗ represents ground-truth verification resources (e.g., test cases). It optimizes 
+
+JRLVR (𝜃 ) = E𝑥 ∼D sup , 𝑠 ∼𝜋 𝜃 (· | 𝑥 )
+
+𝑟 (𝑠,𝑇 ∗)
+
+where 𝑟 (𝑠,𝑇 ∗) is the objective reward (e.g., 𝑟 = 1 if 𝑠 passes all tests in 𝑇 ∗, else 0). In the label-free setting, we derive learning signals from the model’s own code-test interactions, eliminating the reliance on large-scale, reliable verifiers. 
+
+## 3 ZeroCoder 
+
+ZeroCoder co-trains a coder and a tester without ground-truth solutions or tests, using execution feedback from self-generated interactions. Making such co-evolution work requires addressing two key challenges: (i) problems that are too easy or too hard for the current policy induce degenerate passing matrices and unin-formative rewards, and (ii) the tester is initially weak, and tends to produce tests that lack discriminativeness. To address these chal-lenges, ZeroCoder comprises two components: offline rank-based pre-filtering (§3.1), which removes low-information problems be-fore RL, and code-test co-evolutionary RL (§3.2), which jointly optimizes both roles under execution feedback while equipping the tester with a curriculum-based objective that progressively im-proves its validity and discriminativeness. We further introduce Dynamic B4 (§3.3) as an optional selector that can be integrated into ZeroCoder to mitigate selector drift during co-evolution. The overview of ZeroCoder is shown in Figure 1. 
+
+## 3.1 Offline Rank-based Pre-filtering 
+
+Effective RL benefits from training instances that induce informa-tive reward variation across candidates [ 44 , 51 ]. Existing RLVR methods [ 8, 38 , 41 ] often rely on accuracy-based filtering (e.g., retaining instances with non-trivial pass rates) to preserve infor-mative reward variation. In such supervised settings, an instance supports informative selection only when it contains a mix of cor-rect and incorrect candidates, providing the necessary contrast for the algorithm to distinguish superior solutions from inferior ones. In our label-free setting, however, ground-truth accuracy is un-available. The only observable supervision comes from the passing matrix 𝐸 , which records the outcomes of interactions between self-generated solutions and self-generated tests. Therefore, whether an instance is informative depends on the diversity of interaction patterns encoded in 𝐸 : informative instances should contain solu-tions with different pass/fail signatures across tests, and tests that distinguish solutions in different ways. When this diversity collapses, reward construction becomes degenerate. If 𝐸 is nearly all ones, most tests are too weak to distin-guish solutions; if 𝐸 is nearly all zeros, almost all solutions fail and little actionable feedback is available. More generally, whenever many rows or columns of 𝐸 are redundant, the resulting rewards become nearly constant across candidates, leading to near-zero group-normalized advantages [ 44 ] and thus weak policy gradients. This motivates the need for an unsupervised proxy computed solely from 𝐸 . We use the rank of 𝐸 as an unsupervised proxy for interaction diversity [ 16 , 31 ]. Intuitively, rank reflects how many non-redundant execution signatures are present in the matrix: low rank implies many solutions behave similarly or many tests are redundant, whereas a higher rank indicates a richer interaction structure for more informative selection and reward construction. Based on this insight, we curate a high-information dataset D
+
+from the raw dataset D′. Before training, we use the initial policy 
+
+𝜋 𝜃 0 to perform a one-time rollout for each problem 𝑥 ∈ D ′ to construct the matrix 𝐸 𝑥 . We then compute the rank Rank (𝐸 𝑥 ) and retain only those problems whose interaction diversity exceeds a threshold 𝜏 , yielding 
+
+D = {𝑥 ∈ D ′ | Rank (𝐸 𝑥 ) ≥ 𝜏 }
+
+This filtering removes low-information instances and ensures that the subsequent RL phase focuses on samples with high potential for co-evolutionary gain. 
+
+## 3.2 Code-Test Co-evolutionary RL 
+
+We optimize 𝜋 𝜃 by converting the passing matrix 𝐸 into role-specific rewards through a selector-agnostic reward-construction module. Given 𝐸 , the module (i) applies a selector Sel to obtain a consensus subset of solutions and tests, denoted by C𝑆 and C𝑇 , and (ii) assigns rewards to the coder and the tester based on (𝐸, C𝑆 ). Notably, it is selector-agnostic: different selectors can be plugged in, and a single selector is kept fixed within each training run. We instantiate three representative selectors: MaxPass [ 20 ], CodeT [ 3 ], and B4 [5 ]. MaxPass ranks solutions by the number of passed tests, assuming that the sampled tests contain sufficiently reliable cases to separate correct from spurious solutions. CodeT partitions solu-tions into functionality-equivalent groups based on their execution signatures on the sampled tests. Specifically, solutions that exhibit identical pass/fail patterns across tests are grouped together. CodeT then scores each group according to the strength of its consensus and selects the highest-scoring group as the consensus group, as-suming correct solutions appear with non-trivial probability so that a high-quality group can emerge. B4 [5] denotes a specific instantia-tion of the Bayesian selector with two fixed prior hyperparameters, 
+
+𝛽 0 and 𝛼 𝑥 𝑦 . It scores candidate correctness configurations, each of which induces a candidate consensus set ( ˜C𝑆 , ˜C𝑇 ). Following [ 5], its practical score is approximated as 
+
+score B4 ( ˜C𝑆 , ˜C𝑇 ; 𝛽 0, 𝛼 𝑥 𝑦 ) =
+
+Ö  
+
+> 𝑘 ∈ { 1,0,𝑥,𝑦 }
+
+B(𝑎 𝑘 , 𝑏 𝑘 )Lishui Fan, Mouxiang Chen, Tingwei Zhu, Kui Liu, Xin Xia, Shanping Li, and Zhongxin Liu No GT Tests                      
+
+> No GT Solution
+> Tester
+> Tests
+> Codes
+> 1234
+> abcd
+> Selector
+> ({a},
+> {1,2,3})
+> Consensus
+> subset (𝓒 𝒔 ,𝓒 𝑻 )
+> 𝒓 𝒔 𝒊 =𝕀 𝒔 𝒊 ∋𝓒 𝒔 𝒓 𝒕 𝒋 =𝒓 𝒕 𝒋
+> 𝒑𝒓𝒐 +𝝀 𝒌 𝒓 𝒕 𝒋
+> 𝒎𝒖𝒕 +𝒓 𝒕 𝒋
+> 𝒇𝒎𝒕
+> 𝒕 𝒋
+> 𝒔 𝒊
+> Coder
+> 𝒓 𝒔 𝟏
+> Alternating Updates (per iter .)
+> Reward
+
+Pre -filtering  Code -Test Co -evolutionary RL (Label -Free)             
+
+> Advantage
+> Frozen (no update)
+> 𝒓 𝒔 𝟐 𝒓 𝒔 𝟑 𝒓 𝒔 𝟒 𝒓 𝒕 𝟏 𝒓 𝒕 𝟐 𝒓 𝒕 𝟑 𝒓 𝒕 𝟒
+> 𝑹𝒂𝒏𝒌 𝑬 ≥𝝉
+> Policy
+> Tasks
+> Passing
+> Matrix 𝑬
+> (Coder + Tester)
+> (N Solutions ×M Tests)
+> Pre -Filtering
+> Policy Filtered Tasks
+> Shared Policy
+
+Figure 1: Overview of ZeroCoder framework. Coder Promp t Tester Prompt 
+
+{The problem statement} 
+
+Use the following starter code to write the solution, 
+
+and 
+
+If the problem provides an entry point: 
+
+enclose your code within the delimiters below. 
+
+```python 
+
+{The entry point} 
+
+``` 
+
+Read the input from stdin, solve the problem, and 
+
+write the output to stdout. Do not directly test on 
+
+the sample inputs . Enclose your code within the 
+
+delimiters below . Ensure that the Python program 
+
+reads the input, runs the algorithm , and writes the 
+
+output to stdout 
+
+Otherwise: 
+
+.
+
+```python 
+
+# YOUR CODE HERE 
+
+``` 
+
+Below is a Python programming problem. Your 
+
+task is to write assert statements to verify the 
+
+correctness of a candidate solution. Follow these 
+
+requirements: 
+
+1.  Each assert statement should appear on a 
+
+separate line. 
+
+2.  Wrap all assertions in a Python code block .
+
+``` 
+
+{The problem statement} 
+
+``` 
+
+Figure 2: Coder prompt template used in our experiments. 
+
+where each (𝑎 𝑘 , 𝑏 𝑘 ) combines observed summary statistics from 
+
+𝐸 with fixed prior hyperparameters 𝜼 = (𝛽 0, 𝛼 𝑥 𝑦 ): 𝛽 0 encodes the belief that incorrect solutions rarely pass incorrect tests, and 𝛼 𝑥 𝑦 
+
+favors larger consensus sets. B4 returns the ˜C𝑆 with the highest score. See [5] for the full formulation. These assumptions are reasonable under fixed operating condi-tions, but may become miscalibrated as the coder/tester’s reliability drifts during training, motivating 𝐷𝑦 B4 (§3.3). For convenience, we refer to these selectors as static selectors , since their decision rules remain fixed throughout training. 
+
+Coder Reward. In the absence of ground-truth solutions, we treat the selected solutions C𝑆 as a proxy for higher-quality solutions under the current interaction signal. We assign a binary reward to solutions selected into C𝑆 :
+
+𝑟 𝑠 𝑖 = I𝑠 𝑖 ∈ C 𝑆 
+
+
+
+where I(·) is the indicator function. 
+
+Tester Reward. Optimizing the tester requires balancing validity with respect to likely correct solutions and discriminative power. Since ground-truth labels are absent, we leverage C𝑆 as a proxy oracle while explicitly discouraging trivial tests. We design the overall tester reward to consist of three different terms: 
+
+Proxy-Agreement Term. We reward a test if it is satisfied by a proxy-good solution. To reduce training-time overhead, instead of evaluating a candidate test 𝑡 𝑗 on all solutions in C𝑆 , we randomly sample one 𝑠 ★ ∼ C 𝑆 and define 
+
+𝑟 pro  
+
+> 𝑡 𝑗
+
+= I exec (𝑠 ★, 𝑡 𝑗 ) = pass 
+
+Discriminative Term. Crucially, the tester can satisfy 𝑟 pro by gen-erating trivial tests (e.g., assert True ), yielding little useful signal for learning. To mitigate this, we introduce a mutation-based score based on program mutation testing. We apply a program mutation tool 1 to generate a set of mutated variants of 𝑠 ★, denoted by M ( 𝑠 ★),and measure how many mutants are killed by 𝑡 𝑗 :
+
+𝑟 mut  
+
+> 𝑡 𝑗
+
+=
+
+Í𝑚 ∈ M ( 𝑠 ★ ) I exec (𝑚, 𝑡 𝑗 ) = fail 
+
+|M ( 𝑠 ★)| 
+
+Even if a test aligns with the consensus, it receives a low mutation reward if it cannot distinguish 𝑠 ★ from its mutants, discouraging low-discriminability tests. 
+
+Format Term. To ensure tests are parsable, we penalize unparsable outputs: 
+
+𝑟 fmt  
+
+> 𝑡 𝑗
+
+=
+
+(
+
+0, if 𝑡 𝑗 is executable ,
+
+−1, otherwise .
+
+Overall tester Reward. We combine the terms as: 
+
+𝑟 𝑡 𝑗 = 𝑟 pro  
+
+> 𝑡 𝑗
+
++ 𝜆 𝑘 𝑟 mut  
+
+> 𝑡 𝑗
+
++ 𝑟 fmt 
+
+> 𝑡 𝑗
+
+We use a scheduler 𝜆 𝑘 that gradually upweights discriminativeness. Let progress = 𝑘 𝐾 ∈ [ 0, 1] be the normalized training step, where 
+
+𝑘 is the current step and 𝐾 is the total number of RL steps. We set 
+
+𝜆 𝑘 = 1.25 − 0.25 cos (𝜋 · progress )
+
+so 𝜆 𝑘 increases smoothly from 1.0 to 1.5.This curriculum on 𝜆 𝑘 reflects a developmental progression from validity to discriminative power. Early in training, the tester is relatively weak and should first learn to produce valid tests for   
+
+> 1In our implementation, we use the mutmut library. ZeroCoder: Can LLMs Improve Code Generation Without Ground-Truth Supervision?
+
+## Tester Prompt 
+
+o ution, 
+
+below. 
+
+m and 
+
+on 
+
+he 
+
+ogram 
+
+es the 
+
+Below is a Python programming problem. Your 
+
+task is to write assert statements to verify the 
+
+correctness of a candidate solution. Follow these 
+
+requirements: 
+
+1.  Each assert statement should appear on a 
+
+separate line. 
+
+2.  Wrap all assertions in a Python code block .
+
+``` 
+
+{The problem statement} 
+
+``` 
+
+Figure 3: Tester prompt template used in our experiments. 
+
+likely correct solutions. We therefore avoid over-emphasizing the mutation term 𝑟 mut at the beginning, and gradually upweight it as the tester becomes more reliable, so that training shifts from encouraging validity to encouraging finer-grained discrimination. We adopt a cosine schedule, a commonly used schedule [ 24 , 26 ], to ensure a smooth transition from validity-focused training to discriminativeness-focused training. Beyond reward design, we also adopt an alternating update scheme to reduce non-stationarity. Specifically, we alternate be-tween coder and tester updates across training steps, rather than updating both roles sequentially within the same step. The latter would make the second update depend on off-policy data after the first role has changed, which may increase non-stationarity and degrade training quality [33, 45]. 
+
+## 3.3 Dynamic B4
+
+While ZeroCoder itself is label-free, static selectors may become miscalibrated as the reliability of the coder and tester evolves during training (see §5.1). Such miscalibration can lead to noisier consensus selection and, consequently, noisier reward signals. To mitigate this effect, we propose Dynamic B4 (𝐷𝑦 B4), a label-assisted selector built on top of the original selector B4, which recalibrates B4’s prior hyperparameters to align with the current policy’s capability. We construct a lightweight labeled set H = {( 𝑥, 𝑠 †,𝑇 †)} for se-lector calibration, where each instance contains a problem 𝑥 , a refer-ence solution 𝑠 †, reference tests 𝑇 †. We denote the hyperparameters by 𝜼 = (𝛽 0, 𝛼 𝑥 𝑦 ). Following B4 [ 5], we define a candidate search space Ω as a log-scale grid with 𝛽 0 ∈ [ 10 0, 10 9] and 𝛼 𝑥 𝑦 ∈ [ 10 0, 10 7],yielding a search space of 10 × 8 = 80 candidate configurations. Before each training step 𝑘 , we use the current policy to sample candidate solutions and tests for each problem in H , construct passing matrices, and run B4 under each 𝜼 ∈ Ω. Let ˆ𝑠 𝜼 (𝑥 ) be the solution selected by B4 with hyperparameters 𝜼 for calibration problem 𝑥 . We then choose: 
+
+𝜼 (𝑘 ) = arg max  
+
+> 𝜼 ∈Ω
+
+1
+
+|H | ∑︁ (𝑥,𝑠 †,𝑇 † ) ∈ H 
+
+I
+
+
+
+exec ( ˆ𝑠 𝜼 (𝑥 ),𝑇 †) = pass 
+
+
+
+and use 𝜼 (𝑘 ) for B4-based reward construction at step 𝑘 . The cost is manageable, as |H | = 10 already achieves comparable calibration quality to substantially larger calibration sets (see §5.3), and the calibration step accounts for only 2% of the per-step wall-clock time (see §5.3). 
+
+## 4 Experiment Setup 
+
+Models. We conduct training across different model scales, in-cluding Qwen2.5-1.5B-Instruct [42], Qwen3-4B [41] and Qwen2.5-Coder-7B-Instruct [ 12 ]. Due to resource constraints, we run Qwen3-4B in its non-thinking mode throughout training and evaluation. 
+
+Benchmark and Metrics. We select four widely used code-generation benchmarks, including MBPP [ 2], LiveCodeBench [ 14 ], APPS [ 9]and CodeForces [ 28 ]. For LiveCodeBench, we follow prior work [ 41 ]and use problems from Oct 2024 to Feb 2025 to reduce potential data leakage. For computational efficiency on large-scale bench-marks, we evaluate on subsets: following prior practice [ 19 , 27 ], we randomly sample 300 problems from the APPS test set, preserving its difficulty distribution (60/180/60 for introductory/interview/-competition). For CodeForces, we randomly sample 300 problems and ensure this subset has no overlap with the APPS problems used in our experiments. We report Pass@1 under greedy decoding to ensure reproducibility. To quantify test generation capability, we evaluate on Live-CodeBench and MBPP. For each problem, we generate tests via greedy decoding and assess them using a fixed reference solution. (i) Test Accuracy is measured by the pass rate of generated tests 𝑇 
+
+on the reference solution 𝑠 𝑟𝑒 𝑓 :
+
+> ACC
+
+(𝑇 ) = 1
+
+|𝑇 |∑︁ 𝑡 ∈𝑇 
+
+I
+
+
+
+> exec
+
+(𝑠 𝑟𝑒 𝑓 , 𝑡 ) = pass 
+
+
+
+(ii) Mutation score measures the average mutant-killing ability of generated tests. We use mutmut to generate a mutant set M ( 𝑠 ★),compute for each generated test the fraction of mutants it kills, and then average this quantity over all generated tests. 
+
+> Mut
+
+(𝑇 ) = 1
+
+|𝑇 | |M ( 𝑠 𝑟𝑒 𝑓 )| ∑︁ 𝑡 ∈𝑇 ∑︁ 𝑚 ∈ M ( 𝑠 𝑟𝑒 𝑓 )
+
+I(exec (𝑚, 𝑡 ) = fail )
+
+Since LiveCodeBench lacks ground-truth solutions, following prior practice [ 36 ], we construct the pseudo ground-truth solution set by sampling 8 solutions using Qwen3-235B-A22B [ 41 ] with temperature = 0.8 and selecting one solution that passes all official tests. To ensure compatibility with mutation tools, we restrict to function-style problems where the solution contains a clear entry point. This choice is also consistent with prior practice [ 17 , 36 , 40 ]. Applying this filtering yields 323 LiveCodeBench instances with pseudo ground-truth solutions for test evaluation. For MBPP, we use the canonical reference solution provided by the benchmark. 
+
+Baselines. We compare against the following baselines: (1) Base Model (No RL). The original model without training. This is used to demonstrate the overall performance gains achieved by our framework. (2) Offline Test-Driven RL. For each training prob-lem, we first generate a fixed set of synthetic tests 𝑡 syn using the base model with greedy decoding to ensure reproducibility. We then train the model only as a coder. The generated codes are ex-ecuted on the fixed synthetic tests with a binary reward 𝑟 (𝑠 ) =
+
+I ∀𝑡 ∈ 𝑇 syn , exec (𝑠, 𝑡 ) = pass , where 𝑇 syn is the fixed synthetic tests. It is designed to reveal the limitations of relying on static pseudo-labels. (3) Online Test-Driven RL. During training, we gen-erate tests online and train the model only as a coder. We use a Lishui Fan, Mouxiang Chen, Tingwei Zhu, Kui Liu, Xin Xia, Shanping Li, and Zhongxin Liu 
+
+binary reward that is 1 iff the code passes all sampled tests; oth-erwise, it is 0: 𝑟 (𝑠 ) = I(∀ 𝑡 ∈ 𝑇 sam , exec (𝑠, 𝑡 ) = pass ), where 𝑇 sam is the sampled tests. Comparing ZeroCoder against this baseline ex-plicitly isolates and validates the necessity of co-evolving the tester. For a fair comparison, both RL baselines use the same sampling configuration during training as ZeroCoder. 
+
+Training Details. We optimize the policy using the GRPO ob-jective [ 8 ] and implement training in VeRL [ 34 ] on the training split of the APPS dataset [ 10 ], which contains 5,000 coding prob-lems. For the static selector B4, we adopt two settings, B4 (4, 3)
+
+and B4 (5, 3), as used in prior work [ 5 ]. The threshold 𝜏 for filter-ing low-information instances is set to 2. After pre-filtering, the resulting training sets contain 1,377, 1,396 and 990 instances for Qwen2.5-1.5B-Instruct, Qwen3-4B and Qwen2.5-Coder-7B-Instruct, respectively. The prompts for coder and tester are shown in Fig-ure 2 and 3, respectively. For 𝐷𝑦 B4, we reserve a labeled set of size |H | = 10 , where H is randomly sampled from the filtered APPS training set; the remaining instances are used for training. We set the actor clipping ratio to 0.2, the KL coefficient to 0.001. All models are trained for 150 steps with a batch size of 32 and a constant learning rate of 1 × 10 −6. To balance rollout diversity and computational efficiency, we sample 8 rollouts for both code and test generation at each step, using a temperature of 0.7 and top-𝑝 of 0.8. The maximum response length is 2048 tokens. All experiments are conducted on a cluster of 4 NVIDIA A100 GPUs. 
+
+## 5 Experiments 
+
+In this section, we report and analyze the experimental results to answer the following research questions (RQs): 
+
+• RQ1: How effective is ZeroCoder in a fully label-free setting for improving code generation and test generation? 
+
+• RQ2: Under a matched small-label setting, how much additional benefit does ZeroCoder gain from dynamic calibration with 
+
+𝐷𝑦 B4?
+
+• RQ3: How do ZeroCoder ’s components contribute to its perfor-mance, and how does it behave in terms of sensitivity, efficiency, and comparison to oracle-supervised training? We distinguish two evaluation settings throughout the experi-ments. In the label-free ZeroCoder setting (§5.1), ZeroCoder is in-stantiated with static selectors and trained without any labeled data. In the ZeroCoder + 𝐷𝑦 B4 setting (§5.2), we switch to a matched set-ting with a small amount of labeled data, where the same labeled set H is introduced for all selectors. Static selectors use it for su-pervised reward, while 𝐷𝑦 B4 additionally uses it for calibration. We then conduct further analysis through component ablations, sensitivity analysis, efficiency profiling, and comparison against oracle-supervised training, to better understand its behavior and contextualize the gains (§5.3). 
+
+## 5.1 RQ1: Label-Free ZeroCoder with Static Selectors 
+
+We answer RQ1 by evaluating ZeroCoder in a fully label-free set-ting with representative static selectors. Table 1 summarizes the performance of ZeroCoder and other baselines. Task: Pack consecutive duplicates of a list into sublists. 
+
+Base Model                            
+
+> Generated Code
+> def pack_consecutive_duplicates(nums):
+> result =[nums[ 0]]
+> for iin range (1,len (nums)):
+> if nums[i] !=result[ -1]:
+> result.append([nums[i]])
+> else :
+> result[ -1].append(nums[i])
+> return result
+> Generated Test
+> assert pack_consecutive_duplicates([ 'a' ]) == [[ 'a' ]]
+> assert pack_consecutive_duplicates([ 'a' ,'a' ,'b' ,'b' ,'c' ]
+> )== [[ 'a' ,'a' ], ['b' ,'b' ], ['c' ]]
+
+Base Model + ZeroCoder                                 
+
+> Generated Code
+> def pack_consecutive_duplicates(nums):
+> if not nums:
+> return []
+> result =[[nums[ 0]]]
+> for num in nums[ 1:]:
+> if num == result[ -1][ 0]:
+> result[ -1].append(num)
+> else :
+> result.append([num])
+> return result
+> Generated Test
+> assert pack_consecutive_duplicates([ 'a' ,'a' ,'a' ,'b' ,'b' ,
+> 'a' ,'a' ]) == [[ 'a' ,'a' ,'a' ], ['b' ,'b' ], ['a' ,'a' ]]
+> assert pack_consecutive_duplicates([]) == []
+
+Figure 4: A case study demonstrating the advantages of Ze-roCoder. 
+
+First, ZeroCoder with static selectors is already effective in a fully label-free setting. For example, on Qwen2.5-Coder-7B-Instruct, it improves code generation and test generation over the base model by up to 14.5% and 23.9%, respectively. These results suggest that self-generated code-test interactions can produce useful supervi-sion, leading to substantial improvements in both roles. To further figure out the reasons for ZeroCoder ’s better perfor-mance, we manually inspect the code and test outputs generated by the base model (Qwen2.5-Coder-7B-Instruct) and its ZeroCoder-trained variant (using CodeT as the selector). Based on our inspec-tion, we find that ZeroCoder has two major advantages: 
+
+ZeroCoder can suppress invalid generations through external exe-cution feedback. In ZeroCoder, every candidate solution is executed against sampled tests, so structurally flawed code receives negative feedback through low rewards. As shown in Figure 4, the task re-quires grouping consecutive duplicate elements of a list into sublists. The base model produces an invalid implementation by initializ-ing result as a flat list, which propagates into subsequent errors: the comparison checks against a raw element, and the append call fails. In contrast, under ZeroCoder, such faulty code is exposed during execution against sampled tests, receives low rewards, and is therefore suppressed during training. 
+
+The co-evolved tester generates increasingly discriminative tests that, in turn, push the coder toward more robust solutions. In the same ZeroCoder: Can LLMs Improve Code Generation Without Ground-Truth Supervision? 
+
+Table 1: Performance of ZeroCoder with static selectors and baseline methods on code- and test-generation benchmarks across three base models in a fully label-free setting. “LCB” refers to LiveCodeBench, and “CF.” refers to CodeForces. CAvg and TAvg denote the average over code-generation and test-generation benchmarks, respectively. Avg = (CAvg + TAvg) / 2.                                                                                     
+
+> Model Selector Code Generation Test Generation TAvg Avg
+> LCB MBPP Apps CF. CAvg LCB MBPP Intro. Inter. Comp. ACC. Mut. ACC. Mut.
+> Qwen2.5-1.5B-Instruct
+> Base Model –4.8 60.3 31.7 6.1 3.3 1.7 18.0 17.5 3.0 42.7 7.2 17.6 17.8 +Offline –4.8 57.4 33.3 5.6 0.0 1.7 17.1 46.1 4.3 43.9 4.5 24.7 20.9 +Online –4.8 59.3 28.3 5.0 0.0 2.0 16.6 52.9 9.3 45.8 6.9 28.7 22.6 +ZeroCoder MaxPass 4.8 63.0 33.3 6.7 3.3 1.7 18.8 64.7 16.7 69.0 29.9 45.1 31.9 CodeT 5.4 64.8 36.7 7.2 5.0 2.3 20.2 67.2 16.4 71.7 24.6 45.0 32.6
+
+B4(4,3) 4.2 64.3 35.0 6.7 5.0 1.7 19.5 70.6 15.5 67.2 27.8 45.3 32.4 
+
+B4(5,3) 5.4 64.0 33.3 6.1 3.3 1.7 19.0 66.9 17.0 66.9 32.3 45.8 32.4                                                                      
+
+> Qwen3-4B
+> Base Model –21.7 79.9 50.0 21.1 1.7 8.3 30.4 99.4 9.3 72.4 18.0 49.8 40.1 +Offline –22.3 75.7 50.0 18.9 0.0 10.7 29.6 57.7 3.7 66.8 13.7 35.5 32.5 +Online –24.1 79.1 46.7 19.4 0.0 12.3 30.3 81.9 7.9 59.4 12.2 40.4 35.3 +ZeroCoder MaxPass 22.9 78.8 55.0 28.9 3.3 13.0 33.6 99.7 9.6 73.3 17.2 49.9 41.8 CodeT 24.1 80.2 56.7 27.2 5.0 14.7 34.6 99.7 8.3 74.9 18.3 50.3 42.5
+
+B4(4,3) 24.1 79.9 53.3 30.6 5.0 14.7 34.6 99.4 9.9 72.8 18.0 50.0 42.3 
+
+B4(5,3) 22.9 78.6 61.7 22.2 3.3 12.3 33.5 98.8 9.6 72.5 19.6 50.1 41.8                                                                      
+
+> Qwen2.5-Coder-7B-Instruct
+> Base Model –15.1 83.6 60.0 23.3 18.3 8.0 34.7 84.4 6.2 69.1 14.6 43.6 39.1 +Offline –15.1 82.8 51.7 21.7 5.0 10.3 31.1 87.0 7.7 69.3 14.8 44.7 37.9 +Online –18.1 81.2 61.7 18.9 8.3 9.3 32.9 88.9 7.4 68.5 14.6 44.8 38.9 +ZeroCoder MaxPass 14.5 84.1 66.7 23.3 13.3 8.7 35.1 74.1 18.9 72.0 37.3 50.6 42.8 CodeT 20.5 85.4 68.3 21.1 11.7 11.0 36.3 91.3 15.2 72.5 36.8 53.9 45.1
+
+B4(4,3) 20.5 84.9 70.0 31.1 18.3 13.7 39.8 75.2 20.1 69.6 36.5 50.3 45.0 
+
+B4(5,3) 20.5 83.6 66.7 21.1 16.7 9.3 36.3 68.4 20.1 70.9 35.7 48.8 42.5 
+
+example, the base model generates weak tests that cover simple functionality, such as a single-element input and a standard multi-group list, but miss boundary conditions. After training, the tester generates a boundary test for the empty-list input together with a longer and more challenging grouped sequence. These discrimi-native tests not only validate basic behavior, but also distinguish correct solutions from plausible ones that fail on edge cases. As a re-sult, the coder is pushed to satisfy stricter behavioral requirements, leading to more robust code generation. Second, relying solely on offline or online test-driven RL without co-evolving the tester degrades code-generation performance. For example, on Qwen2.5-Coder-7B-Instruct, the offline and online RL baselines reduce code generation performance by 10.4% and 5.2% relative to the base model, respectively. A plausible explanation is that, in both baselines, the tester is fixed rather than improved alongside the increasingly capable coder. As training progresses, such initially weak tests become insufficient to distinguish truly correct solutions from plausible but faulty ones, leading to noisy or low-information reward signals that ultimately hinder learning. Lastly, no single static selector consistently dominates across all evaluated benchmarks. For example, on Qwen2.5-Coder-7B-Instruct, ZeroCoder with B4 (4, 3) achieves the best coding per-formance, improving over the base model by 14.5% on average, whereas CodeT yields the best test-generation performance, out-performing the base model by 23.9%. We hypothesize that this is 
+
+Figure 5: Analysis of the selection noise rate of static selectors and 𝐷𝑦 B4 over training steps. 
+
+because their fixed inductive biases cannot stay calibrated to the evolving reliability of the coder and tester during training, leading to unstable learning signals. To make this explicit, we track the selection noise rate of each selector over training. We randomly sample 300 training instances and, at each checkpoint, measure selection noise rate as follows: noise 𝑘 = 1 − 𝑃𝑟𝑒𝑐 𝑘 (Sel ), where 𝑃𝑟𝑒𝑐 is the fraction of selected solutions that pass the official test suite. Figure 5 shows that noise 𝑘 
+
+fluctuates and can even increase over training for static selectors, Lishui Fan, Mouxiang Chen, Tingwei Zhu, Kui Liu, Xin Xia, Shanping Li, and Zhongxin Liu 
+
+indicating that static selectors may become miscalibrated and even yield degraded selection quality. We define this phenomenon as 
+
+selector drift , i.e., the progressive degradation of selection accuracy due to fixed prior assumptions that fail to align with the evolving distribution of candidate solutions. In contrast, 𝐷𝑦 B4 continuously adapts to these shifts, maintaining a stable precision gap throughout the co-evolutionary process. 
+
+Answer to RQ1: In the fully label-free setting, ZeroCoder with static selectors consistently improves both code and test generation, achieving average relative improvements of 8.6% and 58.2% over the base models across all three models, re-spectively. This demonstrates that self-generated code-test interactions can serve as effective supervision. In contrast, of-fline and online test-driven RL without co-evolving the tester degrades code-generation performance. Analysis of selection noise rates further reveals that static selectors suffer from progressive miscalibration during co-evolution, motivating dynamic calibration. 
+
+## 5.2 RQ2: Dynamic Calibration with 𝐷𝑦 B4
+
+We answer RQ2 by evaluating whether dynamic calibration further improves ZeroCoder under a matched small-label setting. Specif-ically, we equip all selectors with the same small labeled set H
+
+(|H | = 10 ), so that performance differences cannot be attributed to unequal supervision budgets. For static selectors, H is used only to provide supervised rewards during training. For 𝐷𝑦 B4, the same set is used both for supervised rewards and for dynamically recalibrat-ing the selector. On H , rewards are computed from ground-truth supervision: for the coder, a solution receives reward 1 iff it passes all ground-truth tests, and 0 otherwise; for the tester, the reward follows §3.2, except that the consensus solution 𝑠 ★ is replaced by the ground-truth solution. Under this matched supervision budget, 𝐷𝑦 B4 further brings robust and consistent improvements in both code generation and test generation across all three models. As shown in Table 2, on Qwen2.5-Coder-7B-Instruct, ZeroCoder with 𝐷𝑦 B4 achieves aver-age relative improvements of 21.6% and 24.3% over the base model in code generation and test generation, respectively. Notably, 𝐷𝑦 B4
+
+consistently outperforms all static selectors under the same labeled budget, indicating that its gains come from better-calibrated reward construction rather than simply from access to labeled data. A key reason is that 𝐷𝑦 B4 continually adapts the selector to the evolving reliability of the coder and tester during training. As shown in Figure 5, while static selectors can fluctuate in selection quality and even deteriorate over time, 𝐷𝑦 B4 maintains a consis-tently lower noise rate and a sustained selection-quality advantage throughout co-evolution. 
+
+Answer to RQ2: Under a matched small-label budget ( |H | =
+
+10 ), 𝐷𝑦 B4 consistently outperforms all static selectors across all three models, achieving average relative improvements of 18.8% and 62.7% over the base models in code and test genera-tion, respectively. These gains arise because dynamic calibra-tion keeps the selector aligned with the evolving reliability of the coder and tester throughout training. 
+
+## 5.3 RQ3: Component, Sensitivity, and Efficiency Analysis 
+
+We answer RQ3 by analyzing the contribution of each component through ablation studies and sensitivity analysis, profiling training efficiency, and comparing against oracle-supervised training. Due to computational constraints, we conduct analytical experiments on Qwen2.5-coder-7B-Instruct, the strongest-performing model in our evaluation, unless explicitly stated otherwise. 
+
+Effect of the Mutation-Based Reward. To analyze whether gains come merely from improving test validity, or from encouraging tests to be discriminative enough to provide useful feedback to the coder, we ablate the mutation-based reward component in the tester objective. Concretely, we remove the mutation-based term 
+
+𝑟 mut from ZeroCoder + 𝐷𝑦 B4 and re-train all models with the other settings unchanged. The results are summarized in Table 3. Generating discriminative tests is essential for the continuous co-evolution of the coder and tester. As shown in the table, remov-ing the mutation reward leads to a degradation in code genera-tion performance. For example, the average coding performance of Qwen2.5-Coder-7B-Instruct drops from 42.2% to 35.3% when the mutation reward is removed. This may be because, without mutation, the tester fails to explore discriminative cases, leading to trivial tests that provide weak training signals to the coder. 
+
+Impact of Interaction Diversity. We explore how interaction di-versity in the training set affects model performance. Specifically, within ZeroCoder + 𝐷𝑦 B4, we filter the training data using differ-ent rank thresholds 𝜏 ∈ 0, 1, 2, 4 and train models with the same configuration as in the main experiments. Notably, 𝜏 = 0 denotes training on the original dataset. As shown in Figure 6(a), both code generation and test genera-tion performance first improve and then degrade as the threshold becomes stricter. Notably, the performance consistently remains superior to that of the base model and the model trained on the un-filtered dataset, suggesting the effectiveness of the filtering method. The performance degradation at high thresholds is likely attrib-uted to data scarcity. A strict filter reduces the volume of available training data, causing the model to overfit. To substantiate this hy-pothesis, we quantify the number of remaining training instances under each threshold in Table 4, where we observe a sharp drop in data volume at 𝜏 = 4.
+
+Sensitivity to Calibration Set Size. We examine the sensitivity of 𝐷𝑦 B4 to the size of the calibration set H by varying |H | ∈ {10 , 50 , 100 }. As depicted in Figure 6(b), 𝐷𝑦 B4 is relatively insen-sitive to |H | : even 10 labeled instances achieve performance com-parable to substantially larger calibration sets. Although such a ZeroCoder: Can LLMs Improve Code Generation Without Ground-Truth Supervision? 
+
+Table 2: Performance of ZeroCoder † with Dy B4 and static selectors under a matched small-label setting ( |H | = 10 ) across three base models. All ZeroCoder † variants share the same labeled set H : static selectors use it only for supervised reward, while 
+
+Dy B4 additionally uses it for Bayesian prior calibration. Performance differences from the label-free variants are due to this additional supervision. 
+
+Model Selector Code Generation Test Generation TAvg Avg 
+
+LCB MBPP Apps CF. CAvg LCB MBPP Intro. Inter. Comp. ACC. Mut. ACC. Mut. 
+
+Qwen2.5-1.5B-Instruct 
+
+Base Model – 4.8 60.3 31.7 6.1 3.3 1.7 18.0 17.5 3.0 42.7 7.2 17.6 17.8 +ZeroCoder † MaxPass 4.8 66.7 33.3 7.2 3.3 2.7 19.7 62.5 17.3 66.1 28.8 43.7 31.7 CodeT 4.8 64.6 35.0 7.2 3.3 2.3 19.5 64.7 15.2 68.5 30.4 44.7 32.1 
+
+B4(4,3) 5.4 63.5 31.7 6.7 3.3 2.0 18.8 69.3 13.6 67.2 24.6 43.7 31.2 
+
+B4(5,3) 5.4 62.2 33.3 6.1 5.0 2.0 19.0 67.8 14.6 66.7 25.9 43.8 31.4 
+
+𝐷𝑦 B4 5.4 65.6 40.0 10.0 3.3 2.0 21.1 67.5 17.6 68.0 30.7 46.0 33.5 
+
+Qwen3-4B 
+
+Base Model – 21.7 79.9 50.0 21.1 1.7 8.3 30.4 99.4 9.3 72.4 18.0 49.8 40.1 +ZeroCoder † MaxPass 24.1 80.2 55.0 22.2 1.7 12.7 32.6 99.7 9.6 72.5 18.0 49.9 41.3 CodeT 24.7 78.6 56.7 27.8 3.3 11.7 33.8 99.7 9.6 75.7 16.7 50.4 42.1 
+
+B4(4,3) 22.9 79.1 58.3 27.2 1.7 10.7 33.3 99.7 9.6 74.3 16.4 50.0 41.7 
+
+B4(5,3) 24.7 77.8 50.0 26.7 3.3 12.3 32.5 99.7 8.7 75.9 16.4 50.2 41.3 
+
+𝐷𝑦 B4 25.3 79.9 56.7 35.6 3.3 14.3 35.8 100.0 9.6 74.6 20.9 51.3 43.6 
+
+Qwen2.5-Coder-7B-Instruct 
+
+Base Model – 15.1 83.6 60.0 23.3 18.3 8.0 34.7 84.4 6.2 69.1 14.6 43.6 39.1 +ZeroCoder † MaxPass 18.7 83.3 65.0 25.6 13.3 10.7 36.1 87.3 15.2 73.8 37.6 53.5 44.8 CodeT 19.3 83.6 65.0 27.8 15.0 13.7 37.4 88.6 14.7 76.5 27.5 51.8 44.6 
+
+B4(4,3) 18.7 85.4 66.7 25.0 15.0 12.0 37.1 77.4 19.5 70.9 36.5 48.6 42.9 
+
+B4(5,3) 18.1 83.3 60.0 22.8 16.7 9.3 35.0 82.7 18.0 72.0 36.8 52.4 43.7 
+
+𝐷𝑦 B4 23.5 84.9 75.0 32.8 23.3 13.7 42.2 85.8 18.0 74.1 38.6 54.1 48.2 
+
+Table 3: Ablation study and oracle comparison across three base models. “w/o 𝑟 mut ” removes the mutation-based discrim-inativeness reward from the Tester objective. “Oracle” trains with ground-truth solutions and tests. 
+
+Model CAvg TAvg Avg 
+
+Qwen2.5-1.5B 
+
+Base Model 18.0 17.6 17.8 +ZeroCoder ( 𝐷𝑦 B4) w/o 𝑟 mut 19.2 44.8 32.0 +ZeroCoder ( 𝐷𝑦 B4) 21.1 46.0 33.5 +Oracle (w/ GT) 21.6 47.1 34.3 
+
+Qwen3-4B 
+
+Base Model 30.4 49.8 40.1 +ZeroCoder ( 𝐷𝑦 B4) w/o 𝑟 mut 33.3 45.8 39.6 +ZeroCoder ( 𝐷𝑦 B4) 35.8 51.3 43.6 
+
++Oracle (w/ GT) 35.4 50.8 43.1 Qwen2.5-Coder-7B-Instruct 
+
+Base Model 34.7 43.6 39.1 +ZeroCoder ( 𝐷𝑦 B4) w/o 𝑟 mut 35.3 51.9 43.6 +ZeroCoder ( 𝐷𝑦 B4) 42.2 54.1 48.2 +Oracle (w/ GT) 43.2 55.0 49.1 
+
+Bold : best result; Underline: second best. 
+
+(a) Interaction diversity threshold 
+
+𝜏 .
+
+(b) Calibration set size | H | .
+
+Figure 6: Sensitivity analysis of ZeroCoder: (a) performance under varying interaction-diversity filtering thresholds 𝜏 ; (b) under different calibration set sizes |H | 
+
+small set provides a weaker calibration signal than larger alterna-tives, it is already sufficient in practice for effective recalibration. This observation is consistent with prior findings on B4 [ 5 ] that good performance can often be achieved without highly precise hyperparameter tuning. Therefore, a small calibration set is suffi-cient for 𝐷𝑦 B4 to identify a well-performing configuration at each recalibration step. 
+
+Training Efficiency Analysis. To understand the computational overhead, we profile the per-step wall-clock time of ZeroCoder with 
+
+𝐷𝑦 B4. We decompose the total time into five categories: (i) Rollout ,the time for generating candidate solutions and tests; (ii) Execution ,Lishui Fan, Mouxiang Chen, Tingwei Zhu, Kui Liu, Xin Xia, Shanping Li, and Zhongxin Liu 
+
+Table 4: Number of retained APPS training problems after rank-based filtering under different thresholds 𝜏 .                        
+
+> Model 𝜏 =0𝜏 =1𝜏 =2𝜏 =4
+> Qwen2.5-1.5B-Instruct 5000 2283 1377 217 Qwen3-4B 5000 2546 990 279 Qwen2.5-Coder-7B-Instruct 5000 2615 1396 428
+
+Table 5: Per-step wall-clock time breakdown of ZeroCoder with 𝐷𝑦 B4 on Qwen2.5-Coder-7B-Instruct.                 
+
+> Component Time (s) Fraction (%)
+> Rollout 32.1 5.6 Execution 273.0 47.6 Mutation 204.7 35.7
+> 𝐷𝑦 B4Calibration 11.4 2.0 RL Training 52.8 9.2
+> Total 574.0 100.00
+
+the time for executing all solution-test pairs to construct the pass-ing matrix; (iii) Mutation , the time for generating and executing mutants against candidate tests (on average, 13.4 mutants are gen-erated per sample); (iv) 𝐷𝑦 B4 Calibration , the time for recalibrating the Bayesian prior at each step; and (v) RL Training , the time for computing advantages, the backward pass, and optimizer updates. The breakdown is summarized in Table 5. As shown in Table 5, most of the runtime is dominated by verifier-side execution and mutation, while dynamic calibration contributes only a small fraction. In particular, 𝐷𝑦 B4 calibration accounts for only 2.0% of the per-step time. Most of the wall-clock time is spent on Execution (47.6%) and Mutation (35.7%), which are both verifier-side program-analysis workloads. This is expected in our setting, since ZeroCoder improves supervision quality through richer code-test interaction signals. Importantly, these components are em-barrassingly parallel across problems and scale naturally with the number of execution workers, making them straightforward to accelerate with additional compute. 
+
+Comparison with the Oracle-Supervised Reference. We compare ZeroCoder against an oracle-supervised reference variant that has access to ground-truth solutions and tests from the dataset ( Ora-cle ). The reward computation follows the same protocol as in RQ2 when H is used to provide supervised training rewards. The perfor-mance comparison is detailed in Table 3. We observe that ZeroCoder achieves performance comparable to the oracle-supervised models. For example, for Qwen2.5-coder-7B-Instruct, ZeroCoder attains an average coder performance of 42.2%, comparable to 43.2% under the oracle setting. This result suggests that the synthetic interaction data produced by our co-evolutionary framework enables effective learning without relying on ground-truth supervision. 
+
+Answer to RQ3: ZeroCoder ’s gains are driven by two key de-sign choices: rank-based pre-filtering, which improves reward informativeness by removing low-information problems, and the mutation-based tester reward, which promotes discrimina-tive tests and thereby strengthens coder learning. Moreover, 
+
+𝐷𝑦 B4 is label-efficient, and its final performance is competi-tive with that of oracle-supervised training. 
+
+## 6 Related Work 
+
+Self-Rewarding in Large Language Models. Self-rewarding methods improve LLMs without external labels by deriving training sig-nals from the model’s own outputs, and can be broadly grouped into three categories. The first category constructs rewards from model-side self-assessment signals. For example, methods based on confidence [15, 29, 48] use the model’s own uncertainty estimates as a proxy for correctness, rewarding outputs that the model is more confident about. The second category derives supervision from consensus among multiple candidates, such as majority vot-ing [ 11 , 53 ], treating cross-sample agreement as a proxy for quality. Both categories rely on internal model agreement, which may rein-force incorrect answers and induce performance collapse [ 32 ]. The third category, relevant to code generation, grounds rewards in pro-gram execution. Rather than relying on internal agreement, these methods generate tests and evaluate candidate solutions by running them [ 7, 23 , 46 , 47 ]. For example, AceCoder [ 46 ] synthesizes test cases via a separate pipeline and uses their pass rates to construct binary rewards for RL training of the coder. CodeDPO [ 47 ] uses self-generated tests with a PageRank-inspired algorithm to construct preference pairs for coder optimization. A common limitation is that the test generator remains fixed, so as the coder improves, the static tests lose discriminative power and training signal diminishes. In contrast, ZeroCoder co-evolves both roles so that test quality scales with coder capability. 
+
+Reranking and Selection for Solutions. Selecting the optimal solu-tion from a pool of generated candidates is crucial for code genera-tion. Existing approaches can be broadly categorized into execution-based and non-execution-based methods. Execution-based methods generate test cases, execute candidate programs, and select solu-tions based on pass statistics [ 3, 5 , 20 , 35 ]. Non-execution-based methods train neural rerankers to estimate correctness without run-ning the code [ 13 , 49 ]. More recently, Bayesian selection strategies, i.e., B4, formalize solution selection when both solutions and tests are plausible, grounding selection in posterior reasoning over the observed passing matrix [ 5]. However, prior work primarily treats solution selection as an inference-time technique, and training-time selection is often instantiated with simple heuristics such as major-ity voting to form pseudo-labels, overlooking how selector quality directly affects the fidelity of the resulting supervision [ 11 , 53 ]. In contrast, ZeroCoder integrates selection into the training loop and uses the resulting consensus structure to construct rewards. 
+
+Reinforcement Learning for Language Models. RLVR has emerged as a widely adopted paradigm for improving LLM reasoning in code generation [ 1 , 8, 41 ], typically by optimizing policies against objective outcome-based signals [ 33 , 44 , 52 ]. However, most RLVR pipelines for code still rely on trusted verifiers to provide reliable ZeroCoder: Can LLMs Improve Code Generation Without Ground-Truth Supervision? 
+
+rewards. As these supervised data sources saturate, further im-provements in LLMs become difficult. To address this, ZeroCoder extends RLVR into a co-evolutionary framework without requiring ground-truth solutions or tests. 
+
+## 7 Threats to Validity 
+
+Threats to external validity concern the generalizability of our find-ings. To improve coverage, we evaluate ZeroCoder across three LLMs from different families and scales, including Qwen2.5-1.5B-Instruct, Qwen3-4B, and Qwen2.5-Coder-7B-Instruct, and consider both the fully label-free setting and the small-label setting. In addi-tion, key ablations, such as removing the mutation-based reward and comparing against oracle-supervised training, are validated across all three models. Nevertheless, our experiments are limited to models of up to 7B parameters due to computational constraints. In future work, we plan to explore a broader range of model series to further validate the generalizability of our approach. 
+
+Threats to internal validity relate to the prompt templates used to instantiate the Coder and Tester, which may not be optimal. We de-sign these prompts following prior work [ 14 ] and keep them fixed across all compared methods to ensure fairness. While more ad-vanced prompting strategies, such as chain-of-thought, may further improve performance, they are orthogonal to the core contribution of our framework and could be incorporated in future extensions. 
+
+Threats to construct validity concern whether our measurements faithfully capture the underlying concepts of interest. In ZeroCoder, we use the rank of the passing matrix as a proxy for interaction diversity and reward informativeness. Although this proxy is em-pirically effective, matrix rank is only an approximation and may not fully characterize all aspects of supervision quality. For exam-ple, two interaction matrices with the same rank may still differ substantially in the usefulness of the rewards they induce. Future work could explore more expressive characterizations of interac-tion structure, such as covariance-based statistics [ 18 ] and spectral properties [31] of the passing matrix. 
+
+## 8 Conclusion 
+
+We present ZeroCoder, a label-free co-evolutionary framework that improves code generation and test generation from self-generated code-test interactions. By converting passing matrices into role-specific rewards, ZeroCoder enables the coder and tester to improve without relying on ground-truth supervision. Results show that, when instantiated with static selectors, ZeroCoder already delivers consistent gains, demonstrating that code-test interaction alone can serve as an effective training signal. We also identify selector drift as a key source of reward noise in non-stationary co-evolution. To address this, we introduce 𝐷𝑦 B4, a dynamically calibrated Bayesian selector that uses a small labeled set for recalibration. Across three models and six benchmarks, 𝐷𝑦 B4 further improves over static-selector variants and achieves the strongest overall performance. Together, these results show that label-free co-evolution is effective on its own, while lightweight calibration can further strengthen it. 
+
+## Data Availability 
+
+Our code is available: https://doi.org/10.5281/zenodo.19247497. 
+
+## References 
+
+[1] Marah Abdin, Sahaj Agarwal, Ahmed Awadallah, Vidhisha Balachandran, Harki-rat Behl, Lingjiao Chen, Gustavo de Rosa, Suriya Gunasekar, Mojan Java-heripi, Neel Joshi, et al . 2025. Phi-4-reasoning technical report. arXiv preprint arXiv:2504.21318 (2025). [2] Jacob Austin, Augustus Odena, Maxwell Nye, Maarten Bosma, Henryk Michalewski, David Dohan, Ellen Jiang, Carrie Cai, Michael Terry, Quoc Le, et al . 2021. Program synthesis with large language models. arXiv preprint arXiv:2108.07732 (2021). [3] Bei Chen, Fengji Zhang, Anh Nguyen, Daoguang Zan, Zeqi Lin, Jian-Guang Lou, and Weizhu Chen. [n. d.]. CodeT: Code Generation with Generated Tests. In The Eleventh International Conference on Learning Representations .[4] Lili Chen, Mihir Prabhudesai, Katerina Fragkiadaki, Hao Liu, and Deepak Pathak. 2025. Self-questioning language models. arXiv preprint arXiv:2508.03682 (2025). [5] Mouxiang Chen, Zhongxin Liu, He Tao, Yusu Hong, David Lo, Xin Xia, and Jianling Sun. 2024. B4: Towards optimal assessment of plausible code solutions with plausible tests. In Proceedings of the 39th IEEE/ACM International Conference on Automated Software Engineering . 1693–1705. [6] Xueying Du, Mingwei Liu, Kaixin Wang, Hanlin Wang, Junwei Liu, Yixuan Chen, Jiayi Feng, Chaofeng Sha, Xin Peng, and Yiling Lou. 2023. Classeval: A manually-crafted benchmark for evaluating llms on class-level code generation. arXiv preprint arXiv:2308.01861 (2023). [7] Philip Gorinski, Matthieu Zimmer, Gerasimos Lampouras, Derrick Goh Xin Deik, and Ignacio Iacobacci. 2023. Automatic unit test data generation and actor-critic reinforcement learning for code synthesis. In Findings of the Association for Computational Linguistics: EMNLP 2023 . 370–384. [8] Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Ruoyu Zhang, Runxin Xu, Qihao Zhu, Shirong Ma, Peiyi Wang, Xiao Bi, et al . 2025. Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement learning. arXiv preprint arXiv:2501.12948 (2025). [9] Dan Hendrycks, Steven Basart, Saurav Kadavath, Mantas Mazeika, Akul Arora, Ethan Guo, Collin Burns, Samir Puranik, Horace He, Dawn Song, et al . 2021. Measuring Coding Challenge Competence With APPS. In Thirty-fifth Conference on Neural Information Processing Systems Datasets and Benchmarks Track (Round 2) .[10] Dan Hendrycks, Steven Basart, Saurav Kadavath, Mantas Mazeika, Akul Arora, Ethan Guo, Collin Burns, Samir Puranik, Horace He, Dawn Song, and Jacob Steinhardt. 2021. Measuring Coding Challenge Competence With APPS. NeurIPS 
+
+(2021). [11] Chengsong Huang, Wenhao Yu, Xiaoyang Wang, Hongming Zhang, Zongxia Li, Ruosen Li, Jiaxin Huang, Haitao Mi, and Dong Yu. 2025. R-zero: Self-evolving reasoning llm from zero data. arXiv preprint arXiv:2508.05004 (2025). [12] Binyuan Hui, Jian Yang, Zeyu Cui, Jiaxi Yang, Dayiheng Liu, Lei Zhang, Tianyu Liu, Jiajun Zhang, Bowen Yu, Keming Lu, et al . 2024. Qwen2. 5-coder technical report. arXiv preprint arXiv:2409.12186 (2024). [13] Jeevana Priya Inala, Chenglong Wang, Mei Yang, Andres Codas, Mark Encar-nación, Shuvendu Lahiri, Madanlal Musuvathi, and Jianfeng Gao. 2022. Fault-aware neural code rankers. Advances in Neural Information Processing Systems 
+
+35 (2022), 13419–13432. [14] Naman Jain, King Han, Alex Gu, Wen-Ding Li, Fanjia Yan, Tianjun Zhang, Sida Wang, Armando Solar-Lezama, Koushik Sen, and Ion Stoica. 2025. Live-CodeBench: Holistic and Contamination Free Evaluation of Large Language Models for Code. In The Thirteenth International Conference on Learning Rep-resentations, ICLR 2025, Singapore, April 24-28, 2025 . OpenReview.net. https: //openreview.net/forum?id=chfJJYC3iL [15] Hyosoon Jang, Yunhui Jang, Sungjae Lee, Jungseul Ok, and Sungsoo Ahn. [n. d.]. Self-training large language models with confident reasoning. ([n. d.]). [16] Yehuda Koren, Robert Bell, and Chris Volinsky. 2009. Matrix factorization tech-niques for recommender systems. Computer 42, 8 (2009), 30–37. [17] Philippe Laban, Hiroaki Hayashi, Yingbo Zhou, and Jennifer Neville. 2025. Llms get lost in multi-turn conversation. arXiv preprint arXiv:2505.06120 (2025). [18] Clifford Lam. 2020. High-dimensional covariance matrix estimation. Wiley Interdisciplinary reviews: computational statistics 12, 2 (2020), e1485. [19] Hung Le, Hailin Chen, Amrita Saha, Akash Gokul, Doyen Sahoo, and Shafiq Joty. 2024. CodeChain: Towards Modular Code Generation Through Chain of Self-revisions with Representative Sub-modules. In The Twelfth International Conference on Learning Representations .[20] Yujia Li, David Choi, Junyoung Chung, Nate Kushman, Julian Schrittwieser, Rémi Leblond, Tom Eccles, James Keeling, Felix Gimeno, Agustin Dal Lago, et al . 2022. Competition-level code generation with alphacode. Science 378, 6624 (2022), 1092–1097. [21] Zi Lin, Sheng Shen, Jingbo Shang, Jason Weston, and Yixin Nie. 2025. Learning to solve and verify: A self-play framework for code and test generation. arXiv preprint arXiv:2502.14948 (2025). [22] Jiawei Liu, Chunqiu Steven Xia, Yuyao Wang, and Lingming Zhang. 2024. Is your code generated by chatgpt really correct? rigorous evaluation of large language models for code generation. Advances in Neural Information Processing Systems Lishui Fan, Mouxiang Chen, Tingwei Zhu, Kui Liu, Xin Xia, Shanping Li, and Zhongxin Liu 
+
+36 (2024). [23] Zhihan Liu, Shenao Zhang, Yongfei Liu, Boyi Liu, Yingxiang Yang, and Zhaoran Wang. 2024. Dstc: Direct preference learning with only self-generated tests and code to improve code lms. arXiv preprint arXiv:2411.13611 (2024). [24] Ilya Loshchilov and Frank Hutter. 2017. SGDR: Stochastic Gradient Descent with Warm Restarts. In International Conference on Learning Representations .[25] Yichuan Ma, Yunfan Shao, Peiji Li, Demin Song, Qipeng Guo, Linyang Li, Xipeng Qiu, and Kai Chen. 2025. UnitCoder: Scalable Code Synthesis from Pre-training Corpora. In Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing . 5623–5641. [26] Alexander Quinn Nichol and Prafulla Dhariwal. 2021. Improved denoising diffusion probabilistic models. In International conference on machine learning .PMLR, 8162–8171. [27] Theo X Olausson, Jeevana Priya Inala, Chenglong Wang, Jianfeng Gao, and Armando Solar-Lezama. 2023. Is Self-Repair a Silver Bullet for Code Generation?. In The Twelfth International Conference on Learning Representations .[28] Guilherme Penedo, Anton Lozhkov, Hynek Kydlíček, Loubna Ben Allal, Edward Beeching, Agustín Piqueres Lajarín, Quentin Gallouédec, Nathan Habib, Lewis Tunstall, and Leandro von Werra. 2025. CodeForces. https://huggingface.co/ datasets/open-r1/codeforces. [29] Mihir Prabhudesai, Lili Chen, Alex Ippoliti, Katerina Fragkiadaki, Hao Liu, and Deepak Pathak. 2025. Maximizing confidence alone improves reasoning. arXiv preprint arXiv:2505.22660 (2025). [30] Archiki Prasad, Elias Stengel-Eskin, Justin Chih-Yao Chen, Zaid Khan, and Mohit Bansal. 2025. Learning to generate unit tests for automated debugging. arXiv preprint arXiv:2502.01619 (2025). [31] Olivier Roy and Martin Vetterli. 2007. The effective rank: A measure of effective dimensionality. In 2007 15th European signal processing conference . IEEE, 606–610. [32] Sheikh Shafayat, Fahim Tajwar, Ruslan Salakhutdinov, Jeff Schneider, and An-drea Zanette. 2025. Can Large Reasoning Models Self-Train? arXiv preprint arXiv:2505.21444 (2025). [33] Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan Zhang, YK Li, Yang Wu, et al . 2024. Deepseekmath: Pushing the limits of mathematical reasoning in open language models. arXiv preprint arXiv:2402.03300 (2024). [34] Guangming Sheng, Chi Zhang, Zilingfeng Ye, Xibin Wu, Wang Zhang, Ru Zhang, Yanghua Peng, Haibin Lin, and Chuan Wu. 2025. Hybridflow: A flexible and efficient rlhf framework. In Proceedings of the Twentieth European Conference on Computer Systems . 1279–1297. [35] Freda Shi, Daniel Fried, Marjan Ghazvininejad, Luke Zettlemoyer, and Sida I Wang. 2022. Natural language to code translation with execution. In Proceedings of the 2022 Conference on Empirical Methods in Natural Language Processing .3533–3546. [36] Yinjie Wang, Ling Yang, Ye Tian, Ke Shen, and Mengdi Wang. 2025. Co-evolving llm coder and unit tester via reinforcement learning. arXiv preprint arXiv:2506.03136 (2025). [37] Zhiruo Wang, Shuyan Zhou, Daniel Fried, and Graham Neubig. 2023. Execution-based evaluation for open-domain code generation. In Findings of the Association for Computational Linguistics: EMNLP 2023 . 1271–1290. [38] Liang Wen, Yunke Cai, Fenrui Xiao, Xin He, Qi An, Zhenyu Duan, Yimin Du, Junchen Liu, Tanglifu Tanglifu, Xiaowei Lv, et al . 2025. Light-r1: Curriculum sft, dpo and rl for long cot from scratch and beyond. In Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 6: Industry Track) .318–327. [39] Weimin Xiong, Yiwen Guo, and Hao Chen. 2024. The program testing ability of large language models for code. In Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing: Industry Track . 23–34. [40] Zhangchen Xu, Yang Liu, Yueqin Yin, Mingyuan Zhou, and Radha Poovendran. 2025. Kodcode: A diverse, challenging, and verifiable synthetic dataset for coding. 
+
+arXiv preprint arXiv:2503.02951 (2025). [41] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et al . 2025. Qwen3 technical report. arXiv preprint arXiv:2505.09388 (2025). [42] An Yang, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chengyuan Li, Dayiheng Liu, Fei Huang, Haoran Wei, Huan Lin, Jian Yang, Jianhong Tu, Jianwei Zhang, Jianxin Yang, Jiaxi Yang, Jingren Zhou, Junyang Lin, Kai Dang, Keming Lu, Keqin Bao, Kexin Yang, Le Yu, Mei Li, Mingfeng Xue, Pei Zhang, Qin Zhu, Rui Men, Runji Lin, Tianhao Li, Tingyu Xia, Xingzhang Ren, Xuancheng Ren, Yang Fan, Yang Su, Yichang Zhang, Yu Wan, Yuqiong Liu, Zeyu Cui, Zhenru Zhang, and Zihan Qiu. 2024. Qwen2.5 Technical Report. CoRR 
+
+abs/2412.15115 (2024). arXiv:2412.15115 doi:10.48550/ARXIV.2412.15115 [43] Hao Yu, Bo Shen, Dezhi Ran, Jiaxin Zhang, Qi Zhang, Yuchi Ma, Guangtai Liang, Ying Li, Qianxiang Wang, and Tao Xie. 2024. Codereval: A benchmark of pragmatic code generation with generative pre-trained models. In Proceedings of the 46th IEEE/ACM International Conference on Software Engineering . 1–12. [44] Qiying Yu, Zheng Zhang, Ruofei Zhu, Yufeng Yuan, Xiaochen Zuo, Yu Yue, Weinan Dai, Tiantian Fan, Gaohong Liu, Lingjun Liu, et al . 2025. Dapo: An open-source llm reinforcement learning system at scale. arXiv preprint arXiv:2503.14476 
+
+(2025). [45] Michał Zawalski, Błażej Osiński, Henryk Michalewski, and Piotr Miłoś. 2021. Off-policy correction for multi-agent reinforcement learning. arXiv preprint arXiv:2111.11229 (2021). [46] Huaye Zeng, Dongfu Jiang, Haozhe Wang, Ping Nie, Xiaotong Chen, and Wenhu Chen. 2025. Acecoder: Acing coder rl via automated test-case synthesis. arXiv preprint arXiv:2502.01718 (2025). [47] Kechi Zhang, Ge Li, Yihong Dong, Jingjing Xu, Jun Zhang, Jing Su, Yongfei Liu, and Zhi Jin. 2025. Codedpo: Aligning code models with self generated and verified source code. In Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) . 15854–15871. [48] Qingyang Zhang, Haitao Wu, Changqing Zhang, Peilin Zhao, and Yatao Bian. 2025. Right question is already half the answer: Fully unsupervised llm reasoning incentivization. arXiv preprint arXiv:2504.05812 (2025). [49] Tianyi Zhang, Tao Yu, Tatsunori Hashimoto, Mike Lewis, Wen-tau Yih, Daniel Fried, and Sida Wang. 2023. Coder reviewer reranking for code generation. In 
+
+International Conference on Machine Learning . PMLR, 41832–41846. [50] Yuanliang Zhang, Yifan Xie, Shanshan Lit, Ke Liu, Chong Wang, Zhouyang Jia, Xiangbing Huang, Jie Song, Chaopeng Luo, Zhizheng Zheng, et al . 2025. Unseen horizons: Unveiling the real capability of llm code generation beyond the familiar. In 2025 IEEE/ACM 47th International Conference on Software Engineering (ICSE) .IEEE, 604–615. [51] Andrew Zhao, Yiran Wu, Yang Yue, Tong Wu, Quentin Xu, Matthieu Lin, Shen-zhi Wang, Qingyun Wu, Zilong Zheng, and Gao Huang. 2025. Absolute zero: Reinforced self-play reasoning with zero data. arXiv preprint arXiv:2505.03335 
+
+(2025). [52] Chujie Zheng, Shixuan Liu, Mingze Li, Xiong-Hui Chen, Bowen Yu, Chang Gao, Kai Dang, Yuqiong Liu, Rui Men, An Yang, et al . 2025. Group sequence policy optimization. arXiv preprint arXiv:2507.18071 (2025). [53] Yuxin Zuo, Kaiyan Zhang, Li Sheng, Shang Qu, Ganqu Cui, Xuekai Zhu, Haozhan Li, Yuchen Zhang, Xinwei Long, Ermo Hua, et al . 2025. Ttrl: Test-time reinforce-ment learning. arXiv preprint arXiv:2504.16084 (2025). 
+
+Received 20 February 2007; revised 12 March 2009; accepted 5 June 2009
