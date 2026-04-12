@@ -6,91 +6,98 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-04-11
-- 运行时间：2026-04-11 20:12:52 UTC
+- 最新运行日期：2026-04-12
+- 运行时间：2026-04-12 19:45:26 UTC
 - 运行状态：成功
-- 本次总论文数：23
-- 精读区：9
+- 本次总论文数：26
+- 精读区：12
 - 速读区：14
 
 ### 今日简报（AI）
-今日精选 23 篇前沿论文，深度剖析逻辑推理的脆弱性与视频生成的自我修正机制。
-重点关注 DeltaLogic 揭示的逻辑模型信念修正缺陷，以及 SCMAPR 如何通过多智能体协作提升复杂场景下的文生视频质量。
-建议关注逻辑推理的鲁棒性测试，并尝试将多智能体反馈机制引入视频创作流。
-- 详情：[/202604/11/README](/202604/11/README)
+今日深挖 26 篇前沿论文，重点剖析多智能体协作中的“表征坍缩”风险
+- 详情：[/202604/12/README](/202604/12/README)
 
 ### 精读区论文标签
-1. [DeltaLogic: Minimal Premise Edits Reveal Belief-Revision Failures in Logical Reasoning Models](/202604/11/2604.02733v1-deltalogic-minimal-premise-edits-reveal-belief-revision-failures-in-logical-reasoning-models)  
-   标签：评分：9.0/10、query:rl-nlplr
-   evidence：逻辑推理模型中的信念修正失败
-2. [SCMAPR: Self-Correcting Multi-Agent Prompt Refinement for Complex-Scenario Text-to-Video Generation](/202604/11/2604.05489v1-scmapr-self-correcting-multi-agent-prompt-refinement-for-complex-scenario-text-to-video-generation)  
+1. [Representational Collapse in Multi-Agent LLM Committees: Measurement and Diversity-Aware Consensus](/202604/12/2604.03809v1-representational-collapse-in-multi-agent-llm-committees-measurement-and-diversity-aware-consensus)  
    标签：评分：9.0/10、query:mas-gen
-   evidence：生成任务的多智能体细化过程
-3. [SCMAPR: Self-Correcting Multi-Agent Prompt Refinement for Complex-Scenario Text-to-Video Generation](/202604/11/2604.05489v2-scmapr-self-correcting-multi-agent-prompt-refinement-for-complex-scenario-text-to-video-generation)  
+   evidence：多智能体LLM委员会与多样性感知共识协议
+2. [Symbolic-Vector Attention Fusion for Collective Intelligence](/202604/12/2604.03955v1-symbolic-vector-attention-fusion-for-collective-intelligence)  
    标签：评分：9.0/10、query:mas-gen
-   evidence：用于文本到视频生成的智能体协同优化过程
-4. [UniCreative: Unifying Long-form Logic and Short-form Sparkle via Reference-Free Reinforcement Learning](/202604/11/2604.05517v1-unicreative-unifying-long-form-logic-and-short-form-sparkle-via-reference-free-reinforcement-learning)  
+   evidence：集体智能中的智能体间通信协议和内容评估
+3. [Target Policy Optimization](/202604/12/2604.06159v1-target-policy-optimization)  
    标签：评分：9.0/10、query:rl-nlplr
-   evidence：用于长篇逻辑的无参考强化学习框架
-5. [Multi-Faceted Self-Consistent Preference Alignment for Query Rewriting in Conversational Search](/202604/11/2604.06771v1-multi-faceted-self-consistent-preference-alignment-for-query-rewriting-in-conversational-search)  
+   evidence：用于大语言模型序列任务的目标策略优化
+4. [Qualixar OS: A Universal Operating System for AI Agent Orchestration](/202604/12/2604.06392v1-qualixar-os-a-universal-operating-system-for-ai-agent-orchestration)  
+   标签：评分：9.0/10、query:mas-gen
+   evidence：用于通用 AI 智能体编排和多智能体拓扑的操作系统
+5. [EmoMAS: Emotion-Aware Multi-Agent System for High-Stakes Edge-Deployable Negotiation with Bayesian Orchestration](/202604/12/2604.07003v1-emomas-emotion-aware-multi-agent-system-for-high-stakes-edge-deployable-negotiation-with-bayesian-orchestration)  
+   标签：评分：9.0/10、query:mas-gen
+   evidence：协调专门智能体进行谈判的贝叶斯多智能体框架
+6. [AV-SQL: Decomposing Complex Text-to-SQL Queries with Agentic Views](/202604/12/2604.07041v1-av-sql-decomposing-complex-text-to-sql-queries-with-agentic-views)  
+   标签：评分：9.0/10、query:mas-gen
+   evidence：将复杂的Text-to-SQL分解为专门的LLM智能体流水线
+7. [EigentSearch-Q+: Enhancing Deep Research Agents with Structured Reasoning Tools](/202604/12/2604.07927v1-eigentsearch-q-enhancing-deep-research-agents-with-structured-reasoning-tools)  
+   标签：评分：9.0/10、query:mas-gen
+   evidence：配备结构化推理工具的多智能体协作系统用于深度研究
+8. [Aligning Agents via Planning: A Benchmark for Trajectory-Level Reward Modeling](/202604/12/2604.08178v1-aligning-agents-via-planning-a-benchmark-for-trajectory-level-reward-modeling)  
    标签：评分：9.0/10、query:rl-nlplr
-   evidence：前缀引导的多面直接偏好优化
-6. [Decompose, Look, and Reason: Reinforced Latent Reasoning for VLMs](/202604/11/2604.07518v1-decompose-look-and-reason-reinforced-latent-reasoning-for-vlms)  
+   evidence：智能体大模型的轨迹级奖励建模
+9. [MedVR: Annotation-Free Medical Visual Reasoning via Agentic Reinforcement Learning](/202604/12/2604.08203v1-medvr-annotation-free-medical-visual-reasoning-via-agentic-reinforcement-learning)  
    标签：评分：9.0/10、query:rl-nlplr
-   evidence：用于多步推理的强化潜空间推理框架
-7. [SPARD: Self-Paced Curriculum for RL Alignment via Integrating Reward Dynamics and Data Utility](/202604/11/2604.07837v1-spard-self-paced-curriculum-for-rl-alignment-via-integrating-reward-dynamics-and-data-utility)  
+   evidence：通过智能体强化学习增强医疗视觉语言模型的推理能力
+10. [MemCoT: Test-Time Scaling through Memory-Driven Chain-of-Thought](/202604/12/2604.08216v1-memcot-test-time-scaling-through-memory-driven-chain-of-thought)  
    标签：评分：9.0/10、query:rl-nlplr
-   evidence：通过整合奖励动态的自步课程强化学习对齐
-8. [ReRec: Reasoning-Augmented LLM-based Recommendation Assistant via Reinforcement Fine-tuning](/202604/11/2604.07851v1-rerec-reasoning-augmented-llm-based-recommendation-assistant-via-reinforcement-fine-tuning)  
+   evidence：用于因果推理的记忆驱动思维链
+11. [ACF: A Collaborative Framework for Agent Covert Communication under Cognitive Asymmetry](/202604/12/2604.08276v1-acf-a-collaborative-framework-for-agent-covert-communication-under-cognitive-asymmetry)  
+   标签：评分：9.0/10、query:mas-gen
+   evidence：认知不对称下的智能体协作通信框架
+12. [Faithful GRPO: Improving Visual Spatial Reasoning in Multimodal Language Models via Constrained Policy Optimization](/202604/12/2604.08476v1-faithful-grpo-improving-visual-spatial-reasoning-in-multimodal-language-models-via-constrained-policy-optimization)  
    标签：评分：9.0/10、query:rl-nlplr
-   evidence：通过强化微调框架提升大语言模型在复杂任务中的推理能力
-9. [ZeroCoder: Can LLMs Improve Code Generation Without Ground-Truth Supervision?](/202604/11/2604.07864v1-zerocoder-can-llms-improve-code-generation-without-ground-truth-supervision)  
-   标签：评分：9.0/10、query:rl-nlplr
-   evidence：具有可验证奖励的强化学习用于代码生成
+   evidence：通过约束策略优化和GRPO改进视觉空间推理
 
 ### 速读区论文标签
-1. [Dual Optimal: Make Your LLM Peer-like with Dignity](/202604/11/2604.00979v1-dual-optimal-make-your-llm-peer-like-with-dignity)  
+1. [MM-ReCoder: Advancing Chart-to-Code Generation with Reinforcement Learning and Self-Correction](/202604/12/2604.01600v1-mm-recoder-advancing-chart-to-code-generation-with-reinforcement-learning-and-self-correction)  
    标签：评分：8.0/10、query:rl-nlplr
-   evidence：用于人格偏好的受限拉格朗日DPO算法
-2. [Therefore I am. I Think](/202604/11/2604.01202v1-therefore-i-am-i-think)  
+   evidence：使用强化学习进行代码生成训练
+2. [From Multi-Agent to Single-Agent: When Is Skill Distillation Beneficial?](/202604/12/2604.01608v1-from-multi-agent-to-single-agent-when-is-skill-distillation-beneficial)  
+   标签：评分：8.0/10、query:mas-gen
+   evidence：将多智能体系统蒸馏为单智能体技能以处理复杂任务
+3. [ContextBudget: Budget-Aware Context Management for Long-Horizon Search Agents](/202604/12/2604.01664v1-contextbudget-budget-aware-context-management-for-long-horizon-search-agents)  
    标签：评分：8.0/10、query:rl-nlplr
-   evidence：早期编码的决策塑造了推理模型中的思维链
-3. [Therefore I am. I Think](/202604/11/2604.01202v2-therefore-i-am-i-think)  
+   evidence：长程推理智能体的强化学习
+4. [PLUME: Latent Reasoning Based Universal Multimodal Embedding](/202604/12/2604.02073v2-plume-latent-reasoning-based-universal-multimodal-embedding)  
+   标签：评分：8.0/10、query:llm-fo
+   evidence：用隐式推理取代显式思维链以降低推理开销
+5. [Reliable Control-Point Selection for Steering Reasoning in Large Language Models](/202604/12/2604.02113v1-reliable-control-point-selection-for-steering-reasoning-in-large-language-models)  
    标签：评分：8.0/10、query:rl-nlplr
-   evidence：分析了决策如何塑造推理模型中的思维链
-4. [Adaptive Stopping for Multi-Turn LLM Reasoning](/202604/11/2604.01413v1-adaptive-stopping-for-multi-turn-llm-reasoning)  
-   标签：评分：8.0/10、query:rl-nlplr
-   evidence：多轮LLM推理的自适应停止机制
-5. [Adaptive Stopping for Multi-Turn LLM Reasoning](/202604/11/2604.01413v2-adaptive-stopping-for-multi-turn-llm-reasoning)  
-   标签：评分：8.0/10、query:rl-nlplr
-   evidence：针对多轮大模型推理和 ReAct 智能体的自适应停止机制
-6. [Generalization Limits of Reinforcement Learning Alignment](/202604/11/2604.02652v1-generalization-limits-of-reinforcement-learning-alignment)  
+   evidence：通过隐藏状态信号引导推理行为
+6. [When Adaptive Rewards Hurt: Causal Probing and the Switching-Stability Dilemma in LLM-Guided LEO Satellite Scheduling](/202604/12/2604.03562v1-when-adaptive-rewards-hurt-causal-probing-and-the-switching-stability-dilemma-in-llm-guided-leo-satellite-scheduling)  
    标签：评分：7.0/10、query:rl-nlplr
-   evidence：RLHF对齐与泛化失败
-7. [DocShield: Towards AI Document Safety via Evidence-Grounded Agentic Reasoning](/202604/11/2604.02694v1-docshield-towards-ai-document-safety-via-evidence-grounded-agentic-reasoning)  
+   evidence：大模型引导任务中 PPO 算法在自适应奖励信号下的收敛性分析
+7. [Selective Forgetting for Large Reasoning Models](/202604/12/2604.03571v1-selective-forgetting-for-large-reasoning-models)  
    标签：评分：7.0/10、query:rl-nlplr
-   evidence：通过跨线索感知思维链进行视觉逻辑协同推理
-8. [Aligning Progress and Feasibility: A Neuro-Symbolic Dual Memory Framework for Long-Horizon LLM Agents](/202604/11/2604.02734v1-aligning-progress-and-feasibility-a-neuro-symbolic-dual-memory-framework-for-long-horizon-llm-agents)  
+   evidence：大推理模型思维链中的选择性遗忘
+8. [Are LLM-Based Retrievers Worth Their Cost? An Empirical Study of Efficiency, Robustness, and Reasoning Overhead](/202604/12/2604.03676v1-are-llm-based-retrievers-worth-their-cost-an-empirical-study-of-efficiency-robustness-and-reasoning-overhead)  
+   标签：评分：7.0/10、query:llm-fo
+   evidence：量化了推理开销以及相对于增加延迟的准确率提升
+9. [LensAgent: A Self Evolving Agent for Autonomous Physical Inference of Sub-galactic Structure](/202604/12/2604.03691v1-lensagent-a-self-evolving-agent-for-autonomous-physical-inference-of-sub-galactic-structure)  
    标签：评分：7.0/10、query:rl-nlplr
-   evidence：LLM智能体中的严格逻辑约束与状态验证
-9. [Fully Byzantine-Resilient Distributed Multi-Agent Q-Learning](/202604/11/2604.02791v1-fully-byzantine-resilient-distributed-multi-agent-q-learning)  
+   evidence：大模型驱动的自主物理推理智能体框架
+10. [Decomposing Communication Gain and Delay Cost Under Cross-Timestep Delays in Cooperative Multi-Agent Reinforcement Learning](/202604/12/2604.03785v1-decomposing-communication-gain-and-delay-cost-under-cross-timestep-delays-in-cooperative-multi-agent-reinforcement-learning)  
    标签：评分：7.0/10、query:mas-gen
-   evidence：拜占庭容错的分布式多智能体强化学习
-10. [LogicPoison: Logical Attacks on Graph Retrieval-Augmented Generation](/202604/11/2604.02954v1-logicpoison-logical-attacks-on-graph-retrieval-augmented-generation)  
-   标签：评分：7.0/10、query:rl-nlplr
-   evidence：针对GraphRAG系统中的逻辑推理能力
-11. [Mitigating LLM biases toward spurious social contexts using direct preference optimization](/202604/11/2604.02585v1-mitigating-llm-biases-toward-spurious-social-contexts-using-direct-preference-optimization)  
+   evidence：协作多智能体强化学习中的通信增益与延迟成本
+11. [VectraFlow: Long-Horizon Semantic Processing over Data and Event Streams with LLMs](/202604/12/2604.03855v1-vectraflow-long-horizon-semantic-processing-over-data-and-event-streams-with-llms)  
    标签：评分：6.0/10、query:rl-nlplr
-   evidence：使用直接偏好优化（DPO）来减轻偏差
-12. [SentinelAgent: Intent-Verified Delegation Chains for Securing Federal Multi-Agent AI Systems](/202604/11/2604.02767v1-sentinelagent-intent-verified-delegation-chains-for-securing-federal-multi-agent-ai-systems)  
-   标签：评分：6.0/10、query:llm-fo
-   evidence：多智能体委托链中的输出模式一致性
-13. [Reflective Context Learning: Studying the Optimization Primitives of Context Space](/202604/11/2604.03189v1-reflective-context-learning-studying-the-optimization-primitives-of-context-space)  
-   标签：评分：6.0/10、query:token
-   evidence：解决智能体上下文空间中的信用分配和优化问题
-14. [Drift-Based Policy Optimization: Native One-Step Policy Learning for Online Robot Control](/202604/11/2604.03540v1-drift-based-policy-optimization-native-one-step-policy-learning-for-online-robot-control)  
+   evidence：对非结构化数据流进行长程有状态推理
+12. [Deploy, Calibrate, Monitor, Heal -- No Human Required: An Autonomous AI SRE Agent for Elasticsearch](/202604/12/2604.03933v1-deploy-calibrate-monitor-heal----no-human-required-an-autonomous-ai-sre-agent-for-elasticsearch)  
+   标签：评分：6.0/10、query:mas-gen
+   evidence：用于多阶段系统管理的自主AI SRE智能体
+13. [Many Preferences, Few Policies: Towards Scalable Language Model Personalization](/202604/12/2604.04144v1-many-preferences-few-policies-towards-scalable-language-model-personalization)  
    标签：评分：6.0/10、query:rl-nlplr
-   evidence：生成式任务的策略优化
+   evidence：利用奖励函数生成对齐大模型组合的算法
+14. [Comparative reversal learning reveals rigid adaptation in LLMs under non-stationary uncertainty](/202604/12/2604.04182v1-comparative-reversal-learning-reveals-rigid-adaptation-in-llms-under-non-stationary-uncertainty)  
+   标签：评分：6.0/10、query:rl-nlplr
+   evidence：LLM在反转学习任务中作为序列决策策略
 
 
 <div class="dpr-home-promo-card">
