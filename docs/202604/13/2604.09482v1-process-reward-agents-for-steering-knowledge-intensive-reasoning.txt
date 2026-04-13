@@ -1,0 +1,511 @@
+Title: Process Reward Agents for Steering Knowledge-Intensive Reasoning
+
+URL Source: https://arxiv.org/pdf/2604.09482v1
+
+Published Time: Mon, 13 Apr 2026 01:16:44 GMT
+
+Number of Pages: 17
+
+Markdown Content:
+# Process Reward Agents for Steering Knowledge-Intensive Reasoning 
+
+## Jiwoong Sohn 1∗ Tomasz Sternal 1∗ Kenneth Styppa 1,2∗
+
+## Torsten Hoefler 1† Michael Moor 1†
+
+> 1
+
+## ETH Z¨ urich, Switzerland 
+
+> 2
+
+## Heidelberg University, Germany 
+
+# Abstract 
+
+Reasoning in knowledge-intensive domains remains chal-lenging as intermediate steps are often not locally veri-fiable: unlike math or code, evaluating step correctness may require synthesizing clues across large external knowl-edge sources. As a result, subtle errors can propagate through reasoning traces, potentially never to be detected. Prior work has proposed process reward models (PRMs), including retrieval-augmented variants, but these methods operate post hoc, scoring completed trajectories, which prevents their integration into dynamic inference proce-dures. Here, we introduce Process Reward Agents (PRA), a test-time method for providing domain-grounded, on-line, step-wise rewards to a frozen policy. In contrast to prior retrieval-augmented PRMs, PRA enables search-based decoding to rank and prune candidate trajectories at every generation step. Experiments on multiple med-ical reasoning benchmarks demonstrate that PRA con-sistently outperforms strong baselines, achieving 80.8% accuracy on MedQA with Qwen3-4B, a new state of the art at the 4B scale. Importantly, PRA generalizes to unseen frozen policy models ranging from 0.5B to 8B parameters, improving their accuracy by up to 25.7% without any policy model updates. More broadly, PRA suggests a paradigm in which frozen reasoners are decou-pled from domain-specific reward modules, allowing the deployment of new backbones in complex domains without retraining. All code and data are publicly available at 
+
+https://process-reward-agents.github.io/ .
+
+# 1 Introduction 
+
+Despite the success of large reasoning models (LRM), the absence of mechanisms for validating intermediate reasoning steps remains a major challenge to reliable reasoning, particularly in high-stakes domains such as healthcare. In contrast to formal proofs or soft-ware programs, where each step can be mechanically 
+
+> ∗Equal contribution
+> †Co-last authors
+
+checked against axioms, syntactic rules, or compiler constraints, medical reasoning rarely admits rigorous verification. This limitation is consequential, as clini-cally correct decisions must be defensible throughout the entire reasoning trace, not only in the final answer. Establishing correctness often requires synthesiz-ing multiple, layered sources of evidence, including primary scientific literature, clinical guidelines, and institution-specific protocols, within a landscape of knowledge that evolves continuously. Consequently, it becomes prohibitively expensive to repeatedly fine-tune each new LRM backbone to remain aligned with updated medical knowledge. Likewise, simply inject-ing retrieved documents into a thereby bloating policy context does not guarantee that the model will attend to the right evidence at the right time, nor does it provide a mechanism to detect and correct mistakes as they emerge. Prior work has explored the use of process reward models (PRM) (Yun et al., 2025; Jiang et al., 2025) in medical reasoning. Med-PRM trains a process reward model for post hoc evaluation of policy-generated rea-soning traces, incorporating external medical evidence via retrieval. Meanwhile, Med-S 3 jointly trains a pol-icy model and a reward model through a self-evolving framework, but does not incorporate search. Impor-tantly, both approaches rely on post hoc evaluation, as reward signals are applied only after a complete reasoning trajectory has been generated. This formulation limits intervention during reason-ing, allowing errors to accumulate before any cor-rective signal is applied. Moreover, it precludes fine-grained control over the generation process, restricting the model’s ability to explore alternative reasoning paths or prioritize evidence. Building on this view, we introduce a retrieval-augmented process reward framework in which a Pro-cess Reward Agent (PRA) interacts with a frozen reasoning model. At each reasoning step, the PRA 1
+
+> arXiv:2604.09482v1 [cs.AI] 10 Apr 2026
+
+observes the current reasoning trace, optionally de-cides whether to search for external medical evidence, and assigns a local reward signal to guide generation in real time. This approach enables the evaluation of intermediate reasoning steps before errors propagate. Our contributions are threefold: (i) we formulate retrieval-grounded, step-wise evaluation as an online 
+
+control problem for medical reasoning; (ii) we propose PRA, which decouples evidence search and verification from a frozen policy to guide generation in real time; and (iii) we demonstrate that PRA enables inference-time branching and pruning strategies that generalize across tasks and backbone models. We evaluate PRA across multiple medical reason-ing benchmarks. Under a matched policy sampling budget, PRA consistently outperform strong decod-ing baselines. In particular, PRA achieves 80.8% accuracy on MedQA with Qwen3-4B-Instruct, repre-senting state-of-the-art performance at the 4B scale. Overall, these results suggest that online, step-wise rewards provide a stable and transferable mechanism for improving medical reasoning. Additionally, we show that PRA generalizes to un-seen, frozen policy models spanning 0.5B to 8B pa-rameters, improving MedQA accuracy by up to 25.7%. These gains expose underutilized reasoning capacity in smaller models, since generation requires neither policy retraining nor context editing. Under matched policy sampling budgets, PRA continues to improve with inference-time scaling, whereas self-consistency saturates early. Ablations on reward granularity and timing indicate that these gains are driven by apply-ing rewards at intermediate steps rather than only at completion. We detail the PRA framework and its inference-time interaction in the following sections. 
+
+# 2 Related Work 
+
+## 2.1 Medical Reasoning 
+
+Reasoning models applied in the medical domain face several domain-specific challenges. Clinically correct decisions must be grounded in both ever-expanding biomedical literature and contextual constraints such as guidelines and common practice (Norman and Eva, 2010; Fisher and Wennberg, 2003; Lu, 2011). This has motivated retrieval-based methods that provide cu-rated and up-to-date evidence at inference time (Zakka et al., 2024; Kim et al., 2025; Gao et al., 2026). Recent work has also introduced carefully curated retrieval corpora for targeted access, including MIRIAD (Zheng et al., 2025), as well as structured medical knowledge graphs such as MedGraphRAG (Wu et al., 2024). In parallel, post-training has improved medi-cal reasoning through supervised fine-tuning (SFT) and reinforcement learning from verifiable rewards (RLVR) (Chen et al., 2024; Zhang et al., 2025a; Liu et al., 2025a; Huang et al., 2025; Thapa et al., 2025). Some systems also couple grounding and training by constructing reasoning traces from structured knowl-edge graphs (Wu et al., 2025). These approaches concentrate on improving med-ical reasoning either through post-training or by in-jecting retrieved documents directly into the policy context (Lewis et al., 2020; Zakka et al., 2024). An alternative design, in which retrieval and evidence selection are jointly integrated with step-wise verifica-tion by a separate online controller, remains underex-plored. We address this gap by decoupling retrieval from reasoning and assigning it to a process reward agent that evaluates partial reasoning traces using retrieved evidence. 
+
+## 2.2 Reward Models 
+
+Reward modeling provides an interface for allocating additional compute at inference time. Unlike outcome reward models, which score a trace solely based on its final answer, process reward models assign rewards to intermediate reasoning steps (Lightman et al., 2023). This step-level signal is particularly well suited for tree search frameworks (Liu et al., 2025b). Training PRMs typically requires step-level supervi-sion. Early work relied on human-annotated reasoning traces, but the high cost and limited scalability of ex-pert annotation motivated automated alternatives. Subsequent approaches label intermediate steps us-ing Monte Carlo rollouts from partial states, treating the fraction of correct completions as a proxy for step correctness (Wang et al., 2023). However, be-cause models can arrive at the correct answer even when some intermediate steps are incorrect, such la-bels can be noisy (Zhang et al., 2025b). More recent work explores alternative supervision signals, includ-ing LLM-as-a-judge annotations (Yang et al., 2025), hybrid pipelines that combine Monte Carlo-based sig-nals with judge-based labels (Zhang et al., 2025b), and retrieval-augmented judges that ground step eval-uations in external evidence (Yun et al., 2025). A critical challenge for process reward models is generalization across policies. Applying a PRM off-policy, that is, scoring reasoning traces generated by a policy different from the one used during training, often degrades performance due to distributional mis-match, particularly in settings where PRMs are used to guide inference-time search (Liu et al., 2025b; Snell et al., 2024). In mathematical reasoning, retrieval 2Figure 1: Overview of our approach. A Process Reward Agent (PRA) observes the reasoning trace generated by the frozen policy model (reasoner), decides when to search for external evidence, and assigns step-level rewards. This interaction can steer the policy at inference time, enabling more robust and controllable reasoning, particularly in knowledge-intensive domains like medicine. has been used to provide similar questions and steps as warm-up context for PRM judgment, improving generalization across models and problem types (Zhu et al., 2025). In medicine, however, existing retrieval-augmented process reward models typically retrieve evidence only after a complete reasoning trace has been generated and apply rewards post hoc (Yun et al., 2025). Con-sequently, online, retrieval-grounded step-wise evalua-tion that remains robust under policy shift remains un-explored. We address this gap by decoupling retrieval from the policy and performing search-based step-wise evaluation during generation, yielding a portable reward signal for online tree search across diverse medical reasoning policies. 
+
+# 3 Process Reward Agents 
+
+## 3.1 Problem Formulation 
+
+Let q ∈ Q denote a question, and let yq ∈ Y denote its ground-truth answer, where Q and Y are the spaces of possible questions and answers, respectively. We assume answers are verifiable. Concretely, there exists a correctness function C, where C( ˆyq , y q ) = 1 if ˆyq
+
+correctly matches yq , and C(ˆ yq , y q ) = 0 otherwise. Let π be a reasoning model with frozen parameters that autoregressively generates reasoning steps. We refer to the resulting sequence as a reasoning trace 
+
+τ = ( s1, . . . , s K ). For notational simplicity, we index 
+
+τ in a cumulative way, i.e., τt = ( s1, . . . , s t). Also, we define the last step sK of a completed reasoning trace to be the model’s final answer. In addition, assume access to a fixed knowledge base D containing domain-specific documents relevant to the questions. To make effective use of both the policy π and the documents in D, we aim to design a parameterized inference procedure Gϕ that takes as input a question, the fixed policy, and the knowledge base, and outputs a final answer: 
+
+Gϕ : ( q, π, D) 7 → ˆyq . (1) The objective is to find parameters ϕ that maximize the expected correctness of the produced answer: max  
+
+> ϕ
+
+Eq∼P (Q), ˆyq ∼G ϕ(q,π, D)
+
+h
+
+C(ˆ yq , y q )
+
+i
+
+. (2) 
+
+## 3.2 Process Reward Agents 
+
+We instantiate Gϕ as a process reward agent (PRA) that separates reasoning from evidence acquisition by delegating retrieval and evaluation to a dedicated model. The PRA consists of two components: an action controller μact  
+
+> ϕ
+
+and a reward scoring function 
+
+μrwd  
+
+> ϕ
+
+, both implemented as separate token-level read-outs from a single model with shared parameters ϕ.The controller observes a partial reasoning trace and 3selects an action: ˆat ∼ μact  
+
+> ϕ
+
+(τt), where ˆ at ∈ { search , reward }. (3) When ˆat = search , the most relevant documents 
+
+Dt are retrieved from D; when ˆat = reward , we set 
+
+Dt = ∅. Finally, the scoring function μrwd  
+
+> ϕ
+
+evaluates the most recent reasoning step st using the partial reasoning trace τt and the set of documents Dt. The scoring function then evaluates the most recent rea-soning step st conditioned on the partial trace and the (possibly empty) evidence set: ˆrt = μrwd  
+
+> ϕ
+
+(τt, D t). (4) The resulting step-wise rewards ˆrt steer tree search at inference time, ranking and pruning candidate tra-jectories online during generation. This approach has three advantages: (1) the PRA can be trained or updated to reflect changes in the knowledge base D without modifying the frozen policy 
+
+π, so that domain adaptation reduces to retraining a single reward module; (2) the policy is never condi-tioned on retrieved documents and receives no gradient signal from the PRA, different reasoning backbones can be substituted at deployment time with no retrain-ing; and (3) conditional activation of retrieval through the controller introduces a new axis of inference-time scaling: search can be invoked selectively per step, trading off computational cost against reward signal quality within the same tree search budget. 
+
+## 3.3 PRA-Guided Tree Search 
+
+We use beam search Boulanger-Lewandowski et al. (2012); Graves (2012) as an inference-time-scaling method. A beam of width B maintains B partial reasoning traces. Each trace τ jt is scored by its cumu-lative reward: 
+
+R(τ (j) 
+
+> t
+
+) = 
+
+> t
+
+X
+
+> i=1
+
+ˆri(j) =
+
+> t
+
+X
+
+> i=1
+
+μrwd  
+
+> ϕ
+
+(τ (j) 
+
+> i
+
+, D (j) 
+
+> i
+
+) (5) At every step t, the frozen policy π extends each of the B traces with b candidate next steps (branching factor), producing B × b candidates. The PRA scores every candidate, and the top-B traces by cumulative reward R are retained; the rest are pruned. Gen-eration terminates when all traces in the beam are complete, and the trace with the highest cumulative reward yields the final answer. To enable efficient evaluation over an entire bench-mark, PRA-guided tree search coordinates three mod-els, the frozen policy π, process reward agent μϕ, and the retriever ρ, across many concurrent questions, each with its own beam of traces at potentially different reasoning depths. Rather than processing questions independently, we maintain a single global queue of all active traces. At each iteration, traces are partitioned by pending stage, namely π generation, ρ retrieval, or 
+
+μϕ evaluation (readout), and each stage is executed as a single batched operation regardless of which ques-tion, beam, or reasoning step a trace belongs to. After completion, traces re-enter the queue with updated stage tags. This synchronized stage-level batching sustains high GPU utilization even as traces become desynchronized due to variable-length reasoning, early termination, and conditional retrieval. Pseudocode is provided in Appendix Figure B. 
+
+# 4 Experiments 
+
+## 4.1 Experimental Setup 
+
+Datasets and Knowledge Base We use MedQA Jin et al. (2020) to construct the training dataset. For each question in the MedQA training split (10,178 questions), we generate a single reasoning trace us-ing Qwen3-4B-Instruct as the frozen reasoning model, following the policy prompt shown in Appendix Fig-ure 7. For every partial reasoning trace τ jt , we retrieve a corresponding set of relevant documents. We evaluate in-distribution performance on the MedQA test split Jin et al. (2020), ensuring that all evaluation questions are held out from the train-ing set. To assess generalization, we further evalu-ate on several out-of-distribution datasets, including MedBullets Chen et al. (2025), MedMCQA Pal et al. (2022), MMLU-Med Hendrycks et al. (2021); Singhal et al. (2023), GPQA Rein et al. (2023), and clinical case datasets from The Lancet and The New England Journal of Medicine Thapa et al. (2025). Our knowledge base aggregates multiple medical corpora, including medical textbooks Singhal et al. (2023), StatPearls Xiong et al. (2024), clinical practice guidelines Chen et al. (2023), and a rare disease corpus Wang et al. (2024). 
+
+Retrieval Retrieval is performed using the Med-CPT dense retriever and reranker Jin et al. (2023). For each corpus, we retrieve 200 candidate documents, rerank the combined candidate documents and retain the top 64 documents. The query used for retrieval consists of the question q and the last two reasoning steps in the partial reasoning trace. This retrieval configuration is fixed and used consistently across all experiments, including training, inference, ablations, and baseline comparisons. 4Policy Method ID OOD Average MedQA Medbullets MedMCQA MMLU GPQA Lancet NEJM                                                         
+
+> Qwen3-4B-Instruct Direct 61.6 48.8 55.6 77.4 51.1 60.4 45.3 57.2 Direct + SC 61.3 48.7 55.8 77.3 50.8 60.2 46.4 57.2 CoT 72.7 56.5 61.1 83.7 60.8 62.4 62.7 65.7 CoT + SC 74.8 58.7 62.7 84.9 51.8 63.5 63.2 65.7 RAG 72.2 55.7 63.3 85.4 59.2 62.1 65.7 66.2 RAG + SC 76.7 58.4 64.8 86.2 54.4 61.0 66.9 66.9
+> PRA (Ours) 80.8 63.6 66.2 86.6 64.4 67.0 68.3 71.0
+
+Table 1: Main results on medical reasoning benchmarks. PRA outperforms direct answering, chain-of-thought (CoT), and retrieval-augmented generation (RAG) baselines on the in-distribution MedQA benchmark and six out-of-distribution benchmarks, achieving the best average score overall. Using Qwen3-4B-Instruct as the base policy model, PRA improves over the strongest baseline, RAG + SC, by 4.1 points on average. 
+
+Baselines We compare against standard reasoning and retrieval baselines. Direct prompting generates answers without explicit reasoning. CoT uses Chain-of-Thought prompting to elicit step-by-step reasoning. RAG augments the input with the retrieved docu-ments before generation. For each baseline, we also evaluate with Self-Consistency (SC), which samples multiple reasoning paths and selects the most frequent answer. For fair comparison, SC samples 64 traces, which match the compute budget of our PRA with beam search ( B = 4, branching factor b = 16). 
+
+Label Generation We obtain reasoning and search labels for every reasoning step using Qwen3-235B-Instruct as a teacher model. Reasoning labels are generated by conditioning the teacher model on the partial reasoning trace produced by the reasoning model up to the evaluated step, together with the corresponding set of retrieved documents. For each step, we instruct the teacher model to classify the reasoning step as either correct(1) or incorrect(0) by emitting a single token (prompt in Appendix Figure 8). We use this binary output directly as the reasoning label. In addition, we extract the log-probabilities log p(0) and log p(1) assigned to the two reasoning labels, which are used for search label generation. To obtain search labels, we additionally instruct the teacher model on the same partial reasoning trace without providing any retrieved documents, while keeping the prompt structure otherwise identical. This yields a second set of log-probabilities for the same reasoning labels, enabling us to directly measure the impact of retrieval. We compute search labels using the log-probabilities obtained from these two eval-uations. Intuitively, if retrieval does not affect the teacher’s assessment of the reasoning step(posterior), then invoking search is unnecessary. From a Bayesian perspective, the margin shift be-tween two information sets measures how much the additional evidence changes the evaluator’s posterior belief. Since our goal is to identify unnecessary re-trieval, we treat search as necessary only when condi-tioning on retrieved documents induces a sufficiently large posterior update. Let m denote the margin between the log-probabilities of the correct and incorrect reasoning labels when no documents are provided, and let md
+
+denote the corresponding margin when the teacher model is conditioned on retrieved documents: 
+
+m = log p(1) − log p(0) . (6) We measure the influence of retrieval on the reason-ing process by computing the margin shift: ∆m = m − md. (7) A large |∆m| indicates that the search substantially affected the assessment of the teacher, while a small 
+
+|∆m| suggests that retrieved documents had little effect on the reasoning labels. To obtain the final binary labels, we label a step as requiring search if 
+
+at =
+
+(
+
+search , |∆m| > ϵ global ,
+
+reward , |∆m| ≤ ϵglobal . (8) where ϵglobal is set to the median of |∆m| across all training dataset, yielding 50% of reasoning steps la-beled as requiring search. 
+
+PRA Training We fine-tune Qwen3-4B-Instruct on the reasoning and search labels generated by the teacher model for training PRA. For each reasoning step, the model is trained to predict two binary out-puts, the reasoning label and the search label. In the main experiments, we fix the search label to 1 for ev-ery step, corresponding to an always-search setting in which PRA retrieves evidence before evaluating each reasoning step, thereby ensuring maximal access to external evidence during online process-level reward 5guidance. For further analysis on Search–Accuracy Trade-off (Figure 3), we instead use search labels de-rived from the margin-shift criterion described above. This allows PRA to learn when retrieval is necessary, enabling selective search at inference time. The de-tailed training hyperparameters and prompt templates are provided in Appendix Section C and Section D 
+
+Reward Readout Let ℓ(1) ∈ R|V| denote the logit vector at the first output slot of PRA, used for pre-dicting the reasoning reward. The step-wise reward ˆrt = μrwd  
+
+> ϕ
+
+(τt, D t) is obtained by applying a two-way softmax to the logits of tokens 0 and 1 and taking the normalized score assigned to token 1. We interpret ˆrt
+
+as the reward score for the correctness of the current reasoning step. 
+
+Action Readout Let ℓ(2) ∈ R|V| denote the logit vector at the second output slot of PRA, used for pre-dicting the search action. The controller distribution 
+
+μact  
+
+> ϕ
+
+(τt) is obtained by applying a two-way softmax to the logits of tokens 0 and 1, where 1 corresponds to search and 0 corresponds to reward . We then sample the action ˆ at ∼ μact  
+
+> ϕ
+
+(τt). 
+
+## 4.2 Results 
+
+We evaluate PRA against reasoning and retrieval baselines across seven medical benchmarks (Table 1). PRA consistently outperforms all baselines on both in-distribution and out-of-distribution benchmarks. To the best of our knowledge, our framework is the first to enable a 4B-scale model to exceed 80% ac-curacy on MedQA, establishing new state-of-the-art performance for models of this size. While Self-Consistency improves performance when applied to Direct, CoT, and RAG baselines on most benchmarks, we observe performance degradation with increased number of sampling on challenging benchmarks such as GPQA and Lancet. On these benchmarks, the policy model frequently produces incorrect or incomplete responses across repeated samples, causing Self-Consistency to amplify errors through majority voting. In contrast, PRA maintains stable improvements even on difficult benchmarks by guiding generation toward valid completions. 
+
+Inference Time Scaling Behavior Figure 2 com-pares the performance of PRA and Self-Consistency as the sampling budget increases. Self-Consistency shows little improvement once the number of samples exceeds 8, whereas PRA continues to benefit from additional compute. We attribute this difference to the fact that PRA applies step-wise rewards during generation, allowing it to steer reasoning toward more promising trajectories and recover from early errors. In contrast, Self-Consistency is constrained by the policy’s initial sampling distribution and can only aggregate over completed samples. 1 2 4 8 16 32 64 
+
+> Number of Samples (Traces)
+> 0.70
+> 0.72
+> 0.74
+> 0.76
+> 0.78
+> 0.80
+> 0.82
+> Accuracy
+> MedQA
+> Self-Consistency
+> PRA
+> ±1 Standard Error
+
+Figure 2: Performance on MedQA under inference time scaling. PRA continues to benefit from additional compute, while Self-Consistency saturates quickly. For SC, we estimate per-question expected accuracy via Monte Carlo sampling (1,000 trials); shaded regions show ±1 SE computed via bootstrap resampling over questions. 
+
+Generalization to Unseen Datasets PRA demonstrates strong generalization to medical reason-ing benchmarks unseen during training as presented in Table 1. Across all six out-of-distribution bench-marks, PRA consistently outperforms baselines by an average of 4.8 points. 
+
+Generalization to Unseen Policy Models We evaluate whether PRA enables the drop-in replace-ment of frozen policy models without requiring any retraining. Table 2 shows that PRA, despite being trained exclusively on reasoning traces from Qwen3-4B, generalizes well across a diverse set of policy mod-els spanning both smaller and larger sizes. In several cases, models that perform poorly under standard de-coding exhibit especially large relative improvements when paired with PRA, with the largest gains ob-served for smaller policy models. For example, on Qwen2.5-0.5B-Instruct, PRA improves MedQA ac-curacy from 28.4 to 54.1, corresponding to a 90.5% relative improvement over chain-of-thought. This strong transfer is particularly notable because PRA does not modify the policy model itself. Instead, it operates purely at inference time through step-wise 6selection within beam search: at each step, the policy model autoregressively proposes candidate continua-tions, and PRA selects among them without altering the generation procedure, injecting additional context, or updating model parameters. As a result, all generated outputs remain within the policy model’s original output distribution. Un-like retrieval-augmented generation methods, which modify the model’s input context, PRA exerts control solely through inference-time guidance. These results suggest that substantial gains in reasoning perfor-mance can be achieved by more effectively exploiting the latent capabilities of existing models, and that the reasoning potential of smaller policy models is considerably stronger than their standalone decoding performance may indicate.                                        
+
+> Policy Method Acc. ∆Llama-3.1-8B-Instruct CoT 67.0 –+ Self-Consistency 75.1 +8.1 + PRA 80.1 +13.1
+> Qwen3-4B-Instruct †
+> CoT 72.7 –+ Self-Consistency 74.8 +2.1 + PRA 80.8 +8.1
+> Llama-3.2-3B-Instruct CoT 56.0 –+ Self-Consistency 66.2 +10.2 + PRA 75.4 +19.4
+> Qwen2.5-3B-Instruct CoT 49.5 –+ Self-Consistency 54.0 +4.5 + PRA 69.9 +20.4
+> Llama-3.2-1B-Instruct CoT 36.2 –+ Self-Consistency 44.0 +7.8 + PRA 57.8 +21.6
+> Qwen2.5-0.5B-Instruct CoT 28.4 –+ Self-Consistency 31.9 +3.5 + PRA 54.1 +25.7
+
+Table 2: Cross-model generalization on MedQA. PRA trained with Qwen3-4B-Instruct † generalizes effec-tively to both larger and smaller policy models, with larger gains observed for smaller models. All non-daggered policies are unseen during PRA training. 
+
+# 5 Analysis 
+
+## 5.1 Ablation on Training 
+
+Table 3 isolates the effects of reward agent, training, and search while keeping the policy model fixed to Qwen3-4B-Instruct. Under single-sample decoding, Chain-of-Thought (CoT) and retrieval-augmented gen-eration (RAG) achieve comparable accuracy. However, increasing the number of samples yields larger gains when inference is augmented with search (i.e., retrieval augmentation), indicating that search enables more effective inference-time scaling of the policy’s reason-ing. We further compare the trained PRA against its untrained backbone, Qwen3-4B-Instruct, when used as the reward agent within beam search. Despite em-ploying a different inference structure, the untrained reward agent achieves performance comparable to Self-Consistency, and when combined with retrieval, matches the accuracy of Self-Consistency with RAG. This suggests that inference-time restructuring alone is insufficient to substantially improve performance beyond the policy’s native distribution, and that re-trieval provides an orthogonal source of improvement. In contrast, combining search with a trained process reward agent yields a clear additional gain. PRA, which integrates reward agent training and retrieval, achieves the highest accuracy (80.8), demonstrating that training the reward agent is critical for effective inference-time scaling with beam search and retrieval of external evidence.                                               
+
+> Reward Agent Trained? Search? Method # Sample Acc.
+> ×××CoT 172.7
+> ×××CoT + SC 64 74.8
+> ××✓RAG 172.2
+> ××✓RAG + SC 64 76.7 Qwen3-4B ××PRA 64( B×b)74.4 Qwen3-4B ×✓PRA 64( B×b)76.7
+> PRA (ours) ✓✓PRA 64( B×b)80.8
+
+Table 3: Ablation study of PRA training and search on MedQA. All methods use the same frozen Qwen3-4B-Instruct policy model and differ only in whether a reward agent is used, whether it is trained, and whether search(retrieval) is enabled. Training the reward agent accounts for the majority of the per-formance gain, and combining it with search yields further improvements, achieving the highest accuracy with PRA. 
+
+## 5.2 Ablation on Inference 
+
+We further investigate whether the gains from PRA arise primarily from improved reward modeling or from how rewards are applied at inference time. To disentangle these factors, we fix the same trained process reward agent (PRA) and vary only its inference-time usage along two axes: reward level and reward timing. Reward level specifies what is scored. Outcome-level assigns a single reward to each com-pleted reasoning trace, whereas process-level assigns rewards to intermediate reasoning steps. Reward tim-ing specifies when rewards are computed and used. Post hoc computes rewards only after a full trace has been generated, while online computes step-wise re-wards during generation (here, within beam search), 7allowing them to guide reasoning as it unfolds. All settings use identical sampled traces and, when appli-cable, the same search mechanism; search queries are formed from the accumulated reasoning steps available at the time the reward is computed. Table 4 shows that outcome-level PRA yields only modest improvements over Self-Consistency. For process-level, we aggregate step-wise rewards post hoc using different reduction operators (min, max, or average). This improves performance, but still under-performs settings in which rewards are applied online. Our full method, which applies step-wise rewards dur-ing generation, achieves the highest accuracy. Overall, these results indicate that the majority of the gain stems not only from stronger reward signals, but from enabling online, process-level control over the reason-ing process itself.                             
+
+> Method Reward Level Reward Time Search Acc.
+> CoT + SC ×Post hoc ×74.8 PRA (Last) Outcome Post hoc ✓75.7 PRA (Min) Process Post hoc ✓74.3 PRA (Max) Process Post hoc ✓77.5 PRA (Average) Process Post hoc ✓77.6
+> PRA (Ours) Process Online ✓80.8
+
+Table 4: Ablation of outcome-level and process-level inference-time usage of the same trained PRA on MedQA. All PRA variants share identical reward model parameters; only the timing and granularity of reward application differ. 
+
+Search–Accuracy Trade-off While retrieval at ev-ery reasoning step improves performance in knowledge-intensive settings, it can be costly. We therefore in-vestigate whether PRA can learn to invoke search selectively, trading off retrieval cost against answer accuracy. To this end, we train PRA with binary search labels derived from the margin-shift criterion described in Section 4.1, enabling step-wise decisions about when retrieval is necessary. At inference time, PRA outputs a search score at each step and trig-gers retrieval only when this score exceeds a threshold 
+
+θdep . We sweep θdep from 0 to 1 in increments of 0.1 to vary the frequency of search calls. Figure 3 shows a clear trade-off between search frequency and answer accuracy: reducing search generally lowers accuracy, although the Pareto frontier indicates that selective re-trieval can achieve comparable, and sometimes slightly higher, accuracy with fewer search calls. This experiment provides further analysis of se-lective retrieval in PRA. In the main results (Ta-ble 1), we use an always-search configuration, reflect-ing the assumption that retrieval is broadly beneficial in knowledge-intensive reasoning. This setting is well suited to knowledge-intensive evaluation and can be viewed as a practical upper bound on accuracy. 0 50 100   
+
+> Search Frequency (%)
+> 75
+> 77
+> 79
+> 81
+> Accuracy (%)
+> (a)
+> Pareto
+> 0.0 0.5 1.0
+> dep
+> 75
+> 80
+> 85
+> Accuracy (%)
+> (b)
+> Accuracy
+> Search Freq.
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> dep
+> 0
+> 25
+> 50
+> 75
+> 100
+> Search Freq. (%)
+
+Figure 3: Search–accuracy trade-off on MedQA. We sweep the search threshold and report accuracy versus search frequency; the Pareto frontier highlights the best operating points for a given search budget. 
+
+## 5.3 Analysis on Margin Shift 
+
+We analyze how margin shift varies across reason-ing traces on MedQA. Specifically, we compute ∆ m,which quantifies how the inclusion of retrieved evi-dence changes the teacher model’s decisions between reasoning traces. 0 50 100  
+
+> Trajectory Position (%)
+> 1.0
+> 1.2
+> 1.4
+> 1.6
+> 1.8
+> 2.0
+> 2.2
+> 2.4
+> Mean |  m|
+> |m| by Position
+> Correct
+> Incorrect
+
+Figure 4: Margin shift across step positions in reason-ing trajectories on MedQA, separated by traces with correct and incorrect final answers. Correct traces show larger margin shifts at later steps, whereas in-correct traces show the opposite pattern. 
+
+Trajectory Position and Answer Correctness. 
+
+Figure 4 reports the average margin shift at different step positions within the reasoning trajectory, sepa-rated by traces with correct and incorrect final an-swers. We observe markedly different trends between the two groups. For traces that ultimately produce correct answers, margin shift increases toward later steps, indicating that retrieved evidence plays a larger role in the teacher model’s evaluation as reasoning progresses. In contrast, for incorrect traces, margin 80 50 100  
+
+> Solve Rate (%)
+> 1.4
+> 1.6
+> 1.8
+> 2.0
+> 2.2
+> 2.4
+> 2.6
+> 2.8
+> 3.0
+> Mean |  m|
+> |m| by Difficulty
+> Correct
+> Incorrect
+
+Figure 5: Mean absolute magin shift over reasoning steps across questions of varying difficulty, where dif-ficulty is defined by the fraction of policy-generated reasoning samples that reach the correct answer. Cor-rect traces consistently exhibit larger margin shifts than incorrect traces, and margin shift for correct traces is highest on harder questions and gradually decreases as solve rate increases. shift decreases at later steps, suggesting that flaws in the reasoning become more apparent to the teacher model even without additional evidence. Notably, at the final step, which typically corresponds to a concise answer selection or conclusion, retrieved evidence has little effect on margin shift, consistent with this step containing minimal substantive reasoning. 
+
+Difficulty and Answer Correctness. Figure 5 reports margin shift across questions of varying dif-ficulty, again separated by traces with correct and incorrect final answers. Question difficulty is defined by the fraction of reasoning samples from the policy model (Qwen3-4B-Instruct) that reach the correct an-swer. Consistent with the trajectory-position analysis, retrieved evidence induces larger margin shifts for cor-rect traces, particularly on more difficult questions, while its effect remains substantially smaller for incor-rect traces. One plausible interpretation could be that incorrect reasoning trajectories contain internal incon-sistencies or errors that are detectable by the teacher model without strong reliance on external evidence. 
+
+# 6 Conclusion 
+
+We presented Process Reward Agents (PRA), a frame-work for guiding frozen reasoning models through knowledge-intensive reasoning tasks using online, step-wise, and domain-grounded process rewards. PRA reframes inference-time reasoning as a controllable search process in which a dedicated reward agent eval-uates partial reasoning traces and steers generation without modifying the policy model, its parameters, or its input space. By routing retrieval and evidence usage to the reward agent rather than the policy, PRA enables fine-grained verification of intermediate steps while avoiding the sensitivity to retrieval noise and context length of standard retrieval-augmented gener-ation. Across multiple medical reasoning benchmarks, PRA consistently outperforms strong reasoning and retrieval baselines, achieving state-of-the-art perfor-mance for 4B-scale models on MedQA and delivering robust gains on diverse out-of-distribution datasets. We further showed that PRA generalizes across unseen policy backbones, revealing substantial underutilized reasoning capacity in smaller models. Ablation stud-ies indicate that these gains arise primarily from ap-plying process-level rewards online during generation rather than from post hoc scoring alone. Finally, we characterized the trade-off between retrieval cost and accuracy under selective search, showing that PRA can adaptively reduce search while preserving perfor-mance along a Pareto frontier, positioning PRA as a practical and modular approach for reliable, evidence-grounded reasoning in knowledge-intensive domains without retraining the underlying reasoning model. 
+
+# Impact Statement 
+
+This work proposes process reward agents for steering knowledge-intensive reasoning, especially medical rea-soning, with frozen reasoning models. The intended impact of this approach is to increase the reliabil-ity and verifiability of reasoning traces procuced by language models, with a focus on the high stakes ap-plication domain of healthcare, where individual steps need to meet a high bar to enable trust and appropri-ate reliance on AI systems. By explicitly rewarding the reasoning process, and grounding individual steps in latest guidelines and literature, this work has the potential to reduce unfounded reasoning traces, catch hallucinations, and overall increase the quality of gen-erated reasoning traces by means of domain-grounded test-time scaling. Despite these promises, process reward agents may not fully eliminate the risk of hal-lucinations or remove all incorrect intermediate steps. Also, this work should be considered as a method contribution and not a ready-to-deploy system to sup-port medical decision making. Ultimately, this work aims to make AI systems more reliable and better grounded in available external knowledge. Insofar, we hope that the presented methods and results will improve the safety of using AI in knowledge-intensive and high-stakes domains such as medicine. 9References 
+
+Nicolas Boulanger-Lewandowski, Yoshua Bengio, and Pascal Vincent. High-dimensional sequence trans-duction, 2012. URL https://arxiv.org/abs/ 1212.1936 .Hanjie Chen, Zhouxiang Fang, Yash Singla, and Mark Dredze. Benchmarking large language models on answering and explaining challenging medical ques-tions, 2025. URL https://arxiv.org/abs/2402. 18060 .Junying Chen, Zhenyang Cai, Ke Ji, Xidong Wang, Wanlong Liu, Rongsheng Wang, Jianye Hou, and Benyou Wang. Huatuogpt-o1, towards medical complex reasoning with llms. arXiv preprint arXiv:2412.18925 , 2024. Zeming Chen, Alejandro Hern´ andez Cano, Ange-lika Romanou, Antoine Bonnet, Kyle Matoba, Francesco Salvi, Matteo Pagliardini, Simin Fan, An-dreas K¨ opf, Amirkeivan Mohtashami, and others. Meditron-70b: Scaling medical pretraining for large language models. arXiv preprint arXiv:2311.16079 ,2023. Elliott S Fisher and John E Wennberg. Health care quality, geographic variations, and the challenge of supply-sensitive care. Perspectives in biology and medicine , 46(1):69–79, 2003. Fan Gao, Sherry T. Tong, Jiwoong Sohn, Jiahao Huang, Junfeng Jiang, Ding Xia, Piyalitt Ittichai-wong, Kanyakorn Veerakanjana, Hyunjae Kim, Qingyu Chen, Edison Marrese Taylor, Kazuma Kobayashi, Akkiko Aizawa, and Irene Li. Med-coreasoner: Reducing language disparities in medi-cal reasoning via language-informed co-reasoning, 2026. URL https://arxiv.org/abs/2601.08267 .Alex Graves. Sequence transduction with recurrent neural networks, 2012. URL https://arxiv.org/ abs/1211.3711 .Dan Hendrycks, Collin Burns, Steven Basart, Andy Zou, Mantas Mazeika, Dawn Song, and Jacob Stein-hardt. Measuring massive multitask language un-derstanding, 2021. URL https://arxiv.org/abs/ 2009.03300 .Xiaoke Huang, Juncheng Wu, Hui Liu, Xianfeng Tang, and Yuyin Zhou. m1: Unleash the potential of test-time scaling for medical reasoning with large language models. arXiv preprint arXiv:2504.00869 ,2025. Shuyang Jiang, Yusheng Liao, Zhe Chen, Ya Zhang, Yanfeng Wang, and Yu Wang. Meds 3: Towards medical slow thinking with self-evolved soft dual-sided process supervision, 2025. URL https:// arxiv.org/abs/2501.12051 .Di Jin, Eileen Pan, Nassim Oufattole, Wei-Hung Weng, Hanyi Fang, and Peter Szolovits. What Disease does this Patient Have? A Large-scale Open Domain Question Answering Dataset from Medical Exams, September 2020. URL http: //arxiv.org/abs/2009.13081 . arXiv:2009.13081 [cs]. Qiao Jin, Won Kim, Qingyu Chen, Donald C Comeau, Lana Yeganova, W John Wilbur, and Zhiyong Lu. Medcpt: Contrastive pre-trained transformers with large-scale pubmed search logs for zero-shot biomed-ical information retrieval. Bioinformatics , 39(11): btad651, 2023. Yubin Kim, Hyewon Jeong, Shan Chen, Shuyue Stella Li, Chanwoo Park, Mingyu Lu, Kumail Al-hamoud, Jimin Mun, Cristina Grau, Minseok Jung, et al. Medical hallucinations in foundation mod-els and their impact on healthcare. arXiv preprint arXiv:2503.05777 , 2025. Patrick Lewis, Ethan Perez, Aleksandra Piktus, Fabio Petroni, Vladimir Karpukhin, Naman Goyal, Hein-rich K¨ uttler, Mike Lewis, Wen-tau Yih, Tim Rockt¨ aschel, et al. Retrieval-augmented generation for knowledge-intensive nlp tasks. Advances in neu-ral information processing systems , 33:9459–9474, 2020. Hunter Lightman, Vineet Kosaraju, Yuri Burda, Har-rison Edwards, Bowen Baker, Teddy Lee, Jan Leike, John Schulman, Ilya Sutskever, and Karl Cobbe. Let’s verify step by step. In The Twelfth Inter-national Conference on Learning Representations ,2023. Che Liu, Haozhe Wang, Jiazhen Pan, Zhongwei Wan, Yong Dai, Fangzhen Lin, Wenjia Bai, Daniel Rueck-ert, and Rossella Arcucci. Beyond distillation: Push-ing the limits of medical llm reasoning with minimal-ist rule-based rl. arXiv preprint arXiv:2505.17952 ,2025a. Runze Liu, Junqi Gao, Jian Zhao, Kaiyan Zhang, Xiu Li, Biqing Qi, Wanli Ouyang, and Bowen Zhou. Can 1b llm surpass 405b llm? rethinking compute-optimal test-time scaling. arXiv preprint arXiv:2502.06703 , 2025b. 10 Zhiyong Lu. Pubmed and beyond: a survey of web tools for searching biomedical literature. Database ,2011:baq036, 2011. Geoffrey R Norman and Kevin W Eva. Diagnostic error and clinical reasoning. Medical education , 44 (1):94–100, 2010. Ankit Pal, Logesh Kumar Umapathi, and Malaikan-nan Sankarasubbu. MedMCQA : A Large-scale Multi-Subject Multi-Choice Dataset for Medical do-main Question Answering, March 2022. URL http: //arxiv.org/abs/2203.14371 . arXiv:2203.14371 [cs]. David Rein, Betty Li Hou, Asa Cooper Stickland, Jack-son Petty, Richard Yuanzhe Pang, Julien Dirani, Julian Michael, and Samuel R. Bowman. Gpqa: A graduate-level google-proof q&a benchmark, 2023. URL https://arxiv.org/abs/2311.12022 .Karan Singhal, Shekoofeh Azizi, Tao Tu, S Sara Mah-davi, Jason Wei, Hyung Won Chung, Nathan Scales, Ajay Tanwani, Heather Cole-Lewis, Stephen Pfohl, and others. Large language models encode clini-cal knowledge. Nature , 620(7972):172–180, 2023. Publisher: Nature Publishing Group. Charlie Snell, Jaehoon Lee, Kelvin Xu, and Aviral Kumar. Scaling llm test-time compute optimally can be more effective than scaling model parameters. 
+
+arXiv preprint arXiv:2408.03314 , 2024. Rahul Thapa, Qingyang Wu, Kevin Wu, Harrison Zhang, Angela Zhang, Eric Wu, Haotian Ye, Suhana Bedi, Nevin Aresh, Joseph Boen, et al. Disentan-gling reasoning and knowledge in medical large language models. arXiv preprint arXiv:2505.11462 ,2025. Guanchu Wang, Junhao Ran, Ruixiang Tang, Chia-Yuan Chang, Chia-Yuan Chang, Yu-Neng Chuang, Zirui Liu, Vladimir Braverman, Zhandong Liu, and Xia Hu. Assessing and enhancing large language models in rare disease question-answering, 2024. URL https://arxiv.org/abs/2408.08422 .Peiyi Wang, Lei Li, Zhihong Shao, RX Xu, Damai Dai, Yifei Li, Deli Chen, Yu Wu, and Zhifang Sui. Math-shepherd: Verify and reinforce llms step-by-step without human annotations. arXiv preprint arXiv:2312.08935 , 2023. Juncheng Wu, Wenlong Deng, Xingxuan Li, Sheng Liu, Taomian Mi, Yifan Peng, Ziyang Xu, Yi Liu, Hyunjin Cho, Chang-In Choi, Yihan Cao, Hui Ren, Xiang Li, Xiaoxiao Li, and Yuyin Zhou. Medreason: Eliciting factual medical reasoning steps in llms via knowledge graphs, 2025. URL https://arxiv. org/abs/2504.00993 .Junde Wu, Jiayuan Zhu, Yunli Qi, Jingkun Chen, Min Xu, Filippo Menolascina, and Vicente Grau. Medi-cal graph rag: Towards safe medical large language model via graph retrieval-augmented generation. 
+
+arXiv preprint arXiv:2408.04187 , 2024. Guangzhi Xiong, Qiao Jin, Zhiyong Lu, and Aidong Zhang. Benchmarking retrieval-augmented genera-tion for medicine. In Lun-Wei Ku, Andre Martins, and Vivek Srikumar, editors, Findings of the associ-ation for computational linguistics ACL 2024 , pages 6233–6251, Bangkok, Thailand and virtual meet-ing, August 2024. Association for Computational Linguistics. Zhaohui Yang, Chenghua He, Xiaowen Shi, Linjing Li, Qiyue Yin, Shihong Deng, and Daxin Jiang. Beyond the first error: Process reward models for reflective mathematical reasoning. arXiv preprint arXiv:2505.14391 , 2025. Jaehoon Yun, Jiwoong Sohn, Jungwoo Park, Hyun-jae Kim, Xiangru Tang, Daniel Shao, Yong Hoe Koo, Ko Minhyeok, Qingyu Chen, Mark Ger-stein, Michael Moor, and Jaewoo Kang. Med-PRM: Medical reasoning models with stepwise, guideline-verified process rewards. In Christos Christodoulopoulos, Tanmoy Chakraborty, Carolyn Rose, and Violet Peng, editors, Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing , pages 16554–16571, Suzhou, China, November 2025. Association for Computa-tional Linguistics. ISBN 979-8-89176-332-6. doi: 10.18653/v1/2025.emnlp-main.837. URL https: //aclanthology.org/2025.emnlp-main.837/ .Cyril Zakka, Rohan Shad, Akash Chaurasia, Alex R Dalal, Jennifer L Kim, Michael Moor, Robyn Fong, Curran Phillips, Kevin Alexander, Euan Ashley, et al. Almanac—retrieval-augmented language mod-els for clinical medicine. Nejm ai , 1(2):AIoa2300068, 2024. Sheng Zhang, Qianchu Liu, Guanghui Qin, Tris-tan Naumann, and Hoifung Poon. Med-rlvr: Emerging medical reasoning from a 3b base model via reinforcement learning. arXiv preprint arXiv:2502.19655 , 2025a. Zhenru Zhang, Chujie Zheng, Yangzhen Wu, Beichen Zhang, Runji Lin, Bowen Yu, Dayiheng Liu, Jingren Zhou, and Junyang Lin. The lessons of developing 11 process reward models in mathematical reasoning. 
+
+arXiv preprint arXiv:2501.07301 , 2025b. Qinyue Zheng, Salman Abdullah, Sam Rawal, Cyril Zakka, Sophie Ostmeier, Maximilian Purk, Eduardo Reis, Eric J. Topol, Jure Leskovec, and Michael Moor. Miriad: Augmenting llms with millions of medical query-response pairs, 2025. URL https: //arxiv.org/abs/2506.06091 .Jiachen Zhu, Congmin Zheng, Jianghao Lin, Kouni-anhua Du, Ying Wen, Yong Yu, Jun Wang, and Weinan Zhang. Retrieval-augmented process re-ward model for generalizable mathematical reason-ing. arXiv preprint arXiv:2502.14361 , 2025. 12 A Table of Notations 
+
+Table 5 summarizes the notation used throughout the main manuscript. 
+
+Symbol Description System 
+
+q question 
+
+Q space of questions 
+
+Y space of answers 
+
+yq ground-truth answer for question q
+
+ˆyq predicted answer for question qC(ˆ yq , y q ) correctness function; 1 if ˆ yq matches yq , else 0 
+
+π policy (frozen) 
+
+Gϕ parameterized inference procedure ( q, π, D) → Y 
+
+μϕ Process Reward Agent (PRA) 
+
+μact  
+
+> ϕ
+
+PRA controller component 
+
+μrwd  
+
+> ϕ
+
+PRA scoring function 
+
+D knowledge base (collection of documents) 
+
+Dt set of retrieved documents at step t
+
+Traces & Steps 
+
+τ reasoning trace 
+
+τt partial reasoning trace up to step tK number of reasoning steps in a trace 
+
+t step index (1 . . . K )
+
+st reasoning step at position tsK final step of the reasoning trace 
+
+j beam index 
+
+PRA Actions & Rewards 
+
+ˆrt predicted reward at step t
+
+ˆat predicted action at step trt reward label at step tat action label at step tR(τ (j) 
+
+> t
+
+) cumulative reward of partial trace j up to step t
+
+Training & Labels 
+
+ℓ(1) logit vector at the first output slot (reward) 
+
+ℓ(2) logit vector at the second output slot (action) 
+
+V vocabulary of the PRA 
+
+m margin without retrieval 
+
+md margin with retrieved documents ∆m margin shift: m − md
+
+ϵglobal global threshold for search labels 
+
+θdep search threshold at inference 
+
+Inference 
+
+B beam width 
+
+b branching factor Table 5: Summary of notations 13 B Stage-Level Batching 
+
+Figure 6 presents simplified pseudocode for PRA-guided beam search. Each question is managed by a Trace 
+
+object that maintains a beam of partial reasoning traces and a stage tag ∈ { reason , reward , search , done }.At each iteration, the global queue is drained, traces are partitioned by stage, and each partition is dispatched as a single batched operation to π, μϕ, or ρ.PRA Beam Search Pseudocode 
+
+class Trace: stage: REASON | REWARD | SEARCH | DONE beams: [{steps, cum_score, is_done}] candidates: [(beam_idx, text, score)] evidence: [str] | None def after_reason(self, outputs): self.candidates = outputs self.stage = REWARD def after_reward(self, scored): if should_search(scored): self.stage = SEARCH else: self.expand_and_prune(scored) def after_search(self, docs): self.evidence = docs self.stage = REWARD def expand_and_prune(self, scored): self.beams = top_B(scored, key=cum_score) self.stage = DONE if all_done else REASON # ---- Global queue ----queue = [Trace(q) for q in questions] while queue: buckets = partition(queue, key=stage) batch_retrieve(buckets[SEARCH]) batch_generate(buckets[REASON]) batch_score(buckets[REWARD]) queue = [t for t in queue if t.stage != DONE] 
+
+Figure 6: Simplified pseudocode. Each Trace manages one question and cycles through four stages. The global queue collects all active traces, partitions them by pending stage, and dispatches each partition as a batched operation to the policy ( π), retriever ( ρ), or reward agent ( μϕ), regardless of per-trace step index. 
+
+# C Additional Training Details 
+
+We fine-tune Qwen3-4B-Instruct to predict the reasoning and search labels described in Section 4.1. Training is performed with a learning rate of 3 × 10 −5 using a cosine decay schedule with 100 warmup steps. We use a weight decay of 0.01, an effective batch size of 16, and train for 3 epochs in bfloat16 precision. In the main experiments, we use the prompt shown in Figure 9 and train PRA in the always-search setting, where the search label is fixed to 1 for every reasoning step. For the Search–Accuracy Trade-off analysis, we instead train PRA using search labels derived from the margin-shift criterion described in Section 4.1. 14 D Prompt Templates 
+
+Figure 7, 8 and 9, show the prompts used throughout our experiments. Policy Prompt 
+
+System: 
+
+Solve the following question step-by-step. Do not analyze individual options in a single step. Each step of your explanation must start with ’Step number:’ format. You must conclude the answer using the phrase ’the answer is (option alphabet)’ at the end of your step. 
+
+User: 
+
+=== QUESTION === 
+
+{question text }
+
+A: {option A }
+
+... Figure 7: Policy prompt used for all PRA experiments. The prompt instructs explicit step-wise reasoning for easier parsing during search, and a standardized final answer format for answer extraction. 15 Teacher Prompt 
+
+System: 
+
+You are a medical expert responsible for evaluating the quality of the last reasoning step in a solution to a medical question. You are provided with relevant documents, the question, and the reasoning trace including prior steps. Your task is to critically assess only the last reasoning step, considering its logical coherence, medical validity, and consistency with the evidence. You must only return one score, and output nothing else: Reasoning Score: Score 1 if the last step is logically coherent, medically sound, and aligns with the provided evidence; otherwise, score 0. Output only a single digit of your reasoning score in the following format: 1 or 0 (1: correct, 0: incorrect) 
+
+User: 
+
+=== DOCUMENTS === Doc 1: {document 1 }
+
+... === QUESTION === 
+
+{question text }
+
+A: {option A }
+
+... === CORRECT ANSWER === ({answer idx }): {answer text }
+
+=== REASONING TRACE === Step 1: {step 1 text }
+
+... 
+
+Figure 8: Teacher prompt used for all PRA experiments. The prompt evaluates the last reasoning step given retrieved documents, the question with options, correct answer, and the reasoning trace up to and including the current step. 16 PRA Prompt 
+
+System: 
+
+You are an evaluator responsible for assessing the quality of the last reasoning step in a solution to a medical question. You are provided with relevant documents, the question, and the reasoning path (including prior steps and their rewards, if they exist). Your task is to critically assess only the last reasoning step, considering its logical coherence, medical validity, and consistency with the evidence. You must only return two scores, and output nothing else: 1. Reasoning Reward: Score 1 if the last step is logically coherent, medically sound, and aligns with the provided evidence; otherwise, score 0. 2. Search Reward: Score 1 if, in order to evaluate the last reasoning step, you needed to refer to the provided evidence (i.e., the step required searching for or validating with external information), or if the reasoning step itself explicitly involves searching, retrieval, or referencing outside knowledge; otherwise, score 0. Provide your evaluation as two numbers, separated by a comma and a space, with no addi-tional explanation or text. The first number is the Reasoning Reward, and the second is the Search Reward, as in the following examples: 0,0 1,0 0,1 1,1 For instance: If Reasoning Reward = 0 and Search Reward = 1, write: 0,1 If both are 1: 1,1 If both are 0: 0,0 If Reasoning Reward = 1 and Search Reward = 0: 1,0 
+
+User: 
+
+=== DOCUMENTS === Doc 1: {document 1 }
+
+... === QUESTION === 
+
+{question text }
+
+A: {option A }
+
+... === REASONING TRACE === Step 1: {step 1 text }
+
+... 
+
+Figure 9: PRA prompt used in all experiments. The documents section appears only when search is triggered at the current step. 17
