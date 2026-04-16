@@ -1,0 +1,687 @@
+Title: PromptEcho: Annotation-Free Reward from Vision-Language Models for Text-to-Image Reinforcement Learning
+
+URL Source: https://arxiv.org/pdf/2604.12652v1
+
+Published Time: Wed, 15 Apr 2026 01:03:56 GMT
+
+Number of Pages: 16
+
+Markdown Content:
+# PromptEcho: Annotation-Free Reward from Vision-Language Models for Text-to-Image Reinforcement Learning 
+
+Jinlong Liu ∗
+
+Alibaba Group 
+
+Wanggui He ∗
+
+Alibaba Group 
+
+Peng Zhang 
+
+Zhejiang University 
+
+Mushui Liu 
+
+Alibaba Group 
+
+Hao Jiang †
+
+Alibaba Group 
+
+Pipei Huang 
+
+Alibaba Group 
+
+Abstract 
+
+Reinforcement learning (RL) can improve the prompt following capability of text-to-image (T2I) models, yet obtaining high-quality reward signals remains challenging: CLIP Score is too coarse-grained, while VLM-based reward models (e.g., RewardDance) require costly human-annotated preference data and addi-tional fine-tuning. We propose PromptEcho, a reward construction method that requires no annotation and no reward model training. Given a generated image and a guiding query, PromptEcho computes the token-level cross-entropy loss of a frozen VLM with the original prompt as the label, directly extracting the image-text alignment knowledge encoded during VLM pretraining. The reward is deterministic, computationally efficient, and improves automatically as stronger open-source VLMs become available. For evaluation, we develop DenseAlign-Bench, a benchmark of concept-rich dense captions for rigorously testing prompt following capability. Experimental results on two state-of-the-art T2I models (Z-Image and QwenImage-2512) demonstrate that PromptEcho achieves substantial improvements on DenseAlignBench (+26.8pp / +16.2pp net win rate), along with consistent gains on GenEval, DPG-Bench, and TIIFBench without any task-specific training. Ablation studies confirm that PromptEcho comprehensively outperforms inference-based scoring with the same VLM, and that reward quality scales with VLM size. We will open-source the trained models and the DenseAlignBench. 
+
+1 Introduction 
+
+Text-to-image (T2I) generation has advanced rapidly from GANs to Diffusion Models and Flow Matching architectures, yet prompt following—the precise semantic alignment between generated images and input text—remains a core challenge. Complex descriptions involving multiple objects, attribute binding, spatial relationships, or precise counting still cause frequent omissions and errors in state-of-the-art models. Reinforcement learning (RL) has proven effective for improving prompt following. DDPO [Black et al., 2024] and DPOK [Fan et al., 2023] model diffusion denoising as a Markov Decision Process and optimize external reward signals via policy gradients; Flow-GRPO [Liu et al., 2025] and AWM [Xue et al., 2025] extend this framework to Flow Matching models. However, the quality of the reward signal remains the bottleneck. CLIP Score [Hessel et al., 2021] is too coarse-grained to capture 
+
+> ∗Equal contribution.
+> †Corresponding author. Preprint.
+> arXiv:2604.12652v1 [cs.CV] 14 Apr 2026
+
+attribute binding, spatial relations, or counting. Reward models trained on human preferences— PickScore [Kirstain et al., 2023], ImageReward [Xu et al., 2023], HPS [Wu et al., 2023]—improve over CLIP but are constrained by small model sizes and limited annotation coverage. Recent VLM-based reward models [Xu et al., 2024, Wang et al., 2025, Wu et al., 2025a] raise the capability ceiling by fine-tuning VLMs on annotated data, yet they still require costly annotation and additional training. An alternative is to directly prompt VLMs for zero-shot inference scoring (which we term InferScore), but this suffers from hallucinations and sampling randomness (Section 4.3). 
+
+PromptEcho. We propose PromptEcho, a reward construction paradigm that sidesteps both annota-tion and reward model training. Rather than having the VLM reason and judge image-text alignment, we directly extract the alignment knowledge already encoded in its pretrained weights. Specifically, given an image x generated from prompt c, we feed x and a guiding query (e.g., “Describe this image in detail.”) into a frozen VLM, then use c as the label to compute the token-level cross-entropy loss; the negative of this loss serves as the reward. Intuitively, if the image faithfully depicts the prompt, the VLM can “recite” c with high probability after seeing the image—the image echoes the prompt through the VLM. Because this loss is identical to the VLM’s pretraining objective, PromptEcho maximally preserves the image-text alignment knowledge the VLM acquired from massive data. The reward is fully deterministic (no autoregressive sampling), computationally efficient (a single forward pass), and automatically improves as stronger open-source VLMs become available—requiring no re-annotation or retraining. 
+
+Contributions. 
+
+• We propose PromptEcho, the first method to directly use VLM cross-entropy loss as a reward signal for T2I reinforcement learning, opening a fundamentally new path for reward construction. • PromptEcho requires zero annotation and zero reward model training. By directly leveraging pretrained open-source VLMs, it achieves high-quality, deterministic reward signals whose quality automatically scales with VLM capability. • Extensive experiments on two state-of-the-art T2I models (Z-Image and QwenImage-2512) demonstrate substantial win rate improvements on DenseAlignBench (+26.8pp / +16.2pp), con-sistent gains on public benchmarks (GenEval, DPG-Bench, TIIFBench) without task-specific training, and successful application to text rendering—validating PromptEcho as a general-purpose reward paradigm. 
+
+2 Related Work 
+
+2.1 Reinforcement Learning for Text-to-Image Models 
+
+Research on applying reinforcement learning to optimize diffusion models has progressed rapidly in recent years. DDPO (Denoising Diffusion Policy Optimization) [Black et al., 2024] was the first to formalize the denoising process of diffusion models as a multi-step Markov Decision Process (MDP), treating each denoising step as an action and optimizing external rewards via policy gradient methods. DPOK [Fan et al., 2023] builds upon DDPO by introducing KL divergence regularization, constraining the optimized policy from deviating too far from the original pretrained distribution, thereby maintaining image quality and diversity while improving target attributes. With the rise of Flow Matching models, RL optimization methods have been extended accordingly. Flow-GRPO [Liu et al., 2025] adapts the Group Relative Policy Optimization (GRPO) algorithm to the continuous Flow Matching framework, performing policy updates through group-relative advantage estimation. However, the exploration noise introduced during Flow-GRPO training can cause sampled trajectories to deviate from the normal distribution, leading to image quality degradation. AWM (Advantage Weighted Matching) [Xue et al., 2025] proposes a gentler optimization strategy: optimizing directly in the ODE prediction space via advantage-weighted MSE loss, avoiding the quality degradation caused by SDE exploration. Our experiments adopt AWM as the RL training framework. 
+
+2.2 Reward Signal Sources 
+
+Reward signals in T2I RL optimization can be categorized by their source and construction method. 2Traditional reward metrics. CLIP Score [Hessel et al., 2021] relies on coarse-grained vector similarity and cannot capture complex semantic alignment. PickScore [Kirstain et al., 2023], Im-ageReward [Xu et al., 2023], HPS [Wu et al., 2023], and others train dedicated reward models on human-annotated preference data, but are limited by small model sizes and finite training data, struggling to provide effective optimization signals for frontier T2I models. Methods such as Diffusion-DPO [Wallace et al., 2024] and Diffusion-RPO [Gu et al., 2024] bypass explicit reward models but still depend on human-annotated preference pairs. 
+
+VLM-based reward construction. Recent works upgrade reward models to the VLM level, following two main paradigms: (1) Regression-based—VisionReward [Xu et al., 2024] fine-tunes a VLM to answer fine-grained binary (yes/no) questions about image quality, then aggregates the per-question probabilities into a scalar reward via learned linear weights; (2) Generative— RewardDance [Wu et al., 2025a] and UnifiedReward [Wang et al., 2025] cast scoring as a VLM next-token prediction task, fine-tuning the VLM on human-annotated preference or instruction data to directly generate evaluation scores. While these methods raise the capability ceiling of reward models, all require human-annotated data and additional VLM fine-tuning. An alternative is to directly use VLMs for zero-shot inference scoring (InferScore), but this suffers from hallucinations and sampling randomness, producing unstable reward signals (we experimentally validate this in Section 4.3). 
+
+Positioning of PromptEcho. Unlike all the above VLM-based reward methods, PromptEcho requires no annotation data and no reward model training, directly extracting reward signals from a frozen VLM through deterministic forward passes, with reward quality that improves as open-source VLMs advance. 
+
+2.3 Vision-Language Models 
+
+The rapid development of open-source VLMs provides a solid technical foundation for PromptE-cho. Representative VLM families include LLaVA [Liu et al., 2023], which pioneered the visual instruction tuning paradigm; the InternVL series [Chen et al., 2023], which scales up vision encoders and achieves strong multimodal reasoning; and the Qwen-VL series [Bai et al., 2023], which has continuously evolved from Qwen-VL through Qwen2-VL and Qwen2.5-VL to Qwen3-VL, with iterative improvements in model scale, training data, and multimodal understanding capabilities. This paper adopts Qwen3-VL-32B as the source VLM for reward signals, owing to its strong image-text alignment capability at the 32B parameter scale. Importantly, PromptEcho is not tied to any specific VLM—when a more powerful open-source VLM is released, one simply replaces the VLM to obtain higher-quality reward signals, without re-collecting annotation data or retraining a reward model. 
+
+3 Method 
+
+3.1 PromptEcho Reward 
+
+Let Gθ be a T2I model with parameters θ and c the input text prompt. The goal of T2I RL is to maximize the expected reward: θ∗ = arg max θ Ec∼D ,x ∼Gθ (c)[R(x, c )] , where D is the prompt distribution. We propose a new reward function RPromptEcho computed from a frozen VLM M as follows: 
+
+Input Construction. The reward computation takes three inputs: (1) the generated image x =
+
+Gθ (c); (2) a fixed guiding query q (e.g., “Describe this image in detail.”) that instructs the VLM to produce a description; and (3) the original prompt c, which serves as the ground-truth label for cross-entropy computation. 
+
+PromptEcho Reward Definition. Given the VLM’s output logits, we compute the cross-entropy loss only over the token positions corresponding to prompt c and negate it to obtain the reward: 
+
+RPromptEcho (x, c ) = −L CE (c | x, q ) = − 1
+
+|c|
+
+> |c|
+
+X
+
+> t=1
+
+[− log pM(ct | c<t , x, q )] (1) where |c| is the number of tokens in prompt c, and pM(ct | c<t , x, q ) is the probability that VLM M
+
+predicts the t-th token ct given image x, query q, and prefix tokens c<t .3Caption 𝑪 𝒊  
+
+> sampled from dataset
+> input prompt
+
+Image Generation Model 
+
+𝑮 𝜽 
+
+> generate K images
+> Update
+> 𝜃
+
+AWM /GRPO         
+
+> Image Dataset
+> Frozen VLM
+> (e.g.Qwen3 -VL -32B)
+> 𝑞 =Describe this image in detail.
+> Caption Dataset
+> {𝐶 !,𝐶 ",…,𝐶 #}
+
+…
+
+{𝑿 𝟏 , 𝑿 𝟐 , … , 𝑿 𝑲 }
+
+𝐾 Generated Images 
+
+Group Advantage                                                
+
+> 𝐴 !=𝑅 !−𝑚𝑒𝑎𝑛 (𝑅 "…$)
+> PromptEcho Reward Computation
+> 🖼 𝑿 𝒋 𝒒 𝟏 𝒒 𝟐 …𝒄 𝒊
+> 𝟏 𝒄 𝒊
+> 𝟐 𝒄 𝒊
+> 𝟑 …𝒄 𝒊
+> 𝒎
+> ▼▼▼▼▼▼▼▼▼
+> Frozen VLM —Single Forward Pass
+> ▼▼▼▼▼▼▼▼▼
+> ignore ignore ignore …𝒍𝒐𝒈 𝒑 𝒊
+> 𝟏 𝒍𝒐𝒈 𝒑 𝒊
+> 𝟐 𝒍𝒐𝒈 𝒑 𝒊
+> 𝟑 …𝒍𝒐𝒈 𝒑 𝒊
+> 𝒎
+> masked compute CE loss on caption tokens
+
+𝑹 𝒋 = −ℒ"# (𝑪 |𝑿 𝒋 , 𝒒 )        
+
+> Deterministic & efficient —higher 𝑹 𝒋 ⇒image 𝑿 𝒋 better matches caption 𝑪 𝒊
+> Data Preparation
+
+Figure 1: Overview of the PromptEcho training pipeline. (Left, dashed green) Data Preparation : a frozen VLM captions images from a source dataset to build the caption corpus {c1, . . . , c N }. (Main loop) At each iteration, a caption ci is sampled and fed to the T2I model Gθ , which generates K
+
+images. Each image xj enters the PromptEcho Reward Computation (blue box): the image, a fixed query q, and the original caption c are concatenated as input tokens to the same frozen VLM; a single teacher-forcing forward pass produces logits over all positions; the cross-entropy loss is computed only on caption token positions, yielding the reward Rj = −CE (c | xj , q ). Group advantage 
+
+ˆAj = Rj − mean (R1: K ) is then used by AWM/GRPO to update Gθ via policy gradient. The same frozen VLM (e.g. Qwen3-VL-32B) is shared across data preparation and reward computation, requiring no fine-tuning or human annotation. 
+
+Intuition. If image x faithfully depicts prompt c (e.g., correctly rendering all objects, attributes, and spatial relationships), the VLM should “recite” each token of c with high probability after observing the image—the image echoes the prompt—yielding a high reward. Conversely, omissions or semantic deviations in the image lower the token-level likelihood and thus the reward. This formulation works because the reward is exactly the VLM’s pretraining objective (token-level cross-entropy), directly tapping into the image-text alignment knowledge acquired from massive data—without any additional conversion layers, regression heads, or fine-tuning. We analyze this “understanding vs. reasoning” distinction further in Section 5.1. 
+
+3.2 RL Training Framework 
+
+We adopt AWM (Advantage Weighted Matching) [Xue et al., 2025] as the RL training algorithm. AWM is an RL optimization method specifically designed for diffusion models. Compared to SDE-based methods such as Flow-GRPO [Liu et al., 2025], AWM uses pure ODE sampling, avoiding image quality degradation caused by exploration noise. The overall training pipeline is illustrated in Figure 1: sample prompts from the caption dataset → T2I model generates a group of images →
+
+frozen VLM computes PromptEcho rewards → compute group-relative advantages → AWM updates T2I model parameters. 43.3 Data Preparation 
+
+The training data construction process is simple and efficient. We construct an internal dataset of approximately 100K concept-rich, high-quality images, and use Qwen3-VL-32B to generate detailed captions for these images, using the VLM prompt “Describe this image in detail.” Qwen3-VL-32B typically generates detailed captions of 200–400 English words, covering objects, attributes, spatial relationships, colors, textures, and other multi-dimensional information in the images. Notably, the VLM (Qwen3-VL-32B) and prompt (“Describe this image in detail.”) used during the data preparation stage are kept consistent with those used for computing PromptEcho rewards during subsequent RL training. This design choice is motivated by the fact that different VLMs and different queries/prompts lead to different prior distributions of generated captions; maintaining consistency ensures that the training data distribution matches the conditional distribution used for reward computation, enabling PromptEcho rewards to more accurately measure image-text alignment. After construction, the subsequent RL training process only requires the caption text and no longer needs the original images. This property makes the data preparation cost extremely low, and the caption dataset can be conveniently expanded and updated. 
+
+4 Experiments 
+
+4.1 Experimental Setup Models and Training Configuration. Our main experiments are conducted on two state-of-the-art open-source T2I models: Z-Image [Cai et al., 2025] and QwenImage-2512 [Wu et al., 2025b]. Unless otherwise stated, the VLM used for reward computation is a frozen Qwen3-VL-32B-Instruct [Bai et al., 2025] (32 billion parameters), with no fine-tuning throughout training. Training uses LoRA (rank 64, alpha 128) fine-tuning with a learning rate of 5e-5. Each iteration samples 32 unique prompts, each generating 8 images (256 total), with an effective training batch size of 128. To improve sample efficiency, each batch of sampled data is trained for 4 epochs. On 32 H20 GPUs, Z-Image training takes approximately 100 hours and QwenImage-2512 approximately 200 hours. Both training and testing use a resolution of 1024 ×1024. Training uses a CFG of 3.5 with 30-step ODE sampling; evaluation uses a CFG of 4.0 with 50 inference steps. 
+
+Evaluation Benchmarks. DenseAlignBench (ours). To rigorously test the prompt following capability of state-of-the-art T2I models on concept-rich, detailed descriptions, we construct DenseAlignBench—a test set of dense captions with rich concepts, relationships, and fine-grained details. DenseAlignBench consists of 2000 test captions separated from our internal dataset; these cap-tions are not in the training set but share the same source and distribution as the training data. We use Gemini-3-flash-preview [Google DeepMind, 2025] for pairwise evaluation on the prompt following dimension, directly reflecting the method’s effectiveness. We will open-source the DenseAlignBench. Additionally, we evaluate the generalization of prompt following improvements on the following public benchmarks: 
+
+GenEval [Ghosh et al., 2023]: a structured T2I evaluation benchmark covering single object, two objects, counting, colors, spatial position, and attribute binding sub-tasks. 
+
+DPG-Bench [Hu et al., 2024]: evaluates T2I models’ semantic alignment with complex text descrip-tions using dense prompts, covering five categories (global, entity, attribute, relation, other), scored by the mPLUG-large VQA model. 
+
+TIIFBench [Wei et al., 2025]: a fine-grained instruction following benchmark covering 40 dimensions, aggregated across three levels (Basic Following, Advanced Following, Real World Following), using GPT-4o as evaluator. 
+
+4.2 Main Results 4.2.1 DenseAlignBench 
+
+To directly validate the effectiveness of PromptEcho, we use captions from DenseAlignBench (sharing the same source and distribution as training data) to generate images with both the baseline models 5Table 1: DenseAlignBench pairwise evaluation results. Pairwise comparison on the prompt following using Gemini-3-flash-preview. Model Win Rate Baseline Win Rate Tie Rate Net Advantage ↑        
+
+> Z-Image: + PromptEcho vs Baseline 61.5% 34.7% 3.8% +26.8pp
+> QwenImage-2512: + PromptEcho vs Baseline 53.3% 37.0% 9.7% +16.2pp
+
+Table 2: GenEval evaluation results. Evaluating T2I models’ prompt following capability on struc-tured sub-tasks. Model Single Obj. Two Obj. Counting Colors Position Attr. Bind. Overall ↑                            
+
+> Z-Image (Baseline) 0.99 0.91 0.75 0.86 0.41 0.59 0.75
+> + PromptEcho 1.00 0.94 0.85 0.86 0.52 0.73 0.82
+> QwenImage-2512 (Baseline) 0.99 0.94 0.56 0.87 0.47 0.64 0.74
+> + PromptEcho 0.99 0.93 0.68 0.90 0.55 0.70 0.79
+
+(Z-Image and QwenImage-2512) and the PromptEcho-trained models for the same prompts. We use Gemini-3-flash-preview for pairwise evaluation: each comparison randomly swaps image order with 50% probability to eliminate position bias, with temperature set to 0.3 (detailed evaluation prompt in Appendix A). Results for both Z-Image and QwenImage-2512 are shown in Table 1. On Z-Image, the PromptEcho-trained model achieves an overwhelming advantage in prompt fol-lowing, with a win rate of 61.5%—nearly double the baseline (34.7%)—and a net advantage of +26.8pp. On QwenImage-2512, it similarly achieves a significant win (53.3% vs 37.0%, net advantage +16.2pp), fully validating the effectiveness of PromptEcho as a reward signal and its cross-model generalization. 
+
+4.2.2 Public Benchmark 
+
+It is important to emphasize that the test prompts of the following public benchmarks differ signif-icantly in distribution from our training data, which consists of approximately 200-word detailed captions generated by Qwen3-VL-32B. We perform no task-specific training for any of these bench-marks; the following results entirely reflect the generalized improvement in prompt following capa-bility. Both Z-Image and QwenImage-2512 baselines use the officially released models, evaluated at 1024 ×1024 resolution with CFG of 4.0 and 50 inference steps. 
+
+GenEval. As shown in Table 2, on Z-Image, PromptEcho achieves improvements across all GenEval sub-tasks, with Overall increasing from 0.75 to 0.82 (+6.5pp). The most significant improvements include: Attribute Binding +14.0pp (0.59 → 0.73), indicating a qualitative leap in attribute binding capability; Position +11.0pp (0.41 → 0.52), substantially enhanced spatial relationship understanding; and Counting +10.0pp (0.75 → 0.85), significantly improved counting accuracy. On QwenImage-2512, PromptEcho improves Overall from 0.74 to 0.79 (+5pp), with Counting (+12pp, 0.56 → 0.68), Position (+8pp, 0.47 → 0.55), and Attribute Binding (+6pp, 0.64 → 0.70) showing the most significant gains. 
+
+DPG-Bench. DPG-Bench evaluates T2I models’ semantic alignment capability using dense prompts (long, complex descriptions), covering five categories: global, entity, attribute, relation, and other. Results are shown in Table 3. On Z-Image, PromptEcho improves the DPG-Bench Overall from 86.90 to 87.92 (+1.02), with Attribute (+1.55) and Relation (+1.13) showing the most significant gains. 
+
+TIIFBench. TIIFBench evaluates T2I models’ instruction following capability across multiple fine-grained dimensions, providing both short description and long description prompt forms. Results are shown in Table 4. On Z-Image, PromptEcho achieves significant improvements across all levels of TIIFBench, with Overall improving by +3.6pp (short) / +5.8pp (long). At the sub-dimension level, Text (93.2 →99.1 short), Style (73.3 →83.3 long), and Real World (91.6 →95.2 short) show particularly notable gains. 6Table 3: DPG-Bench evaluation results. Evaluating T2I models’ semantic alignment with complex dense prompts. Model Global Entity Attribute Relation Other Overall ↑
+
+Z-Image (Baseline) 91.60 91.54 90.32 92.76 91.94 86.90 
+
++ PromptEcho 93.05 92.76 91.87 93.89 89.99 87.92 
+
+QwenImage-2512 (Baseline) 94.40 93.27 90.01 92.82 91.34 87.32 
+
++ PromptEcho 91.21 93.25 90.39 93.63 93.13 87.49 
+
+Table 4: TIIFBench evaluation results. Each cell contains two values corresponding to short/long description prompts. Model Overall ↑ Basic Following Advanced Following Real short long Attr. Rela. Reas. Avg Attr.+Rela. Attr.+Reas. Rela.+Reas. Style Text Avg World Z-Image (Baseline) 84.91 83.16 89.5/88.9 90.3/82.3 79.3/86.0 86.4/85.7 80.8/81.3 75.8/77.4 80.9/79.3 82.8/73.3 93.2/89.6 79.9/79.5 91.6/90.3                                        
+
+> + PromptEcho 88.50 88.94 94.5/93.0 90.9/86.5 85.5/89.6 90.3/89.7 83.5/88.5 80.1/88.4 84.4/82.8 83.3/83.3 99.1/95.0 83.3/86.8 95.2/93.3
+> QwenImage-2512 (Baseline) 84.89 83.25 92.2 /86.5 84.9 /86.8 79.4/81.0 85.5/84.8 84.5 /84.8 73.1/81.7 81.6 /81.6 80.0 /60.0 95.5/93.2 80.3/82.2 92.9/93.7
+> + PromptEcho 85.50 86.46 91.0/ 87.0 84.7/ 90.0 85.5 /84.6 87.1 /87.2 79.1/ 85.4 80.2 /88.6 81.3/ 83.1 72.4/ 69.0 99.1 /95.4 80.6 /85.4 96.2 /95.0
+
+On QwenImage-2512, consistent improvements are also observed, with Overall +0.6pp (short) / +3.2pp (long), and significant gains in Reasoning (+6.1pp short), Text (+3.6pp short), and Real World (+3.3pp short). The results across all public benchmarks (GenEval, DPG-Bench, TIIFBench) consistently demonstrate that, despite significant distributional differences between training and test data, the PromptEcho-trained models achieve substantial improvements on two T2I models with different architectures. We attribute this strong generalization to the nature of the PromptEcho reward signal—it originates from the image-text alignment knowledge of a large-scale VLM pretrained on massive data, rather than distribution-specific preference annotation data, thus naturally possessing cross-distribution, cross-architecture generalization capability. 
+
+4.3 Ablation and Comparative Experiments 4.3.1 PromptEcho vs InferScore 
+
+To directly compare PromptEcho (extracting VLM “understanding”) with InferScore (leveraging VLM “reasoning”), we design a controlled ablation: both use the identical VLM (Qwen3-VL-32B) and the same base model (Z-Image), differing only in reward construction. Results are shown in Tables 5–6. The results reveal a stark contrast. On DenseAlignBench, PromptEcho achieves +26.8pp net ad-vantage while InferScore falls below the baseline ( −3.3pp). On public benchmarks, PromptEcho consistently outperforms the baseline (GenEval +6.5pp, DPG-Bench +1.02, TIIFBench +3.6/+5.8pp), while InferScore shows negligible improvement or degradation (GenEval +1pp, DPG-Bench −0.04, TIIFBench short −2.5pp). This confirms that extracting VLM “understanding” via the loss function is far more effective than leveraging VLM “reasoning” via inference (see Section 5.1). 
+
+4.3.2 Reward Model Size Ablation 
+
+To investigate the effect of VLM size on PromptEcho’s reward quality, we compare training results on Z-Image using Qwen3-VL-32B (32 billion parameters) and Qwen3-VL-8B (8 billion parameters) as the reward model. Both use identical training data and hyperparameters. On DenseAlignBench (Table 7), both the 32B and 8B reward models yield significant win rate improvements, with the 32B’s net advantage (+26.8pp) substantially higher than the 8B (+18.3pp), indicating that larger VLMs provide higher-quality reward signals. The generalization results on public benchmarks (Table 8) further corroborate this trend. The 32B reward outperforms the 8B reward on 3 out of 4 public metrics: GenEval (0.82 vs 0.77, +5pp), DPG-Bench (87.92 vs 87.15), and TIIF-long (88.94 vs 87.69). The gap is most pronounced on GenEval, indicating that the larger VLM provides more precise image-text alignment reward signals. 7Table 5: Ablation: PromptEcho vs InferScore on public benchmarks (Z-Image + Qwen3-VL-32B). GenEval reports per-subtask and overall scores; DPG-Bench reports per-category and overall scores; TIIFBench reports overall short/long scores. Model GenEval DPG-Bench TIIFBench Single Two Count Color Pos. Attr. Overall ↑ Global Entity Attr. Rel. Other Overall ↑ Short ↑ Long ↑                                             
+
+> Baseline 0.99 0.91 0.75 0.86 0.41 0.59 0.75 91.60 91.54 90.32 92.76 91.94 86.90 84.91 83.16
+> + PromptEcho 1.00 0.94 0.85 0.86 0.52 0.73 0.82 93.05 92.76 91.87 93.89 89.99 87.92 88.50 88.94
+> + InferScore 1.00 0.91 0.79 0.86 0.41 0.59 0.76 78.74 93.17 90.21 92.56 82.49 86.86 82.40 84.64
+
+Table 6: Ablation: PromptEcho vs InferScore on DenseAlignBench (Z-Image + Qwen3-VL-32B). Model Win Rate Baseline Win Rate Tie Rate Net Advantage ↑
+
++ PromptEcho vs Baseline 61.5% 34.7% 3.8% +26.8pp 
+
++ InferScore vs Baseline 28.0% 31.3% 40.8% −3.3pp 
+
+This result demonstrates that PromptEcho’s reward quality scales with VLM parameter count, further supporting the advantage of “improving reward quality as VLMs advance.” 
+
+4.4 Text Rendering Experiment: Validating the General-Purpose Reward Paradigm 
+
+To validate PromptEcho’s potential as a general-purpose reward paradigm, we apply it to a task fundamentally different from general prompt following—optimizing text rendering quality in e-commerce posters. On an internal poster generation model, we extend PromptEcho to the text rendering scenario by adapting the VLM prompt and label format. 
+
+Method Adaptation. Unlike the general prompt following experiments that use “Describe this image in detail.” as the VLM query, in the text rendering scenario we replace the VLM query with a structured OCR recognition prompt—requiring the VLM to recognize all designed marketing text in the image and classify it by semantic role into main title, subtitle, selling points, and other text. Correspondingly, the label is replaced from free-form captions to structured text labels (in JSON format) pre-extracted from editing instructions. The core computation of the PromptEcho reward (negative of the VLM cross-entropy loss) remains unchanged. Detailed prompt templates are provided in Appendix B. 
+
+Experimental Results. Using Qwen3.5-Plus [Qwen Team, 2025] as an independent evaluation model—chosen for its strong Chinese character recognition capability, which is critical for accurate OCR-based evaluation in this scenario—we perform character-by-character strict comparison eval-uation on 5000 test samples (details in Appendix B.3). Here, text rendering accuracy refers to the proportion of images where all text in the entire image is completely correct (1 point for fully correct, 0 otherwise). After PromptEcho training, the model’s text rendering accuracy improves from 68% to 75% (+7pp). 
+
+Significance for Generality. This experiment demonstrates that PromptEcho’s core idea—using VLM cross-entropy loss as the reward—possesses good generality. By adapting the VLM query and label format, PromptEcho can be flexibly applied to different T2I models and different optimization objectives, without retraining task-specific reward models. This further confirms the value of PromptEcho as a general-purpose reward construction paradigm. 
+
+4.5 Qualitative Analysis 
+
+We present qualitative improvements from PromptEcho training along two dimensions: general prompt following capability and text rendering accuracy. 
+
+4.5.1 Improved General Prompt Following 
+
+We select 6 representative cases from the DenseAlignBench pairwise evaluation (Appendix C), comparing QwenImage-2512 baseline with the PromptEcho-trained model on long, detailed text 8Table 7: DenseAlignBench reward model size ablation: 32B vs 8B VLM, both based on Z-Image. Model Win Rate Baseline Win Rate Tie Rate Net Advantage ↑         
+
+> + PromptEcho (32B Reward) vs Baseline 61.5% 34.7% 3.8% +26.8pp
+> + PromptEcho (8B Reward) vs Baseline 57.6% 39.3% 3.2% +18.3pp
+
+Table 8: Public benchmark reward model size ablation: 32B vs 8B VLM, both based on Z-Image. Model GenEval ↑ DPG ↑ TIIF-S ↑ TIIF-L ↑
+
+Z-Image (Baseline) 0.75 86.90 84.91 83.16 
+
++ PromptEcho (32B Reward) 0.82 87.92 88.50 88.94 
+
++ PromptEcho (8B Reward) 0.77 87.15 89.08 87.69 descriptions. We observe that these cases span diverse scenario types—character portraits, animal close-ups, still life arrangements, natural macro photography, and spatial relationships—and PromptE-cho consistently demonstrates higher prompt fidelity in attribute details (color, quantity, texture), object features, and pose descriptions. 
+
+4.5.2 Text Rendering Before and After Training 
+
+Beyond general prompt following, we observe notable qualitative improvements from PromptEcho in the text rendering task (Section 4.4). Before training, the model frequently produces e-commerce posters with missing strokes, extra strokes, uneven character spacing, and incorrect Chinese characters. After PromptEcho training, the model shows clear improvements in stroke completeness, character accuracy, and overall layout regularity. Representative cases are shown in Appendix Figure 3. This further validates PromptEcho’s flexibility as a general-purpose reward paradigm—by simply adapting the VLM query and label format, the same reward mechanism can be transferred to fundamentally different optimization objectives. 
+
+5 Discussion 
+
+5.1 Understanding vs. Reasoning 
+
+InferScore relies on the VLM’s reasoning ability —explicitly judging and scoring image-text align-ment through autoregressive generation, a process limited by inference-time hallucinations and sampling randomness. PromptEcho instead extracts the VLM’s understanding ability : the implicit image-text alignment knowledge encoded in the pretrained weights, accessed through the same cross-entropy loss used during pretraining. Because next-token prediction accuracy is typically more robust than explicit reasoning chains, PromptEcho provides more stable and reliable reward signals—as confirmed by the large performance gap in our ablation (Section 4.3.1). 
+
+5.2 Open-Source VLMs as Free Reward Annotators 
+
+PromptEcho transforms the collective progress of the open-source VLM community into free reward signals for T2I optimization. Traditional reward models require dedicated annotation and specialized training, while PromptEcho directly leverages existing VLMs. As these VLMs improve, PromptE-cho’s reward quality improves in tandem—our 32B vs. 8B ablation (Section 4.3.2) provides direct evidence of this scaling property. 
+
+5.3 Limitations 
+
+Our method has certain limitations. First, in domains where the VLM lacks specific visual expertise (e.g., fine-grained photographic aesthetics, recognition of subtle text errors), PromptEcho may not provide effective reward signals. Second, since PromptEcho’s reward computation is based on the VLM’s forward pass rather than autoregressive reasoning, it does not leverage the more powerful reasoning and chain-of-thought capabilities of state-of-the-art large models, which may limit the precision of reward signals in scenarios requiring complex reasoning and judgment. 96 Conclusion 
+
+We presented PromptEcho, which directly uses the cross-entropy loss of a frozen VLM as an annotation-free, training-free reward signal for T2I reinforcement learning. The key insight is that the VLM’s pretraining loss already encodes rich image-text alignment knowledge that can be extracted through a single deterministic forward pass. Experiments on Z-Image and QwenImage-2512 demonstrate substantial improvements on DenseAlignBench (+26.8pp / +16.2pp) and consistent gains across GenEval, DPG-Bench, and TIIFBench. Ablation studies confirm that PromptEcho far outperforms inference-based scoring and that reward quality scales with VLM size. Successful application to text rendering further validates PromptEcho as a general-purpose reward paradigm. Current limitations include reduced effectiveness in domains where the VLM lacks visual expertise, and the inability to leverage chain-of-thought reasoning. Future directions include scaling to larger VLMs and training data, domain-specific VLM adaptation, and extension to text-to-video generation. 
+
+References 
+
+Kevin Black, Michael Janner, Yilun Du, Ilya Kostrikov, and Sergey Levine. Training diffusion models with reinforcement learning. In International Conference on Learning Representations (ICLR) ,2024. Ying Fan, Olivia Watkins, Yuqing Du, Hao Liu, Moonkyung Ryu, Craig Boutilier, Pieter Abbeel, Mohammad Ghavamzadeh, Kangwook Lee, and Kimin Lee. DPOK: Reinforcement learning for fine-tuning text-to-image diffusion models. In Advances in Neural Information Processing Systems (NeurIPS) , 2023. Jie Liu, Gongye Liu, Jiajun Liang, Yangguang Li, Jiaheng Liu, Xintao Wang, Pengfei Wan, Di Zhang, and Wanli Ouyang. Flow-GRPO: Training flow matching models via online RL. arXiv preprint arXiv:2505.05470 , 2025. Shuchen Xue, Chongjian Ge, Shilong Zhang, Yichen Li, and Zhi-Ming Ma. Advantage weighted matching: Aligning RL with pretraining in diffusion models. arXiv preprint arXiv:2509.25050 ,2025. Jack Hessel, Ari Holtzman, Maxwell Forbes, Ronan Le Bras, and Yejin Choi. CLIPScore: A reference-free evaluation metric for image captioning. In Proceedings of the 2021 Conference on Empirical Methods in Natural Language Processing (EMNLP) , 2021. Yuval Kirstain, Adam Polyak, Uriel Singer, Shahbuland Matiana, Joe Penna, and Omer Levy. Pick-a-pic: An open dataset of user preferences for text-to-image generation. In Advances in Neural Information Processing Systems (NeurIPS) , 2023. Jiazheng Xu, Xiao Liu, Yuchen Wu, Yuxuan Tong, Qinkai Li, Ming Ding, Jie Tang, and Yuxiao Dong. ImageReward: Learning and evaluating human preferences for text-to-image generation. In 
+
+Advances in Neural Information Processing Systems (NeurIPS) , 2023. Xiaoshi Wu, Yiming Hao, Keqiang Sun, Yixiong Chen, Feng Zhu, Rui Zhao, and Hongsheng Li. Human preference score v2: A solid benchmark for evaluating human preferences of text-to-image synthesis. arXiv preprint arXiv:2306.09341 , 2023. Jiazheng Xu, Yu Huang, Jiale Cheng, et al. VisionReward: Fine-grained multi-dimensional human preference learning for image and video generation. arXiv preprint arXiv:2412.21059 , 2024. Yibin Wang, Yuhang Zang, Hao Li, Cheng Jin, and Jiaqi Wang. Unified reward model for multimodal understanding and generation. arXiv preprint arXiv:2503.05236 , 2025. Jie Wu, Yu Gao, Zilyu Ye, Ming Li, Liang Li, Hanzhong Guo, Jie Liu, Zeyue Xue, Xiaoxia Hou, Wei Liu, et al. RewardDance: Reward scaling in visual generation. arXiv preprint arXiv:2509.08826 ,2025a. Bram Wallace, Meihua Dang, Rafael Rafailov, Linqi Zhou, Aaron Lou, Senthil Purushwalkam, Ste-fano Ermon, Caiming Xiong, Shafiq Joty, and Nikhil Naik. Diffusion model alignment using direct preference optimization. In IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) , 2024. 10 Yi Gu, Zhendong Wang, Yueqin Yin, Yujia Xie, and Mingyuan Zhou. Diffusion-RPO: Aligning diffusion models through relative preference optimization. arXiv preprint arXiv:2406.06382 , 2024. Haotian Liu, Chunyuan Li, Qingyang Wu, and Yong Jae Lee. Visual instruction tuning. In Advances in Neural Information Processing Systems (NeurIPS) , 2023. Zhe Chen, Jiannan Wu, Wenhai Wang, Weijie Su, Guo Chen, Sen Xing, Muyan Zhong, Qinglong Zhang, Xizhou Zhu, Lewei Lu, et al. InternVL: Scaling up vision foundation models and aligning for generic visual-linguistic tasks. arXiv preprint arXiv:2312.14238 , 2023. Jinze Bai, Shuai Bai, Shusheng Yang, Shijie Wang, Sinan Tan, Peng Wang, Junyang Lin, Chang Zhou, and Jingren Zhou. Qwen-VL: A versatile vision-language model for understanding, localization, text reading, and beyond. arXiv preprint arXiv:2308.12966 , 2023. Huanqia Cai, Sihan Cao, Ruoyi Du, Peng Gao, Steven Hoi, Zhaohui Hou, Shijie Huang, Dengyang Jiang, Xin Jin, Liangchen Li, et al. Z-image: An efficient image generation foundation model with single-stream diffusion transformer. arXiv preprint arXiv:2511.22699 , 2025. Chenfei Wu, Jiahao Li, Jingren Zhou, Junyang Lin, Kaiyuan Gao, Kun Yan, Sheng-ming Yin, Shuai Bai, Xiao Xu, Yilei Chen, et al. Qwen-image technical report. arXiv preprint arXiv:2508.02324 ,2025b. Shuai Bai, Yuxuan Cai, Ruizhe Chen, Keqin Chen, Xionghui Chen, Zesen Cheng, Lianghao Deng, Wei Ding, Chang Gao, Chunjiang Ge, et al. Qwen3-vl technical report. arXiv preprint arXiv:2511.21631 , 2025. Google DeepMind. Gemini 3 flash preview. https://ai.google.dev/gemini-api/docs/ models/gemini-3-flash-preview , 2025. Dhruba Ghosh, Hanna Hajishirzi, and Ludwig Schmidt. GenEval: An object-focused framework for evaluating text-to-image alignment. arXiv preprint arXiv:2310.11513 , 2023. Xiwei Hu, Rui Wang, Yixiao Fang, Bin Fu, Pei Cheng, and Gang Yu. ELLA: Equip diffusion models with LLM for enhanced semantic alignment. arXiv preprint arXiv:2403.05135 , 2024. Xinyu Wei, Jinrui Zhang, Zeqing Wang, Hongyang Wei, Zhen Guo, and Lei Zhang. TIIF-Bench: How does your T2I model follow your instructions? arXiv preprint arXiv:2506.02161 , 2025. Qwen Team. Qwen3.5-397b-a17b. https://huggingface.co/Qwen/Qwen3.5-397B-A17B ,2025. 
+
+A DenseAlignBench Pairwise Evaluation Prompt Template 
+
+The following prompt template is used in the DenseAlignBench evaluation, where Gemini-3-flash-preview performs pairwise comparison on the prompt following for each pair of images: 
+
+> You are a professional image quality assessment expert specializing in evaluating prompt following accuracy. Your task is to compare two AI-generated images and determine which image better follows the given prompt. Focus only on prompt following accuracy - do not consider aesthetics, artistic quality, or realism. **Prompt:** {prompt} **Evaluation Process:** 1. Carefully read and understand all requirements in the prompt: - Main subjects and objects - Actions and poses - Visual attributes (color, size, material, texture) - Composition and layout
+
+11 - Style and atmosphere - Any text or written elements - Spatial relationships (foreground, background, position) - Quantities and counting 2. Examine Image A: - Which prompt requirements are accurately depicted? - Which prompt requirements are missing or incorrect? - Are there elements not mentioned in the prompt? 3. Examine Image B: - Which prompt requirements are accurately depicted? - Which prompt requirements are missing or incorrect? - Are there elements not mentioned in the prompt? 4. Compare: - Which image more accurately captures the prompt requirements? - If both are equal in accuracy, select "tie" **Preference Options:** - "image_a": Image A better follows the prompt than Image B - "image_b": Image B better follows the prompt than Image A - "tie": Both images follow the prompt to a similar degree **Important Notes:** - Make your decision based solely on prompt following accuracy - Ignore differences in artistic style, aesthetics, or realism - Remain objective and unbiased - Select "tie" when prompt following quality is truly similar **Output Format (strict JSON, no markdown):** {"reasoning": "<detailed explanation>", "preference": "<image_a, image_b, or tie>" }
+
+B Text Rendering Experiment Prompt Templates 
+
+B.1 Label Construction Prompt 
+
+Used to extract structured text labels from editing instructions, serving as the label for PromptEcho reward computation: 
+
+You are a professional text structure analysis expert. Your task is to extract all text content required to appear in the image from a given prompt, and classify them by semantic role in a structured manner. **Given Prompt:** {prompt} **Extraction Rules:** 1. **main_title**: If the title has multiple lines (e.g., top line/ bottom line), each line is a separate element in the list. 2. **subtitle**: Text inferred to be subtitles, such as product titles or secondary headings. 3. **selling_points**: Product selling points, recommendations, or introductory phrases. 4. **other_text**: Other text not belonging to the above categories. **Notes:** - Each piece of text should be extracted completely, preserving the original content - If a category has no corresponding content, return an empty list [] 
+
+12 - Carefully read the context to determine the semantic role of each piece of text **Output Format (must strictly follow JSON format, do not add any markdown tags):** {"reasoning": "<brief explanation of how you identified and classified these texts>", "main_title": ["first line title", "second line title"], "subtitle": ["subtitle text"], "selling_points": ["point 1", "point 2"], "other_text": ["other text 1", "other text 2"] }
+
+B.2 Training Reward Computation Prompt 
+
+After inputting the generated image, the OCR recognition prompt used as the VLM query (with structured text labels as the label for cross-entropy computation): 
+
+You are a professional image text recognition expert. Your task is to recognize all designed and typeset text content in this e-commerce marketing image, and classify them by semantic role in a structured manner. **Extraction Rules:** 1. **main_title**: The largest and most prominent title text in the image. If the title has multiple lines, each line is a separate element in the list. 2. **subtitle**: Subtitles or supplementary text, such as product titles or secondary headings. 3. **selling_points**: Product selling points, recommendations, introductory phrases, efficacy features, etc. 4. **other_text**: Other text not belonging to the above categories. **Notes:** - Only extract designed marketing text in the image; do not extract text printed on product packaging or physical objects - Each piece of text should be extracted completely, preserving the original content - Each field is a list of strings, arranged in visual reading order - If a category has no corresponding content, return an empty list [] **Output Format (must strictly follow JSON format, do not add any markdown tags or explanations):** {"main_title": ["first line title", "second line title"], "subtitle": ["subtitle text"], "selling_points": ["point 1", "point 2"], "other_text": ["other text 1", "other text 2"]} 
+
+B.3 Text Rendering Evaluation Prompt 
+
+The prompt used for independent evaluation, where the VLM performs character-by-character strict comparison and outputs a binary score (0 or 1): 
+
+You are a professional and strict text rendering quality inspector. You are extremely sensitive to text details - any character error, garbled text, missing character, extra character, or positional deviation is unacceptable. Your task is to check whether the text rendered in the image exactly matches the text required by the prompt. **Prompt:** 
+
+13 {prompt} **Inspection Steps:** 1. **Extract required text**: Carefully read the prompt and extract all text content required to appear in the image. Pay attention to distinguishing Chinese/English, uppercase/lowercase, numbers, etc. If the prompt does not explicitly require any text to appear in the image, expected_text is an empty string, and directly give 1 point. 2. **Recognize image text**: Carefully examine the image and recognize all text appearing in it character by character. Ignore text on product packaging; focus on the text required by the prompt. 3. **Character-by-character comparison**: Perform strict character-by-character comparison between the prompt-required text and the actual text in the image: - Every required character must be completely correct; garbled text is unacceptable - No extra characters, missing characters, wrong characters, or garbled text allowed - No duplicate text (unless the prompt explicitly requires it) - Text order must be correct 4. **Scoring**: - 1 point: All required text is rendered completely correctly in the image with no character-level errors - 0 points: Any text error exists **Output Format (strict JSON):** {"expected_text": "<all required text extracted from the prompt>", "found_text": "<all text actually recognized from the image>", "reasoning": "<detailed character-by-character comparison results>", "score": <integer 0 or 1> }
+
+C Qualitative Analysis Cases 
+
+14 This is a close -up, eye -level photograph of a light brown or tan -colored cow, likely a 
+
+breed such as a Zebu or Brahman, given its prominent features. The cow is facing 
+
+directly toward the camera, creating an intimate and engaging perspective. Head and 
+
+Face: - The cow has large, curved horns that sweep upward and outward. The horns are 
+
+thick and appear weathered, with a reddish -brown, almost rust -like coloration, especially 
+
+near the base where they emerge from the skull. There are visible cracks and rough 
+
+textures on the horns, suggesting age or exposure to the elements. - Its face is broad and 
+
+light tan, with a slightly darker brown patch running down the center of the 
+
+forehead and around the eyes. - The eyes are dark, expressive, and appear calm, with a 
+
+gentle gaze. The area around the eyes is shadowed, giving depth to the face. - The ears 
+
+are large, floppy, and hang down on either side of the head. The inner parts of the ears 
+
+are pinkish -brown, and there are some dark, irregular patches or marks on the left 
+
+ear (viewer’s left) , possibly scars or natural pigmentation. - The muzzle is broad and 
+
+light -colored, with a dark, moist nose. 
+
+This is a vibrant, close -up photograph of a young girl blowing bubbles outdoors on a 
+
+sunny day. The image captures a moment of joyful, carefree play. Subject: The girl is the 
+
+central focus, shown from the chest up. She has long, light brown hair tied into a high 
+
+ponytail with a light purple or gray hair tie. A few loose strands frame her face. Her eyes 
+
+are gently closed or looking upward as she blows, and her lips are puckered in 
+
+concentration. She appears to be around 8 –12 years old. Clothing and Accessories: She is 
+
+wearing a sleeveless top with a black -and -white striped or patterned design, possibly 
+
+with ruched fabric. Around her neck, she wears a layered necklace: one is a beaded 
+
+strand with dark blue or black and white beads, accented with two large, smooth, 
+
+reddish -brown wooden beads and a circular metal pendant. Underneath, a thinner, 
+
+delicate chain is visible. She also wears a small, shiny stud earring in her visible left ear. 
+
+Action: She is holding a purple bubble wand in her right hand, which is raised near her 
+
+mouth. The wand has a small, clear bubble forming at the end .
+
+This image features two identical -looking Chihuahua dogs sitting side by side against 
+
+a clean, white background. The dogs are small, with short, smooth coats that are 
+
+predominantly black, accented with tan markings on their faces, legs, and paws, and a 
+
+white patch on their chests. Their large, upright ears are pointed and alert, and their 
+
+dark, expressive eyes gaze upward, giving them an endearing and curious look. 
+
+Between the two dogs, centered in the composition, is the word "LOVE" spelled out in 
+
+large, three -dimensional, pastel pink letters. The letters have a smooth, matte finish 
+
+and are arranged in a slightly staggered, playful manner. Behind the "LOVE" letters, 
+
+partially visible through the open spaces in the letters (especially the "O" and "V"), 
+
+is a small, detailed model of the Eiffel Tower. The tower is rendered in a metallic 
+
+bronze or gold color, adding a touch of elegance and a romantic, Parisian theme to the 
+
+image. The overall composition is symmetrical and balanced, with the two dogs 
+
+mirroring each other on either side of the central "LOVE" and Eiffel Tower elements. 
+
+The clean white background emphasizes the subjects,… 
+
+This is a striking urban landscape photograph taken from across a body of water, likely 
+
+a river or harbor, looking toward a dense city skyline under a clear, deep blue sky. The 
+
+lighting suggests either early morning or late afternoon, with the sun low in the sky, 
+
+creating strong contrasts and dramatic shadows. **Foreground:** The foreground is 
+
+dominated by dark, rippling water that reflects the sunlight in shimmering patches. 
+
+Along the water’s edge, there are wooden pilings and docks, indicating a working 
+
+waterfront. A large, modern -looking structure with a flat roof and glass panels sits on 
+
+the water’s edge. It appears to be a ferry terminal or a public transit hub, with visible 
+
+openings and what might be ferry slips or loading areas. To its right, there’s an older, 
+
+more ornate structure with arched openings and classical detailing, possibly a historic 
+
+pier or part of a bridge approach. **Midground:** The midground features a mix of 
+
+architectural styles. The most prominent building is a massive, rectangular skyscraper 
+
+with a grid -like facade of windows, standing tall and imposing. To its left, a sleek, 
+
+cylindrical skyscraper with a reflective glass surface catches the sunlight , creating 
+
+a bright glare. Other buildings of varying heights 
+
+This image presents a festive, top -down view of a Christmas gift wrapped in vibrant 
+
+red and cream holiday -themed paper. The wrapping paper features a repeating pattern 
+
+of cheerful, cartoonish Santa Claus figures with white beards and red hats, set against a 
+
+cream background with subtle snowflake and swirl designs. The red sections of the 
+
+paper are adorned with small decorative elements like stars and hearts. The gift is tied 
+
+with a glossy red satin ribbon, which is tied into a neat bow on the left side. Attached 
+
+to the bow is a shiny, golden Christmas bauble, adding a touch of sparkle and holiday 
+
+cheer. Resting atop the gift are two modern payment -related items: 1. **A white 
+
+iZettle card reader**: This compact, rectangular device has a black screen displaying a 
+
+contactless payment symbol (a stylized wave with a hand above it). Below the screen 
+
+is a numeric keypad with black circular buttons labeled 1, 2, 3, 4, 5, and 6 (partially 
+
+visible). The brand name “iZettle ” is printed in blue near the bottom. 2. **A gold -
+
+colored credit or debit card**: Positioned diagonally across the card reader , this 
+
+card has a smooth, metallic gold finish. It features a standard magnetic stripe along… 
+
+This is a well -composed, professional -style portrait of a man standing outdoors in 
+
+what appears to be an autumn setting. The image is shot with a shallow depth of field, 
+
+keeping the man in sharp focus while the background is softly blurred, emphasizing 
+
+him as the central subject. **Subject:** The man is in his late 20s to early 30s, with 
+
+dark, neatly styled hair, a light stubble beard, and intense, direct gaze toward the 
+
+camera. His expression is serious and confident, with slightly parted lips , giving him 
+
+a thoughtful or pensive look. **Attire:** He is dressed in stylish, autumn -appropriate 
+
+clothing: - A **camel -colored wool coat** with a classic, tailored cut, featuring a 
+
+single visible button and a notched lapel. - Underneath, he wears a **deep burgundy 
+
+or maroon sweater**. - Around his neck is a **plaid scarf** with a pattern of navy 
+
+blue, beige, and white or light gray, adding texture and warmth to his outfit. 
+
+**Accessories:** He holds a **large, black umbrella** with a curved black handle. 
+
+The umbrella is open and positioned above his head, suggesting it might be raining or 
+
+about to rain, or simply used for stylistic effect. The umbrella’s canopy is fully 
+
+extended, creating a strong… 
+
+Prompt Baseline Ours Figure 2: Qualitative comparison of 6 representative winning cases. Each row shows the full Prompt ,
+
+Baseline (QwenImage-2512), and Ours (PromptEcho-trained). Ours demonstrates more faithful adherence to fine-grained details including color, count, texture, and spatial relations. 15 Prompt Before PromptEcho After PromptEcho 
+
+A 9:16 vertical e -commerce poster. Extract the Taier 
+
+Sauerkraut Fish bowl and the white rice bowl from input 
+
+image 1 and position them at a slight angle on a light 
+
+grey sandstone countertop. Intense, warm spotlighting 
+
+from the left creates high contrast and brings out every 
+
+detail of the red peppers and garlic bits. **Text 
+
+Styling:** The main title " 太⼆酸菜⻥ " is placed at the 
+
+top -left in a bold, stylized black font with a silver 
+
+metallic sheen and hard drop shadow. Directly beneath, 
+
+"闲⻥价 85 元起 " is the focal point, where "85 元" is 
+
+rendered in a giant, bright orange -yellow 3D comic font 
+
+with sharp yellow speed lines bursting outwards from 
+
+the center. The character " 起" is scaled down and 
+
+colored dark charcoal. The subtitle " 吃喝玩乐先上闲⻥ 
+
+" is stylized as a neon -style graphic at the bottom -right 
+
+with a soft yellow glow and a thin white stroke. 
+
+**Decorative Elements:** Droplets of golden soup and 
+
+a few floating peppercorns are frozen in mid -air around 
+
+the bowl to suggest fresh preparation. A folded linen 
+
+napkin is draped partially under the fish bowl. The 
+
+background is a blurred, light -colored textured plaster 
+
+wall. Overall style is dynamic, modern, and mouth -
+
+watering with clear focus and rich natural shadows. 
+
+A 9:16 vertical e -commerce poster. Extract the Iced 
+
+Butter Latte from input image 1 and position it in the 
+
+bottom third, creating a powerful 3D breakthrough 
+
+effect where the cup emerges from a circular hole in a 
+
+yellow -tinted, stylized newspaper background. The 
+
+newspaper is oriented diagonally, filled with small 
+
+decorative text blocks describing butter coffee benefits. 
+
+Lighting is vibrant and high -saturation, coming from 
+
+multiple directions. **Main Headline Styling**: ' 淘宝 
+
+闪购 新⼈低⾄ 0.01 元' is rendered in a playful, blocky 
+
+3D font at the top; '0.01 元' is exceptionally large, 
+
+colored in bright orange with a thick black comic -style 
+
+outline and white highlight glints. **Sub -headline 
+
+Styling**: ' 最⾼可得 19 元外卖红包 ' is written inside a 
+
+red slanted badge with a white zigzag border. **Creative 
+
+Bar**: The text ' 淘宝闪购，下单即达不等待 ' is styled 
+
+in a blue neon -tube effect script font centered on a semi -
+
+transparent frosted glass bar. **Decorations**: Action 
+
+lines extend from the product to emphasize movement, 
+
+accompanied by floating cinnamon sticks and scattered 
+
+coffee grounds. Overall style is a youthful, energetic 
+
+Pop -Art inspired commercial poster with high spatial 
+
+depth. 
+
+A 9:16 vertical e -commerce poster. Extract the dual -
+
+layer and single -layer egg steamers from input image 1. 
+
+Position the single -layer steamer in the lower center 
+
+foreground, appearing to physically overlap the edge of 
+
+a large glowing pink neon circular border, with the 
+
+double -layer version behind it to create depth. 
+
+Background & Scene: A dreamy, soft pastel sky blue 
+
+background decorated with layered paper -cut clouds and 
+
+light blue pig silhouette patterns. Lighting: Dreamy top -
+
+down lighting creating a soft -focus glow around the 
+
+product domes. Text Styling: The main heading " 萌趣早 
+
+餐·快乐开餐 " is at the top in a deep pink brush script 
+
+with a thick white border. The promotional text " 新⼈全 
+
+场0.01 元起 " is housed in a translucent frosted glass text 
+
+box at the bottom; "0.01 元" is oversized with a 
+
+marshmallow -like texture and a soft rainbow gradient. A 
+
+sub -caption " 早起也有好胃⼝ " appears in a white pill -
+
+shaped container. Decorative Elements: Voluminous 3D 
+
+cotton -candy -like steam clouds and a trail of tiny 3D pig 
+
+footprints leading from the foreground into the 
+
+background. Overall Style: A soft -focus, whimsical 3D 
+
+animation style with an extremely high level of cuteness 
+
+and warmth. 
+
+A 9:16 vertical e -commerce poster. Extract the 
+
+Grandpa's Tea ( 爷爷不泡茶 ) specialty drinks and the 
+
+orange gift box from input image 1 and composite them 
+
+at the center -bottom on a vibrant, matte pink circular 
+
+podium. The background is a high -end designer scene 
+
+with a soft orange and pink pastel gradient and floating 
+
+3D frosted glass spheres. **Lighting** is a crisp studio 
+
+setup with white rim light emphasizing the curves of the 
+
+bottles and cups, creating a professional commercial feel. 
+
+**Text Styling**: The main title " 上淘宝闪购 搜樱 花季 
+
+" ( top line) and " 抢樱花季限定盲盒套餐 " ( bottom line) 
+
+is rendered in a glossy 3D puffy font. The characters 
+
+have a milky white center, surrounded by a luminous 
+
+yellow and orange -red multi -layered outline, creating a 
+
+cohesive, eye -catching block. The subtitle " 上新了 橙意 
+
+好礼 " sits on a small orange ribbon badge below the 
+
+title. **Decorative Elements**: The product is 
+
+surrounded by small, artistic floating text saying " 爷爷 
+
+不泡茶 " in different styles like serif and bold sans -serif. 
+
+Pink silk ribbons and stylized orange fruit segments 
+
+float in the mid -ground to add dynamic energy. The 
+
+overall style is a modern, high -quality 3D digital 
+
+illustration with a joyful and energetic spring mood. 
+
+Input Image Figure 3: Text rendering quality comparison before and after PromptEcho training (Section 4.4). Each row shows the Input Image , Prompt , Before PromptEcho , and After PromptEcho . After training, the model produces more accurate Chinese characters with improved stroke completeness and layout consistency in e-commerce poster generation. 16
