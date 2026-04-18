@@ -1,0 +1,640 @@
+Title: Reinforcement Learning with Negative Tests as Completeness Signal for Formal Specification Synthesis
+
+URL Source: https://arxiv.org/pdf/2604.05820v1
+
+Published Time: Wed, 08 Apr 2026 01:02:01 GMT
+
+Number of Pages: 12
+
+Markdown Content:
+# Reinforcement Learning with Negative Tests as Completeness Signal for Formal Specification Synthesis 
+
+# Zhechong Huang 
+
+willhuang@stu.pku.edu.cn School of Computer Science, Peking University China 
+
+# Zhao Zhang 
+
+zhangzhao2019@pku.edu.cn School of Computer Science, Peking University China 
+
+# Zeyu Sun 
+
+zeyu.zys@gmail.com Institute of Software, Chinese Academy of Sciences China 
+
+# Huifeng Sun 
+
+shelon_2008@126.com Tencent China 
+
+# Yingfei Xiong 
+
+xiongyf@pku.edu.cn Key Lab of HCST (PKU), MOE; SCS, Peking University China 
+
+## Abstract 
+
+The specification synthesis task aims to automatically generate spec-ifications, together with any necessary auxiliary verification anno-tations, for existing programs. This task is important because such specifications serve as behavioral contracts that support modular reasoning and reusable verification across a codebase. At the same time, it remains challenging because verifier-only feedback is fun-damentally incomplete: passing verification establishes soundness, but cannot distinguish weak specifications from strong ones. What is missing is a fine-grained signal for specification completeness .We present SpecRL , a reinforcement learning framework for specification synthesis in Dafny. SpecRL introduces a self-contained pipeline that generates negative tests, i.e., input-output pairs that can never be produced by the program. We use the fraction of these negative tests rejected by a candidate specification as a signal of specification completeness, which is integrated into the reward for RL training. Experiments across four model sizes show that SpecRL improves both specification strength and verification success over SFT and RL with a binary specification-strength reward, generalizes to an out-of-distribution benchmark, and remains competitive on that unseen benchmark compared to much larger general-purpose LLMs. 
+
+## Keywords 
+
+formal verification, specification synthesis, reinforcement learning, large language models, Dafny 
+
+## 1 Introduction 
+
+Formal verification mathematically proves that a program satisfies desired properties by statically checking it against a formal specifi-cation [ 19 ]. In auto-active verification languages such as Dafny [ 29 ], Frama-C/ACSL [ 5], and Verus [ 27 ], developers annotate programs with specifications: preconditions and postconditions describe what each function should do, while auxiliary annotations such as loop invariants, assertions, and lemma invocations help the verifier dis-charge the resulting proof obligations. Writing these annotations by hand is tedious and error-prone [48], motivating growing interest in using LLMs to automate this process [ 1 , 4, 6, 7 , 15 , 36 , 50 , 53 , 54 ]. Among the various annotation tasks, specification synthesis is especially important: given an existing program that lacks formal annotations, the goal is to automatically generate specifications and auxiliary annotations (e.g., loop invariants) so that the program verifies and the specifications capture its intended behavior. Speci-fications act as machine-checked behavioral contracts [ 17 , 33 ] that document what a function does, so developers can understand its behavior from the contract alone without reading the implemen-tation. In large codebases and during code review, where tracing through every function is impractical, such contracts become the primary means of understanding code. Beyond documentation, specifications are also essential for modular verification , where a caller is verified against the callee’s specification rather than its implementation; if the specification is too weak, the caller’s verifi-cation may fail even when the implementation is correct. Yet most existing code lacks formal specifications, so writing them remains a major obstacle to wider adoption of formal verification. Several recent approaches have begun to address specification synthesis, but important limitations remain. Inference-time meth-ods [ 35 , 42 , 48 ] rely on prompting and iterative repair alone, so task-specific knowledge is never internalized by the model. SFT-based iterative approaches [ 8, 12 ] fine-tune on the model’s own verified outputs, but supervised learning remains fundamentally constrained by the quality and coverage of the training data. These limitations motivate a training paradigm that can opti-mize directly against external feedback. Reinforcement learning is a natural candidate, as prior work has shown that code models can be improved using unit-test, compiler, execution, and verifier feed-back [ 13 , 16 , 28 , 51 ]. Specification synthesis in Dafny is a natural fit, because candidate annotated programs can be compiled, verified, and executed, providing multiple forms of external feedback during training [ 29 ]. At the same time, effective RL depends on reward signals that are fine-grained enough to guide exploration over rich search spaces [ 2 , 37 , 49 ]. Specification synthesis is exactly such a search problem: many candidate annotation sets may verify, yet still differ substantially in how completely they capture program behavior [ 26 ]. However, existing RL approaches either do not fo-cus on specification quality itself [ 23 ] or rely on binary rewards that grant full credit once a generated specification is proved no weaker than a reference specification [ 51 ]. Such rewards are too coarse to distinguish weak specifications from strong ones. What is 
+
+> 1
+> arXiv:2604.05820v1 [cs.SE] 7 Apr 2026 Zhechong Huang, Zhao Zhang, Zeyu Sun, Huifeng Sun, and Yingfei Xiong
+
+missing is a fine-grained reward signal that can rank specifications by strength, not just verify them. Building on these observations, we propose SpecRL, a reinforce-ment learning framework for specification synthesis. The key idea is to generate negative tests, called spectests , that together mea-sure the completeness of a specification: each spectest is a concrete input-output pair that the program never produces but the specifica-tion may permit. The fraction of spectests that a specification rejects provides a fine-grained signal of completeness for RL training, guid-ing the model toward stronger specifications. Our contributions are: (1) spectest generation , a self-contained pipeline that au-tomatically constructs negative tests for evaluating spec-ification completeness [ 24 , 26 , 30 ] without requiring pre-existing test suites. (2) spectest reward , a progressive reward function that inte-grates the fine-grained completeness signal from spectests. This design enables RL to favor stronger specifications while preserving formal correctness. (3) An extensive evaluation on two specification-focused benchmarks constructed from existing Dafny datasets: Py2Dfy-Spec for training and DafnyComp-Spec for out-of-distribution evaluation. The results show that fine-grained rewards consistently improve both specification strength and verification success over SFT and RL with a binary specification-strength reward across four model scales, while remaining competitive on the unseen benchmark. 
+
+## 2 Background 2.1 Verification Annotations in Dafny 
+
+Dafny [ 29 ] is a verification-aware language whose built-in verifier translates programs and annotations into verification conditions and discharges them with an SMT solver [ 9]. These annotations fall into two categories: 
+
+• Specifications (blue ): requires clauses state precondi-tions on method inputs; ensures clauses state postcondi-tions on both method inputs and outputs. Together they form a behavioral contract between the caller and the callee. 
+
+• Auxiliary annotations (purple ): loop invariants and as-sertions that help the verifier discharge proof obligations. Figure 1 shows a Dafny method Max that scans an array of nat-ural numbers and whose implementation returns the maximum element (or -1 for an empty array). The shown requires clause restricts the specification to non-empty arrays, and the ensures 
+
+clause states that the returned value is at least every element. The loop invariant is an auxiliary annotation that states a property maintained at every iteration, enabling the verifier to reason about the loop without unrolling it. Taken together, these annotations specify that, for a non-empty array, Max returns a value no smaller than any array element. 
+
+## 2.2 Soundness and Completeness of Specifications 
+
+A specification defines a set of allowed input-output behaviors: the precondition constrains the input domain, and the postcondition                                    
+
+> method Max(a: array<nat>) returns (m: int)
+> requires a.Length > 0
+> ensures forall k:: 0≤k < a.Length =⇒m≥a[k] {
+> if a.Length == 0 { return -1; }
+> var i := 0; m := a[0];
+> while i < a.Length
+> invariant 0≤i≤a.Length
+> invariant forall k:: 0≤k < i =⇒m≥a[k] {
+> if a[i] ≥m { m := a[i]; } i := i + 1; }}
+> Specifications
+> Auxiliary Annotations
+
+Figure 1: A Dafny method Max with specifications and auxil-iary annotations. The verifier checks that every execution satisfying the precondition also satisfies all postconditions. 
+
+constrains the output for each valid input. We write J𝑆 K for the set of behaviors permitted by a specification 𝑆 , and J𝑃 K for the set of behaviors exhibited by the program 𝑃 . In this sense, a specifica-tion is an abstraction of the program’s concrete behaviors: it omits implementation details and retains only constraints on observable inputs and outputs. The quality of a specification then corresponds to how tightly J𝑆 K approximates J𝑃 K, which can be characterized by two properties: 
+
+• Soundness. J𝑃 K ⊆ J𝑆 K: every input-output pair that the program can produce satisfies the specification. The verifier checks exactly this property. 
+
+• Completeness. J𝑆 K ⊆ J𝑃 K: every input-output pair that satisfies the specification can be produced by the program. Unlike soundness, the verifier cannot check completeness. When J𝑆 K = J𝑃 K, the specification is both sound and complete. Verification guarantees soundness, leaving completeness as the main unresolved question: how to quantify and reduce the gap between 
+
+J𝑆 K and J𝑃 K. In the Max example (Figure 1), the specification is sound but incomplete in two ways: the postcondition is too weak (it permits returning any sufficiently large number, not just the maximum), and the precondition is too strong (requires a.Length > 0 excludes empty arrays, for which the method has well-defined behavior). By contrast, a complete specification for Max would characterize both cases handled by the implementation, for example:                  
+
+> ensures a.Length == 0 =⇒m == -1
+> ensures a.Length > 0 =⇒min a[..]
+> ensures forall k:: 0≤k < a.Length =⇒m≥a[k]
+
+These clauses say that the method returns -1 on empty arrays and otherwise returns an actual array element that is no smaller than every other element. As a result, they rule out spurious behaviors such as returning 100 for [3,1,4,1,5] while still admitting every behavior that the program can actually produce. 
+
+> 2Reinforcement Learning with Negative Tests as Completeness Signal for Formal Specification Synthesis
+
+## 2.3 Reinforcement Learning for Language Model Training 
+
+Supervised fine-tuning (SFT) trains a language model to imitate reference outputs and is thus inherently limited by the quality of its training data [ 39 ]. Reinforcement learning (RL) overcomes this limitation by letting the model explore: it samples diverse outputs and receives scores from an external reward function 𝑟 (𝑥, 𝑦 ), rein-forcing outputs that score well regardless of whether they appear in any training set. It also allows RL to exploit non-differentiable 
+
+feedback signals such as compiler or verifier verdicts, which SFT cannot directly incorporate. We use Group Relative Policy Optimization (GRPO) [ 40 ]to train the model. In each iteration, for a given prompt 𝑥 , GRPO samples a group of 𝐺 responses and scores them with 𝑟 (𝑥, 𝑦 ). Each response’s advantage is computed relative to the group: 
+
+ˆ𝐴 𝑖 = 𝑟 (𝑥, 𝑦 𝑖 ) − mean ({ 𝑟 (𝑥, 𝑦 𝑗 )} 𝐺 𝑗 =1)
+
+std ({ 𝑟 (𝑥, 𝑦 𝑗 )} 𝐺 𝑗 =1) (1) The model’s parameters are then updated to increase the likelihood of responses with positive advantage and decrease the likelihood of those with negative advantage. Over successive iterations, the policy gradually shifts toward generating higher-quality outputs. 
+
+## 3 Method 
+
+This section presents SpecRL. 
+
+## 3.1 Problem Setting 
+
+Our target task is specification synthesis for existing Dafny pro-grams. Given a fully-implemented Dafny method without any veri-fication annotation, the goal is to generate specifications (precondi-tions and postconditions) together with any auxiliary annotations (e.g., loop invariants) so that (1) the Dafny verifier accepts the pro-gram and (2) the resulting specifications are as complete as possible. Our approach trains a neural network model with reinforcement learning to perform this task. For reinforcement learning, we re-quire a training set containing fully annotated Dafny programs. Since high-quality Dafny programs are scarce, we do not require the specification in the training set to be complete. Our goal is to use reinforcement learning to improve the model such that it can generate stronger specifications that are more complete than those in the training set. 
+
+## 3.2 Overview of SpecRL 
+
+SpecRL has two phases: Offline spectest construction and Online RL training . In the offline phase, we generate a set of spectests for each program in the training set. A spectest is an input-output pair that can never be produced by the program. In the online phase, we train a model for specification synthesis using RL training. During the training, given a specification generated by the model, we use the set of generated spectests to measure the completeness of the specification, and integrate the computed score into the reward function for RL training. 
+
+Running example. We illustrate the effect of both phases on the 
+
+Max method from Figure 1. 
+
+Offline phase. Given an annotated program in the training set, we first ask an LLM to generate test inputs for the program, and then execute the program on these inputs to get the corresponding outputs, and then ask the LLM to mutate the outputs to be some-thing different from the original outputs. In this way, we get a set of input-output pairs that the program never produces, i.e., spectests. For example, below are some spectests generated for our example.                   
+
+> Input aCorrect mMutated m’ Case
+> [3,1,4,1,5] 514 sum instead of max
+> [3,1,4,1,5] 5100 arbitrary large value
+> [3,1,4,1,5] 53non-maximum element
+> [] -1 99 empty-array case
+
+During the generation, we guide the LLM to generate spectests that satisfy two goals: (1) the spectests should be discriminative, assigning different scores for specifications with different strengths; (2) the spectests should be particularly discriminative towards spec-ifications that are stronger (i.e., more complete) than the current ones in the training set. The latter is because the model can already obtain the capability of generating the specification of the current strength after supervised training on the current training set, and our goal is to guide the model to generate stronger specifications. More details on this part can be found in Section 3.3.8. 
+
+Online phase. In the online phase, we perform RL training to improve a model. In each training step, we first remove the annota-tions from a program in the training set (called a stripped program), and then ask the model to generate annotations for the program. If the annotation passes the Dafny verification, we compute the fraction of spectests rejected by the generated specification as a score for completeness. This score is combined with scores used in existing studies as the final reward. Below we show how the generated tests distinguish different specifications. Suppose the model generates two specifications for the example program, both passing the Dafny verification.                            
+
+> Spec_weak:
+> requires a.Length > 0
+> ensures forall k:: 0≤k < a.Length =⇒m≥a[k] Spec_strong:
+> ensures a.Length == 0 =⇒m == -1
+> ensures a.Length > 0 =⇒min a[..]
+> ensures forall k:: 0≤k < a.Length =⇒m≥a[k]
+
+Spec_weak rejects only one of the four fixed spectests, so its com-pleteness score is 1/4 = 0.25 . By contrast, Spec_strong rejects all four spectests, so its completeness score is 4/4 = 1.00 . Dur-ing online RL training, the stronger candidate therefore receives a higher reward, so the policy is updated toward specifications like 
+
+Spec_strong .
+
+## 3.3 Offline spectest Construction 
+
+We now detail how the offline data is constructed. Figure 2 illus-trates the seven-step pipeline on a running Max example. Given a Dafny file containing a program together with its available specifi-cation, the pipeline selects one target method (Step 1) and produces a self-contained test file for measuring the negative-test rejection 
+
+> 3
+
+Zhechong Huang, Zhao Zhang, Zeyu Sun, Huifeng Sun, and Yingfei Xiong Offline: Spec test Generation Pipeline 
+
+Dafny Source 
+
+function Helper(..) {..} 
+
+method Sort(..) {..} 
+
+... 
+
+method Max(a: array< nat >) 
+
+returns (m: int) 
+
+requires a.Length > 0 
+
+ensures forall k :: 
+
+0 <= k < a.Length ==> 
+
+m >= a[k] 
+
+{ ... }  
+
+> 1
+
+Method Extraction 
+
+method Max(a: array< nat >) 
+
+returns (m: int) 
+
+requires a.Length > 0 
+
+ensures forall k :: 
+
+0 <= k < a.Length ==> 
+
+m >= a[k] 
+
+{ ... } 
+
+> 2
+
+SpecCheck Generation Symbolic 
+
+predicate SpecCheck (
+
+a: array< nat >, 
+
+m: int) 
+
+{
+
+a.Length > 0 ==> 
+
+forall k :: 
+
+0 <= k < a.Length ==> 
+
+m >= a[k] 
+
+} 
+
+> 4
+
+I/O Pair Generation LLM         
+
+> Input Output
+> a = [3,1,4,1,5] m = 5
+> a = [7,7,7] m = 7
+> a = [0,10,2] m = 10
+> a = [42] m = 42
+> a = [] m = -1
+> 3
+
+Compile Check 
+
+$ dafny resolv e
+
+✓ runtime -executable → continue 
+
+✗ ghost/unbounded symbols → discard  
+
+> 5
+
+Neg Tests per I/O     
+
+> mutate output of each I/O pair
+> IO_1: ([3,..], 5) →neg_1
+> (.., 14)
+> neg_2
+> (.., -1)
+
+…   
+
+> IO_2: ([7,7,7], 7) →neg_1
+> (.., 21)
+> neg_2
+> (.., 0 )
+
+…  
+
+> Complete spec test (neg_1 of IO_1):
+> method {:test} Neg_IO1_1(){
+> var a := new nat []
+> [3,1,4,1,5];
+> var m := Max(a);
+> m := 14;
+> expect ! SpecCheck (a,m );
+> }
+> 6
+
+Assembly & Verify 
+
+function Helper(..) {..} 
+
+method Sort(..) {..} 
+
+... 
+
+method Max( a:array <nat >) 
+
+returns ( m:int )
+
+requires a.Length > 0 
+
+ensures forall k :: 
+
+0<=k< a.Length ==> m>=a[k] 
+
+{ ... } 
+
+predicate SpecCheck (
+
+a:array <nat >, m:int ) { 
+
+a.Length > 0 ==> 
+
+forall k :: 0 <= k < a.Length 
+
+==> m >= a[k] } 
+
+method {:test} Neg_IO1_1(){ 
+
+var a:=new nat [][3,1,4,1,5]; 
+
+var m:=Max(a); m:=14; 
+
+expect ! SpecCheck (a,m );} 
+
+... (more neg tests) 
+
+$ dafny tes t --no -verify 
+
+Test Results:         
+
+> Neg_IO1_1: FAILED m=14 not rejected
+> Neg_IO1_2: PASS ED m= -1rejected
+> Neg_IO2_1: FAILED m=21 not rejected
+> Neg_IO2_2: PASSED m=0 rejected
+> ... (more test results )
+
+neg_ test_ acc = 6/10 → completeness = 60%    
+
+> Reflect & Fix
+> Reflect & Fix
+> →
+> →
+> →
+> →
+> →
+> Dafny Dafny
+> Symbolic LLM
+> Dafny program verifier did not
+> attempt verification .
+> 1 resolution/type errors detected
+> in xxx.dfy
+> 7
+
+Iterative Enhancement LLM                   
+
+> Given the program,
+> specifications ,spectests and
+> test results ,is the test suite
+> strong enough? Yes, we are done.
+> No, there are following
+> weaknesses: …
+
+Figure 2: Seven-step spectest generation pipeline on a running Max example. Starting from a Dafny source file, the pipeline extracts a target method, constructs a runtime-checkable SpecCheck predicate, drops non-compilable cases, generates validated positive seeds, mutates them into spectests, assembles and runs the test file to obtain the completeness score (shown as 
+
+neg_test_acc in Step 6), and finally enhances the suite in Step 7. 
+
+rate via Dafny’s built-in testing framework 1. The pipeline combines symbolic transformations (Steps 1–3 and 6) with LLM-based gener-ation (Steps 4–5 and 7), using the LLM only where concrete seeds, plausible mutations, or weakness analyses are needed. 
+
+3.3.1 Step 1: Method Extraction. A Dafny source file may contain 
+
+method s, function s, predicate s, class es, and other declarations, so the pipeline first heuristically selects one target method . It fil-ters out methods for which a valid SpecCheck predicate cannot be constructed, such as those nested in classes or those using generics. Among the remaining candidates, it prefers the method named “Main” or the last method with requires /ensures clauses, which is typically the primary entry point. 
+
+3.3.2 Step 2: SpecCheck Predicate Construction. From the selected method, the pipeline constructs a predicate SpecCheck that col-lapses all pre- and postconditions into a single runtime-checkable predicate. This makes the specification executable at runtime. The parameter list combines the method’s input parameters and return values. Each ensures clause is cleaned (removing comments and trailing semicolons) and conjoined with && to form the predicate body. If the method has requires clauses, they are folded into the 
+
+1dafny test : compiles the program and runs all methods annotated with the {:test} .
+
+body using implication ( ==> ), so that the predicate evaluates to 
+
+true whenever the precondition is not met. For example, given: 
+
+method M(x: int) returns (y: int) 
+
+requires R1 
+
+requires R2 
+
+ensures E1 
+
+ensures E2 
+
+the pipeline produces: 
+
+predicate SpecCheck(x: int, y: int) { (R1 && R2) =⇒ (E1 && E2) } 
+
+3.3.3 Step 3: Predicate Compile Check. The pipeline compiles 2
+
+the source file together with the generated predicate to determine whether SpecCheck can be executed at runtime. Not all ensures 
+
+clauses yield compilable predicates: those referencing ghost func-tions or unbounded quantifiers fail at this stage. Methods whose predicates fail this compile check are excluded from the test suite. 
+
+2dafny resolve performs a lightweight static compilation check: it checks parsing, name resolution, type correctness and some other static properties without generating target code or invoking the verifier. 4Reinforcement Learning with Negative Tests as Completeness Signal for Formal Specification Synthesis 
+
+3.3.4 Step 4: Positive Seed Generation. For each method that passes compile checking, the pipeline next derives concrete correct I/O pairs. It uses an LLM to propose diverse candidate inputs that cover different execution paths, boundary cases, and cases near or outside the requires boundary. Each candidate input is wrapped in an executable Dafny harness that materializes the input, invokes the target method, and prints the output. If execution succeeds, the resulting input-output pair becomes a validated positive seed. Otherwise, the pipeline enters a reflect-and-fix loop for up to three rounds, feeding the failing harness, its error message, and a short catalog of common Dafny harness pitfalls back to the LLM. This step grounds later mutations in real program behavior rather than guessed outputs. 
+
+3.3.5 Step 5: Negative Mutation Generation. From each validated positive seed, the pipeline constructs negative tests by mutating only the output while keeping the input fixed. For a correct pair 
+
+(𝑎, 𝑚 ), the mutation replaces 𝑚 with a plausible but incorrect value 
+
+𝑚 ′. The LLM is prompted with the target method and the positive seed to generate mutations that target common error patterns and, when possible, still satisfy constraints of the weak postcondition. Each negative test follows a fixed structure:       
+
+> method {:test} Neg_IO1_1() {
+> var a := new nat[] [3, 1, 4, 1, 5];
+> var m := Max(a); m := 14; // mutated output (sum) expect !SpecCheck(a, m); }
+
+The harness first executes the target method so that any side effects are materialized, then overwrites the return value with a mutated value and asserts that the specification should reject this incorrect pair. This preserves the concrete program state while changing only the observed output. As in Step 4, harnesses that fail to compile enter the same reflect-and-fix loop. 
+
+3.3.6 Step 6: Assembly and Runtime Evaluation. Step 6 assembles a self-contained Dafny test file containing the original source file, the SpecCheck predicate from Step 2, and all negative tests from Step 5. Executing this file yields the negative-test rejection rate ,the fraction of negative tests whose expect assertion passes. For a fixed suite, this rate provides a practical signal of completeness: a higher rate indicates that the specification rejects more challenging incorrect behaviors. While it is not a proof of logical completeness, it is sufficient to rank sound specifications by strength during training and evaluation. 
+
+3.3.7 Step 7: Iterative Suite Enhancement. Because the complete-ness signal depends on test quality, the pipeline performs a final enhancement step after Steps 1–6. At each enhancement iteration, it reuses the current test results together with the current specifica-tion and spectest suite, and asks an LLM to analyze which incorrect behaviors may still escape. The LLM may either conclude that the suite is already strong enough or output concrete weakness descrip-tions, such as missing boundary cases, under-constrained outputs, or uncovered branches. If weaknesses are reported, they are inserted into the prompts of Steps 4 and 5, and the pipeline reruns Steps 4–6 to build an All I/O pairs          
+
+> SpecCheck = ¬Pre ∪Post
+> ¬Pre Post
+> ([ ], −3)
+> ([0], −2)
+> ([ ], −1)
+> ([5], 5)
+> ([0], 0)
+> ([5], 3)
+> ([3,1,2], 3)
+> ([1,4], 4)
+> ([3,1,2], 5)
+> ([1,4], 2)
+> ([2,1], 1)
+> ([3,1,2], −1) ([1,4], −5)
+> GT
+
+Figure 3: I/O space for Max under another specification 
+
+requires a.Length > 1; ensures m >= 0 . The blue region is 
+
+¬Pre , the pink region is Post , and their union is the SpecCheck 
+
+region. The green region is GT (ground truth). 
+
+enhanced suite. It then keeps the suite with the lower rejection rate under the current specification. If the LLM judges the suite strong enough, the pipeline stops without further enhancement. 
+
+3.3.8 Design Rationale: I/O Space Perspective. Figure 3 illustrates the spectest design in an I/O space , where each point is an input– output pair (𝑥, 𝑦 ). Let Pre and Post denote the conjunction of all 
+
+requires clauses and all ensures clauses, respectively. We write 
+
+Pre and Post for the sets of pairs satisfying these propositions, and 
+
+GT for the set of correct I/O pairs produced by the program. Because 
+
+SpecCheck evaluates Pre ⇒ Post , it accepts pairs in ¬Pre ∪ Post .We write SpecCheck for this accepted region. Since verification establishes soundness, GT ⊆ SpecCheck . The gap SpecCheck \ GT 
+
+contains incorrect I/O pairs that the specification still permits. For example, ([ 5], 3) and ([ 3, 1, 2], 5) in Figure 3 lie in this gap. The goal of spectest construction is to place mutations in this gap. Step 4 first generates diverse validated seeds in GT so that they cover different program behaviors. In particular, it seeks seeds in 
+
+GT ∩ ¬ Pre , which correspond to real behaviors outside the current 
+
+requires boundary. Step 5 then mutates these seeds into incorrect pairs outside GT and aims to place them in Post \ GT . Together, these two steps aim to place mutations in SpecCheck : points out-side this region are trivially rejected by the specifications with the same or stronger strength than the current one, providing no fur-ther optimization signal. For a fixed test suite, a higher rejection rate means that fewer mutated points remain in the gap, so the specification appears more complete on that suite. During suite construction, however, the preference is reversed: a lower rejection rate means that more mutated points still land in the gap, making the suite more effective at exposing weaknesses. This is why the iterative enhancement procedure in Section 3.3.7 is useful. 
+
+## 3.4 Online RL Optimization with spectest Reward 
+
+Online RL process. With the offline artifact fixed, the online phase trains a policy over the dataset of stripped Dafny programs paired with their pre-built spectest suites. At each training step, the model selects one training program, samples a group of candidate anno-tation sets, scores them against the fixed suite for that program, 
+
+> 5Zhechong Huang, Zhao Zhang, Zeyu Sun, Huifeng Sun, and Yingfei Xiong
+
+and updates the policy with GRPO using group-relative advan-tages. Repeating this loop across many training programs gradually shifts the policy toward generating stronger specifications for new stripped inputs. 
+
+Reward. Each sampled candidate is scored with a four-stage progressive reward. The first three stages provide binary soundness guidance (extraction, compilation, verification), while the fourth uses the offline spectest suite to distinguish stronger specifications from merely verifiable ones. Formally, the reward 𝑟 is 
+
+𝑟 = 𝑟 extract + 𝑟 compile + 𝑟 verify + 𝑟 spectest (2) where each component is defined as follows. 
+
+Stage 1: Extraction ( 𝑟 extract ). The LLM output is parsed to extract a valid Dafny file with specification annotations. If extraction suc-ceeds, 𝑟 extract = 0.05 ; otherwise, 𝑟 extract = 0 and all subsequent stages are skipped. 
+
+Stage 2: Compilation ( 𝑟 compile ). The extracted file is compiled to ensure syntactic well-formedness and type-correctness of the specification. If compilation succeeds, 𝑟 compile = 0.15 ; otherwise, 
+
+𝑟 compile = 0 and later stages are skipped. 
+
+Stage 3: Verification ( 𝑟 verify ). The method is submitted to the Dafny verifier to check that the specification is provably consistent with the implementation. If verification succeeds, 𝑟 verify = 0.30 ;otherwise, 𝑟 verify = 0 and Stage 4 is skipped. 
+
+Stage 4: spectest reward ( 𝑟 spectest ). This stage supplies the fine-grained completeness signal from the spectest pipeline (Section 3.3). We gate it on successful verification so that completeness is evalu-ated only among candidates that are already sound. Given a candi-date that passes verification, we construct a new SpecCheck predi-cate from it and run the pre-built offline negative test suite: 
+
+𝑟 spectest = 0.50 × |{ 𝑡 ∈ T neg | 𝑡 is rejected }| |T neg | (3) where Tneg is the negative test suite constructed offline. This stage asks only how many challenging mutated I/O pairs the candidate rejects. A specification that rejects all negative tests receives the full 0.50 reward, while a weak specification that rejects few receives a score close to 0. In practice, this rejection rate lets us rank sound candidates by how well they reject challenging incorrect behaviors. The total reward ranges from 0 (unparseable output) to 1.0 (a veri-fied specification that rejects all negative tests). The first three stages provide coarse soundness guidance early in training; Stage 4 then separates weak specifications from strong ones among formally sound candidates using the offline suite built once in Section 3.3. 
+
+Output model. The final output of the online phase is an up-dated policy rather than a single specification. At inference time, this policy takes a stripped Dafny program as input and generates candidate specifications and auxiliary annotations for that program. 
+
+Reward shaping safeguards. To prevent reward hacking, we apply two kinds of safeguards. First, we enforce task preservation : candi-dates receive 𝑟 = 0 if they contain assume statements or modify the original signature or implementation, since such changes bypass the intended verification task rather than solving it. Second, we penalize trivial specifications : candidates that emit vacuous annota-tions such as ensures true , ensures x == x , or requires false 
+
+also receive 𝑟 = 0. Without this second guard, the policy quickly collapses to these degenerate outputs. Together, these safeguards keep the reward aligned with genuine specification quality. 
+
+## 4 Evaluation 
+
+We evaluate SpecRL to answer the following research questions: 
+
+• RQ1 (Effectiveness) : Does the spectest reward lead to consistent gains over baselines across model scales? 
+
+• RQ2 (Ablation) : How does each reward component con-tribute to the overall performance? 
+
+• RQ3 (Competitiveness) : Can small RL-trained models compete with much larger general-purpose LLMs? 
+
+## 4.1 Experimental Setup 
+
+Task. We follow the problem setting in Section 3.1. The model receives a Dafny program with verification annotations removed and may only add annotations and ghost code, leaving the original method signatures and implementation bodies unchanged. 
+
+Benchmarks. We apply the SpecTest generation pipeline from Section 3.3 to two existing Dafny datasets, Py2Dfy and Dafny-Comp [ 51 ], and construct two specification-generation benchmarks: 
+
+Py2Dfy-Spec and DafnyComp-Spec . Each original example con-tains a verified Dafny program with verification annotations, together with its annotation-stripped counterpart used as the model input. We run the full pipeline in Section 3.3 offline on both datasets, producing a fixed SpecTest suite for each program. We keep only programs for which the target method, an executable 
+
+SpecCheck predicate, and the corresponding offline SpecTest suite can all be constructed reliably, so that the resulting benchmarks are fully aligned with our training and evaluation protocol. We use DeepSeek-V3 [ 10 ] for all LLM-based stages except iterative test enhancement, for which we use GPT-5.1 [38]. We randomly split Py2Dfy-Spec at the program level into 4,396 training programs and 274 validation programs. DafnyComp-Spec contains only 232 programs, so we use it entirely as the out-of-distribution test set. 
+
+Models and baselines. We use four Qwen2.5 [ 52 ] backbones: 0.5B, 1.5B, 3B, and 7B. For each backbone, we initialize from the SFT checkpoint released by ReForm, which is already adapted to Dafny syntax and semantics. We then train two RL variants on the Py2Dfy-Spec training split: 
+
+• SpecRL : RL with the spectest reward proposed in this work, which provides a fine-grained signal based on the negative-test rejection rate. 
+
+• ReForm : for a controlled comparison, we keep the ex-traction, compilation, and verification stages identical to SpecRL and replace only Stage 4. The new Stage 4 uses a ReForm-style binary reward based on the reference spec-ification. The reward is granted only when the generated specification is provably no weaker than the ground truth, as checked by verifier implication queries over the gener-ated and reference preconditions and postconditions. The SFT checkpoint, without any RL, serves as a baseline. 
+
+> 6Reinforcement Learning with Negative Tests as Completeness Signal for Formal Specification Synthesis
+
+Training and inference. For RL, we use GRPO [ 40 ] implemented in veRL [ 41 ]. We follow ReForm for the learning rate and sampling temperature, adopt standard veRL/GRPO settings for the remain-ing optimizer hyperparameters, and keep the same setting across methods for fair comparison. Concretely, we use an actor learning rate of 1 × 10 −5, temperature 1.0, group size 𝑛 =8, KL coefficient 
+
+0.001 , and PPO clip ratio 0.2, and train for 20 epochs. Batch size is adjusted only by model scale to fit GPU memory: for 0.5B and 1.5B, it is 512 (mini-batch 128); for 3B and 7B, it is 128 (mini-batch 32). The progressive reward follows the four-stage design in Sec-tion 3.4. At evaluation time, we sample 8 candidates per problem (temperature 1.0, max 4,096 tokens) without beam search or other pruning. Both pass@1 and pass@8 are computed from this same 8-sample set. pass@1 is estimated as the average single-sample suc-cess rate over these 8 candidates, and pass@8 is the corresponding success rate over the full set. For RL methods, we save one check-point every 10 training steps and select the checkpoint with the highest average progressive reward on the Py2Dfy-Spec validation split. DafnyComp-Spec is used only for final evaluation. 
+
+Metrics. We report four metrics (%, higher is better), all com-puted over the full 232 programs: Compilable (compiles success-fully), Verifiable (passes verification with 0 errors), Complete-ness (empirical; fraction of spectests correctly rejected), and Spec-Superiority (fraction of generated specifications proved no weaker than the ground-truth specification under the same implication-based criterion used by ReForm). Specifications that fail to compile receive a score of 0 for all other metrics. Completeness is evaluated on all compiling specifications regardless of verification, decoupling soundness and completeness at evaluation time. This differs from training, where the spectest reward is gated on successful verifica-tion (Section 3.4). The goal in evaluation is to measure empirical specification strength separately from formal soundness. 
+
+## 4.2 Results and Analysis 
+
+We evaluate all methods on DafnyComp-Spec, which is out of distribution with respect to RL training and is also not used for checkpoint selection. The main comparison covers the initial SFT model, and the checkpoints trained with different RL methods (ReForm and SpecRL) across four Qwen2.5 backbones. 
+
+4.2.1 RQ1: SpecRL vs. Baselines. RQ1 compares SFT, ReForm, and SpecRL across four Qwen2.5 backbones on DafnyComp-Spec under both pass@1 and pass@8 evaluation protocols (Table 1). We focus on the two main outcome metrics, Completeness and Verifiable, and use Compilable and Spec-Superiority as auxiliary evidence. 
+
+Completeness. SpecRL gives the largest Completeness gains at every model size, and the advantage widens as the backbone grows. Relative to SFT, SpecRL’s pass@1 gain increases from +2.26 at 0.5B to +6.15 at 7B, and pass@8 follows the same pattern (+1.42 to +5.65). ReForm’s Completeness gains are much smaller and even turn negative at 7B ( −0.57 pass@1, −1.37 pass@8). This widening gap suggests that the fine-grained spectest reward becomes increasingly useful as the backbone has more capacity to exploit the richer signal, whereas ReForm’s reference-based binary reward quickly saturates, making it less effective at improving Completeness. 
+
+Verifiable. Both RL methods outperform SFT, but SpecRL im-proves Verifiable more consistently than ReForm. At 7B, SpecRL adds +4.96 pass@1 vs. ReForm’s +2.37. This is because Dafny verifi-cation is compositional: a caller is verified against the specifications of its callees. If a callee’s specification is too weak, the caller may still fail verification regardless of the implementation. SpecRL im-proves specification completeness, which in turn provides stronger contracts for downstream reasoning and makes full-program verifi-cation easier. This explains why a reward aimed at completeness also leads to better Verifiable performance, rather than merely over-fitting to the offline SpecTest suite. 
+
+Auxiliary evidence from Compilable and Spec-Superiority. Com-pilable differs little between the two RL methods (within 1 point at every size), although both are substantially stronger than SFT (∼10–17 points). As a third-party auxiliary view, we also report Spec-Superiority, computed using the same implication-based crite-rion used by ReForm. SpecRL remains at least as strong as ReForm under this external metric across model sizes. Together, these aux-iliary metrics suggest that SpecRL’s gains are not simply caused by copying biases from the source specifications into the reward: they remain visible under ReForm’s independent implication-based metric as well. 
+
+Scaling trend and generalization. The monotonic widening of the Completeness gap from 0.5B to 7B shows that task-specific RL with a fine-grained reward scales better with model capacity than RL with a reference-based binary reward. Since DafnyComp-Spec is unseen during RL training and checkpoint selection, this trend also indicates cross-benchmark generalization. 
+
+Finding 1 (RQ1) 
+
+SpecRL’s main advantage is larger Completeness gains, which widens with model size. Its consistent improvements on Veri-fiability and auxiliary metrics suggest that the gains are not merely inherited from source-specification bias but are gen-uinely caused by improving specification completeness. 
+
+4.2.2 RQ2: Ablation Study. RQ2 isolates the contribution of each reward component. We fix the Qwen2.5-1.5B backbone and compare SpecRL with variants that remove one component at a time, plus the SFT checkpoint as a no-RL reference (Table 2). All RL variants use the same training data and training budget. We ablate two components: 
+
+• w/o SpecTest : Remove Stage 4 ( 𝑟 spectest ), and the reward becomes 𝑟 = 𝑟 extract + 𝑟 compile + 𝑟 verify . This tests whether the reward for specification completeness is necessary. 
+
+• w/o Verify : Remove Stage 3 ( 𝑟 verify ), so the reward becomes 
+
+𝑟 = 𝑟 extract +𝑟 compile +𝑟 spectest . This tests whether the verifier gate is necessary before rewarding completeness. Table 2 shows that removing spectests reduces both verifiability and specification completeness. Compared with SpecRL (full) , w/o SpecTest drops by more than three points in Completeness under both pass@1 and pass@8, and its Verifiable score also falls below the full method. This is consistent with our RQ1 analysis: when the synthesized specifications are not strong enough, they may fail to support the proofs required by other methods. 
+
+> 7Zhechong Huang, Zhao Zhang, Zeyu Sun, Huifeng Sun, and Yingfei Xiong
+
+Table 1: Main results on DafnyComp-Spec (%). Bold marks the best value per model size. For Verifiable and Completeness, the second column in each pass@ 𝑘 pair reports the change relative to the SFT checkpoint. Spec-Superiority is a third-party auxiliary metric computed using ReForm’s implication-based criterion.                                                                                                                                                                         
+
+> Model Method Compilable Verifiable Completeness Spec-Superiority
+> pass@1 pass@8 pass@1 pass@8 pass@1 pass@8 pass@1 pass@8 Qwen2.5-0.5B SFT 60.08 70.69 1.19 –3.02 –16.73 –19.68 –0.00 0.00 Qwen2.5-0.5B ReForm 77.21 81.90 2.86 +1.67 5.17 +2.15 16.96 +0.23 19.27 -0.41 0.16 1.29
+> Qwen2.5-0.5B SpecRL 76.51 81.03 3.61 +2.42 6.03 +3.01 18.99 +2.26 21.10 +1.42 0.22 1.29
+> Qwen2.5-1.5B SFT 66.33 78.02 1.72 –4.31 –17.80 –20.94 –0.11 0.43 Qwen2.5-1.5B ReForm 77.96 82.33 3.07 +1.35 5.60 +1.29 19.51 +1.71 22.17 +1.23 0.43 2.59 Qwen2.5-1.5B SpecRL 78.02 82.76 4.42 +2.70 7.33 +3.02 22.24 +4.44 24.71 +3.77 0.59 3.45
+> Qwen2.5-3B SFT 69.61 81.90 3.77 –9.05 –17.14 –20.17 –2.32 3.45 Qwen2.5-3B ReForm 78.45 83.19 6.63 +2.86 12.07 +3.02 17.82 +0.68 20.25 +0.08 2.59 4.74 Qwen2.5-3B SpecRL 79.58 83.62 8.03 +4.26 13.36 +4.31 22.69 +5.55 25.21 +5.04 3.45 5.60
+> Qwen2.5-7B SFT 67.03 78.88 5.44 –11.21 –18.15 –21.35 –2.93 6.47 Qwen2.5-7B ReForm 78.02 82.33 7.81 +2.37 14.22 +3.01 17.58 -0.57 19.98 -1.37 3.02 7.76 Qwen2.5-7B SpecRL 78.50 83.62 10.40 +4.96 16.81 +5.60 24.30 +6.15 27.00 +5.65 5.87 9.05
+
+Table 2: Ablation study on Qwen2.5-1.5B (%, DafnyComp-Spec). SFT is a no-RL reference; each other row removes one SpecRL component. We report Verifiable and Completeness only, since Compilable is similar across RL variants.                      
+
+> Method Verifiable Completeness
+> pass@1 pass@8 pass@1 pass@8 SFT (reference) 1.72 4.31 17.80 20.94 SpecRL (full) 4.42 7.33 22.24 24.71 w/o SpecTest 4.15 6.90 19.11 21.79 w/o Verify 1.56 2.59 29.42 36.27
+
+w/o Verify exhibits the opposite failure mode. It achieves by far the highest Completeness, but its Verifiable score drops even below SFT. In other words, the model learns to generate specifications that may match program behavior better empirically, yet are rarely provable and therefore have limited practical value for verification. This result shows that the verifier gate is essential for aligning the reward for specification completeness with actually usable specifi-cations, while SpecRL (full) works best because it combines both. 
+
+Finding 2 (RQ2) 
+
+Both components are essential: the spectest reward actively drives specification completeness to prevent weak specifica-tions, while the verifier gate ensures this empirical complete-ness translates into formally provable properties. 
+
+4.2.3 RQ3: Comparison with Larger General-Purpose LLMs. RQ3 asks how competitive task-specific RL makes small models com-pared with much larger general-purpose LLMs. We compare SpecRL (Qwen2.5-3B/7B) with representative LLMs on DafnyComp-Spec, using the same prompt template and sampling budget. 
+
+Table 3: Comparison with general-purpose LLMs on DafnyComp-Spec (%). SpecRL is trained only on Py2Dfy-Spec. We report Verifiable and Completeness to focus on final spec-ification quality.                                      
+
+> Verifiable Completeness Model pass@1 pass@8 pass@1 pass@8
+> Task-specific RL
+> SpecRL (Qwen2.5-3B) 8.03 13.36 22.69 25.21 SpecRL (Qwen2.5-7B) 10.40 16.81 24.30 27.00
+> Open-source
+> Qwen3-235B [43] 4.03 6.90 11.12 20.97 MiniMax-M2 [34] 2.53 14.22 4.87 16.33 DeepSeek-V3.2 [11] 7.00 15.09 13.53 23.53
+> Closed-source
+> Qwen2.5-Max 4.15 6.90 10.28 18.42 Qwen3-Max 9.70 15.95 18.78 24.53 GPT-5.1 11.10 22.84 19.60 26.33
+
+Against much larger open-source models, SpecRL-3B already wins on Completeness, and SpecRL-7B wins on both metrics. No-tably, SpecRL-7B outperforms flagship models from its own family (Qwen2.5-Max) and the next generation (Qwen3-235B, Qwen3-Max) across both metrics. On DafnyComp-Spec under a shared prompt-ing and sampling budget, these results suggest that task-specific training can matter more than raw model scale or generational upgrades. Against the strongest closed-source model, SpecRL-7B achieves the highest Completeness, while GPT-5.1 remains stronger on Verifiable. This suggests that while our method improves spec-ification strength, frontier models retain an edge in verification 
+
+> 8Reinforcement Learning with Negative Tests as Completeness Signal for Formal Specification Synthesis
+
+capabilities. This comparison should be interpreted cautiously be-cause Py2Dfy and DafnyComp are public datasets. 
+
+Finding 3 (RQ3) 
+
+On DafnyComp-Spec, task-specific RL makes small models highly competitive with much larger general-purpose models under the same prompting and sampling budget. SpecRL-7B achieves the strongest specifications overall, although GPT-5.1 remains stronger on Verifiable. 
+
+## 4.3 Case Study 
+
+We use findItem to illustrate how reward shape affects the learned specification. It searches head.items for a non-null element whose 
+
+name equals searchName , and returns the result in found . Our pipeline generates 8 distinct negative tests (2 false-positives, 6 false-negatives; 3 false-negatives place the match at position 0, 3 place it later). We compare the ground-truth (GT) specification with those produced by ReForm and SpecRL. The GT postcondition is:           
+
+> ensures found =⇒exists i:: 0≤i < |head.items| && head.items[i] ≠null && head.items[i].name == searchName
+
+This is a one-way implication. It constrains only the case found == true and says nothing about found == false . As a result, it rejects the 2 false-positive mutations but misses all 6 false-negative mutations, for a score of 2/8 .ReForm adds a reverse implication, but only for the first element:                
+
+> ensures found =⇒exists i:: 0≤i < |head.items| && head.items[i] ≠null && head.items[i].name == searchName
+> ensures head.items[0] ≠null && head.items[0].name == searchName =⇒found
+
+This specification is already provably stronger than GT, so the binary reward gives full credit and provides no further training signal. It catches the 3 false-negative mutations where the match is at position 0, but still misses the 3 where the match appears later, for a score of 5/8 .Unlike ReForm, SpecRL receives partial credit in proportion to the number of rejected tests. The reward therefore keeps increas-ing as the specification becomes stronger. The model continues to explore until it discovers the full biconditional:           
+
+> ensures found ≤=> exists i:: 0≤i < |head.items| && head.items[i] ≠null && head.items[i].name == searchName
+
+This covers all indices in both directions, rejecting all 8 tests and yielding 8/8 .
+
+## 4.4 Threats to Validity 
+
+Construct validity. Completeness is measured by spectest rejec-tion rates, which are an empirical proxy rather than a formal proof of logical completeness. This proxy may miss gaps requiring highly structured inputs or richer semantic reasoning. Even so, experi-ments have shown that training on our spectest-based completeness reward can improve both verifiability and third-party specification strength metrics. 
+
+External validity. Our study focuses on Dafny and two bench-marks derived from existing Dafny datasets, so the results may not transfer unchanged to other verification languages or specification styles. We partially mitigate this threat by reporting results on DafnyComp-Spec, which is out of distribution with respect to RL training and checkpoint selection. 
+
+## 5 Related Work 5.1 LLM for Formal Verification 
+
+Formal verification aims to prove that a program satisfies desired properties. It requires two kinds of artifacts: a specification that states the intended behavior, and proofs or verification annota-tions that show the implementation satisfies it. Most LLM-based work targets the downstream proving stage, where the specifica-tion is assumed to be available and the model generates proofs or auxiliary annotations to discharge the resulting proof obligations. Dafny is a widely used auto-active verification language that inte-grates specifications, code, and proofs in a single program, making it a popular target for LLM-based verification research. Misu et al. [ 31 ] introduce DafnyBench as a benchmark for Dafny verifica-tion tasks. Laurel [ 36 ] generates helper assertions using retrieval-augmented prompting, DafnyPro [ 4 ] proposes an inference-time framework with diff-checking, pruning, and hint augmentation for proof annotation generation, and Chakraborty et al. [ 7] rank LLM-generated loop invariants to improve verification success. Baksys et al. [ 3 ] translate the miniF2F mathematical benchmark into Dafny’s auto-active format and evaluate LLM-based theorem proving, and Proof2Silicon [ 22 ] targets verified Dafny code and hardware gen-eration. Beyond Dafny, AutoVerus [ 53 ] uses iterative LLM-verifier feedback for proof generation in Verus/Rust, and Chakraborty et al. [ 6] study proof-oriented programming in F*. LLM-based theorem proving follows the same paradigm: the specification is a theorem statement and the task is to generate a proof. Baldur [ 15 ] gener-ates whole proofs for Isabelle/HOL, LeanDojo [ 54 ] and Copra [ 44 ]build environments and agents for Lean/Coq, and DeepSeek-Prover-V1.5 [ 50 ] combines RL with Monte-Carlo tree search for Lean. These approaches all assume a fixed formal target, such as a theorem state-ment, an existing specification, or proof obligations derived from it. Because a proof either checks or it does not, proof generation admits a natural binary signal. A related but harder problem is generating specifications to-gether with proofs. LLMs have been applied to this task in several verification frameworks. AutoSpec [ 48 ] combines LLMs with static analysis to generate specifications for C programs, SAFE [ 8] synthe-sizes Verus requires/ensures clauses and proofs from existing Rust code through self-evolving SFT, AlphaVerus [ 1 ] translates Python programs into formally verified Verus code, and VeRuSyn [ 12 ] scales up SAFE’s data-synthesis pipeline to 6.9 million verified Rust pro-grams. Starting from natural language, Clover [ 42 ] simultaneously generates code, annotations, and docstrings with consistency check-ing, and Mirchev et al. [ 35 ] co-evolve code, specifications, and tests 
+
+> 9Zhechong Huang, Zhao Zhang, Zeyu Sun, Huifeng Sun, and Yingfei Xiong
+
+from natural language descriptions. In most of these systems, spec-ifications are a by-product of code or verified-artifact generation, with no dedicated mechanism to evaluate or optimize specification completeness. The closest prior work is ReForm [ 51 ], which shares our setting and contributes two datasets that we reuse. ReForm uses a reference-based binary reward that gives credit only when a candidate specification is proved logically stronger than a refer-ence specification. We instead use a fine-grained reward based on spectest completeness. 
+
+## 5.2 Specification Testing and Validation 
+
+Our spectest reward rests on the premise that a specification can and should be tested for quality beyond mere verifiability. This idea has a long history in formal methods. Kemmerer [ 24 ] argues that specifications themselves can contain design errors and should be systematically tested before implementation begins. McCluskey et al. [ 32 ] survey validation techniques that help stakeholders confirm alignment between formal specifications and informal expectations. Liu [ 30 ] proposes specification animation, executing a specification on test inputs to reveal missing cases and gaps. On the diagnostic side, Könighofer et al. [ 25 ] compute simplified counterstrategies to locate problematic clauses in unrealizable specifications, and Jard and Bochmann [ 21 ] check consistency between a refined specifica-tion and an abstract reference. More recently, this line of thinking has been applied to LLM-generated specifications. Lahiri [ 26 ] proposes symbolic testing to assess both soundness and completeness of specifications produced by language models, a methodology later adopted by SAFE [ 8]. MPSC [ 20 ] shows that multi-perspective self-consistency among code, specifications, and tests improves code selection, and PBT-LLM [ 18 ] demonstrates that property-based testing provides stronger validation signals than input-output tests. Our work shares the view that verification alone is insufficient for judging specifi-cation completeness, but differs in that we automatically generate spectests from runtime-checkable predicates and feed the resulting completeness signal back into RL training as a fine-grained reward. 
+
+## 5.3 RL for Code Generation 
+
+Reinforcement learning has been applied to code-related tasks with verifier or execution feedback as reward signals. CodeRL [ 28 ] trains code generation models with unit test feedback via actor-critic RL. StepCoder [ 13 ] decomposes code generation into a curriculum of subtasks with compiler feedback. RLEF [ 16 ] teaches models to use execution feedback for multi-turn code synthesis. RLCoder [ 45 ]uses RL to train a retriever for repository-level code completion. SWE-RL [ 47 ] trains on open-source software evolution data for software engineering tasks. These works all target code generation, whereas we address formal verification by generating verification annotations for existing code. On reward design, we adopt GRPO [ 40 ] as our RL algorithm, which removes the critic network through group relative advan-tage estimation. Posterior-GRPO [ 14 ] extends GRPO by rewarding reasoning processes in code generation; our work is complemen-tary in that we design a domain-specific reward for specification completeness rather than reasoning process. The reward shaping theory of Ng et al. [ 37 ] provides the classic foundation for designing such domain-specific rewards without changing optimal policies, which motivates our spectest reward design. CURE [ 46 ] co-evolves code generators and unit testers via RL, with each providing re-ward signals for the other; we similarly use tests as reward signals, but our tests evaluate specification completeness rather than code correctness. 
+
+## 6 Conclusion 
+
+We presented SpecRL, a reinforcement learning framework for syn-thesizing specifications and auxiliary verification annotations for existing Dafny programs. The central challenge is that verifica-tion alone is insufficient, since a specification may verify yet still be too weak to capture the intended behavior. SpecRL addresses this gap with an offline spectest construction pipeline that builds reusable completeness signals and a progressive reward that mea-sures completeness from negative-test rejection rates. On the out-of-distribution DafnyComp-Spec benchmark, this design consistently improves both specification strength and verification success over SFT and RL with a reference-based binary reward across four model scales. Looking ahead, an important next step is to extend the spectest construction pipeline beyond methods with compilable postcon-ditions, including cases involving ghost functions or unbounded quantifiers. Future work also includes transferring the framework to other auto-active verification languages such as Verus and Frama-C, and exploring spectests as a standalone metric for specification quality. 
+
+## References                      
+
+> [1] Pranjal Aggarwal, Bryan Parno, and Sean Welleck. 2025. AlphaVerus: Bootstrap-ping Formally Verified Code Generation through Self-Improving Translation and Treefinement. In Forty-second International Conference on Machine Learn-ing, ICML 2025, Vancouver, BC, Canada, July 13-19, 2025 (Proceedings of Machine Learning Research) , Aarti Singh, Maryam Fazel, Daniel Hsu, Simon Lacoste-Julien, Felix Berkenkamp, Tegan Maharaj, Kiri Wagstaff, and Jerry Zhu (Eds.). PMLR / OpenReview.net. https://proceedings.mlr.press/v267/aggarwal25a.html [2] Susan Amin, Maziar Gomrokchi, Harsh Satija, Herke van Hoof, and Doina Precup. 2021. A Survey of Exploration Methods in Reinforcement Learning. CoRR
+> abs/2109.00157 (2021). arXiv:2109.00157 https://arxiv.org/abs/2109.00157 [3] Mantas Baksys, Stefan Zetzsche, and Olivier Bouissou. 2025. MiniF2F-Dafny: LLM-Guided Mathematical Theorem Proving via Auto-Active Verification. CoRR
+> abs/2512.10187 (2025). arXiv:2512.10187 doi:10.48550/ARXIV.2512.10187 [4] Debangshu Banerjee, Olivier Bouissou, and Stefan Zetzsche. 2026. DafnyPro: LLM-Assisted Automated Verification for Dafny Programs. CoRR abs/2601.05385 (2026). arXiv:2601.05385 doi:10.48550/ARXIV.2601.05385 [5] Patrick Baudin, François Bobot, Loïc Correnson, Florent Kirchner, Nikolai Kos-matov, André Maroneze, Virgile Prevosto, and Allan Blanchard. 2021. ACSL: ANSI/ISO C Specification Language, Version 1.17 .https://frama-c.com/download/ acsl.pdf [6] Saikat Chakraborty, Gabriel Ebner, Siddharth Bhat, Sarah Fakhoury, Sakina Fatima, Shuvendu K. Lahiri, and Nikhil Swamy. 2025. Towards Neural Synthesis for SMT-Assisted Proof-Oriented Programming. In 47th IEEE/ACM International Conference on Software Engineering, ICSE 2025, Ottawa, ON, Canada, April 26 -May 6, 2025 . IEEE, 1755–1767. doi:10.1109/ICSE55347.2025.00002 [7] Saikat Chakraborty, Shuvendu K. Lahiri, Sarah Fakhoury, Akash Lal, Madanlal Musuvathi, Aseem Rastogi, Aditya Senthilnathan, Rahul Sharma, and Nikhil Swamy. 2023. Ranking LLM-Generated Loop Invariants for Program Verifica-tion. In Findings of the Association for Computational Linguistics: EMNLP 2023, Singapore, December 6-10, 2023 (Findings of ACL) , Houda Bouamor, Juan Pino, and Kalika Bali (Eds.). Association for Computational Linguistics, 9164–9175. doi:10.18653/V1/2023.FINDINGS-EMNLP.614 [8] Tianyu Chen, Shuai Lu, Shan Lu, Yeyun Gong, Chenyuan Yang, Xuheng Li, Md Rakib Hossain Misu, Hao Yu, Nan Duan, Peng Cheng, Fan Yang, Shuvendu K. Lahiri, Tao Xie, and Lidong Zhou. 2025. Automated Proof Generation for Rust Code via Self-Evolution. In The Thirteenth International Conference on Learning Representations, ICLR 2025, Singapore, April 24-28, 2025 . OpenReview.net. https: //openreview.net/forum?id=2NqssmiXLu 10
+
+Reinforcement Learning with Negative Tests as Completeness Signal for Formal Specification Synthesis 
+
+[9] Leonardo Mendonça de Moura and Nikolaj S. Bjørner. 2008. Z3: An Efficient SMT Solver. In Tools and Algorithms for the Construction and Analysis of Systems, 14th International Conference, TACAS 2008, Held as Part of the Joint European Conferences on Theory and Practice of Software, ETAPS 2008, Budapest, Hungary, March 29-April 6, 2008. Proceedings (Lecture Notes in Computer Science) , C. R. Ramakrishnan and Jakob Rehof (Eds.). Springer, 337–340. doi:10.1007/978-3-540-78800-3_24 [10] DeepSeek-AI. 2024. DeepSeek-V3 Technical Report. CoRR abs/2412.19437 (2024). arXiv:2412.19437 doi:10.48550/ARXIV.2412.19437 [11] DeepSeek-AI. 2025. DeepSeek-V3.2: Pushing the Frontier of Open Large Lan-guage Models. CoRR abs/2512.02556 (2025). arXiv:2512.02556 doi:10.48550/ ARXIV.2512.02556 [12] Nongyu Di, Tianyu Chen, Shan Lu, Shuai Lu, Yeyun Gong, Peng Cheng, Jacob R. Lorch, Yuan Yao, and Xiaoxing Ma. 2026. Reducing the Costs of Proof Synthesis on Rust Systems by Scaling Up a Seed Training Set. CoRR abs/2602.04910 (2026). arXiv:2602.04910 doi:10.48550/ARXIV.2602.04910 [13] Shihan Dou, Yan Liu, Haoxiang Jia, Enyu Zhou, Limao Xiong, Junjie Shan, Caishuang Huang, Xiao Wang, Xiaoran Fan, Zhiheng Xi, Yuhao Zhou, Tao Ji, Rui Zheng, Qi Zhang, Tao Gui, and Xuanjing Huang. 2024. StepCoder: Improv-ing Code Generation with Reinforcement Learning from Compiler Feedback. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), ACL 2024, Bangkok, Thailand, August 11-16, 2024 , Lun-Wei Ku, Andre Martins, and Vivek Srikumar (Eds.). Association for Computational Linguistics, 4571–4585. doi:10.18653/V1/2024.ACL-LONG.251 [14] Lishui Fan, Yu Zhang, Mouxiang Chen, and Zhongxin Liu. 2025. Posterior-GRPO: Rewarding Reasoning Processes in Code Generation. CoRR abs/2508.05170 (2025). arXiv:2508.05170 doi:10.48550/ARXIV.2508.05170 [15] Emily First, Markus N. Rabe, Talia Ringer, and Yuriy Brun. 2023. Baldur: Whole-Proof Generation and Repair with Large Language Models. In Proceedings of the 31st ACM Joint European Software Engineering Conference and Symposium on the Foundations of Software Engineering, ESEC/FSE 2023, San Francisco, CA, USA, December 3-9, 2023 , Satish Chandra, Kelly Blincoe, and Paolo Tonella (Eds.). ACM, 1229–1241. doi:10.1145/3611643.3616243 [16] Jonas Gehring, Kunhao Zheng, Jade Copet, Vegard Mella, Taco Cohen, and Gabriel Synnaeve. 2025. RLEF: Grounding Code LLMs in Execution Feedback with Reinforcement Learning. In Forty-second International Conference on Machine Learning, ICML 2025, Vancouver, BC, Canada, July 13-19, 2025 (Proceedings of Machine Learning Research) , Aarti Singh, Maryam Fazel, Daniel Hsu, Simon Lacoste-Julien, Felix Berkenkamp, Tegan Maharaj, Kiri Wagstaff, and Jerry Zhu (Eds.). PMLR / OpenReview.net. https://proceedings.mlr.press/v267/gehring25a. html [17] John Hatcliff, Gary T. Leavens, K. Rustan M. Leino, Peter Müller, and Matthew J. Parkinson. 2012. Behavioral interface specification languages. ACM Comput. Surv. 44, 3 (2012), 16:1–16:58. doi:10.1145/2187671.2187678 [18] Lehan He, Zeren Chen, Zhe Zhang, Jing Shao, Xiang Gao, and Lu Sheng. 2025. Use Property-Based Testing to Bridge LLM Code Generation and Validation. 
+
+CoRR abs/2506.18315 (2025). arXiv:2506.18315 doi:10.48550/ARXIV.2506.18315 [19] C. A. R. Hoare. 1969. An Axiomatic Basis for Computer Programming. Commun. ACM 12, 10 (1969), 576–580. doi:10.1145/363235.363259 [20] Baizhou Huang, Shuai Lu, Xiaojun Wan, and Nan Duan. 2024. Enhancing Large Language Models in Coding Through Multi-Perspective Self-Consistency. In 
+
+Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), ACL 2024, Bangkok, Thailand, August 11-16, 2024 , Lun-Wei Ku, Andre Martins, and Vivek Srikumar (Eds.). Association for Computational Linguistics, 1429–1450. doi:10.18653/V1/2024.ACL-LONG.78 [21] Claude Jard and Gregor von Bochmann. 1983. An approach to testing specifica-tions. J. Syst. Softw. 3, 4 (1983), 315–323. doi:10.1016/0164-1212(83)90018-3 [22] Manvi Jha, Jiaxin Wan, and Deming Chen. 2025. Proof2Silicon: Prompt Repair for Verified Code and Hardware Generation via Reinforcement Learning. CoRR 
+
+abs/2509.06239 (2025). arXiv:2509.06239 doi:10.48550/ARXIV.2509.06239 [23] Manvi Jha, Lily Jiaxin Wan, Huan Zhang, and Deming Chen. 2025. PREFACE -A Reinforcement Learning Framework for Code Verification via LLM Prompt Repair. In Proceedings of the Great Lakes Symposium on VLSI 2025, GLSVLSI 2025, New Orleans, LA, USA, 30 June 2025 - 2 July 2025 , Lu Peng, Boris Vaisband, Fan Chen, Peipei Zhou, Shahar Kvatinsky, and Jiafeng Xie (Eds.). ACM, 547–553. doi:10.1145/3716368.3735300 [24] Richard A. Kemmerer. 1985. Testing Formal Specifications to Detect Design Errors. IEEE Trans. Software Eng. 11, 1 (1985), 32–43. doi:10.1109/TSE.1985.231535 [25] Robert Könighofer, Georg Hofferek, and Roderick Bloem. 2009. Debugging formal specifications using simple counterstrategies. In Proceedings of 9th International Conference on Formal Methods in Computer-Aided Design, FMCAD 2009, 15-18 November 2009, Austin, Texas, USA . IEEE, 152–159. doi:10.1109/FMCAD.2009. 5351127 [26] Shuvendu K. Lahiri. 2024. Evaluating LLM-driven User-Intent Formalization for Verification-Aware Languages. In Formal Methods in Computer-Aided Design, FMCAD 2024, Prague, Czech Republic, October 15-18, 2024 , Nina Narodytska and Philipp Rümmer (Eds.). IEEE, 142–147. doi:10.34727/2024/ISBN.978-3-85448-065-5_19 [27] Andrea Lattuada, Travis Hance, Chanhee Cho, Matthias Brun, Isitha Subasinghe, Yi Zhou, Jon Howell, Bryan Parno, and Chris Hawblitzel. 2023. Verus: Verifying Rust Programs using Linear Ghost Types. Proc. ACM Program. Lang. 7, OOPSLA1 (2023), 286–315. doi:10.1145/3586037 [28] Hung Le, Yue Wang, Akhilesh Deepak Gotmare, Silvio Savarese, and Steven Chu-Hong Hoi. 2022. CodeRL: Mastering Code Generation through Pretrained Models and Deep Reinforcement Learning. In Advances in Neural Informa-tion Processing Systems 35: Annual Conference on Neural Information Process-ing Systems 2022, NeurIPS 2022, New Orleans, LA, USA, November 28 - De-cember 9, 2022 , Sanmi Koyejo, S. Mohamed, A. Agarwal, Danielle Belgrave, K. Cho, and A. Oh (Eds.). http://papers.nips.cc/paper_files/paper/2022/hash/ 8636419dea1aa9fbd25fc4248e702da4-Abstract-Conference.html [29] K. Rustan M. Leino. 2010. Dafny: An Automatic Program Verifier for Functional Correctness. In Logic for Programming, Artificial Intelligence, and Reasoning - 16th International Conference, LPAR-16, Dakar, Senegal, April 25-May 1, 2010, Revised Selected Papers (Lecture Notes in Computer Science) , Edmund M. Clarke and Andrei Voronkov (Eds.). Springer, 348–370. doi:10.1007/978-3-642-17511-4_20 [30] Shaoying Liu. 2016. Validating formal specifications using testing-based specifi-cation animation. In Proceedings of the 4th FME Workshop on Formal Methods in Software Engineering, FormaliSE@ICSE 2016, Austin, Texas, USA, May 15, 2016 .ACM, 29–35. doi:10.1145/2897667.2897668 [31] Chloe Loughridge, Qinyi Sun, Seth Ahrenbach, Federico Cassano, Chuyue Sun, Ying Sheng, Anish Mudide, Md Rakib Hossain Misu, Nada Amin, and Max Tegmark. 2025. DafnyBench: A Benchmark for Formal Software Verifica-tion. Trans. Mach. Learn. Res. 2025 (2025). https://openreview.net/forum?id= yBgTVWccIx [32] T. L. McCluskey, J. M. Porteous, M. M. West, and C. H. Bryant. 1996. The Validation of Formal Specifications of Requirements. Formal Aspects of Computing 
+
+8 (1996), 89–107. doi:10.14236/ewic/FA1996.14 [33] Bertrand Meyer. 1992. Applying "Design by Contract". Computer 25, 10 (1992), 40–51. doi:10.1109/2.161279 [34] MiniMax AI. 2025. MiniMax-M2: A Mini Model Built for Max Coding & Agentic Workflows. https://github.com/MiniMax-AI/MiniMax-M2 [35] Martin Mirchev, Andreea Costea, Abhishek Kr Singh, and Abhik Roychoudhury. 2024. Assured Automatic Programming via Large Language Models. CoRR 
+
+abs/2410.18494 (2024). arXiv:2410.18494 doi:10.48550/ARXIV.2410.18494 [36] Eric Mugnier, Emmanuel Anaya Gonzalez, Ranjit Jhala, Nadia Polikarpova, and Yuanyuan Zhou. 2024. Laurel: Generating Dafny Assertions Using Large Lan-guage Models. CoRR abs/2405.16792 (2024). arXiv:2405.16792 doi:10.48550/ ARXIV.2405.16792 [37] Andrew Y. Ng, Daishi Harada, and Stuart Russell. 1999. Policy Invariance Un-der Reward Transformations: Theory and Application to Reward Shaping. In 
+
+Proceedings of the Sixteenth International Conference on Machine Learning (ICML 1999), Bled, Slovenia, June 27 - 30, 1999 , Ivan Bratko and Saso Dzeroski (Eds.). Morgan Kaufmann, 278–287. [38] OpenAI. 2025. Introducing GPT-5.1 for developers. https://openai.com/index/gpt-5-1-for-developers/. [39] Long Ouyang, Jeffrey Wu, Xu Jiang, Diogo Almeida, Carroll L. Wainwright, Pamela Mishkin, Chong Zhang, Sandhini Agarwal, Katarina Slama, Alex Ray, John Schulman, Jacob Hilton, Fraser Kelton, Luke Miller, Maddie Simens, Amanda Askell, Peter Welinder, Paul F. Christiano, Jan Leike, and Ryan Lowe. 2022. Train-ing language models to follow instructions with human feedback. In Advances in Neural Information Processing Systems 35: Annual Conference on Neural Informa-tion Processing Systems 2022, NeurIPS 2022, New Orleans, LA, USA, November 28 -December 9, 2022 , Sanmi Koyejo, S. Mohamed, A. Agarwal, Danielle Belgrave, K. Cho, and A. Oh (Eds.). http://papers.nips.cc/paper_files/paper/2022/hash/ b1efde53be364a73914f58805a001731-Abstract-Conference.html [40] Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Mingchuan Zhang, Y. K. Li, Y. Wu, and Daya Guo. 2024. DeepSeekMath: Pushing the Limits of Mathematical Reasoning in Open Language Models. CoRR abs/2402.03300 (2024). arXiv:2402.03300 doi:10.48550/ARXIV.2402.03300 [41] Guangming Sheng, Chi Zhang, Zilingfeng Ye, Xibin Wu, Wang Zhang, Ru Zhang, Yanghua Peng, Haibin Lin, and Chuan Wu. 2025. HybridFlow: A Flexible and Efficient RLHF Framework. In Proceedings of the Twentieth European Conference on Computer Systems, EuroSys 2025, Rotterdam, The Netherlands, 30 March 2025 -3 April 2025 . ACM, 1279–1297. doi:10.1145/3689031.3696075 [42] Chuyue Sun, Ying Sheng, Oded Padon, and Clark W. Barrett. 2024. Clover: Closed-Loop Verifiable Code Generation. In AI Verification - First International Symposium, SAIV 2024, Montreal, QC, Canada, July 22-23, 2024, Proceedings (Lec-ture Notes in Computer Science) , Guy Avni, Mirco Giacobbe, Taylor T. Johnson, Guy Katz, Anna Lukina, Nina Narodytska, and Christian Schilling (Eds.). Springer, 134–155. doi:10.1007/978-3-031-65112-0_7 [43] Qwen Team. 2025. Qwen3 Technical Report. CoRR abs/2505.09388 (2025). arXiv:2505.09388 doi:10.48550/ARXIV.2505.09388 [44] Amitayush Thakur, Yeming Wen, and Swarat Chaudhuri. 2023. A Language-Agent Approach to Formal Theorem-Proving. CoRR abs/2310.04353 (2023). arXiv:2310.04353 doi:10.48550/ARXIV.2310.04353 11 Zhechong Huang, Zhao Zhang, Zeyu Sun, Huifeng Sun, and Yingfei Xiong 
+
+[45] Yanlin Wang, Yanli Wang, Daya Guo, Jiachi Chen, Ruikai Zhang, Yuchi Ma, and Zibin Zheng. 2025. RLCoder: Reinforcement Learning for Repository-Level Code Completion. In 47th IEEE/ACM International Conference on Software Engineering, ICSE 2025, Ottawa, ON, Canada, April 26 - May 6, 2025 . IEEE, 1140–1152. doi:10. 1109/ICSE55347.2025.00014 [46] Yinjie Wang, Ling Yang, Ye Tian, Ke Shen, and Mengdi Wang. 2025. Co-Evolving LLM Coder and Unit Tester via Reinforcement Learning. CoRR abs/2506.03136 (2025). arXiv:2506.03136 doi:10.48550/ARXIV.2506.03136 [47] Yuxiang Wei, Olivier Duchenne, Jade Copet, Quentin Carbonneaux, Lingming Zhang, Daniel Fried, Gabriel Synnaeve, Rishabh Singh, and Sida I. Wang. 2025. SWE-RL: Advancing LLM Reasoning via Reinforcement Learning on Open Software Evolution. CoRR abs/2502.18449 (2025). arXiv:2502.18449 doi:10.48550/ARXIV.2502.18449 [48] Cheng Wen, Jialun Cao, Jie Su, Zhiwu Xu, Shengchao Qin, Mengda He, Haokun Li, Shing-Chi Cheung, and Cong Tian. 2024. Enchanting Program Specification Synthesis by Large Language Models Using Static Analysis and Program Ver-ification. In Computer Aided Verification - 36th International Conference, CAV 2024, Montreal, QC, Canada, July 24-27, 2024, Proceedings, Part II (Lecture Notes in Computer Science) , Arie Gurfinkel and Vijay Ganesh (Eds.). Springer, 302–328. doi:10.1007/978-3-031-65630-9_16 [49] Zeqiu Wu, Yushi Hu, Weijia Shi, Nouha Dziri, Alane Suhr, Prithviraj Am-manabrolu, Noah A. Smith, Mari Ostendorf, and Hannaneh Hajishirzi. 2023. Fine-Grained Human Feedback Gives Better Rewards for Language Model Training. In Advances in Neural Information Processing Systems 36: Annual Conference on Neural Information Processing Systems 2023, NeurIPS 2023, New Orleans, LA, USA, December 10 - 16, 2023 , Alice Oh, Tristan Naumann, Amir Globerson, Kate Saenko, Moritz Hardt, and Sergey Levine (Eds.). http://papers.nips.cc/paper_files/paper/ 2023/hash/b8c90b65739ae8417e61eadb521f63d5-Abstract-Conference.html [50] Huajian Xin, Z. Z. Ren, Junxiao Song, Zhihong Shao, Wanjia Zhao, Haocheng Wang, Bo Liu, Liyue Zhang, Xuan Lu, Qiushi Du, Wenjun Gao, Haowei Zhang, Qihao Zhu, Dejian Yang, Zhibin Gou, Z. F. Wu, Fuli Luo, and Chong Ruan. 2025. DeepSeek-Prover-V1.5: Harnessing Proof Assistant Feedback for Reinforce-ment Learning and Monte-Carlo Tree Search. In The Thirteenth International Conference on Learning Representations, ICLR 2025, Singapore, April 24-28, 2025 .OpenReview.net. https://openreview.net/forum?id=I4YAIwrsXa [51] Chuanhao Yan, Fengdi Che, Xuhan Huang, Xu Xu, Xin Li, Yizhi Li, Xingwei Qu, Jingzhe Shi, Zhuangzhuang He, Chenghua Lin, Yaodong Yang, Binhang Yuan, Hang Zhao, Yu Qiao, Bowen Zhou, and Jie Fu. 2025. Re:Form - Reducing Human Priors in Scalable Formal Software Verification with RL in LLMs: A Preliminary Study on Dafny. CoRR abs/2507.16331 (2025). arXiv:2507.16331 doi:10.48550/ARXIV.2507.16331 [52] An Yang, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chengyuan Li, Dayiheng Liu, Fei Huang, Haoran Wei, Huan Lin, Jian Yang, Jianhong Tu, Jianwei Zhang, Jianxin Yang, Jiaxi Yang, Jingren Zhou, Junyang Lin, Kai Dang, Keming Lu, Keqin Bao, Kexin Yang, Le Yu, Mei Li, Mingfeng Xue, Pei Zhang, Qin Zhu, Rui Men, Runji Lin, Tianhao Li, Tingyu Xia, Xingzhang Ren, Xuancheng Ren, Yang Fan, Yang Su, Yichang Zhang, Yu Wan, Yuqiong Liu, Zeyu Cui, Zhenru Zhang, and Zihan Qiu. 2024. Qwen2.5 Technical Report. CoRR 
+
+abs/2412.15115 (2024). arXiv:2412.15115 doi:10.48550/ARXIV.2412.15115 [53] Chenyuan Yang, Xuheng Li, Md Rakib Hossain Misu, Jianan Yao, Weidong Cui, Yeyun Gong, Chris Hawblitzel, Shuvendu K. Lahiri, Jacob R. Lorch, Shuai Lu, Fan Yang, Ziqiao Zhou, and Shan Lu. 2025. AutoVerus: Automated Proof Generation for Rust Code. Proc. ACM Program. Lang. 9, OOPSLA2 (2025), 3454– 3482. doi:10.1145/3763174 [54] Kaiyu Yang, Aidan M. Swope, Alex Gu, Rahul Chalamala, Peiyang Song, Shixing Yu, Saad Godil, Ryan J. Prenger, and Animashree Anandkumar. 2023. LeanDojo: Theorem Proving with Retrieval-Augmented Language Models. In Advances in Neural Information Processing Systems 36: Annual Conference on Neural Informa-tion Processing Systems 2023, NeurIPS 2023, New Orleans, LA, USA, December 10 -16, 2023 , Alice Oh, Tristan Naumann, Amir Globerson, Kate Saenko, Moritz Hardt, and Sergey Levine (Eds.). http://papers.nips.cc/paper_files/paper/2023/hash/ 4441469427094f8873d0fecb0c4e1cee-Abstract-Datasets_and_Benchmarks.html 12
