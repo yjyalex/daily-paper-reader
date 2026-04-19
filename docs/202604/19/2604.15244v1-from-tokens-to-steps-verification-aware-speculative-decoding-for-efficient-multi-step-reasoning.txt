@@ -1,0 +1,595 @@
+Title: From Tokens to Steps: Verification-Aware Speculative Decoding for Efficient Multi-Step Reasoning
+
+URL Source: https://arxiv.org/pdf/2604.15244v1
+
+Published Time: Fri, 17 Apr 2026 01:16:38 GMT
+
+Number of Pages: 16
+
+Markdown Content:
+# From Tokens to Steps: Verification-Aware Speculative Decoding for Efficient Multi-Step Reasoning 
+
+Kiran Purohit ∗
+
+IIT Kharagpur 
+
+kiran.purohit @kgpian.iitkgp.ac.in 
+
+Ramasuri Narayanam 
+
+Adobe Research 
+
+rnarayanam @adobe.com 
+
+Soumyabrata Pal 
+
+Adobe Research 
+
+soumyabratap @adobe.com 
+
+Abstract 
+
+Speculative decoding (SD) accelerates large language model inference by allowing a lightweight draft model to propose out-puts that a stronger target model verifies. However, its token-centric nature allows erroneous steps to propagate. Prior ap-proaches mitigate this using external re-ward models, but incur additional latency, computational overhead, and limit gen-eralizability. We propose SpecGuard ,a verification-aware speculative decoding framework that performs step-level verifica-tion using only model-internal signals. At each step, SpecGuard samples multiple draft candidates and selects the most consis-tent step, which is then validated using an ensemble of two lightweight model-internal signals: (i) an attention-based grounding score that measures attribution to the in-put and previously accepted steps, and (ii) a log-probability-based score that captures token-level confidence. These signals jointly determine whether a step is accepted or recomputed using the target, allocating compute selectively. Experiments across a range of reasoning benchmarks show that 
+
+SpecGuard improves accuracy by 3.6% 
+
+while reducing latency by ∼11%, outper-forming both SD and reward-guided SD. 
+
+1 Introduction 
+
+Large language models (LLMs) have demon-strated a remarkable ability to solve complex multi-step reasoning problems across domains such as mathematics and knowledge-intensive tasks (Brown et al., 2020; Team et al., 2024; Hurst et al., 2024). However, their practical de-ployment is constrained by high inference costs, which limit scalability and real-time applicabil-ity (Patterson et al., 2021). Reducing inference 
+
+> ∗Work done during internship at Adobe Research.
+
+overhead without sacrificing accuracy has there-fore become a central research challenge (Xu et al., 2024; Lin et al., 2024). Speculative decoding (SD) (Leviathan et al., 2023) has emerged as a promising solution to accelerate inference, where a lightweight draft model generates candidate tokens, and a stronger target model verifies them. By offload-ing much of the token generation process to the smaller draft model, SD achieves significant latency reductions compared to decoding with the target model alone. Despite these gains, SD remains inherently token-centric, leading to critical limitations in reasoning tasks. Its strict unbiasedness requirement often rejects semantically correct draft tokens that have low probability under the target model, resulting in wasted computation and reduced efficiency (Bachmann et al., 2025; Holtzman et al., 2020). This rigidity limits speedups and makes it less effective for multi-step tasks. Recent extensions of SD attempt to address this limitation. For example, reward-guided speculative decoding (RSD) (Liao et al., 2025) introduces external pre-trained reward models (PRMs) to verify the correctness of the draft output. Although effective in improving reli-ability, it incurs substantial drawbacks. First, reliance on external verifiers significantly in-creases latency and compute overhead. Second, pre-trained reward models are often special-ized to specific tasks, making them difficult to generalize across diverse reasoning tasks. This naturally leads to the central question driving our work: How can we design a specu-lative decoding framework that maintains accu-racy in multi-step reasoning tasks while remain-ing cost-efficient and scalable, without relying on external verifier models? 
+
+We present SpecGuard , a mathemati-cally grounded, verification-aware framework 
+
+> arXiv:2604.15244v1 [cs.CL] 16 Apr 2026
+
+for adaptive inference-time compute allocation. The key intuition behind SpecGuard is: 
+
+- Accuracy preservation: Mitigate error prop-agation by ensuring trusted intermediate out-puts are accepted, safeguarding correctness throughout the reasoning chain. 
+
+- Efficiency: Enable lightweight, cost-effective verification without relying on large external verifiers, reducing latency. 
+
+SpecGuard integrates two lightweight veri-fiers derived directly from the model itself: (i) 
+
+Attention-based grounding verification , which checks whether the generated step is properly grounded in the input context or previously validated steps, and (ii) Log-probability-based verification , which ensures confidence at the token level. These complementary signals are combined into an ensemble verifier that adap-tively decides whether to accept draft outputs or invoke the target model. Furthermore, we introduce a novel self-consistency selector that identifies the most semantically consistent step from multiple sampled draft candidates. To summarize, our key contributions are: (1) We propose SpecGuard , a novel frame-work that integrates model-internal verifiers with adaptive inference-time compute alloca-tion, improving reliability without the need for external reward models. (2) We introduce a novel self-consistency se-lector that identifies the representative step from multiple sampled draft candidates. (3) Extensive experiments on various reason-ing benchmarks show that SpecGuard im-proves accuracy by up to 3.6% while reducing latency by ∼11% compared to state-of-the-art methods, making it both effective and efficient for real-world deployment. 
+
+2 Related Work 
+
+Speculative Decoding. Speculative decod-ing accelerates inference by letting a lightweight draft model propose tokens that a larger target model verifies in parallel (Leviathan et al., 2023; Li et al., 2024; Chen et al., 2024c, 2023; Zhang et al., 2024; Stern et al., 2018; Xia et al., 2024; Sun et al., 2024). Variants include tree-based speculation (Chen et al., 2024b; Sun et al., 2023; Fu et al., 2024; Miao et al., 2024) to increase acceptance, self-speculative decoding that leverages parts of the base model (Zhang et al., 2024; Elhoushi et al., 2024), and CTC-based drafting (Wen et al., 2024) to improve sequence quality. Methods like LayerSkip (El-houshi et al., 2024) and Draft-on-the-Fly (Me-tel et al., 2024) further explore adaptive or early-exit strategies. SpecReason (Pan et al., 2025) performs speculative reasoning with the target model as a critic that scores semantic utility. SpecGuard , in contrast, combines multi-sample self-consistency with an ensemble verifier, enabling stronger filtering of plausible-but-ungrounded steps. RSD (Liao et al., 2025) incorporates process reward models (PRMs) to guide speculative reasoning at the step level. 
+
+SpecGuard differs by keeping the standard draft-target pipeline but replacing external ver-ifiers with lightweight, model-internal signals for step-level evaluation. 
+
+Reward Models on Reasoning. Reward models are used to provide feedback for choos-ing the correct reasoning path (Zhou et al., 2025; Wang et al., 2024; Chen et al., 2024a). Outcome reward models (ORMs) (Dong et al., 2024; Yu et al., 2024) score final answers, while process reward models (PRMs) (Light-man et al., 2023) assess intermediate steps. Advances in reward models have increased fo-cus on scaling test-time compute (Snell et al., 2024), enabling strategies like Best-of-N sam-pling (Dong et al., 2023; Cobbe et al., 2021; Brown et al., 2024), tree search (Yao et al., 2023; Qi et al., 2024; Chen et al., 2024a), and reward-guided inference such as RSD (Liao et al., 2025) or SPECS (Cemri et al., 2025). These improve reasoning quality but add latency and reliance on external verifiers. In contrast, SpecGuard 
+
+leverages an ensemble of internal confidence and grounding signals, avoiding external PRMs while improving multi-step reasoning accuracy. 
+
+3 Our Proposed Approach 
+
+In this section, we present SpecGuard , a novel speculative decoding framework leverag-ing inference-time compute. It employs an ensemble verifier combining attention-based grounding (Section 3.1) and probability-based signals (Section 3.2). This formulation enables efficient reasoning without reliance on external verifiers while maintaining interpretability and robustness. We then describe how our approach combines the inference time compute with the Figure 1: Architectural overview of the SpecGuard framework 
+
+ensemble-guided acceptance criteria (Section 3.3)). Figure 1 outlines the high-level architec-tural overview of our proposed framework. 
+
+3.1 Attention-Based Grounding Verification 
+
+We introduce Attention-Based Grounding Ver-ification (ABGV) as a mechanism to assess whether each output token (i.e. full reasoning step in our scenario) generated by a language model is sufficiently grounded in the input con-text or the previously generated steps. Unlike approaches that rely on external verifiers or auxiliary models, ABGV directly leverages the internal attention matrices of the model itself, enabling efficient and scalable verification. The key intuition is that a correctly grounded out-put should exhibit strong attention alignment with the most relevant input tokens or vali-dated prior steps, thereby reflecting faithful attribution rather than spurious correlations. Let an input prompt be denoted as x, and the language model generates an output sequence 
+
+yi = ( yi, 1, y i, 2, . . . , y i,T ) at each step i. At each step, the model produces multilayer multihead attention matrices for each layer l and head h:
+
+A(l,h ) ∈ R(tinput +toutput )×(tinput +toutput ).To compute cumulative attribution from in-put tokens to an output token, we use the well-known attention rollout mechanism, which re-cursively multiplies attention matrices across layers to show the total influence of each in-put token on the final output. Formally, let 
+
+A(l) denote the attention matrix averaged over the heads in layer l. The rollout matrix R is computed as: R = A(L)A(L−1) · · · A(1) .For each output token yi,t , the distribution over the input tokens is given by the row Ryi,t 
+
+of the rollout matrix, normalized to sum to 1. Let I denote the set of input tokens (including prior reasoning steps). The grounding score for token yi,t is defined as: 
+
+G(yi,t ) = X
+
+> j∈I
+
+Ryi,t [j]
+
+Here, Ryi,t [j] denotes the attention weight of the token yi,t to the input token j. A higher grounding score indicates a stronger reliance on the input context. We adopt a stricter crite-rion by taking the minimum token grounding score across the reasoning step yi: Gmin-step =min t G(yi,t ), which ensures that every token in the generated reasoning step yi is sufficiently grounded, thereby preventing ungrounded to-kens from being masked by averaging. 
+
+Memory-Efficient Design: A naive imple-mentation would require storing attention ma-trices from all layers, which could become memory-intensive for larger models and longer outputs. To ensure practical scalability, ABGV employs two lightweight design choices: 
+
+- Layer subset: we store attention matrices from the last 3 layers, which we find sufficient for grounding quality (Figure 3 shows minimal loss in performance). 
+
+- Head sparsification: we discard entries below 0.01 in attention heads, reducing memory footprint with negligible effect on grounding fidelity (see Figure 3). 
+
+3.2 Log Probability-Based Verification 
+
+We introduce log-probability-based verification (LPBV) as a complementary mechanism to as-sess the reliability of the full reasoning step generated by a language model. LPBV relies on the model’s own predictive confidence, as reflected in the conditional log probability of the tokens generated. The key intuition is that faithfully generated and reliable output should be assigned a relatively high log probability un-der the model’s next-token distribution, while unreliable tokens are often associated with pre-dictions of low probability. For each token yi,t ,of the reasoning step yi, the model produces a conditional probability given the input x and the prior steps: p(yi,t | x, y i,<t ), from which we compute the logarithmic probability score: 
+
+L(yi,t ) = log p(yi,t | x, y i,<t )
+
+At each step level, a stricter criterion is applied by taking the minimum log proba-bility across tokens, ensuring that no token is assigned disproportionately low confidence: 
+
+Lmin-step = min t L(yi,t ) .
+
+3.3 SpecGuard : Verification-Aware Speculative Decoding 
+
+We propose SpecGuard , an ensemble verifier-guided speculative decoding framework that augments speculative decoding with principled verification at the step level. At each reason-ing step, SpecGuard evaluates draft outputs using two lightweight, model-internal signals: (i) Log Probability-Based Verification (LPBV) ,which enforces token-level confidence by mea-suring predictive likelihoods, and (ii) Attention-Based Grounding Verification (ABGV) , which ensures that every generated token is properly attributed to the input or previously validated steps via attention rollout. These complemen-tary criteria are combined into a unified en-semble score that carries formal guarantees :only steps that are simultaneously confident and grounded are accepted, while uncertain steps trigger recomputation with the target model. In doing so, SpecGuard mitigates er-ror cascades (common in SD), thus improving reasoning reliability while preserving efficiency. At step i, SpecGuard proceeds as follows: 
+
+A. Generate Draft Step: The draft model 
+
+m, samples k candidate steps {ˆy(1)  
+
+> i
+
+, . . . , ˆy(k) 
+
+> i
+
+}
+
+conditioned on the input prompt and previously accepted steps. To identify the most consistent candidate from these k possibilities, we propose the self-consistency selector (see Section 3.4), 
+
+Algorithm 1: SpecGuard                                                                                                           
+
+> 1Input: Prompt x, draft model m, target model
+> M, log prob function L(·), grounding score function G(·), log prob range [ℓmin , ℓ max ],grounding range [gmin , g max ], weight β,acceptance threshold τ, EOS token s, max length N, samples per step k
+> 2Output: Response y1: i
+> 3Initialize y1:0 ←””
+> 4for i←1to N−1do
+> 5Sample kdraft candidates
+> {ˆy(1)
+> i, . . . , ˆy(k)
+> i} ← m(x, y 1: i−1)
+> 6Select draft step ˆyj∗
+> i←
+> Self-Consistency Selector ({ˆy(j)
+> i}kj=1 )
+> 7Compute min log prob ℓi←L(ˆ yj∗
+> i)
+> 8Compute min grounding score gi←G(ˆ yj∗
+> i)
+> 9Normalize: ˜ℓi=ℓi−ℓmin
+> ℓmax −ℓmin
+> ,˜gi=gi−gmin
+> gmax −gmin
+> 10 Compute ensemble verifier score:
+> ri←β·˜ℓi+ (1 −β)·˜gi
+> 11 if ri≥τthen
+> 12 Accept draft step yi←ˆyj∗
+> i
+> 13 else
+> 14 Sample ktarget candidates
+> {y(1)
+> i, . . . , y (k)
+> i} ← M(x, y 1: i−1)
+> 15 Select target step yj∗
+> i←
+> Self-Consistency Selector ({y(j)
+> i}kj=1 )
+> 16 yi←yj∗
+> i
+> 17 if s∈yithen
+> 18 break
+
+which selects the step ˆyj∗ 
+
+> i
+
+that is maximally consistent with the other k − 1 candidates. 
+
+B. Compute Verification Scores: For the selected step, the ensemble verifier computes both the logarithmic probability-based score 
+
+L( ˆyj∗ 
+
+> i
+
+) and the grounding score G( ˆyj∗ 
+
+> i
+
+). Before aggregation, both scores are scaled to a compa-rable range using Min-Max normalization. 
+
+C. Apply Acceptance Criterion: The en-semble verifier combines normalized scores through a weighted aggregation to deter-mine acceptance. If the criterion is satisfied, 
+
+ˆyj∗ 
+
+> i
+
+is accepted; otherwise, the target model 
+
+M is invoked to sample k candidate steps 
+
+{y(1)  
+
+> i
+
+, . . . , y (k) 
+
+> i
+
+} to reduce stochastic variance and improve reliability. Since even the target model may occasionally produce inconsistent reasoning. Self-consistency selector is again ap-plied to select the most consistent step yj∗ 
+
+> i
+
+.
+
+D. Repeat Until Termination: This process continues until the model generates an end-of-sequence (EOS) token or the sequence reaches Algorithm 2: Self-Consistency Selector                                            
+
+> Input: Set of kcandidates {y(1) , . . . , y (k)},sentence transformer model E
+> Output: Index j∗of the selected candidate
+> 1Compute embeddings for all candidates:
+> e(j)← E (y(j))for j= 1 . . . k
+> 2Normalize embeddings so that ∥e(j)∥2= 1
+> 3Compute pairwise similarity matrix:
+> Sij ← ⟨ e(i), e (j)⟩for i, j = 1 . . . k
+> 4Apply row-wise softmax: ˜Sij =exp( Sij )
+> Pkl=1 exp( Sil )
+> 5Extract diagonal scores: dj←˜Sjj for j= 1 . . . k
+> 6j∗←arg min jdj;// Select most semantically consistent candidate
+
+the maximum length N .Algorithm 1 outlines the key steps involved in the proposed approach SpecGuard . Analy-sis of the computational complexity of Spec-Guard is provided in Appendix A.3. 
+
+3.4 Self-Consistency Selector to Identify Consistent Candidate 
+
+To identify the most consistent reasoning step among a set of k sampled candidates (either by draft or target), we propose the self-consistency selector , based on (Zhu et al., 2025). The un-derlying intuition is that a consistent candidate should exhibit strong agreement with the other candidates, rather than being an outlier. For-mally, each candidate y(j) is encoded in a nor-malized embedding e(j) using a pre-trained sen-tence transformer E. While embeddings could, in principle, be obtained from the model’s final hidden layer, vLLM does not expose intermedi-ate states, so we compute them externally. The (cosine) similarities are then calculated in pairs between the candidates, yielding a similarity matrix S ∈ Rk×k, which is further normalized row-wise using softmax to obtain ˜S. For each candidate y(j), we calculate its self-alignment score dj = ˜Sjj , which measures the degree to which the candidate aligns with itself relative to the others. Candidates that are semantically consistent with the rest of the set distribute their similarity mass across multiple peers, pro-ducing a low dj , while outliers or less consistent candidates concentrate the similarity primarily on themselves, resulting in a high dj . Thus, can-didates with lower dj are more representative of the set, and our approach selects the can-didate with the minimum self-alignment score: 
+
+j∗ ← arg min j dj . Algorithm 2 describes our novel self-consistency selector. 
+
+3.5 Formal Guarantees 
+
+We now present formal guarantees for the pro-posed SpecGuard algorithm. 
+
+Lemma 1 (Soundness Guarantee) . Let C
+
+denote the set of correct reasoning steps, 
+
+˜ℓi be the logarithmic probability signal, and 
+
+˜gi be the attention-grounding signal. For any α ∈ [0 , 1] , ϵℓ ∈ [0 , 1] and ϵg ∈
+
+[0 , 1] , assume that Pr 
+
+h˜ℓi ≥ α yi ∈ C 
+
+i
+
+≥
+
+1 − ϵℓ, Pr[˜ gi ≥ α | yi ∈ C ] ≥ 1 − ϵg. Then, 
+
+Pr[ V (yi) = accept | yi ∈ C ] ≥ 1 − (ϵℓ + ϵg).
+
+Proof. Both ˜ℓi and ˜gi independently pro-vide high probability acceptance for correct steps. Since the ensemble score satisfies 
+
+ri ≥ min ( ˜ℓi, ˜gi), the probability of rejection is bounded by the union of individual error events. Then, the total error probability is at most ϵℓ + ϵg and thus the lemma follows. 
+
+Lemma 2 (Efficiency Guarantee) . Let πi =Pr [V (yi) = accept ]. Then the expected no. of target calls CT , is E[CT ] = PTi=1 (1 − πi). If 
+
+πi ≥ πmin for all i, then E[CT ] ≤ T ·(1 −πmin ).
+
+Proof. At each step i, a target call is required if and only if V (yi) = reject . Thus, the ex-pectation is P
+
+> i
+
+(1 − πi). If πi ≥ πmin , the sum is bounded by T (1 − πmin ). This formalizes that higher acceptance rates directly reduce expected target calls. 
+
+Theorem 1 (Accuracy–Efficiency Trade-off) .
+
+Suppose correct steps satisfy Lemma 1 and the incorrect steps are rejected with probability at least 1 − δ. Then, for any sequence of length 
+
+T , Pr[ all accepted steps are correct ] ≥ (1 −ϵℓ −
+
+ϵg)T · (1 − δ)CT .
+
+Proof. By Lemma 1, the probability of accept-ing only the correct steps is at least (1 −ϵℓ−ϵg)T .By assumption, incorrect steps are rejected with probability at least 1 − δ, and there are 
+
+CT target calls. Thus, the lower bound of the joint probability is (1 − ϵℓ − ϵg)T (1 − δ)CT .These results show that SpecGuard pro-vides multiplicative accuracy guarantees while bounding the expected number of target calls. Table 1: Accuracy on reasoning benchmarks.                                                                                                                                                                  
+
+> Method Target Model Draft Model MATH500 GSM8K Gaokao 2023 En Olympiad Bench Math Model, Draft and Target: Qwen2.5-Math-Instruct
+> Target Model 7B -83.0 94.7 66.8 40.6 Target-only Majority 7B -84.9 95.2 68.8 41.0 Draft-only Majority -1.5B 79.0 88.9 67.9 40.9 Best-of-N-1.5B 82.2 93.3 67.4 40.7 SD 7B 1.5B 82.4 94.2 66.3 39.4 RSD 7B 1.5B 82.4 94.4 68.5 39.6 RSD Majority 7B 1.5B 78.0 88.7 64.9 38.7 SC + LPBV 7B 1.5B 83.2 94.5 67.5 39.7
+> SpecGuard Greedy 7B 1.5B 83.6 95.6 68.8 40.7
+> SpecGuard 7B 1.5B 85.4 95.8 69.4 41.2 General Model, Draft and Target: Qwen2.5-Instruct
+> Target Model 7B -74.8 91.7 64.9 38.8 Draft-only Majority -1.5B 66.4 82.1 56.9 28.7 Best-of-N-1.5B 73.4 89.7 60.5 32.7 SD 7B 1.5B 74.8 91.6 63.1 37.1 RSD 7B 1.5B 71.4 90.1 60.5 37.6 RSD Majority 7B 1.5B 60.6 77.0 55.3 31.7
+> SpecGuard Greedy 7B 1.5B 74.9 92.0 65.5 37.8
+> SpecGuard 7B 1.5B 77.0 93.0 66.0 40.3 General Model, Draft: Llama-3.2-Instruct and Target: Llama-3.1-Instruct
+> Target Model 8B -48.2 83.9 40.8 14.5 Draft-only Majority -1B 38.0 60.2 32.2 9.5 Best-of-N-1B 48.6 74.8 40.7 14.4 SD 8B 1B 47.0 83.4 40.1 16.1 RSD 8B 1B 50.0 83.9 41.8 15.7 RSD Majority 8B 1B 36.6 61.9 30.6 12.3
+> SpecGuard Greedy 8B 1B 50.0 84.5 41.9 16.9
+> SpecGuard 8B 1B 51.6 85.1 43.9 17.2
+
+4 Experiments 
+
+We address the following research questions: 
+
+RQ I. Does SpecGuard provide measurable accuracy improvements on multi-step reason-ing benchmarks compared to state-of-the-art methods, while mitigating error cascades? 
+
+RQ II. How does the number of sampled can-didates per reasoning step influence both the reliability and stability of SpecGuard under the ensemble verification criterion? 
+
+RQ III. Can SpecGuard reduce inference latency compared to RSD while preserving, or even enhancing, accuracy guarantees? 
+
+4.1 Experimental Setup Datasets and Metrics: We conduct extensive experiments on datasets that require complex reasoning, including MATH500 (Hendrycks et al., 2021), GSM8K (Cobbe et al., 2021), GaoKao-2023-En (Liao et al., 2024), and OlympiadBench (He et al., 2024). For eval-uation, we adopt the official metrics, i.e., ex-act match (EM). Detailed descriptions of the datasets can be found in Appendix A.1. 
+
+Models: To evaluate SpecGuard ’s effec-tiveness, we consider both general-purpose and math-focused LLMs, namely Qwen-2.5-Math (Yang et al., 2024), Qwen-2.5 (Qwen et al., 2025), and Llama-3 (Dubey et al., 2024). For RSD, we adopt Skywork-o1-OpenPRM (o1 Team, 2024) as the PRM. 
+
+Baselines: We evaluate SpecGuard 
+
+against four categories of baselines: (1) Target model only : the target model is used indepen-dently, which generally incurs a higher computa-tional cost compared to SpecGuard . (2) Draft model with or without PRM: This group covers inference time compute techniques that aim to maximize the performance of the draft model. Specifically, we evaluate majority voting and Best-of-N (BoN) (Brown et al., 2024; Cobbe et al., 2021), where BoN selects the highest scor-ing response (last step) among N candidates using a PRM; beam search (Chen et al., 2024a), which employs a PRM to identify the optimal decoding trajectory; and we process Best-of-N, Table 2: Comparison with search-based methods on Qwen2.5-Math-Instruct. Beam Search and Process Best-of-N use a 1.5B base model and a 1.5B PRM.                              
+
+> Method Setting MATH500 GSM8K
+> Draft Model (1.5B) -73.8 85.0 Process Best-of-NN= 8 75.8 87.8 Process Best-of-NN= 16 76.0 87.9 Beam Search bs=4 78.2 88.9 Beam Search bs=8 78.2 88.4 RSD (1.5B/7B/1.5B) -82.4 94.4
+> SpecGuard Greedy -83.6 95.6
+> SpecGuard maj@16 85.4 95.8
+
+which samples N candidate steps and chooses the one with the highest reward. (3) Specula-tive decoding (SD): We also include speculative decoding with 7 speculative tokens for accelerat-ing inference (Leviathan et al., 2023). (4) RSD: 
+
+(Liao et al., 2025) leverages a PRM to score intermediate steps and adaptively determine when to call target model. 
+
+Setting: We perform all experiments on NVIDIA A100 GPUs with vLLM as the serv-ing backend. We define a reasoning step as a generation terminated by \n\n. For generating multiple samples, we set temperature = 0 .7,
+
+top _p = 0 .8, and n = 16 . SpecGuard refers to this multi-sample setting combined with our self-consistency selector, which chooses the most representative reasoning step. RSD Ma-jority likewise employs this multi-sample set-ting, with each step scored by a PRM and the highest-scoring candidate selected. In the greedy setting where temperature = 0 ,
+
+top _p = 1 , and n = 1 , we refer our approach as SpecGuard Greedy . For both RSD and 
+
+SpecGuard , we set the threshold parameter to τ = 0.7 and we set β = 0.3 for SpecGuard .For details about hyperparameters refer to Ap-pendix A.2.2. Unless stated otherwise, all mod-els used are Qwen-2.5-Math-Instruct. 
+
+4.2 Performance Comparison 
+
+To address RQI , we evaluate SpecGuard on a broad set of challenging reasoning benchmarks, in Table 1, and make the following observa-tions: (1) Inference-time compute strategies such as majority voting and Best-of-N, which rely on extensive draft sampling, typically un-derperform compared to the accuracy of a single target model. This shows the critical role of larger models in reasoning tasks, as their capa-bilities cannot be readily matched by smaller models even with increased computation. (2)          
+
+> 0510 15
+> 75
+> 80
+> 85
+> 90
+> No. of samples
+> Accuracy on MATH500  SpecGuard
+> RSD Majority
+> MATH500 GSM8K GaoKao Olympiad
+> 0
+> 20
+> 40
+> 60
+> 80
+> 85.4
+> 95.8 69.4
+> 41.2
+> 78.0 88.7 64.9
+> 38.7
+> Time (in minutes)
+> SpecGuard
+> RSD Majority
+
+Figure 2: ( Top ) Varying number of samples. ( Bot-tom ) Runtime comparison (y-axis) RSD Majority vs SpecGuard with corresponding accuracy in-dicated on top of bars .
+
+While target-only majority voting may match 
+
+SpecGuard in accuracy, it incurs substantially higher computational cost as every reasoning step must be sampled multiple times from the target, contrary to our objective of reducing target calls. (3) Although speculative decoding (SD) is theoretically unbiased, matching tar-get model accuracy, it often performs worse in practice, primarily due to floating-point errors (Chen et al., 2023). Furthermore, when the draft model surpasses the target model, the strict unbiased nature of SD can actually de-grade performance relative to the draft. (4) Reward-guided speculative decoding (RSD) ad-dresses this by using a process reward model (PRM) to evaluate draft reasoning steps, but reliance on an external verifier adds latency and computational overhead. (5) SpecGuard uses lightweight model-internal verifiers instead of PRMs to evaluate draft steps, and consistently outperforms both the target model and RSD across all benchmarks, demonstrating strong efficiency and performance. While LPBV cap-tures confidence, it lacks grounding, allowing confident yet ungrounded steps to pass. In con-trast, SpecGuard achieves higher accuracy, showing ABGV is crucial for rejecting plau-sible but ungrounded steps. Appendix A.2.3 MATH500 GSM8K GaoKao Olympiad         
+
+> 0
+> 20
+> 40
+> 60
+> 80
+> 85.4
+> 95.8 69.4
+> 41.2
+> 84.8 95.7 68.6
+> 40.2
+> Time (in minutes)
+> Last
+> All
+> MATH500 GSM8K GaoKao Olympiad
+> 0
+> 20
+> 40
+> 60
+> 80
+> 85.4
+> 95.8 69.4
+> 41.2
+> 84.6
+> 95.4 67.3
+> 40
+> Time (in minutes)
+> YES
+> NO
+
+Figure 3: Runtime comparison (y-axis) with cor-responding accuracy indicated on top of bars .(Top ) changing layers. ( Bottom ) Sparsity in atten-tion heads by SpecGuard .
+
+presents qualitative analysis showing that PRM often assigns high scores to incorrect draft steps, underscoring the need for stronger veri-fication that ensures both step-wise soundness and final-answer correctness. 
+
+4.3 Comparison with Search-Based Approaches 
+
+We also compare SpecGuard with beam search (Chen et al., 2024a) and process Best-of-N, in Table 2. Our method consistently outper-forms both baselines. These findings reveal that when reasoning steps become complex, search-based techniques face limitations, as combina-torial growth of candidate solutions makes it difficult to reliably identify optimal paths, re-sulting in degraded performance. In contrast, 
+
+SpecGuard leverages the power of larger mod-els to generate strong candidate solutions. In addition, the incorporation of an ensemble veri-fier provides step-level feedback, mitigating the challenges of difficult tasks. This highlights that moving beyond purely search-based strategies and augmenting larger models with lightweight feedback mechanisms can deliver both higher efficiency and stronger performance, when the search space is vast or the reasoning task is highly complex. 
+
+4.4 Sample Size and Time Comparison 
+
+To investigate RQ II , we evaluate SpecGuard 
+
+under varying sample sizes per reasoning step. In Figure 2, accuracy steadily improves as more diverse candidates are explored, with gains sat-urating at higher counts. In contrast, RSD Majority exhibits diminishing returns and even degrades performance with larger samples, due to accumulated noise from PRM. This demon-strate that SpecGuard takes advantage of ad-ditional candidate generations more effectively. For RQ III , Figure 2 compares the runtime of RSD Majority and SpecGuard , with the accuracy indicated on top of the bars. Spec-Guard consistently achieves both higher ac-curacy and lower latency. For example, on GSM8K, SpecGuard achieves an accuracy of 
+
+95 .8% in 34 minutes, compared to the accuracy of the RSD Majority 88 .7% in more than 41 
+
+minutes. Together, these results confirm that our ensemble verifier-guided speculative decod-ing framework improves reasoning reliability while delivering superior efficiency. 
+
+4.5 Ablation Studies 
+
+We perform ablation studies to analyze key de-sign choices in SpecGuard , shown in Figure 3. 
+
+Changing Layers: Figure 3 compares using attention from the last three layers versus ag-gregating across all layers. Although the latter yields marginal gains on some benchmarks, it adds runtime overhead. Leveraging only the last three layers strikes a better balance, achiev-ing higher accuracy with lower latency. We show other variants in Appendix A.2.1. 
+
+Sparsity in Attention Heads: We discard entries below 0.01 in attention heads. Figure 3 shows that enforcing sparsity improves both accuracy and runtime, sharpening the verifier’s focus on relevant attention patterns and en-hancing efficiency without performance loss. 
+
+5 Conclusion and Future Work 
+
+In this work, we propose SpecGuard , an adaptive speculative decoding that improves both efficiency and accuracy in multistep rea-soning. By leveraging lightweight model-internal signals for verification, along with a self-consistency selector that identifies repre-sentative reasoning step across samples, Spec-Guard avoids dependence on external reward models and achieves higher accuracy with re-duced latency compared to state-of-the-art methods. In future, we plan to extend Spec-Guard by incorporating additional internal signals such as entropy-based measures and un-certainty calibration to refine verifier reliability. 
+
+6 Limitations 
+
+Our work primarily focuses on improving inference-time efficiency and robustness for multi-step reasoning through verification-aware speculative decoding. While the proposed framework demonstrates consistent gains across a variety of reasoning benchmarks, we acknowl-edge several limitations related to the scope and evaluation of the current study. Our experiments are conducted on a set of reasoning benchmarks that emphasize struc-tured, step-by-step inference. Although these benchmarks cover a wide range of reasoning patterns, we do not explicitly evaluate per-formance on open-ended generation tasks or domains such as long-form dialogue and cre-ative writing, where the notion of step-level verification may manifest differently. Extend-ing the evaluation to such settings remains an interesting direction for future work. Our analysis focuses on single-instance in-ference and does not explicitly address deploy-ment aspects such as large-scale batching or hardware-specific optimizations. While our method reduces latency at the per-instance level, additional engineering considerations may be required to fully realize these benefits in production-scale systems. We leave these ex-tensions to future work. 
+
+7 Ethical Considerations 
+
+Our approach relies on large language mod-els for multi-step reasoning, it inherits known risks associated with LLMs, including halluci-nated or factually incorrect outputs (Ji et al., 2023). In real-world deployments, such incor-rect reasoning traces or final answers could be mistakenly trusted by users, potentially lead-ing to the dissemination of misleading or in-correct information (Zhang et al., 2023; Al-brecht et al., 2022). While our method aims to improve reasoning reliability by selecting the most consistent reasoning step, it does not eliminate the possibility of hallucinations, and the resulting systems should not be considered fully reliable without human oversight. The proposed approach is therefore best suited for research settings or as a supporting component in applications where appropriate validation mechanisms are in place. Finally, our method does not rely on or intro-duce any private or personally identifiable data. All experiments are conducted using publicly available benchmarks. Although the underlying language models may have been pre-trained on large-scale corpora that could contain sensitive information, our method does not explicitly or implicitly solicit such content. 
+
+References                                 
+
+> Joshua Albrecht, Ellie Kitanidis, and Abraham J. Fetterman. 2022. Despite "super-human" per-formance, current llms are unsuited for de-cisions about ethics and safety. Preprint ,arXiv:2212.06295. G. Bachmann, S. Anagnostidis, A. Pumarola, M. Georgopoulos, A. Sanakoyeu, Y. Du, E. Schönfeld, A.K. Thabet, and J. Kohler. 2025. Judge decoding: Faster speculative sampling re-quires going beyond model alignment. In 13th International Conference on Learning Represen-tations (ICLR) .Bradley Brown, Jordan Juravsky, Ryan Ehrlich, Ronald Clark, Quoc V Le, Christopher Ré, and Azalia Mirhoseini. 2024. Large language mon-keys: Scaling inference compute with repeated sampling. arXiv preprint arXiv:2407.21787 .Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan, Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sas-try, Amanda Askell, and 1 others. 2020. Lan-guage models are few-shot learners. Advances in neural information processing systems , 33:1877– 1901. Mert Cemri, Nived Rajaraman, Rishabh Tiwari, Xiaoxuan Liu, Kurt Keutzer, Ion Stoica, Kannan Ramchandran, Ahmad Beirami, and Ziteng Sun. 2025. Specs: Faster test-time scaling through speculative drafts. In ES-FoMo III: 3rd Work-shop on Efficient Systems for Foundation Models .Charlie Chen, Sebastian Borgeaud, Geoffrey Irv-ing, Jean-Baptiste Lespiau, Laurent Sifre, and John Jumper. 2023. Accelerating large language model decoding with speculative sampling. arXiv preprint arXiv:2302.01318 .Guoxin Chen, Minpeng Liao, Chengxi Li, and Kai Fan. 2024a. Alphamath almost zero: process
+
+supervision without process. Advances in Neu-ral Information Processing Systems , 37:27689– 27724. Zhuoming Chen, Avner May, Ruslan Svirschevski, Yuhsun Huang, Max Ryabinin, Zhihao Jia, and Beidi Chen. 2024b. Sequoia: Scalable, robust, and hardware-aware speculative decoding. arXiv preprint arXiv:2402.12374 .Ziyi Chen, Xiaocong Yang, Jiacheng Lin, Chenkai Sun, Kevin Chang, and Jie Huang. 2024c. Cas-cade speculative drafting for even faster llm infer-ence. Advances in Neural Information Processing Systems , 37:86226–86242. Karl Cobbe, Vineet Kosaraju, Mohammad Bavar-ian, Mark Chen, Heewoo Jun, Lukasz Kaiser, Matthias Plappert, Jerry Tworek, Jacob Hilton, Reiichiro Nakano, and 1 others. 2021. Training verifiers to solve math word problems. arXiv preprint arXiv:2110.14168 .Hanze Dong, Wei Xiong, Deepanshu Goyal, Yihan Zhang, Winnie Chow, Rui Pan, Shizhe Diao, Jipeng Zhang, Kashun Shum, and Tong Zhang. 2023. Raft: Reward ranked finetuning for gener-ative foundation model alignment. Transactions on Machine Learning Research , 2023. Hanze Dong, Wei Xiong, Bo Pang, Haoxiang Wang, Han Zhao, Yingbo Zhou, Nan Jiang, Doyen Sa-hoo, Caiming Xiong, and Tong Zhang. 2024. Rlhf workflow: From reward modeling to online rlhf a comprehensive practical alignment recipe of iterative preference learning. Transactions on Machine Learning Research , 2024. Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Amy Yang, Angela Fan, and 1 others. 2024. The llama 3 herd of models. arXiv e-prints , pages arXiv–2407. Mostafa Elhoushi, Akshat Shrivastava, Diana Liskovich, Basil Hosmer, Bram Wasti, Liangzhen Lai, Anas Mahmoud, Bilge Acun, Saurabh Agar-wal, Ahmed Roman, and 1 others. 2024. Lay-erskip: Enabling early exit inference and self-speculative decoding. In Proceedings of the 62nd Annual Meeting of the Association for Compu-tational Linguistics (Volume 1: Long Papers) ,pages 12622–12642. Yichao Fu, Peter Bailis, Ion Stoica, and Hao Zhang. 2024. Break the sequential dependency of llm in-ference using lookahead decoding. In Proceedings of the 41st International Conference on Machine Learning , pages 14060–14079. Chaoqun He, Renjie Luo, Yuzhuo Bai, Shengding Hu, Zhen Thai, Junhao Shen, Jinyi Hu, Xu Han, Yujie Huang, Yuxiang Zhang, and 1 others. 2024. Olympiadbench: A challenging benchmark for promoting agi with olympiad-level bilingual mul-timodal scientific problems. In Proceedings of the 62nd Annual Meeting of the Association for Com-putational Linguistics (Volume 1: Long Papers) ,pages 3828–3850. Dan Hendrycks, Collin Burns, Saurav Kadavath, Akul Arora, Steven Basart, Eric Tang, Dawn Song, and Jacob Steinhardt. 2021. Measuring mathematical problem solving with the math dataset. In Thirty-fifth Conference on Neural Information Processing Systems Datasets and Benchmarks Track (Round 2) .Ari Holtzman, Jan Buys, Li Du, Maxwell Forbes, and Yejin Choi. 2020. The curious case of neural text degeneration. In International Conference on Learning Representations .Aaron Hurst, Adam Lerer, Adam P Goucher, Adam Perelman, Aditya Ramesh, Aidan Clark, AJ Os-trow, Akila Welihinda, Alan Hayes, Alec Radford, and 1 others. 2024. Gpt-4o system card. arXiv preprint arXiv:2410.21276 .Ziwei Ji, Nayeon Lee, Rita Frieske, Tiezheng Yu, Dan Su, Yan Xu, Etsuko Ishii, Ye Jin Bang, An-drea Madotto, and Pascale Fung. 2023. Survey of hallucination in natural language generation. 
+
+ACM Computing Surveys , 55(12):1–38. Yaniv Leviathan, Matan Kalman, and Yossi Matias. 2023. Fast inference from transformers via spec-ulative decoding. In International Conference on Machine Learning , pages 19274–19286. PMLR. Yuhui Li, Fangyun Wei, Chao Zhang, and Hongyang Zhang. 2024. Eagle: Speculative sam-pling requires rethinking feature uncertainty. In 
+
+International Conference on Machine Learning ,pages 28935–28948. PMLR. Baohao Liao, Yuhui Xu, Hanze Dong, Junnan Li, Christof Monz, Silvio Savarese, Doyen Sahoo, and Caiming Xiong. 2025. Reward-guided spec-ulative decoding for efficient llm reasoning. In 
+
+Forty-second International Conference on Ma-chine Learning (ICML) .Minpeng Liao, Chengxi Li, Wei Luo, Wu Jing, and Kai Fan. 2024. Mario: Math reasoning with code interpreter output-a reproducible pipeline. In Findings of the Association for Computational Linguistics ACL 2024 , pages 905–924. Hunter Lightman, Vineet Kosaraju, Yuri Burda, Harrison Edwards, Bowen Baker, Teddy Lee, Jan Leike, John Schulman, Ilya Sutskever, and Karl Cobbe. 2023. Let’s verify step by step. In The Twelfth International Conference on Learning Representations .Ji Lin, Jiaming Tang, Haotian Tang, Shang Yang, Wei-Ming Chen, Wei-Chen Wang, Guangxuan Xiao, Xingyu Dang, Chuang Gan, and Song Han. 2024. Awq: Activation-aware weight quantiza-tion for on-device llm compression and accel-eration. Proceedings of machine learning and systems , 6:87–100. Michael Metel, Peng Lu, Boxing Chen, Mehdi Reza-gholizadeh, and Ivan Kobyzev. 2024. Draft on the fly: Adaptive self-speculative decoding using cosine similarity. In Findings of the Association for Computational Linguistics: EMNLP 2024 ,pages 2267–2272. Xupeng Miao, Gabriele Oliaro, Zhihao Zhang, Xin-hao Cheng, Zeyu Wang, Zhengxin Zhang, Rae Ying Yee Wong, Alan Zhu, Lijie Yang, Xiaoxiang Shi, and 1 others. 2024. Specinfer: Accelerat-ing large language model serving with tree-based speculative inference and verification. In Proceed-ings of the 29th ACM International Conference on Architectural Support for Programming Lan-guages and Operating Systems, Volume 3 , pages 932–949. S. o1 Team. 2024. Skywork-o1 open series. Rui Pan, Yinwei Dai, Zhihao Zhang, Gabriele Oliaro, Zhihao Jia, and Ravi Netravali. 2025. Specreason: Fast and accurate inference-time compute via speculative reasoning. arXiv preprint arXiv:2504.07891 .David Patterson, Joseph Gonzalez, Quoc Le, Chen Liang, Lluis-Miquel Munguia, Daniel Rothchild, David So, Maud Texier, and Jeff Dean. 2021. Carbon emissions and large neural network train-ing. arXiv preprint arXiv:2104.10350 .Zhenting Qi, MA Mingyuan, Jiahang Xu, Li Lyna Zhang, Fan Yang, and Mao Yang. 2024. Mutual reasoning makes smaller llms stronger problem-solver. In The Thirteenth International Confer-ence on Learning Representations .Qwen, :, An Yang, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chengyuan Li, Dayiheng Liu, Fei Huang, Haoran Wei, Huan Lin, and Jian Yang et al. 2025. Qwen2.5 technical report. Preprint , arXiv:2412.15115. Charlie Snell, Jaehoon Lee, Kelvin Xu, and Aviral Kumar. 2024. Scaling llm test-time compute op-timally can be more effective than scaling model parameters. arXiv preprint arXiv:2408.03314 .Mitchell Stern, Noam Shazeer, and Jakob Uszkor-eit. 2018. Blockwise parallel decoding for deep autoregressive models. Advances in Neural In-formation Processing Systems , 31. Hanshi Sun, Zhuoming Chen, Xinyu Yang, Yuan-dong Tian, and Beidi Chen. 2024. Triforce: Loss-less acceleration of long sequence generation with hierarchical speculative decoding. CoRR .Ziteng Sun, Ananda Theertha Suresh, Jae Hun Ro, Ahmad Beirami, Himanshu Jain, and Felix Yu. 2023. Spectr: Fast speculative decoding via opti-mal transport. Advances in Neural Information Processing Systems , 36:30222–30242. Gemini Team, Petko Georgiev, Ving Ian Lei, Ryan Burnell, Libin Bai, Anmol Gulati, Garrett Tanzer, Damien Vincent, Zhufeng Pan, Shibo Wang, and 1 others. 2024. Gemini 1.5: Un-locking multimodal understanding across mil-lions of tokens of context. arXiv preprint arXiv:2403.05530 .Peiyi Wang, Lei Li, Zhihong Shao, Runxin Xu, Damai Dai, Yifei Li, Deli Chen, Yu Wu, and Zhifang Sui. 2024. Math-shepherd: Verify and reinforce llms step-by-step without human an-notations. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 9426– 9439. Zhuofan Wen, Shangtong Gui, and Yang Feng. 2024. Speculative decoding with ctc-based draft model for llm inference acceleration. Advances in Neu-ral Information Processing Systems , 37:92082– 92100. Heming Xia, Zhe Yang, Qingxiu Dong, Peiyi Wang, Yongqi Li, Tao Ge, Tianyu Liu, Wenjie Li, and Zhifang Sui. 2024. Unlocking efficiency in large language model inference: A comprehensive sur-vey of speculative decoding. In Findings of the Association for Computational Linguistics ACL 2024 , pages 7655–7671. Yuhui Xu, Zhanming Jie, Hanze Dong, Lei Wang, Xudong Lu, Aojun Zhou, Amrita Saha, Caiming Xiong, and Doyen Sahoo. 2024. Think: Thin-ner key cache by query-driven pruning. In The Thirteenth International Conference on Learning Representations .An Yang, Beichen Zhang, Binyuan Hui, Bofei Gao, Bowen Yu, Chengpeng Li, Dayiheng Liu, Jianhong Tu, Jingren Zhou, Junyang Lin, and 1 others. 2024. Qwen2. 5-math technical re-port: Toward mathematical expert model via self-improvement. arXiv preprint arXiv:2409.12122 .Shunyu Yao, Dian Yu, Jeffrey Zhao, Izhak Shafran, Tom Griffiths, Yuan Cao, and Karthik Narasimhan. 2023. Tree of thoughts: Deliberate problem solving with large language models. Ad-vances in neural information processing systems ,36:11809–11822. Fei Yu, Anningzhe Gao, and Benyou Wang. 2024. Ovm, outcome-supervised value models for plan-ning in mathematical reasoning. In Findings of the Association for Computational Linguistics: NAACL 2024 , pages 858–875. Jianyi Zhang, Xu Ji, Zhangchi Zhao, Xiali Hei, and Kim-Kwang Raymond Choo. 2023. Ethical con-siderations and policy implications for large lan-guage models: Guiding responsible development and deployment. Preprint , arXiv:2308.02678. Jun Zhang, Jue Wang, Huan Li, Lidan Shou, Ke Chen, Gang Chen, and Sharad Mehrotra. 2024. Draft& verify: Lossless large language model acceleration via self-speculative decoding. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 11263–11282. Jin Peng Zhou, Kaiwen Wang, Jonathan D Chang, Zhaolin Gao, Nathan Kallus, Kilian Q Wein-berger, Kianté Brantley, and Wen Sun. 2025. q#: Provably optimal distributional rl for llm post-training. CoRR .Y. Zhu, H. Zhang, B. Wu, J. Li, Z. Zheng, P. Zhao, P. Chen, and Y. Bian. 2025. Measuring diversity in synthetic datasets. In Forty-Second Interna-tional Conference on Machine Learning .A Appendix 
+
+A.1 Datasets Description 
+
+An overview of the dataset statistics and exam-ples are shown in Table 3. 
+
+MATH500 : A benchmark subset curated from the MATH dataset, consisting of 500 competition-level mathematics problems span-ning algebra, geometry, combinatorics, number theory, and probability. Each problem is ac-companied by a detailed step-by-step solution, requiring multi-hop symbolic and logical rea-soning. We use the full 500 problems as the evaluation set. 
+
+GSM8K : A dataset of linguistically diverse grade-school math word problems designed to test multi-step numerical reasoning. It com-prises 8.5K questions, with a test set of 1,319 problems. Each question includes annotated solutions with intermediate steps, encourag-ing models to demonstrate faithful reasoning chains. 
+
+Gaokao-2023-En : Derived from the English-translated 2023 Gaokao (China’s na-tional college entrance exam), this dataset con-tains high-school level math word problems with a strong emphasis on reasoning over al-gebra, functions, and applied mathematics. It poses particular challenges due to its formal problem style and complex solution trajecto-ries. The evaluation set includes 385 problems. 
+
+OlympiadBench : A large-scale benchmark of problems drawn from global mathematics and science Olympiads, covering topics such as advanced algebra, geometry, physics, and logical reasoning. The problems are highly chal-lenging, requiring creative multi-step reasoning far beyond routine computation. We evaluate on the test split of 675 questions. 
+
+A.2 Additional Experiments A.2.1 Changing Layers 
+
+We perform ablation studies to analyze key de-sign choices in SpecGuard , particularly the se-lection of layers used to extract internal ground-ing signals. Figure 4 compares four settings: using attention from (1) all layers, (2) the last three layers, (3) the middle three layers, and (4) the first three layers. The results show that the first three layers perform noticeably worse than other variants, while the middle three layers achieve higher accuracy but still lag behind the  
+
+> MATH500 GSM8K GaoKao Olympiad
+> 0
+> 50
+> 100
+> Accuracy
+> All
+> Last
+> Middle
+> First
+> Figure 4: Changing Layers
+
+deeper layers. Both the last three layers and all layers yield strong performance, but using all layers incurs higher runtime overhead. Overall, the last three layers provide the best trade-off, delivering strong accuracy with lower latency. 
+
+A.2.2 Tuning of β and τ
+
+We analyze the sensitivity of our approach to two hyperparameters: the step acceptance threshold τ for our ensemble verifier, and the weighting factor β, which balances the log-probability and attention grounding score when computing the ensemble score. As shown in Table 4, accuracy remains stable across dif-ferent values of β, with β = 0 .3 performing slightly better than higher values, suggesting that a moderate weighting strikes a good bal-ance between model confidence and grounding. Table 5 reports results for varying τ . We find that τ = 0 .7 achieves the most consistent gains across datasets, while both lower ( τ = 0 .6) and higher values ( τ = 0 .8, 0.9) lead to small drops. Overall, our method is robust to hyperparame-ter choices, with β = 0 .3 and τ = 0 .7 serving as effective defaults across tasks. 
+
+A.2.3 Qualitative Analysis 
+
+Table 6, 7 presents a qualitative example of reasoning steps scored by the PRM. Each in-termediate step receives a high score, leading the verifier to accept the draft-generated rea-soning without intervention. However, despite this consistent acceptance, the reasoning chain ultimately produces an incorrect final answer. This illustrates a key limitation of relying solely on PRM scores: while they may capture local plausibility of individual steps, they do not guarantee global correctness of the overall so-lution. Such cases highlight the need for more robust evaluation mechanisms that can account for consistency across steps as well as correct-ness of the final outcome. 
+
+A.3 Complexity Analysis -
+
+SpecGuard 
+
+We compare the computational complex-ity of Speculative Decoding (SD), Reward-guided Speculative Decoding (RSD), and Spec-Guard .Let: 
+
+• T = number of reasoning steps, 
+
+• k = number of draft candidates sampled per step, 
+
+• d = hidden dimension of embeddings, 
+
+• H = number of attention heads, 
+
+• L = number of layers used in ABGV, 
+
+• Cdraft , C target = per-step cost of draft and target models. 
+
+Speculative Decoding (SD). Complexity 
+
+= O(T · (k · Cdraft + (1 − π) · k · Ctarget )) ,
+
+where π is the acceptance probability. 
+
+Reward-guided Speculative Decoding (RSD). In addition to SD cost, RSD requires a pretrained reward model (PRM) verifier: Complexity = 
+
+O(T · (k · Cdraft + (1 − π) · k · Ctarget + CPRM )) .
+
+SpecGuard . It includes draft sampling, self-consistency selector, and ensemble verifica-tion. Complexity =
+
+O
+
+
+
+T ·  k · Cdraft + k2d + ˜L ˜HT 2 + (1 − π) · k · Ctarget 
+
+
+
+,
+
+where ˜L ≪ L and ˜H ≪ H represent the reduced number of layers and heads used in ABGV under sparsity/last-layer approxima-tions. It is not difficult to infer the following from the complexity analysis. 
+
+• SpecGuard avoids the external PRM cost 
+
+CPRM in RSD, reducing latency and com-pute. 
+
+• With practical optimizations ( ˜L ≈ 3, ˜H ≪
+
+H), the ABGV overhead is negligible rela-tive to the forward draft / target passes. 
+
+• Empirically, SpecGuard achieves up to 
+
+11% lower runtime than RSD while im-proving accuracy by 1–3% in benchmarks. 
+
+A.4 LLM Usage 
+
+Large Language Models (LLMs) were used in this work solely as general-purpose assistive tools. Specifically, they were employed in two limited capacities: (i) to aid in polishing the writing for clarity and readability, and (ii) to assist in retrieval and discovery tasks, such as identifying related work. No part of the re-search design, algorithm development, theoret-ical analysis, or experimental implementation relied on LLMs. Their role was restricted to supportive tasks. Table 3: Overview of the Complex QA datasets used in this study.                                
+
+> Dataset #Test Example Question Description
+> What is the smallest positive perfect cube multi-step
+> MATH500 (Hendrycks et al., 2021) 500 that can be written as the sum of three arithmetic word
+> consecutive integers? problems
+> The red car is 40% cheaper than the blue car. multi-step
+> GSM8K (Cobbe et al., 2021) 1319 The price of the blue car is $100. How much arithmetic word
+> do both cars cost? problems
+> Suppose the universe set is U={0,1,2,4,6,8}. multi-step
+> GaoKao-2023-En (Liao et al., 2024) 385 Two of its subsets are M={0,4,6}, N={0,1,6}. arithmetic word
+> Find M∪¯N.problems
+> A number is called Norwegian if it has three multi-step
+> OlympiadBench (He et al., 2024) 675 distinct positive divisors whose sum is equal arithmetic word
+> to 2022. Determine smallest Norwegian number. problems
+
+Table 4: Accuracy with different βs. Overall, β = 0.3 works well for different tasks. 
+
+Method Target Model Draft Model Setting MATH500 GSM8K Gaokao 2023 En Olympiad Bench Math Model, Draft and Target: Qwen2.5-Math-Instruct 
+
+Ours Majority 7B 1.5B β = 0 .3 85.4 95.8 69.4 41.2 Ours Majority 7B 1.5B β = 0 .5 85.0 95.7 68.5 40.4 Ours Majority 7B 1.5B β = 0 .7 84.4 95.6 65.5 40.2 
+
+Table 5: Accuracy with different τ s. Overall, τ = 0.7 works well for different tasks. 
+
+Method Target Model Draft Model Setting MATH500 GSM8K Gaokao 2023 En Olympiad Bench Math Model, Draft and Target: Qwen2.5-Math-Instruct 
+
+Ours Majority 7B 1.5B τ = 0 .6 83.6 93.5 67.4 39.7 Ours Majority 7B 1.5B τ = 0 .7 85.4 95.8 69.4 41.2 Ours Majority 7B 1.5B τ = 0 .8 84.2 94.6 68.7 40.4 Ours Majority 7B 1.5B τ = 0 .9 85.1 95.6 69.2 41.0 
+
+Table 6: Qualitative analysis of reasoning steps scored by PRM . Even though all draft-generated steps receive high acceptance scores from the PRM , the final answer is still incorrect. 
+
+Question: A treasure hunter found a buried treasure chest filled with gems. There were 175 diamonds, 35 fewer rubies than diamonds, and twice the number of emeralds than the rubies. How many of the gems were there in the chest? 
+
+Reasoning Steps PRM Scores 
+
+Step 1: Identify the number of diamonds in the chest. The treasure hunter found 175 diamonds. 0.962108 Step 2: Calculate the number of rubies. There were 35 fewer rubies than diamonds, so the number of rubies is 175 - 35 = 140. 0.962108 Step 3: Calculate the number of emeralds. The number of emeralds is twice the number of rubies, so the number of emeralds is 2 * 140 = 280. 0.962108 Step 4: Calculate total number of gems. To find the total number of gems, add the number of diamonds, rubies, and emeralds: 175 + 140 + 280 = 535. 0.961534 Step 5: The final answer is: \boxed{535} 0.962108 Table 7: Qualitative analysis of reasoning steps scored by PRM . Even though all draft-generated steps receive high acceptance scores from the PRM , the final answer is still incorrect. 
+
+Question: Two girls each got 1/6 of the 24 liters of water. Then a boy got 6 liters of water. How many liters of water were left? 
+
+Reasoning Steps PRM Scores 
+
+Step 1: Calculate the amount of water each girl received. Each girl got 1/6 of 24 liters of water, which is (1/6) * 24 = 4 liters. 0.92192 Step 2: Calculate the total amount of water the girls received. Since there are two girls, the total amount of water they received is 2 * 4 = 8 liters. 0.92079 Step 3: Calculate the amount of water left after the boy got 6 liters. Subtract the amount of water the boys received from the total amount of water the girls received: 8 - 6 = 2 liters. 0.92079 Step 4: The final answer is: \boxed{2} 0.92079     
+
+> Table 8: Qualitative analysis of reasoning steps accepted by SpecGuard , where consistent step verification leads to the correct final answer.
+
+Question: A treasure hunter found a buried treasure chest filled with gems. There were 175 diamonds, 35 fewer rubies than diamonds, and twice the number of emeralds than the rubies. How many of the gems were there in the chest? 
+
+Reasoning Steps 
+
+Step 1: First, let’s identify the number of diamonds, which is given as 175. Step 2: The number of rubies is 35 fewer than the number of diamonds, so we need to subtract 35 from 175 to find the number of rubies: 175 - 35 = 140 rubies. Step 3: The number of emeralds is twice the number of rubies, so we need to multiply the number of rubies by 2 to find the number of emeralds: 140 * 2 = 280 emeralds. Step 4: To find the total number of gems in the chest, we need to add the number of diamonds, rubies, and emeralds: 175 + 140 + 280 = 595 gems. Step 5: The final answer is: \boxed{595}     
+
+> Table 9: Qualitative analysis of reasoning steps accepted by SpecGuard , where consistent step verification leads to the correct final answer.
+
+Question: Two girls each got 1/6 of the 24 liters of water. Then a boy got 6 liters of water. How many liters of water were left? 
+
+Reasoning Steps 
+
+Step 1: First, let’s calculate the amount of water each girl got. Since they each got 1/6 of the 24 liters, we can calculate this as 24 * (1/6) = 4 liters per girl. Step 2: Since there are two girls, the total amount of water they got is 4 * 2 = 8 liters. Step 3: Now, let’s calculate the amount of water left after the girls got their share. We subtract the amount they got from the total amount of water: 24 - 8 = 16 liters. Step 4: Then, the boy got 6 liters of water. We subtract this from the remaining water: 16 - 6 = 10 liters. Step 5: The final answer is: \boxed{10}
