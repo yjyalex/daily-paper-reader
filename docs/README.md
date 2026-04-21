@@ -6,114 +6,208 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-04-20
-- 运行时间：2026-04-20 19:58:10 UTC
+- 最新运行日期：2026-04-21
+- 运行时间：2026-04-21 20:13:56 UTC
 - 运行状态：成功
-- 本次总论文数：31
-- 精读区：17
+- 本次总论文数：62
+- 精读区：48
 - 速读区：14
 
 ### 今日简报（AI）
-今日深度解析 31 篇 AI 前沿论文，重点攻克多智能体协作中的“弱环节”优化与推理忠实度难题。
-满分论文揭示了通过可微分注意力
-- 详情：[/202604/20/README](/202604/20/README)
+今日深度解析 62 篇 AI 论文，聚焦大推理模型（LRM）在强化学习与策略优化领域的突破性进展。
+满分力作 MCPO 与 SPS 提出通过掌握度巩固与概率挤压技术，大幅增强了模型在复杂推理任务中的探索与学习效率。
+建议重点关注强化学习如何重塑推理模型，并留意 Web Agent 泛化与语义翻译等前沿应用方向。
+- 详情：[/202604/21/README](/202604/21/README)
 
 ### 精读区论文标签
-1. [Weak-Link Optimization for Multi-Agent Reasoning and Collaboration](/202604/20/2604.15972v1-weak-link-optimization-for-multi-agent-reasoning-and-collaboration)  
-   标签：评分：10.0/10、query:mas-gen
-   evidence：针对复杂任务的多智能体推理与协作框架
-2. [AtManRL: Towards Faithful Reasoning via Differentiable Attention Saliency](/202604/20/2604.16158v1-atmanrl-towards-faithful-reasoning-via-differentiable-attention-saliency)  
+1. [MCPO: Mastery-Consolidated Policy Optimization for Large Reasoning Models](/202604/21/2604.16972v1-mcpo-mastery-consolidated-policy-optimization-for-large-reasoning-models)  
    标签：评分：10.0/10、query:rl-nlplr
-   evidence：通过显著性奖励对思维链进行强化学习
-3. [A Benchmark and Multi-Agent System for Instruction-driven Cinematic Video Compilation](/202604/20/2604.10456v1-a-benchmark-and-multi-agent-system-for-instruction-driven-cinematic-video-compilation)  
+   evidence：使用可验证奖励的强化学习 (RLVR) 来提高大语言模型的推理能力
+2. [SPS: Steering Probability Squeezing for Better Exploration in Reinforcement Learning for Large Language Models](/202604/21/2604.16995v1-sps-steering-probability-squeezing-for-better-exploration-in-reinforcement-learning-for-large-language-models)  
+   标签：评分：10.0/10、query:rl-nlplr
+   evidence：面向推理模型的强化学习及推理轨迹探索
+3. [Graph-of-Agents: A Graph-based Framework for Multi-Agent LLM Collaboration](/202604/21/2604.17148v1-graph-of-agents-a-graph-based-framework-for-multi-agent-llm-collaboration)  
+   标签：评分：10.0/10、query:mas-gen
+   evidence：基于图的多智能体LLM协作框架
+4. [MedPRMBench: A Fine-grained Benchmark for Process Reward Models in Medical Reasoning](/202604/21/2604.17282v1-medprmbench-a-fine-grained-benchmark-for-process-reward-models-in-medical-reasoning)  
+   标签：评分：10.0/10、query:rl-nlplr
+   evidence：医疗推理过程奖励模型的基准测试
+5. [A Survey of Reinforcement Learning for Large Language Models under Data Scarcity: Challenges and Solutions](/202604/21/2604.17312v1-a-survey-of-reinforcement-learning-for-large-language-models-under-data-scarcity-challenges-and-solutions)  
+   标签：评分：10.0/10、query:rl-nlplr
+   evidence：强化学习增强大语言模型推理能力的综述
+6. [Hive: A Multi-Agent Infrastructure for Algorithm- and Task-Level Scaling](/202604/21/2604.17353v1-hive-a-multi-agent-infrastructure-for-algorithm--and-task-level-scaling)  
+   标签：评分：10.0/10、query:mas-gen
+   evidence：用于任务级扩展的多智能体基础设施
+7. [LEPO: \underline{L}atent R\underline{e}asoning \underline{P}olicy \underline{O}ptimization for Large Language~Models](/202604/21/2604.17892v1-lepo-underlinelatent-runderlineeasoning-underlinepolicy-underlineoptimization-for-large-languagemodels)  
+   标签：评分：10.0/10、query:rl-nlplr
+   evidence：使用强化学习的潜空间推理策略优化
+8. [Learning to Correct: Calibrated Reinforcement Learning for Multi-Attempt Chain-of-Thought](/202604/21/2604.17912v1-learning-to-correct-calibrated-reinforcement-learning-for-multi-attempt-chain-of-thought)  
+   标签：评分：10.0/10、query:rl-nlplr
+   evidence：使用CAL-GRPO进行多尝试思维链推理的强化学习
+9. [Process Reward Models Meet Planning: Generating Precise and Scalable Datasets for Step-Level Rewards](/202604/21/2604.17957v1-process-reward-models-meet-planning-generating-precise-and-scalable-datasets-for-step-level-rewards)  
+   标签：评分：10.0/10、query:rl-nlplr
+   evidence：用于大模型推理步骤级反馈的过程奖励模型
+10. [Learning from Less: Measuring the Effectiveness of RLVR in Low Data and Compute Regimes](/202604/21/2604.18381v1-learning-from-less-measuring-the-effectiveness-of-rlvr-in-low-data-and-compute-regimes)  
+   标签：评分：10.0/10、query:rl-nlplr
+   evidence：带有可验证奖励的强化学习用于推理
+11. [StepPO: Step-Aligned Policy Optimization for Agentic Reinforcement Learning](/202604/21/2604.18401v1-steppo-step-aligned-policy-optimization-for-agentic-reinforcement-learning)  
+   标签：评分：10.0/10、query:rl-nlplr
+   evidence：用于智能体强化学习的步骤对齐策略优化
+12. [Too Correct to Learn: Reinforcement Learning on Saturated Reasoning Data](/202604/21/2604.18493v1-too-correct-to-learn-reinforcement-learning-on-saturated-reasoning-data)  
+   标签：评分：10.0/10、query:rl-nlplr
+   evidence：利用GRPO在饱和基准上通过强化学习增强LLM推理
+13. [When Can LLMs Learn to Reason with Weak Supervision?](/202604/21/2604.18574v1-when-can-llms-learn-to-reason-with-weak-supervision)  
+   标签：评分：10.0/10、query:rl-nlplr
+   evidence：利用可验证奖励的强化学习提升大模型推理能力
+14. [Sample Complexity of Autoregressive Reasoning: Chain-of-Thought vs. End-to-End](/202604/21/2604.12013v2-sample-complexity-of-autoregressive-reasoning-chain-of-thought-vs-end-to-end)  
+   标签：评分：9.0/10、query:rl-nlplr
+   evidence：比较自动回归推理中思维链与端到端监督的 PAC 学习框架
+15. [VERITAS: Verifiable Epistemic Reasoning for Image-Derived Hypothesis Testing via Agentic Systems](/202604/21/2604.12144v1-veritas-verifiable-epistemic-reasoning-for-image-derived-hypothesis-testing-via-agentic-systems)  
    标签：评分：9.0/10、query:mas-gen
-   evidence：用于电影视频剪辑的多智能体系统，采用设计与组合范式
-4. [Visual Enhanced Depth Scaling for Multimodal Latent Reasoning](/202604/20/2604.10500v1-visual-enhanced-depth-scaling-for-multimodal-latent-reasoning)  
+   evidence：用于可验证认识论推理的多智能体系统
+16. [Heuristic Classification of Thoughts Prompting (HCoT): Integrating Expert System Heuristics for Structured Reasoning into Large Language Models](/202604/21/2604.12390v3-heuristic-classification-of-thoughts-prompting-hcot-integrating-expert-system-heuristics-for-structured-reasoning-into-large-language-models)  
+   标签：评分：9.0/10、query:rl-nlplr
+   evidence：集成启发式方法以改进随机生成中的结构化推理
+17. [Visual Preference Optimization with Rubric Rewards](/202604/21/2604.13029v1-visual-preference-optimization-with-rubric-rewards)  
+   标签：评分：9.0/10、query:rl-nlplr
+   evidence：针对细粒度推理的偏好优化
+18. [CollabCoder: Plan-Code Co-Evolution via Collaborative Decision-Making for Efficient Code Generation](/202604/21/2604.13946v2-collabcoder-plan-code-co-evolution-via-collaborative-decision-making-for-efficient-code-generation)  
+   标签：评分：9.0/10、query:mas-gen
+   evidence：用于代码生成的多智能体协作
+19. [Enhancing LLM-based Search Agents via Contribution Weighted Group Relative Policy Optimization](/202604/21/2604.14267v2-enhancing-llm-based-search-agents-via-contribution-weighted-group-relative-policy-optimization)  
+   标签：评分：9.0/10、query:rl-nlplr
+   evidence：将过程监督集成到组相对策略优化（GRPO）中
+20. [MemoSight: Unifying Context Compression and Multi Token Prediction for Reasoning Acceleration](/202604/21/2604.14889v1-memosight-unifying-context-compression-and-multi-token-prediction-for-reasoning-acceleration)  
+   标签：评分：9.0/10、query:llm-fo
+   evidence：上下文压缩与推理加速之间的权衡
+21. [BOOKAGENT: Orchestrating Safety-Aware Visual Narratives via Multi-Agent Cognitive Calibration](/202604/21/2604.16541v1-bookagent-orchestrating-safety-aware-visual-narratives-via-multi-agent-cognitive-calibration)  
+   标签：评分：9.0/10、query:mas-gen
+   evidence：用于视觉叙事的多智能体协作框架
+22. [Debate as Reward: A Multi-Agent Reward System for Scientific Ideation via RL Post-Training](/202604/21/2604.16723v1-debate-as-reward-a-multi-agent-reward-system-for-scientific-ideation-via-rl-post-training)  
+   标签：评分：9.0/10、query:mas-gen
+   evidence：通过强化学习后训练的科学构思多智能体奖励系统
+23. [When Agents Go Quiet: Output Generation Capacity and Format-Cost Separation for LLM Document Synthesis](/202604/21/2604.16736v1-when-agents-go-quiet-output-generation-capacity-and-format-cost-separation-for-llm-document-synthesis)  
+   标签：评分：9.0/10、query:llm-fo
+   evidence：格式重文档合成中的格式成本分离与Token效率
+24. [Federation over Text: Insight Sharing for Multi-Agent Reasoning](/202604/21/2604.16778v1-federation-over-text-insight-sharing-for-multi-agent-reasoning)  
+   标签：评分：9.0/10、query:mas-gen
+   evidence：用于多智能体推理和共享元认知见解的联邦框架
+25. [Step-GRPO: Internalizing Dynamic Early Exit for Efficient Reasoning](/202604/21/2604.16890v1-step-grpo-internalizing-dynamic-early-exit-for-efficient-reasoning)  
+   标签：评分：9.0/10、query:rl-nlplr
+   evidence：Step-GRPO框架用于高效推理和步骤感知奖励
+26. [DVAR: Adversarial Multi-Agent Debate for Video Authenticity Detection](/202604/21/2604.16987v1-dvar-adversarial-multi-agent-debate-for-video-authenticity-detection)  
+   标签：评分：9.0/10、query:mas-gen
+   evidence：用于逻辑推理的多智能体辩论
+27. [Small Model as Master Orchestrator: Learning Unified Agent-Tool Orchestration with Parallel Subtask Decomposition](/202604/21/2604.17009v1-small-model-as-master-orchestrator-learning-unified-agent-tool-orchestration-with-parallel-subtask-decomposition)  
+   标签：评分：9.0/10、query:mas-gen
+   evidence：多智能体系统中的并行子任务分解与协作
+28. [Abstain-R1: Calibrated Abstention and Post-Refusal Clarification via Verifiable RL](/202604/21/2604.17073v1-abstain-r1-calibrated-abstention-and-post-refusal-clarification-via-verifiable-rl)  
+   标签：评分：9.0/10、query:rl-nlplr
+   evidence：用于提高推理能力和校准弃权的验证式强化学习
+29. [The Consensus Trap: Rescuing Multi-Agent LLMs from Adversarial Majorities via Token-Level Collaboration](/202604/21/2604.17139v1-the-consensus-trap-rescuing-multi-agent-llms-from-adversarial-majorities-via-token-level-collaboration)  
    标签：评分：9.0/10、query:token
-   evidence：潜空间推理过程中的Token级梯度动态
-5. [Thinking Fast, Thinking Wrong: Intuitiveness Modulates LLM Counterfactual Reasoning in Policy Evaluation](/202604/20/2604.10511v1-thinking-fast-thinking-wrong-intuitiveness-modulates-llm-counterfactual-reasoning-in-policy-evaluation)  
+   evidence：多智能体 LLM 的 Token 级协作以摆脱对抗性多数
+30. [Demystifying the unreasonable effectiveness of online alignment methods](/202604/21/2604.17207v1-demystifying-the-unreasonable-effectiveness-of-online-alignment-methods)  
    标签：评分：9.0/10、query:rl-nlplr
-   evidence：LLM在政策评估中的反事实推理
-6. [CBCL: Safe Self-Extending Agent Communication](/202604/20/2604.14512v1-cbcl-safe-self-extending-agent-communication)  
+   evidence：在线RLHF和在线DPO的理论分析
+31. [A Multi-Agent Approach for Claim Verification from Tabular Data Documents](/202604/21/2604.17225v1-a-multi-agent-approach-for-claim-verification-from-tabular-data-documents)  
    标签：评分：9.0/10、query:mas-gen
-   evidence：用于异构协作的智能体通信语言
-7. [Targeted Exploration via Unified Entropy Control for Reinforcement Learning](/202604/20/2604.14646v2-targeted-exploration-via-unified-entropy-control-for-reinforcement-learning)  
-   标签：评分：9.0/10、query:rl-nlplr
-   evidence：通过在GRPO等强化学习算法中进行熵控制来提升推理
-8. [Analyzing Chain of Thought (CoT) Approaches in Control Flow Code Deobfuscation Tasks](/202604/20/2604.15390v1-analyzing-chain-of-thought-cot-approaches-in-control-flow-code-deobfuscation-tasks)  
-   标签：评分：9.0/10、query:rl-nlplr
-   evidence：用于代码分析中逐步推理的思维链提示
-9. [LACE: Lattice Attention for Cross-thread Exploration](/202604/20/2604.15529v1-lace-lattice-attention-for-cross-thread-exploration)  
+   evidence：基于思维链的声明验证多智能体框架
+32. [Phase-Scheduled Multi-Agent Systems for Token-Efficient Coordination](/202604/21/2604.17400v1-phase-scheduled-multi-agent-systems-for-token-efficient-coordination)  
    标签：评分：9.0/10、query:mas-gen
-   evidence：跨线程推理的协同并行过程
-10. [LLM Reasoning Is Latent, Not the Chain of Thought](/202604/20/2604.15726v1-llm-reasoning-is-latent-not-the-chain-of-thought)  
-   标签：评分：9.0/10、query:rl-nlplr
-   evidence：大模型推理作为潜状态轨迹与思维链的对比
-11. [Structured Abductive-Deductive-Inductive Reasoning for LLMs via Algebraic Invariants](/202604/20/2604.15727v1-structured-abductive-deductive-inductive-reasoning-for-llms-via-algebraic-invariants)  
-   标签：评分：9.0/10、query:rl-nlplr
-   evidence：用于LLM逻辑一致性的符号推理支架
-12. [Placing Puzzle Pieces Where They Matter: A Question Augmentation Framework for Reinforcement Learning](/202604/20/2604.15830v1-placing-puzzle-pieces-where-they-matter-a-question-augmentation-framework-for-reinforcement-learning)  
-   标签：评分：9.0/10、query:rl-nlplr
-   evidence：通过识别关键步骤增强LLM推理的强化学习框架
-13. [CiPO: Counterfactual Unlearning for Large Reasoning Models through Iterative Preference Optimization](/202604/20/2604.15847v1-cipo-counterfactual-unlearning-for-large-reasoning-models-through-iterative-preference-optimization)  
-   标签：评分：9.0/10、query:rl-nlplr
-   evidence：针对思维链推理模型的迭代偏好优化
-14. [AgentV-RL: Scaling Reward Modeling with Agentic Verifier](/202604/20/2604.16004v1-agentv-rl-scaling-reward-modeling-with-agentic-verifier)  
-   标签：评分：9.0/10、query:rl-nlplr
-   evidence：智能体验证器将奖励建模转化为推理的多轮审议过程
-15. [AstroVLM: Expert Multi-agent Collaborative Reasoning for Astronomical Imaging Quality Diagnosis](/202604/20/2604.16024v1-astrovlm-expert-multi-agent-collaborative-reasoning-for-astronomical-imaging-quality-diagnosis)  
+   evidence：用于Token高效协作的多智能体系统
+33. [Transparent and Controllable Recommendation Filtering via Multimodal Multi-Agent Collaboration](/202604/21/2604.17459v1-transparent-and-controllable-recommendation-filtering-via-multimodal-multi-agent-collaboration)  
    标签：评分：9.0/10、query:mas-gen
-   evidence：专家级多智能体协作推理用于天文成像诊断
-16. [Detecting and Suppressing Reward Hacking with Gradient Fingerprints](/202604/20/2604.16242v1-detecting-and-suppressing-reward-hacking-with-gradient-fingerprints)  
+   evidence：多模态多智能体协作过滤
+34. [SkillGraph: Self-Evolving Multi-Agent Collaboration with Multimodal Graph Topology](/202604/21/2604.17503v1-skillgraph-self-evolving-multi-agent-collaboration-with-multimodal-graph-topology)  
+   标签：评分：9.0/10、query:mas-gen
+   evidence：具有图拓扑的自我进化多智能体协作
+35. [ONTO: A Token-Efficient Columnar Notation for LLM Input Optimization](/202604/21/2604.17512v1-onto-a-token-efficient-columnar-notation-for-llm-input-optimization)  
+   标签：评分：9.0/10、query:llm-fo
+   evidence：针对大模型输入输出的Token高效列式表示法与JSON对比
+36. [Provable Coordination for LLM Agents via Message Sequence Charts](/202604/21/2604.17612v1-provable-coordination-for-llm-agents-via-message-sequence-charts)  
+   标签：评分：9.0/10、query:mas-gen
+   evidence：用于指定智能体协作的领域特定语言
+37. [Poly-EPO: Training Exploratory Reasoning Models](/202604/21/2604.17654v1-poly-epo-training-exploratory-reasoning-models)  
    标签：评分：9.0/10、query:rl-nlplr
-   evidence：在带有思维链推理的强化学习中检测奖励作弊
-17. [Beyond Distribution Sharpening: The Importance of Task Rewards](/202604/20/2604.16259v1-beyond-distribution-sharpening-the-importance-of-task-rewards)  
+   evidence：用于探索性推理策略的集合强化学习
+38. [Towards Self-Improving Error Diagnosis in Multi-Agent Systems](/202604/21/2604.17658v1-towards-self-improving-error-diagnosis-in-multi-agent-systems)  
+   标签：评分：9.0/10、query:mas-gen
+   evidence：多智能体系统中复杂问题解决的自我改进错误诊断
+39. [Efficient Federated RLHF via Zeroth-Order Policy Optimization](/202604/21/2604.17747v1-efficient-federated-rlhf-via-zeroth-order-policy-optimization)  
    标签：评分：9.0/10、query:rl-nlplr
-   evidence：基于任务奖励的强化学习用于推理模型
+   evidence：通过策略优化实现高效联邦RLHF
+40. [Neural Garbage Collection: Learning to Forget while Learning to Reason](/202604/21/2604.18002v1-neural-garbage-collection-learning-to-forget-while-learning-to-reason)  
+   标签：评分：9.0/10、query:rl-nlplr
+   evidence：针对思维链推理的强化学习及KV缓存管理
+41. [Diversity Collapse in Multi-Agent LLM Systems: Structural Coupling and Collective Failure in Open-Ended Idea Generation](/202604/21/2604.18005v1-diversity-collapse-in-multi-agent-llm-systems-structural-coupling-and-collective-failure-in-open-ended-idea-generation)  
+   标签：评分：9.0/10、query:mas-gen
+   evidence：多智能体系统中的多样性与集体失败研究
+42. [Topology-Aware LLM-Driven Social Simulation: A Unified Framework for Efficient and Realistic Agent Dynamics](/202604/21/2604.18011v1-topology-aware-llm-driven-social-simulation-a-unified-framework-for-efficient-and-realistic-agent-dynamics)  
+   标签：评分：9.0/10、query:mas-gen
+   evidence：具有类人推理和通信能力的多智能体框架
+43. [Multi-Agent Systems: From Classical Paradigms to Large Foundation Model-Enabled Futures](/202604/21/2604.18133v1-multi-agent-systems-from-classical-paradigms-to-large-foundation-model-enabled-futures)  
+   标签：评分：9.0/10、query:mas-gen
+   evidence：大语言模型中的协作多智能体框架
+44. [Copy-as-Decode: Grammar-Constrained Parallel Prefill for LLM Editing](/202604/21/2604.18170v1-copy-as-decode-grammar-constrained-parallel-prefill-for-llm-editing)  
+   标签：评分：9.0/10、query:llm-fo
+   evidence：语法约束解码与并行预填充以提升效率
+45. [Audio-DeepThinker: Progressive Reasoning-Aware Reinforcement Learning for High-Quality Chain-of-Thought Emergence in Audio Language Models](/202604/21/2604.18187v1-audio-deepthinker-progressive-reasoning-aware-reinforcement-learning-for-high-quality-chain-of-thought-emergence-in-audio-language-models)  
+   标签：评分：9.0/10、query:rl-nlplr
+   evidence：音频模型中高质量思维链生成的强化学习
+46. [PARM: Pipeline-Adapted Reward Model](/202604/21/2604.18327v1-parm-pipeline-adapted-reward-model)  
+   标签：评分：9.0/10、query:rl-nlplr
+   evidence：针对多阶段代码生成流水线的直接偏好优化
+47. [Knowing When to Quit: A Principled Framework for Dynamic Abstention in LLM Reasoning](/202604/21/2604.18419v1-knowing-when-to-quit-a-principled-framework-for-dynamic-abstention-in-llm-reasoning)  
+   标签：评分：9.0/10、query:token
+   evidence：强化学习框架下的动态生成中途弃权
+48. [MASS-RAG: Multi-Agent Synthesis Retrieval-Augmented Generation](/202604/21/2604.18509v1-mass-rag-multi-agent-synthesis-retrieval-augmented-generation)  
+   标签：评分：9.0/10、query:mas-gen
+   evidence：用于证据处理和推理的多智能体综合方法
 
 ### 速读区论文标签
-1. [KD-MARL: Resource-Aware Knowledge Distillation in Multi-Agent Reinforcement Learning](/202604/20/2604.06691v1-kd-marl-resource-aware-knowledge-distillation-in-multi-agent-reinforcement-learning)  
-   标签：评分：8.0/10、query:mas-gen
-   evidence：多智能体强化学习中协调行为的知识蒸馏
-2. [AgentGate: A Lightweight Structured Routing Engine for the Internet of Agents](/202604/20/2604.06696v1-agentgate-a-lightweight-structured-routing-engine-for-the-internet-of-agents)  
-   标签：评分：8.0/10、query:mas-gen
-   evidence：用于候选感知智能体调度的结构化路由引擎
-3. [SQLStructEval: Structural Evaluation of LLM Text-to-SQL Generation](/202604/20/2604.06736v1-sqlstructeval-structural-evaluation-of-llm-text-to-sql-generation)  
-   标签：评分：8.0/10、query:llm-fo
-   evidence：通过编译式流水线在结构化空间中生成查询
-4. [On the Step Length Confounding in LLM Reasoning Data Selection](/202604/20/2604.06834v1-on-the-step-length-confounding-in-llm-reasoning-data-selection)  
+1. [Syntax Is Easy, Semantics Is Hard: Evaluating LLMs for LTL Translation](/202604/21/2604.07321v1-syntax-is-easy-semantics-is-hard-evaluating-llms-for-ltl-translation)  
    标签：评分：8.0/10、query:rl-nlplr
-   evidence：分析思维链推理数据选择中的步长混淆现象
-5. [Gemma 4, Phi-4, and Qwen3: Accuracy-Efficiency Tradeoffs in Dense and MoE Reasoning Language Models](/202604/20/2604.07035v1-gemma-4-phi-4-and-qwen3-accuracy-efficiency-tradeoffs-in-dense-and-moe-reasoning-language-models)  
+   evidence：评估大语言模型将自然语言翻译为逻辑公式的能力
+2. [PRIME: Training Free Proactive Reasoning via Iterative Memory Evolution for User-Centric Agent](/202604/21/2604.07645v1-prime-training-free-proactive-reasoning-via-iterative-memory-evolution-for-user-centric-agent)  
+   标签：评分：8.0/10、query:token
+   evidence：解决智能体强化学习中的轮次级信用分配问题
+3. [Structured Distillation of Web Agent Capabilities Enables Generalization](/202604/21/2604.07776v1-structured-distillation-of-web-agent-capabilities-enables-generalization)  
+   标签：评分：8.0/10、query:mas-gen
+   evidence：模块化LLM组件充当任务设计者、标注者和监督者
+4. [Hidden Biases in Conditioning Autoregressive Models](/202604/21/2604.07855v1-hidden-biases-in-conditioning-autoregressive-models)  
    标签：评分：8.0/10、query:llm-fo
-   evidence：推理语言模型的准确率与效率权衡
-6. [Visual Enhanced Depth Scaling for Multimodal Latent Reasoning](/202604/20/2604.10500v2-visual-enhanced-depth-scaling-for-multimodal-latent-reasoning)  
-   标签：评分：7.0/10、query:token
-   evidence：推理过程中的Token级梯度动态与隐式特征传播
-7. [Structure-Grounded Knowledge Retrieval via Code Dependencies for Multi-Step Data Reasoning](/202604/20/2604.10516v1-structure-grounded-knowledge-retrieval-via-code-dependencies-for-multi-step-data-reasoning)  
+   evidence：分析自回归模型约束生成中的隐藏推理偏差
+5. [MemReader: From Passive to Active Extraction for Long-Term Agent Memory](/202604/21/2604.07877v2-memreader-from-passive-to-active-extraction-for-long-term-agent-memory)  
+   标签：评分：8.0/10、query:llm-fo
+   evidence：使用GRPO优化以实现符合模式的结构化输出
+6. [CASK: Core-Aware Selective KV Compression for Reasoning Traces](/202604/21/2604.10900v1-cask-core-aware-selective-kv-compression-for-reasoning-traces)  
    标签：评分：7.0/10、query:rl-nlplr
-   evidence：多步数据推理的知识检索
-8. [OccuBench: Evaluating AI Agents on Real-World Professional Tasks via Language World Models](/202604/20/2604.10866v1-occubench-evaluating-ai-agents-on-real-world-professional-tasks-via-language-world-models)  
-   标签：评分：7.0/10、query:mas-gen
-   evidence：用于评估专业任务智能体的多智能体合成流水线
-9. [ZoomR: Memory Efficient Reasoning through Multi-Granularity Key Value Retrieval](/202604/20/2604.10898v1-zoomr-memory-efficient-reasoning-through-multi-granularity-key-value-retrieval)  
+   evidence：推理轨迹的KV缓存压缩
+7. [When Valid Signals Fail: Regime Boundaries Between LLM Features and RL Trading Policies](/202604/21/2604.10996v1-when-valid-signals-fail-regime-boundaries-between-llm-features-and-rl-trading-policies)  
+   标签：评分：7.0/10、query:rl-nlplr
+   evidence：LLM特征用于PPO交易智能体
+8. [Automated SVA Generation with LLMs](/202604/21/2604.11044v1-automated-sva-generation-with-llms)  
    标签：评分：7.0/10、query:llm-fo
-   evidence：推理思维过程与内存/计算开销之间的权衡
-10. [CFMS: A Coarse-to-Fine Multimodal Synthesis Framework for Enhanced Tabular Reasoning](/202604/20/2604.10973v1-cfms-a-coarse-to-fine-multimodal-synthesis-framework-for-enhanced-tabular-reasoning)  
+   evidence：强制结构一致性并将自然语言转换为可执行代码
+9. [TRACE: An Experiential Framework for Coherent Multi-hop Knowledge Graph Question Answering](/202604/21/2604.11193v1-trace-an-experiential-framework-for-coherent-multi-hop-knowledge-graph-question-answering)  
    标签：评分：7.0/10、query:rl-nlplr
-   evidence：增强表格推理的多模态合成框架
-11. [CodaRAG: Connecting the Dots with Associativity Inspired by Complementary Learning](/202604/20/2604.10426v1-codarag-connecting-the-dots-with-associativity-inspired-by-complementary-learning)  
-   标签：评分：6.0/10、query:rl-nlplr
-   evidence：在知识密集型任务中重建逻辑链
-12. [Agent Mentor: Framing Agent Knowledge through Semantic Trajectory Analysis](/202604/20/2604.10513v1-agent-mentor-framing-agent-knowledge-through-semantic-trajectory-analysis)  
+   evidence：知识图谱问答中的连贯关系路径推理
+10. [CocoaBench: Evaluating Unified Digital Agents in the Wild](/202604/21/2604.11201v1-cocoabench-evaluating-unified-digital-agents-in-the-wild)  
+   标签：评分：7.0/10、query:mas-gen
+   evidence：长程任务的统一数字智能体
+11. [Flow-Controlled Scheduling for LLM Inference with Provable Stability Guarantees](/202604/21/2604.11001v1-flow-controlled-scheduling-for-llm-inference-with-provable-stability-guarantees)  
+   标签：评分：6.0/10、query:llm-fo
+   evidence：管理内存和吞吐量的LLM推理调度
+12. [Min-$k$ Sampling: Decoupling Truncation from Temperature Scaling via Relative Logit Dynamics](/202604/21/2604.11012v1-min-k-sampling-decoupling-truncation-from-temperature-scaling-via-relative-logit-dynamics)  
+   标签：评分：6.0/10、query:token
+   evidence：通过动态截断优化解码
+13. [Bottleneck Tokens for Unified Multimodal Retrieval](/202604/21/2604.11095v1-bottleneck-tokens-for-unified-multimodal-retrieval)  
+   标签：评分：6.0/10、query:token
+   evidence：多模态大模型中信息压缩的Token级指导
+14. [METRO: Towards Strategy Induction from Expert Dialogue Transcripts for Non-collaborative Dialogues](/202604/21/2604.11427v3-metro-towards-strategy-induction-from-expert-dialogue-transcripts-for-non-collaborative-dialogues)  
    标签：评分：6.0/10、query:mas-gen
-   evidence：通过轨迹分析监控和调整智能体行为
-13. [IceCache: Memory-efficient KV-cache Management for Long-Sequence LLMs](/202604/20/2604.10539v1-icecache-memory-efficient-kv-cache-management-for-long-sequence-llms)  
-   标签：评分：6.0/10、query:rl-nlplr
-   evidence：针对思维链推理等长生成任务的KV缓存管理
-14. [CogInstrument: Modeling Cognitive Processes for Bidirectional Human-LLM Alignment in Planning Tasks](/202604/20/2604.10587v1-coginstrument-modeling-cognitive-processes-for-bidirectional-human-llm-alignment-in-planning-tasks)  
-   标签：评分：6.0/10、query:rl-nlplr
-   evidence：在LLM中建模推理结构和因果依赖
+   evidence：对话智能体的策略归纳与规划逻辑
 
 
 <div class="dpr-home-promo-card">

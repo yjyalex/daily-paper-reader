@@ -1,0 +1,956 @@
+Title: Step-GRPO: Internalizing Dynamic Early Exit for Efficient Reasoning
+
+URL Source: https://arxiv.org/pdf/2604.16890v1
+
+Published Time: Tue, 21 Apr 2026 00:36:56 GMT
+
+Number of Pages: 15
+
+Markdown Content:
+## Step-GRPO: Internalizing Dynamic Early Exit for Efficient Reasoning 
+
+Benteng Chen 1,2,* , Weida Wang 1,2,3,*,§ , Shufei Zhang 2, † , Mingbao Lin 4 , Min Zhang 1, †,‡
+
+> 1
+
+East China Normal University, 2Shanghai AI Laboratory, 3Fudan University, 4Rakuten Singapore 
+
+> *
+
+Equal contribution §Student project leader ‡Project leader 
+
+> †
+
+Corresponding authors: mzhang@cs.ecnu.edu.cn, zhangshufei@pjlab.org.cn 
+
+Abstract 
+
+Large reasoning models that use long chain-of-thought excel at problem-solving yet waste compute on redundant checks. Curbing this overthinking is hard: training-time length penalties can cripple ability, while inference-time early-exit adds system overhead. To bridge this gap, we propose Step-GRPO , a novel post-training framework that internalizes dynamic early-exit capabilities directly into the model. Step-GRPO shifts the optimization objective from raw tokens to semantic steps by utilizing linguistic markers to structure rea-soning. We introduce a Dynamic Truncated Rollout mechanism that exposes the model to concise high-confidence trajectories during ex-ploration, synergized with a Step-Aware Rela-tive Reward that dynamically penalizes redun-dancy based on group-level baselines. Exten-sive experiments across three model sizes on di-verse benchmarks demonstrate that Step-GRPO achieves a superior accuracy-efficiency trade-off. On Qwen3-8B, our method reduces token consumption by 32.0% compared to the vanilla model while avoiding the accuracy degradation observed in traditional length-penalty methods. 
+
+1 Introduction 
+
+Large reasoning models (LRMs), like DeepSeek-R1 (Guo et al., 2025) and Qwen3 (Yang et al., 2025a), have well solved complex problems using long chain-of-thought (CoT). However, this reason-ing ability comes at a high computational cost. A common problem is “overthinking” (Yang et al., 2025b; Dai et al., 2025a), models often generate unnecessary verification steps or circular explana-tions even after finding the correct solution. This happens because standard reinforcement learning methods, like GRPO (Shao et al., 2024), primarily reward correct outcomes. Since longer reasoning chains statistically increase the chance of getting the right answer, the model naturally learns to be GRPO w/ Length Penalty                                                                                                               
+
+> Step-GRPO(Ours)
+> Distillation
+> √InternalizedSemantic
+> Efficiency
+> √InternalizedEfficiency
+> &CapabilityCollaps
+> ×Syntatic Blindness
+> e
+> PenaltyonToken
+> Okay,letpointsAandBlieon...
+> SinceABisaunitlength...
+> Therefore,thefinalansweris23.
+> Wait,letmecalculate...
+> Wait,letmedoublecheckthe...
+> RejectionSamplingFinetune
+> Trigger
+> √SemanticAware
+> ×PoorGeneralization
+> &HighDataOverhead
+> Okay,letpointsAandBlieon...
+> SinceABisaunitlength...
+> Therefore,thefinalansweris23.
+> Wait,letmecalculate...
+> Wait,letmedoublecheckthe...
+> CorrectnessEfficiency
+> Okay,letpointsAandBlieon
+> theaxes....Wait,letme
+> calculate...SinceABisaunit
+> lengthsegment,weapply...
+> Wait,letmedoublecheck
+> .
+> thecalculation....Therefore,
+> thefinalanswerisp+q=23.
+
+Figure 1: Advantages of our Step-GRPO. 
+
+verbose, leading to wasted computation and higher latency. To address this inefficiency, recent research has focused on constraining the generation length dur-ing post-training (Yu et al., 2025; Dai et al., 2025a; Team et al., 2025). Methods like GRPO with length penalty (Team et al., 2025; Yu et al., 2025) or dy-namic adjustments like GRPO-λ (Dai et al., 2025a) explicitly add penalty terms to the reward function. However, as illustrated in Figure 1 (Top Left), these approaches suffer from “syntactic blindness” .Since they rely on indiscriminate token counting, models cannot distinguish between redundancy and necessary reasoning. Consequently, penalizing to-kens often forces the model to cut essential verifi-cation steps, leading to capability collapse where brevity is achieved at the cost of accuracy (Gao et al., 2023; Su and Cardie, 2025). Another direction attempts to internalize effi-cient inference strategies (Wang et al., 2025; Yang et al., 2025b), which rely on lexical cues (Vanhoy-
+
+> arXiv:2604.16890v1 [cs.AI] 18 Apr 2026
+
+weghen et al., 2025) or entropy (Agarwal et al., 2025) to optimize generation, via distillation. Re-cent works apply supervised fine-tuning (SFT) on compressed trajectories (Qiao et al., 2025; Zhang et al., 2025) derived from rejection sam-pling. While semantic-aware , this approach faces severe limitations shown in Figure 1 (Top Right): constructing valid concise samples incurs high data overhead due to expensive rejection sampling. Crit-ically, SFT yields poor generalization , the model superficially mimics the concise style of the train-ing data without learning the underlying decision-making policy, often failing on complex unseen tasks. To bridge this gap, we propose Step-GRPO, a novel post-training framework that internalizes the efficient reasoning capability directly into the model itself (Figure 1, Bottom). Unlike previ-ous methods that focus on tokens, Step-GRPO ad-dresses the problem through semantic steps . First, we solve the syntactic blindness of previous train-ing methods by moving from tokens to semantic steps . We use linguistic markers to segment rea-soning and apply a step-aware reward . Second, we simulate the decision-making process of inference interventions during training rollouts. By mixing natural trajectories with teacher-guided truncated paths, we force the model to learn that fewer rea-soning steps yield higher rewards. This effectively transfers the external stopping capability into the model itself, achieving semantically efficient rea-soning with zero inference overhead. Experimental results show that Step-GRPO achieves a superior trade-off between accuracy and efficiency, signifi-cantly reducing tokens while avoiding the training collapse in length-penalty methods. 
+
+2 Related Work 
+
+2.1 Inference-Time Efficiency Interventions 
+
+With the utilization of test-time scaling (Snell et al., 2024) to enhance complex tasks, LRMs (Kojima et al., 2022; Jaech et al., 2024; Guo et al., 2025) gen-erate long CoT (Lightman et al., 2023) sequences, leading to increased computational load and infer-ence latency. Research indicates an intrinsic “over-thinking” phenomenon in LRMs, where models persistently generate verbose reasoning sequences with redundant steps, wasting resources and po-tentially degrading accuracy (Chen et al., 2025; Saito et al., 2023). To address this, existing work is two-fold: prompt-based and output-based . Prompt-based methods apply external constraints, such as NoThinking strategy (Ma et al., 2025a) that skips reasoning, Chain-of-Draft (CoD) (Xu et al., 2025) which limits word counts, and Token-Conditional Control (TCC) (Muennighoff et al., 2025) that sets token budgets. However, these static constraints often compromise reasoning capabilities or are ig-nored in complex tasks. Conversely, output-based methods aim for dynamic early exit. For example, Dynasor-CoT (Fu et al., 2025) periodically checks answer consistency but often suffers from late ter-mination. While methods like DEER (Yang et al., 2025b) achieve precise truncation, strategies requir-ing parallel decoding or branch evaluation often increase overhead, potentially negating efficiency gains. 
+
+2.2 Training-Time Alignment for Conciseness 
+
+To mitigate deployment latency during inference-time, research has internalized concise reasoning capabilities directly into model weights. SFT on compressed CoT data is a primary strategy (Li et al., 2025; Ma et al., 2025b; Cui et al., 2025; Xia et al., 2025). While approaches like ConCISE (Ma et al., 2025b; Qiao et al., 2025; Xia et al., 2025; Cui et al., 2025) improve efficiency via mixed train-ing or confidence-guided data filtration, they face significant bottlenecks in constructing high-quality, logically complete yet concise samples. Alterna-tively, Reinforcement Learning (RL) targets effi-ciency via length penalties, yet often risks “corner cutting” and capability collapse (Dai et al., 2025a). While recent innovations like GRPO-λ (Dai et al., 2025a), entropy-guided compression (Zhu et al., 2025), and S-GRPO (Dai et al., 2025b) improve stability through dynamic adjustments or decaying rewards, they remain reliant on statistical heuristics (e.g. , entropy, sequence length) that ignore reason-ing semantics. Distinct from these scalar-based ap-proaches, we integrate semantic stopping directly into the GRPO loop. By treating linguistic markers (e.g. , “Wait”) as decision anchors, we reward the model for logical closure at valid transition points, ensuring compression aligns with the natural struc-ture of reasoning rather than blind truncation. 
+
+3 Method 
+
+In this section, we propose Step-GRPO, a post-training framework designed to internalize the dynamic early-exit capability into the reasoning model itself. As illustrated in Figure 2, Step-GRPO q Policy Model
+
+> 𝐀 1
+> 𝐀 2
+> 𝐀 𝐀
+
+...  
+
+> ReferenceModel
+> Step-Aware
+> RelativeReward
+> 𝐀 1
+> 𝐀 2
+> 𝐀 𝐀
+
+...
+
+> Group
+> Computation
+> 𝐀 1
+> 𝐀 2
+> 𝐀 𝐀
+
+... 
+
+> Dynamic Truncated Rollout Step-Aware Relative Reward
+
+...    
+
+> 𝐀 𝐀 𝐀 𝐀
+> 𝐀 𣠀 𝐀 1
+> 45
+> 𝐀 𝐀 𝐀 𝐀
+> 𝐀 𣠀 𝐀 268
+> 𝐀 𝐀 𝐀 𝐀
+> 𝐀 𣠀 𝐀 𝐀 𝐀
+> Dynamic Truncated Rollout Step-AwareRelativeReward
+> 𝐀 1
+> 𝐀 2
+> 𝐀 3
+> 𝐀 𝐀
+
+...
+
+> 𝐀 form
+> 𝐀 𝐀
+> 𝐀 3
+> 𝐀 2
+> 𝐀 1
+
+...
+
+> Step-GRPO
+> 𝐀 1
+> 𝐀 2
+> 𝐀 𝐀 𝐀
+> +
+> +
+> +
+> 𝐀 𡰀 𝐀 𝐀
+> 𝐀 𡰀 2
+> 𝐀 𡰀 1
+> 99
+
+...
+
+> 𝐀 1
+> 𝐀 2
+> 𝐀 𝐀 𝐀
+> 𝐀 𡰀 2
+> 𝐀 𡰀 1
+> 𝐀 𝐀 𝐀 𝐀
+> 𝐀 𣠀 𝐀 𝐀 𝐀
+
+𝐀 𝐀 
+
+...
+
+> 𝐀 acc
+> 𝐀 1
+> 𝐀 2
+> 𝐀 3
+> 𝐀 𝐀
+
+...    
+
+> 𝐀
+> bonus
+> penalty
+> penalty
+> +ConcatConfidence
+> Calculation 𝐀 𝐀
+> Semantic
+> Step 𝐀 𡰀 𝐀
+> Trigger
+> Word
+
+Figure 2: The overall pipeline of Step-GRPO. 
+
+consists of three integral components: Dynamic Truncated Rollout during exploration (Section 3.2), 
+
+Semantic Step Quantification (Section 3.3), and 
+
+Step-Aware Relative Reward (Section 3.4) for pol-icy optimization. 
+
+3.1 Preliminary 
+
+We consider a reasoning task where the input is a question q and the ground truth is y∗. The pol-icy model πθ, parameterized by θ, generates a completion oi, which consists of both the CoT reasoning path and the final answer. Following the GRPO framework (Shao et al., 2024), for each question q, we sample a group of G outputs 
+
+G = {o1, o 2, . . . , o G} from the old policy πθold .The objective is to maximize a reward J(θ):
+
+J(θ) = Eq∼D ,o ∼πθ (·| q)[R(o, q )] , (1) where R(o, q ) is a reward function balancing cor-rectness and reasoning efficiency. 
+
+3.2 Dynamic Truncated Rollout 
+
+To enable the model to learn efficient reasoning paths, we must expose it to short yet correct trajec-tories during training. Instead of standard autore-gressive generation, we enforce a Dynamic Trun-cated Rollout mechanism for all samples in G, in-spired by inference-time early-exit strategies (Yang et al., 2025b; Wang et al., 2025). For each comple-tion oi, we utilize a set of transition trigger words 
+
+Wtrig (e.g. , “Wait”, “Alternatively”). Following Qiao et al. (2025), we define these triggers as sig-nals for boundaries between semantic reasoning steps . The generation proceeds iteratively as: 
+
+1) Semantic Step Detection We monitor the gen-eration process continuously. Once a trigger word 
+
+T r ∈ W trig is detected at the end of the current sequence, we define the content generated since the last trigger as a semantic step S. We then pause the standard generation to evaluate the necessity of further reasoning. 
+
+2) Answer Induction We construct a temporary input context by appending an answer-inducing prompt pind (e.g ., “ </think> The final answer is ”) to the current history. The model then generates a tentative answer ans .
+
+3) Confidence Calculation We evaluate the con-fidence conf (ans ) (we use c(a) for short) of the tentative answer, defined as the average log-probability of its tokens: 
+
+c(a) = 1
+
+|a|
+
+> |a|
+
+X
+
+> j=1
+
+log πθold (aj | q, o i,<t , p ind , a <j ).
+
+(2) 
+
+4) Truncation Decision We compare the confi-dence against a threshold δ.• If c(ans ) > δ , the model is deemed confident. We terminate the reasoning process and define the final completion oi as the concatenation of the current path (including the current trigger 
+
+T r ) and the induced answer ans .• If c(ans ) ≤ δ, the tentative answer ans is discarded. The model resumes generating the next semantic step until the next trigger word or the end of generation. This process ensures that the sampled group G
+
+contains diverse reasoning paths that are potentially truncated at the moment of sufficient confidence. 
+
+3.3 Semantic Step Quantification 
+
+Traditional efficiency metrics relying on raw token counts are often sensitive to phrasing verbosity. We instead evaluate computational cost through 
+
+Semantic Steps .We quantify the reasoning complexity ki for the 
+
+i-th completion oi by tallying the occurrences of trigger words. Formally, let Ntrig (oi) denote the to-tal count of any trigger word T r ∈ W trig detected within the completion oi. The semantic step count is defined as: 
+
+ki = 1 + Ntrig (oi), (3) where the initial term 1 accounts for the final rea-soning segment (containing the answer) that typ-ically follows the last trigger. This quantification aligns with the discrete decision points in the dy-namic rollout, providing a robust, structure-aware metric for reasoning complexity. 
+
+3.4 Step-Aware Relative Reward 
+
+We propose a Step-Aware Relative Reward to guide the policy optimization. Unlike static length penal-ties, our reward mechanism employs a dynamic reference derived from the group’s performance. For each completion oi ∈ G , the total reward Ri
+
+is computed based on its correctness and its relative step efficiency. 
+
+Dynamic Step Baseline We first calculate the dynamic average μ, defined as the mean step count of all correct completions in the current group 
+
+Gcorrect :
+
+μ = 1
+
+|G correct |
+
+X 
+
+> j:oj∈G correct
+
+kj . (4) We exclude incorrect samples to prevent baseline skewing, as they often exhibit extreme step counts (e.g. , premature guessing or circular hallucinations). Including such outliers would distort μ, leading to misaligned efficiency incentives. If the group contains no correct answers, we omit efficiency term. 
+
+Final Reward Function The total reward Ri
+
+serves as a composite objective, balancing solu-tion correctness, reasoning efficiency, and struc-tural compliance. It combines an accuracy indica-tor R(i)
+
+> acc
+
+, a step-aware efficiency term, and a format consistency reward R(i)
+
+> form
+
+:
+
+Ri =α · R(i) 
+
+> acc
+
+·
+
+
+
+1 − β · tanh 
+
+ ki − μμ
+
+ 
+
++ (1 − α) · R(i)
+
+> form
+
+,
+
+(5) where α ∈ [0 , 1] balances accuracy against format-ting constraints, and β > 0 controls the penalty strength. The term ( ki−μμ ) represents the relative deviation from the group mean. By applying the hyperbolic tangent function ( tanh ), we bound the 
+
+step efficiency incentive to the range (−β, β ). This formulation prevents extreme variance in rewards while encouraging the model to seek the minimal sufficient reasoning path . Specifically, if a correct response uses fewer steps than average ( ki < μ ), the penalty term becomes a bonus (positive), in-creasing Ri above α; otherwise, it acts as a penalty. 
+
+3.5 Policy Optimization 
+
+Following the GRPO framework (Shao et al., 2024), we optimize the policy θ by maximizing the ex-pected advantage over the generated tokens. First, we compute the advantage Ai for each completion 
+
+oi by standardizing the rewards within the group: 
+
+Ai = Ri − mean ({R1, . . . , R G})
+
+std ({R1, . . . , R G}) . (6) The final objective function is defined as the average per-token importance-weighted advantage, constrained by a KL divergence term. To maintain readability, we use π(·) to denote the conditional dependence π(oi,t |q, o i,<t ):
+
+JGRPO (θ) = E
+
+ 1
+
+G
+
+> G
+
+X
+
+> i=1
+> |oi|
+
+X
+
+> t=1
+
+min 
+
+ πθ(·)
+
+πθold (·) Ai,
+
+clip 
+
+ πθ(·)
+
+πθold (·) , 1 − ϵ, 1 + ϵ
+
+
+
+Ai
+
+
+
+−βKL DKL (πθ∥πref )
+
+#
+
+.
+
+(7) where ϵ is the clipping parameter used in Proxi-mal Policy Optimization (PPO) to limit policy up-dates (Schulman et al., 2017). 
+
+4 Experiment 
+
+4.1 Experimental Setup Benchmarks To comprehensively evaluate the accuracy-efficiency trade-off, we conduct experi-ments across diverse benchmarks spanning varying difficulty levels. We utilize GSM8K (Cobbe et al., 2021) and MATH-500 (Hendrycks et al., 2021) for standard multi-step reasoning tasks. To assess per-formance on complex problems requiring extensive reasoning chains, we include AMC 2023 (AI-MO, 2024), AIME 2024 (Zhang and Math-AI, 2024), and AIME 2025 (Zhang and Math-AI, 2025). Ad-ditionally, we test domain-specific expert reasoning using GPQA (Rein et al., 2024) (Diamond subset). 
+
+Baselines We compare our method against a com-prehensive set of baselines to evaluate both reason-ing accuracy and generation efficiency. Vanilla 
+
+denotes the original base model without additional reinforcement learning. For standard RL compar-isons, GRPO represents the original Group Rela-tive Policy Optimization algorithm trained purely on correctness rewards. To benchmark efficiency-oriented strategies, we include GRPO-8k , which imposes a hard truncation at 8,192 tokens during training to simulate resource-constrained genera-tion. We further compare against three state-of-the-art penalty-based methods: GRPO+LP , which adopts the length penalty mechanism implemented in Kimi 1.5 (Team et al., 2025); GRPO+SOP ,which utilizes the Soft Overlong Punishment in-troduced in DAPO (Yu et al., 2025); and GRPO-
+
+λ (Dai et al., 2025a), which dynamically applies length penalties based on the correctness ratio of the rollout group. Finally, to assess the necessity of reinforcement learning over supervised distilla-tion, we include DEER+SFT , where the model is finetuned on concise and correct reasoning chains collected via DEER (Yang et al., 2025b)-guided rejection sampling. 
+
+Implementation Details Our implementation is built upon the EasyR1 training framework (Zheng et al., 2025). For training, we utilize data selected from the DAPO-Math-17k dataset (Yu et al., 2025). We define the transition trigger tokens Wtrig fol-lowing Qiao et al. (2025), including terms such as “Wait” and “Alternatively”. Regarding hyperpa-rameters, we set the reward balancing coefficient 
+
+α = 0 .1 step penalty strength β = 0 .5 and the rollout group size G = 5 . During the dynamic truncated rollout, the confidence threshold δ is set to 0.95. For all RL experiments, we set the global batch size to 512, use a constant learning rate of 
+
+1e − 6 and a KL penalty coefficient βKL = 0 .01 .The maximum generation length is set to 16,384 tokens for all models (except GRPO-8k ) to allow sufficient reasoning exploration. All experiments are conducted on 8 × H100 GPUs. 
+
+Evaluation Metrics In addition to accuracy, we evaluate reasoning efficiency using the Compres-sion Rate (CR). To faithfully reflect the model’s balanced performance across tasks of different dif-ficulty, we compute CR per task first, then take the arithmetic mean: 
+
+CR overall = 1
+
+|D| 
+
+X
+
+> i∈D
+
+Avg_Tok (i)
+
+> Model
+
+Avg_Tok (i)
+
+> Vanilla
+
+(8) where D denotes the set of evaluated benchmark datasets. Lower values indicate better compression. 
+
+4.2 Main Results 
+
+Table 1 presents the performance of Step-GRPO compared to baselines across three model scales. Our empirical results suggest that Step-GRPO sig-nificantly improves the trade-off boundary between accuracy and reasoning efficiency, outperforming baselines in this region. 
+
+Superior Accuracy-Efficiency Trade-off On Qwen3-8B, Step-GRPO achieves 82.1% overall accuracy, surpassing the vanilla model while reduc-ing token usage by 32.0%. Although the aggressive GRPO+LP baseline yields higher compression, it severely harms reasoning performance. Notably, on the hard AIME 2025 benchmark, GRPO+LP accuracy drops to 60.0%, showing that static token penalties force the model to cut essential reasoning steps. In contrast, Step-GRPO maintains 73.3% accuracy on the same task. This proves that our step-aware reward correctly distinguishes between redundancy and necessary logical complexity, pre-serving the model’s ability to reason deeply. 
+
+Necessity of Reinforcement Learning The re-sults expose the limitations of supervised distil-lation. Creating the DEER+SFT dataset requires costly rejection sampling. Despite this effort, the resulting model generalizes poorly. On smaller Table 1: Experimental results. The order is arranged as requested. “Acc” denotes accuracy, “Tok” denotes token count, and “CR” denotes compression rate (relative to Vanilla). Intermediate CR columns are omitted for brevity. Best results are in bold , and second-best results are underlined. 
+
+Method GSM8K GPQA MATH-500 AMC 2023 AIME 2024 AIME 2025 Overall 
+
+Acc ↑ Tok ↓ Acc ↑ Tok ↓ Acc ↑ Tok ↓ Acc ↑ Tok ↓ Acc ↑ Tok ↓ Acc ↑ Tok ↓ Acc ↑ CR ↓
+
+Qwen3-8B 
+
+Vanilla 93.2 2,362 62.1 7,249 96.8 5,299 97.5 8,648 70.0 15,880 60.0 17,492 79.9 100% DEER+SFT 90.5 1,733 47.0 8,860 95.0 3,361 90.0 6,149 63.3 10,623 50.0 13,330 72.6 78.9% GRPO 93.3 2,262 54.6 6,087 96.8 5,092 97.5 8,204 76.7 12,545 66.7 15,407 80.9 89.7% GRPO-8k 94.2 1,754 55.1 5,085 96.2 3,796 87.5 5,933 66.7 10,422 53.3 12,638 75.5 70.4% GRPO+LP 94.2 813 55.6 4,820 95.0 2,336 92.5 3,786 73.3 9,899 60.0 11,932 78.4 53.2% 
+
+GRPO+SOP 93.0 1,582 62.6 5,330 95.8 3,822 97.5 5,431 66.7 10,173 66.7 11,844 80.4 67.9% GRPO-λ 92.9 1,193 60.1 5,003 96.4 3,095 90.0 5,432 76.7 10,554 63.3 12,321 79.9 62.9% 
+
+Step-GRPO (Ours) 94.9 1,354 56.1 5,560 96.8 3,485 95.0 5,295 76.7 11,657 73.3 12,859 82.1 68.0% 
+
+Qwen3-4B 
+
+Vanilla 93.8 2,242 55.1 6,644 96.2 5,346 97.5 8,801 70.0 15,453 63.3 18,049 79.3 100% DEER+SFT 90.1 1,869 37.4 8,404 93.0 3,610 85.0 5,002 53.3 12,105 46.7 12,503 67.6 80.3% GRPO 93.0 2,291 51.0 5,380 97.6 4,974 97.5 7,712 73.3 12,126 63.3 14,249 79.3 86.9% GRPO-8k 93.8 1,753 50.5 4,571 96.2 3,691 95.0 5,506 70.0 10,515 60.0 11,172 77.6 68.1% GRPO+LP 93.0 680 50.0 4,039 94.2 2,329 95.0 4,712 70.0 10,631 63.3 10,783 77.6 52.8% 
+
+GRPO+SOP 93.9 1,656 50.0 4,452 95.6 3,808 95.0 5,793 70.0 9,363 60.0 13,838 77.4 69.2% GRPO-λ 93.1 1,261 48.0 4,606 96.6 3,232 97.5 4,671 70.0 9,094 60.0 12,814 77.5 61.5% 
+
+Step-GRPO (Ours) 93.3 1,298 54.0 5,182 95.6 3,528 95.0 5,456 76.7 11,435 60.0 13,356 79.1 68.7% 
+
+Qwen3-1.7B 
+
+Vanilla 89.2 2,326 37.4 6,781 90.8 5,777 80.0 10,713 43.3 18,552 26.7 17,766 61.2 100% DEER+SFT 84.2 2,811 22.2 14,165 83.0 4,615 67.5 5,712 30.0 12,758 20.0 12,367 51.2 100.2% GRPO 90.1 2,100 39.4 6,037 92.4 5,140 85.0 9,425 50.0 15,039 40.0 16,427 66.1 88.3% GRPO-8k 88.9 1,688 38.9 5,123 90.6 3,931 80.0 7,021 43.3 13,600 33.3 12,362 62.5 70.8% GRPO+LP 90.1 951 38.9 4,691 89.4 2,718 72.5 6,605 53.3 11,508 20.0 11,412 60.7 57.5% 
+
+GRPO+SOP 89.2 1,778 36.9 5,188 90.2 4,419 82.5 7,704 40.0 13,934 30.0 14,216 61.5 76.1% GRPO-λ 88.7 1,431 34.3 4,899 90.2 3,708 75.0 7,050 40.0 13,572 43.3 12,994 61.9 68.3% 
+
+Step-GRPO (Ours) 88.5 1,418 34.9 5,356 90.2 3,812 82.5 6,856 43.3 13,728 40.0 13,146 63.2 69.7% 
+
+models (4B and 1.7B), DEER+SFT suffers from se-vere instability on out-of-distribution (OOD) tasks. For instance, on the scientific reasoning benchmark GPQA, it exhibits negative compression (CR > 120-200%), generating hallucinations significantly longer than Vanilla while suffering drastic accuracy drops This suggests SFT only mimics surface-level conciseness within the training distribution rather than internalizing the generalizable logic of when to stop. While other RL baselines like GRPO+SOP and GRPO-λ improve over static penalties, they still lag behind Step-GRPO on complex tasks, con-firming the advantage of our semantic step quantifi-cation. 
+
+Consistency Across Model Scales Experiments on Qwen3-4B and 1.7B confirm our method’s ro-bustness. Smaller models generally possess fragile reasoning capabilities. While GRPO+LP causes accuracy degradation ( e.g. , AIME 2025 drops to 20.0% on 1.7B), Step-GRPO maintains a competi-tive accuracy profile ( e.g. , 40.0% on AIME 2025) comparable to or better than standard baselines, while achieving over 30% compression. This ro-bustness stems from our dynamic group-relative baseline, which adapts the difficulty to the model’s current capability. Furthermore, Step-GRPO ef-fectively targets the repetitive loops common in smaller models, achieving high compression on simple tasks without the catastrophic collapse seen in static penalty methods. 
+
+5 Discussion 
+
+5.1 Ablation Study 
+
+To validate the contribution of each component in Step-GRPO, we conduct ablation studies on Qwen3-8B using three representative benchmarks. The results are summarized in Table 2. 
+
+Table 2: Ablation studies on Qwen3-8B. We report Accuracy (%) and Average Token Count. The values demonstrate that removing the step reward leads to ver-bosity, while using a noisy all-sample baseline causes the worst performance degradation.                                            
+
+> Method GPQA MATH-500 AIME 2024 Average
+> Acc Tok Acc Tok Acc Tok Acc Tok
+> Step-GRPO (Ours) 56.1 5560 96.8 3485 76.7 11657 76.5 6901 w/o Step Reward 56.1 6300 96.4 4737 73.3 12787 75.3 7941 w/o Dynamic Rollout 56.6 5319 95.8 3822 70.0 10173 74.1 6438
+> w/ All-Sample Mean 54.6 5620 96.6 3994 66.7 12250 72.6 7288
+
+Impact of Step-Aware Relative Reward To em-pirically verify whether Step-GRPO overcomes the syntactic blindness of traditional length penalties, we designed a fine-grained structural analysis using GPT-4o to dissect the reasoning traces of 100 ran-dom samples. We explicitly categorized steps into 
+
+Forward Reasoning , Verification , and Redundancy .This allows us to distinguish between the essen-tial verification required for complex tasks and the 
+
+harmful overthinking that inflates computation. As shown in Table 2, removing this component (w/o Step Reward) leads to a significant rebound in to-ken usage (from 6901 to 7941), confirming that without explicit semantic regularization, the model inevitably drifts back to the verbose generation pat-terns inherent in the original policy. 
+
+Impact of Dynamic Truncated Rollout The variant without dynamic rollout (Row 3 in Table 2) shows a reduction in token usage due to the pres-ence of the step penalty, but suffers a drop in ac-curacy (Avg 74.1%). Without exposure to “short yet correct” trajectories during training, the model 
+
+struggles to internalize the correct stopping logic ,forcing brevity at the cost of reasoning depth on complex tasks like AIME. This performance gap highlights a critical distribution mismatch: without the dynamic rollout acting as a rehearsal mecha-nism, the model treats early exit signals as out-of-distribution events, leading to hesitant and incom-plete reasoning chains during inference. 
+
+Importance of Robust Baseline Calculation 
+
+Calculating the baseline μ using all samples (Row 4 in Table 2) yields the lowest overall accuracy (72.6%). Including incorrect responses, which are often extremely short (give-up) or long (circular), introduces severe noise into the reward signal. For instance, short but incorrect “give-up” responses artificially lower the group mean μ, which inad-vertently causes the reward function to penalize necessary, high-quality long reasoning steps as “in-efficient”. This confused reward baseline prevents the model from effectively distinguishing between efficient reasoning and failure, leading to subopti-mal convergence. 
+
+5.2 Case Study 
+
+To visualize the behavioral shift induced by our method, Figure 3 presents a qualitative comparison on a complex number theory problem requiring strict constraint satisfaction. The Vanilla model, while correct, exhibits a typical trial-and-error pat-tern characterized by redundant hesitation and backtracking, significantly inflating the computa-tional cost. In contrast, optimization baselines like DEER+SFT and GRPO-λ succumb to reasoning collapse ; they achieve brevity through a superfi-cial mimicry of concise forms but fail to execute the critical checks required for this specific task, resulting in logical errors. Crucially, Step-GRPO demonstrates a successful internalization of the de-cisive reasoning policy. It effectively prunes the self-doubting loops observed in the Vanilla model but, unlike the aggressive baselines, preserves the 
+
+essential verification steps necessary to identify the “least positive” integer, thereby achieving the correct solution with superior structural efficiency. 
+
+5.3 Why Semantic Steps Matter? 
+
+To empirically verify whether Step-GRPO over-comes the syntactic blindness of traditional length penalties, we designed a fine-grained structural analysis using GPT-4o to dissect the reasoning traces of 200 random samples. We explicitly cate-gorized steps into Forward Reasoning , Verification ,and Redundancy . This allows us to distinguish between the essential verification required for com-plex tasks and the harmful overthinking that inflates computation. 
+
+Selective Pruning of Redundancy. Our analysis reveals a critical divergence in how models achieve brevity. As shown in Figure 4(a), while token-based penalties (e.g., GRPO-λ) compress reason-ing by indiscriminately suppressing all step types, Step-GRPO exhibits a selective pruning behavior. It reduces redundant steps (Grey bars) to the low-est level among all models (10.9%), yet retains a higher proportion of verification steps (22.9%, Yellow bars) compared to GRPO-λ (21.7%). This confirms that our method decouples reasoning effi-ciency from raw length, internalizing a policy that cuts syntactic fat (verbosity) while preserving cog-nitive muscle (verification). 
+
+Stabilizing Information Density. Beyond com-position, we analyze the semantic density in Fig-ure 4(b). This metric reflects the information pay-load per reasoning unit, quantified as: Semantic Density i = Semantic Step Count ki
+
+Total Tokens in oi
+
+(9) The Vanilla model (Orange box) exhibits extreme variance with a “tall” distribution, indicating un-predictable “overthinking” loops where the model generates excessive tokens with low information Q: Let $p$ be the least prime number for which there exists a positive integer $n$ such that $n^{4}+1$ is divisible by
+
+$p^{2}$. Find the least positive integer $m$ such that $m^{4}+1$ is divisible by $p^{2}$.
+
+Please reason step by step, and put your final answer within \\boxed{}.
+
+Qwen3-8b 
+
+Total Token: 14930
+
+To solve this, let's first determine the
+
+least prime number p for which ...
+
+Therefore, n=155 is a solution.
+
+However, the problem asks ... m.
+
+... n = 8 + 17*6 = 110. Therefore,
+
+n=110 is another solution.
+
+Let me check numbers less than 110
+
+which are congruent to 2,8,9,15...
+
+Let me check n=19... n=25... n=42...
+
+n=59...
+
+So none of these work. Therefore,
+
+110 is indeed the minimal m.
+
+Correct but Inefficient: Wastes
+
+tokens on hesitant verification and
+
+backtracking.
+
+Step-GRPO 
+
+Total Token: 10810
+
+We start by searching for the least
+
+prime p such that ...
+
+Therefore, the four solutions mod 17
+
+are 2, 8, 9, 15.
+
+Therefore, when lifting these
+
+solutions via Hensel's lemma ...
+
+Earlier, we found that lifting 2 mod
+
+17 gives m ≡ 155 mod 289.
+
+Therefore, n = 8 + 176 = 110... n = 9
+
++ 1710 = 179... n = 15 + 17*7 = 134.
+
+Therefore, the minimal positive
+
+integer m is 110.
+
+Efficient and Accurate:
+
+Internalizes trial-and-error to find
+
+the solution without redundancy.
+
+GRPO-λ 
+
+Total Token: 5689
+
+Therefore, the answer is m=155.
+
+Okay, let's begin by finding the
+
+smallest prime p and the ...
+
+Therefore, the solution mod 17^2 is
+
+x = 2 + 9*17 = 155.
+
+Wait, since Hensel's lemma ... So the
+
+minimal positive integer is 155.
+
+Trapped in a Local Optimum:
+
+Correctly identifies one path but
+
+fails to explore all candidates to
+
+find the global minimum.
+
+Therefore, m=155 is the solution...
+
+Wait, but is there a smaller m?
+
+For example, n=2, since 2^4=16
+
+\equiv -1 mod 17.
+
+DEER + SFT 
+
+Total Token: 6373
+
+Therefore, the least positive integer
+
+m is 179.
+
+The first step is to identify the
+
+smallest prime p where there exists ...
+
+n=9: $9^4 \equiv -1$ mod 17. So
+
+n=9 is a solution.
+
+Let me lift this solution... So n = 9 +
+
+17*10 = 179.
+
+Superficial Mimicry: Mimics
+
+surface brevity but lacks essential
+
+verification logic.
+
+Therefore, we proceed with n=9.
+
+... n=2: 16 mod 17 = 16.
+
+Incorrect Reasoning
+
+Redundant Self-Correction
+
+Valid ReasoningFigure 3: Qualitative comparison of reasoning chains on a number theory problem from AIME 2024. Vanilla DEER+SFT GRPO-Lambda Ours                 
+
+> Model
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Percentage of Steps (%)
+> 62.5%
+> 24.9%
+> 12.5%
+> 64.0%
+> 22.0%
+> 14.0%
+> 66.0%
+> 21.7%
+> 12.3%
+> 66.1%
+> 22.9%
+> 10.9%
+> Total: 19.7 Total: 17.8 Total: 17.2 Total: 17.6
+> (a) Step Composition Analysis (Normalized)
+> Forward
+> Verification
+> Redundant
+> Vanilla DEER+SFT GRPO-Lambda Ours
+> Model
+> 0
+> 200
+> 400
+> 600
+> 800
+> 1000
+> 1200
+> 1400
+> Tokens per Semantic Step
+> (b) Semantic Density Distribution
+> 020 40 60 80 100
+> Step
+> 0.72
+> 0.74
+> 0.76
+> 0.78
+> 0.80
+> 0.82
+> 0.84
+> Accuracy
+> (c) Training Process (GRPO + LP)
+> 020 40 60 80 100
+> Step
+> 0.72
+> 0.74
+> 0.76
+> 0.78
+> 0.80
+> 0.82
+> 0.84
+> Accuracy
+> (d) Training Process (Step-GRPO)
+> 3000
+> 4000
+> 5000
+> 6000
+> 7000
+> 8000
+> 9000
+> Response length
+> 3000
+> 4000
+> 5000
+> 6000
+> 7000
+> 8000
+> 9000
+> Response length
+
+Figure 4: Structural and Training Dynamics Analysis. (a) Step Composition Analysis. Proportions of step types with average step counts annotated on top. (b) Semantic Density Distribution. Tokens per step (outliers excluded); dashed lines denote means. (c)(d) Training Dynamics. Evolution of accuracy (Grey) and length (Blue) for GRPO+LP and Step-GRPO. 
+
+gain. In contrast, Step-GRPO (Blue box) signifi-cantly compresses this variance. Unlike GRPO-λ
+
+which often forces premature truncation (yielding a lower median density), our method maintains a compact and consistent density distribution. This suggests that Step-GRPO stabilizes the reasoning process, avoiding the fragmentation observed in static length-penalty methods by effectively filter-ing out “low-density” redundant steps. 
+
+5.4 Training Stability 
+
+To investigate the robustness of our method against the “training collapse” phenomenon, we visualize the evolution of response length and accuracy on the validate dataset in Figure 4(c)(d). The results reveal a critical failure mode in static token penal-ties (Left): GRPO+LP shows a strong correlation between the rapid decrease in length (Blue dashed line) and a simultaneous, precipitous drop in ac-curacy (Gray solid line, from ∼0.82 to ∼0.74). This indicates that the model is forced to indis-criminately abandon essential reasoning steps to satisfy the fixed penalty. Conversely, Step-GRPO 
+
+(Right) exhibits a decoupled trajectory : while the reasoning length is significantly compressed (from 
+
+∼9k to ∼4k tokens), the accuracy remains robustly stable around 0.82. This demonstrates that our dy-namic, group-relative baseline effectively acts as an adaptive curriculum , penalizing only relative re-dundancy while protecting the necessary cognitive depth required for complex problem-solving. 6 Conclusion 
+
+In this paper, we introduced Step-GRPO , a novel post-training framework that enables Large Lan-guage Models to internalize efficient reasoning strategies. By synergizing dynamic truncated roll-outs with a semantic step-aware relative reward, our method shifts the optimization objective from syn-tactic token minimization to semantic logic conden-sation. Extensive experiments across diverse bench-marks demonstrate that Step-GRPO achieves a su-perior accuracy-efficiency trade-off, significantly reducing computational costs while maintaining ro-bustness on complex reasoning tasks. Crucially, we show that our dynamic, group-relative mechanism effectively resolves the “training collapse” issue plaguing traditional length-penalty methods. Ulti-mately, this work offers a scalable path toward ef-ficient reasoning: transforming the explicit “early-exit” decision-making process into the model’s intrinsic intuition, yielding decisive and precise reasoning chains without the need for external inference-time interventions. 
+
+Limitation 
+
+While Step-GRPO successfully internalizes effi-cient reasoning, the Dynamic Truncated Rollout 
+
+mechanism introduces a marginal increase in train-ing latency during the generation phase, primarily due to the additional forward passes for confidence estimation. However, this overhead is partially mit-igated by the accelerated parameter update phase, which benefits from significantly shorter sequence lengths. We consider this a justifiable “training-time investment” as it yields a zero-overhead model for deployment. Additionally, our current seman-tic step quantification relies on explicit linguistic markers, which may limit applicability in domains lacking such structures. Future work will focus on developing domain-agnostic step segmentation methods and exploring iterative self-training to re-duce reliance on predefined triggers. 
+
+Ethics Statement 
+
+This research complies with the ARR Ethics Pol-icy. The datasets used in this study (e.g., GSM8K, MATH-500, AIME) are established, publicly avail-able benchmarks for mathematical and logical rea-soning, ensuring no violation of privacy or copy-right. No human subjects or crowdworkers were employed in this research. We believe this work presents no significant risk of harm and offers a positive societal impact by democratizing efficient reasoning. 
+
+Acknowledgements 
+
+This work was supported by the Key Laboratory of Cognitive Intelligence and Content Security, Min-istry of Education (Grant No.10120251107, Harbin Institute of Technology). The National Natural Sci-ence Foundation of China (Grant No. 62477012), the AI for Science Program of the Shanghai Mu-nicipal Commission of Economy and Informatiza-tion, China (Grant No. 2025-GZL-RGZN-BTBX-01014) and the robotic AI-Scientist platform of Chinese Academy of Sciences. 
+
+References            
+
+> Shivam Agarwal, Zimin Zhang, Lifan Yuan, Jiawei Han, and Hao Peng. 2025. The unreasonable effectiveness of entropy minimization in llm reasoning. arXiv preprint arXiv:2505.15134 .AI-MO. 2024. Amc 2023. https://huggingface. co/datasets/AI-MO/aimo-validation-amc . Ac-cessed: 2026-01-04. Xingyu Chen, Jiahao Xu, Tian Liang, Zhiwei He, Jianhui Pang, Dian Yu, Linfeng Song, Qiuzhi Liu, Mengfei Zhou, Zhuosheng Zhang, and 1 others. 2025. Do not think that much for 2+ 3=? on the overthink-ing of long reasoning models. In Forty-second Inter-national Conference on Machine Learning .Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian, Mark Chen, Heewoo Jun, Lukasz Kaiser, Matthias Plappert, Jerry Tworek, Jacob Hilton, Reiichiro Nakano, and 1 others. 2021. Training verifiers to solve math word problems. arXiv preprint arXiv:2110.14168 .Yingqian Cui, Pengfei He, Jingying Zeng, Hui Liu, Xianfeng Tang, Zhenwei Dai, Yan Han, Chen Luo, Jing Huang, Zhen Li, and 1 others. 2025. Stepwise perplexity-guided refinement for efficient chain-of-thought reasoning in large language models. arXiv preprint arXiv:2502.13260 .Muzhi Dai, Shixuan Liu, and Qingyi Si. 2025a. Stable reinforcement learning for efficient reasoning. arXiv preprint arXiv:2505.18086 .Muzhi Dai, Chenxu Yang, and Qingyi Si. 2025b. S-grpo: Early exit via reinforcement learning in reason-ing models. arXiv preprint arXiv:2505.07686 .Yichao Fu, Junda Chen, Yonghao Zhuang, Zheyu Fu, Ion Stoica, and Hao Zhang. 2025. Reasoning without self-doubt: More efficient chain-of-thought through certainty probing. In ICLR 2025 Workshop on Foun-dation Models in the Wild .
+
+Leo Gao, John Schulman, and Jacob Hilton. 2023. Scal-ing laws for reward model overoptimization. In In-ternational Conference on Machine Learning , pages 10835–10866. PMLR. Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Ruoyu Zhang, Runxin Xu, Qihao Zhu, Shi-rong Ma, Peiyi Wang, Xiao Bi, and 1 others. 2025. Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement learning. arXiv preprint arXiv:2501.12948 .Dan Hendrycks, Collin Burns, Saurav Kadavath, Akul Arora, Steven Basart, Eric Tang, Dawn Song, and Ja-cob Steinhardt. 2021. Measuring mathematical prob-lem solving with the math dataset. arXiv preprint arXiv:2103.03874 .Aaron Jaech, Adam Kalai, Adam Lerer, Adam Richard-son, Ahmed El-Kishky, Aiden Low, Alec Helyar, Aleksander Madry, Alex Beutel, Alex Carney, and 1 others. 2024. Openai o1 system card. arXiv preprint arXiv:2412.16720 .Takeshi Kojima, Shixiang Shane Gu, Machel Reid, Yu-taka Matsuo, and Yusuke Iwasawa. 2022. Large lan-guage models are zero-shot reasoners. Advances in neural information processing systems , 35:22199– 22213. Zeju Li, Jianyuan Zhong, Ziyang Zheng, Xiangyu Wen, Zhijian Xu, Yingying Cheng, Fan Zhang, and Qiang Xu. 2025. Compressing chain-of-thought in llms via step entropy. arXiv preprint arXiv:2508.03346 .Hunter Lightman, Vineet Kosaraju, Yuri Burda, Harri-son Edwards, Bowen Baker, Teddy Lee, Jan Leike, John Schulman, Ilya Sutskever, and Karl Cobbe. 2023. Let’s verify step by step. In The Twelfth Inter-national Conference on Learning Representations .Wenjie Ma, Jingxuan He, Charlie Snell, Tyler Griggs, Sewon Min, and Matei Zaharia. 2025a. Reasoning models can be effective without thinking. arXiv preprint arXiv:2504.09858 .Xinyin Ma, Guangnian Wan, Runpeng Yu, Gongfan Fang, and Xinchao Wang. 2025b. Cot-valve: Length-compressible chain-of-thought tuning. arXiv preprint arXiv:2502.09601 .Niklas Muennighoff, Zitong Yang, Weijia Shi, Xi-ang Lisa Li, Li Fei-Fei, Hannaneh Hajishirzi, Luke Zettlemoyer, Percy Liang, Emmanuel Candès, and Tatsunori B Hashimoto. 2025. s1: Simple test-time scaling. In Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing ,pages 20286–20332. Ziqing Qiao, Yongheng Deng, Jiali Zeng, Dong Wang, Lai Wei, Guanbo Wang, Fandong Meng, Jie Zhou, Ju Ren, and Yaoxue Zhang. 2025. Concise: Confidence-guided compression in step-by-step ef-ficient reasoning. In Proceedings of the 2025 Con-ference on Empirical Methods in Natural Language Processing , pages 8021–8040. David Rein, Betty Li Hou, Asa Cooper Stickland, Jack-son Petty, Richard Yuanzhe Pang, Julien Dirani, Ju-lian Michael, and Samuel R Bowman. 2024. Gpqa: A graduate-level google-proof q&a benchmark. In 
+
+First Conference on Language Modeling .Keita Saito, Akifumi Wachi, Koki Wataoka, and Youhei Akimoto. 2023. Verbosity bias in preference la-beling by large language models. arXiv preprint arXiv:2310.10076 .John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. 2017. Proxi-mal policy optimization algorithms. arXiv preprint arXiv:1707.06347 .Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan Zhang, YK Li, Yang Wu, and 1 others. 2024. Deepseekmath: Pushing the limits of mathematical reasoning in open language models. arXiv preprint arXiv:2402.03300 .Charlie Snell, Jaehoon Lee, Kelvin Xu, and Aviral Ku-mar. 2024. Scaling llm test-time compute optimally can be more effective than scaling model parameters. 
+
+arXiv preprint arXiv:2408.03314 .Jinyan Su and Claire Cardie. 2025. Thinking fast and right: Balancing accuracy and reasoning length with adaptive rewards. arXiv preprint arXiv:2505.18298 .Mirac Suzgun, Nathan Scales, Nathanael Schärli, Se-bastian Gehrmann, Yi Tay, Hyung Won Chung, Aakanksha Chowdhery, Quoc Le, Ed Chi, Denny Zhou, and 1 others. 2023. Challenging big-bench tasks and whether chain-of-thought can solve them. In Findings of the Association for Computational Linguistics: ACL 2023 , pages 13003–13051. Kimi Team, Angang Du, Bofei Gao, Bowei Xing, Changjiu Jiang, Cheng Chen, Cheng Li, Chenjun Xiao, Chenzhuang Du, Chonghua Liao, and 1 others. 2025. Kimi k1. 5: Scaling reinforcement learning with llms. arXiv preprint arXiv:2501.12599 .Arne Vanhoyweghen, Brecht Verbeken, Andres Al-gaba, and Vincent Ginis. 2025. Lexical hints of accuracy in llm reasoning chains. arXiv preprint arXiv:2508.15842 .Shenzhi Wang, Le Yu, Chang Gao, Chujie Zheng, Shix-uan Liu, Rui Lu, Kai Dang, Xionghui Chen, Jianxin Yang, Zhenru Zhang, and 1 others. 2025. Beyond the 80/20 rule: High-entropy minority tokens drive effective reinforcement learning for llm reasoning. 
+
+arXiv preprint arXiv:2506.01939 .Heming Xia, Chak Tou Leong, Wenjie Wang, Yongqi Li, and Wenjie Li. 2025. Tokenskip: Controllable chain-of-thought compression in llms. arXiv preprint arXiv:2502.12067 .Silei Xu, Wenhao Xie, Lingxiao Zhao, and Pengcheng He. 2025. Chain of draft: Thinking faster by writing less. arXiv preprint arXiv:2502.18600 .An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, and 1 others. 2025a. Qwen3 technical report. arXiv preprint arXiv:2505.09388 .Chenxu Yang, Qingyi Si, Yongjie Duan, Zheliang Zhu, Chenyu Zhu, Qiaowei Li, Minghui Chen, Zheng Lin, and Weiping Wang. 2025b. Dynamic early exit in reasoning models. arXiv preprint arXiv:2504.15895 .Qiying Yu, Zheng Zhang, Ruofei Zhu, Yufeng Yuan, Xiaochen Zuo, Yu Yue, Weinan Dai, Tiantian Fan, Gaohong Liu, Lingjun Liu, and 1 others. 2025. Dapo: An open-source llm reinforcement learning system at scale. arXiv preprint arXiv:2503.14476 .Di Zhang, Weida Wang, Junxian Li, Xunzhi Wang, Ji-atong Li, Jianbo Wu, Jingdi Lei, Haonan He, Peng Ye, Shufei Zhang, and 1 others. 2025. Control-r: To-wards controllable test-time scaling. arXiv preprint arXiv:2506.00189 .Yifan Zhang and Team Math-AI. 2024. American invi-tational mathematics examination (aime) 2024. Yifan Zhang and Team Math-AI. 2025. American invi-tational mathematics examination (aime) 2025. Yaowei Zheng, Junting Lu, Shenzhi Wang, Zhangchi Feng, Dongdong Kuang, and Yuwen Xiong. 2025. Easyr1: An efficient, scalable, multi-modality rl train-ing framework. https://github.com/hiyouga/ EasyR1 .Yaowei Zheng, Richong Zhang, Junhao Zhang, Yanhan Ye, Zheyan Luo, Zhangchi Feng, and Yongqiang Ma. 2024. Llamafactory: Unified efficient fine-tuning of 100+ language models. In Proceedings of the 62nd Annual Meeting of the Association for Compu-tational Linguistics (Volume 3: System Demonstra-tions) , Bangkok, Thailand. Association for Computa-tional Linguistics. Hourun Zhu, Yang Gao, Wenlong Fei, Jiawei Li, and Huashan Sun. 2025. Entropy-guided reasoning com-pression. arXiv preprint arXiv:2511.14258 .
+
+A Prompts 
+
+Inference Prompt Template 
+
+{Input Question} + Please reason step by step, and put your final answer within \boxed{}. 
+
+CoT Analysis Prompt Template 
+
+System: You are an expert in analyzing the reasoning processes of Large Language Models. Your task is to segment a raw "Chain of Thought" (CoT) into distinct se-mantic steps and classify each step. 
+
+### Input Data 
+
+You will receive: 1. The Math Problem. 2. The raw reasoning text (content within 
+
+<think> tags). 3. Whether the problem was solved cor-rectly. 
+
+### Task 
+
+1. Segmentation : Break the reasoning text into a list of chronological steps. A "step" is a coherent unit of thought, calculation, or reflection. 2. Classification : Assign one of the fol-lowing labels to each step: • Forward : Constructive reason-ing that moves closer to the so-lution (e.g., proposing a method, performing a calculation, deriv-ing a sub-result). • Verification : Self-correction, double-checking, or validating a previous step (e.g., "Wait, let me check", "Re-calculating this", "Since 17 2 is 289..."). Note: This is considered a VALID and useful step. 
+
+• Redundant : Unnecessary repe-tition, getting stuck in a loop, stalled thinking, or restating the obvious without progress (e.g., repeating the question multiple times, "Hmm... let me think", cir-cular logic that adds no value). 
+
+### Output Format (JSON Only) {
+
+> "total_steps": 15, "breakdown": { "forward_count": 10, "verification_count": 3, "redundant_count": 2 }, "steps": [ {"content": "...", "label": "Forward"}, {"content": "Wait, let me double check...", "la-bel": "Verification"},
+
+{"content": "So the answer is... wait no...", "la-bel": "Redundant"} ]}
+
+B Hyper-parameters 
+
+In this section, we list the hyper-parameters used in different phases of training and inference. We used Llama-Factory (Zheng et al., 2024) to con-duct SFT training (for DEER+SFT after rejection sampling), and EasyR1 (Zheng et al., 2025) for GRPO training. Table 3 provides the values for the hyper-parameters. The table includes settings such as the number of GPUs, learning rates, batch sizes, and the number of epochs for each phase. 
+
+Hyper-parameter Value 
+
+Supervised Fine-Tuning (SFT) 
+
+Number of GPUs (H200) 8Per Device Train Batch Size 1Gradient Accumulation Steps 2Learning Rate 1.0 × 10 −5
+
+LR Scheduler Cosine Warmup Ratio 0.1 Epochs 3
+
+GRPO Training 
+
+Number of GPUs (H200) 8Learning Rate 1.0 × 10 −6
+
+Weight Decay 1.0 × 10 −2
+
+KL Coefficient ( βKL ) 0.01 Group Size ( G) 5Rollout Temperature 1.0 Global Batch Size 128 Rollout Batch Size 512 Total Training Steps 100 
+
+Inference 
+
+Temperature 0.6 Top-p 0.9 Max Tokens 32768 
+
+Table 3: Hyper-parameters for SFT, GRPO training, and Inference. 
+
+C Full Reasoning Trajectories 
+
+Demo of Step-GRPO Output 
+
+User Input: 
+
+Every morning, Aya does a 9 kilometer walk, and then finishes at the coffee shop. One day, she walks at s kilometers per hour, and the walk takes 4 hours, including t min-utes at the coffee shop. Another morning, she walks at s + 2 kilometers per hour, and 
+
+the walk takes 2 hours and 24 minutes, in-cluding t minutes at the coffee shop. This morning, if she walks at s + 12 kilometers per hour, how many minutes will the walk take, including the t minutes at the coffee shop? Please reason step by step, and put your final answer within \boxed{}. 
+
+Model Prediction: <think> Okay, so I need to figure out how long Aya’s walk will take this morning, including the time she spends at the coffee shop. Let me start by under-standing the problem step by step. First, the problem says that every morning Aya does a 9 kilometer walk and then finishes at the coffee shop. So, the total distance she walks each morning is 9 km, right? Then, on one day, she walks at a speed of s km/h, and the walk takes 4 hours, including t
+
+minutes at the coffee shop. Another morning, she walks at s + 2 km/h, and the walk takes 2 hours and 24 minutes, including t minutes at the coffee shop. Then, this morning, she walks at s + 1 /2 km/h, and we need to find how many minutes the walk takes, including t minutes at the coffee shop. Hmm, okay. Let me parse this again. The key here is that the total time includes both the walking time and the time spent at the coffee shop. So, when they say “the walk takes 4 hours, including t minutes at the coffee shop,” that means the total time from starting to finish at the coffee shop is 4 hours, which includes both the walking time and the t minutes at the coffee shop. Similarly for the other day. So, let me denote: For the first day: Total time = walking time + t minutes = 4 hours. But walking time is distance divided by speed. The distance is 9 km, speed is s km/h. So walking time is 9/s hours. Then, total time is 9/s + t/ 60 hours = 4 hours. Similarly, for the second day: Total time is 2 hours and 24 minutes, which is 2 + 24 /60 = 2 .4 hours. So, same as before, walking time is 9/(s + 2) hours, and total time is 9/(s + 2) + t/ 60 = 2 .4 hours. So, we have two equations: 1) 9/s + t/ 60 = 4 2) 
+
+9/(s + 2) + t/ 60 = 2 .4
+
+We need to solve these equations to find s and t, then use them to find the total time for the third day, which is walking time at s + 1 /2 km/h plus t minutes. So, first, let me write equations 1 and 2. Equation 1: 
+
+9/s +t/ 60 = 4 . Equation 2: 9/(s+2)+ t/ 60 = 2 .4.So, if I subtract equation 2 from equation 1, the t/ 60 
+
+terms will cancel out. Let me try that. Equation 1 -Equation 2: [9 /s − 9/(s + 2)] + [ t/ 60 − t/ 60] = 4 − 2.4. Simplify: 9/s − 9/(s + 2) = 1 .6.So, compute 9/s − 9/(s + 2) = 1 .6. Let me compute the left side: 9[1 /s − 1/(s + 2)] = 9[( s + 2 −
+
+s)/[s(s + 2)]] = 9[2 /(s(s + 2))] = 18 /[s(s + 2)] .So, 18 /[s(s + 2)] = 1 .6. Let me write 1.6 as 8/5, so: 
+
+18 /[s(s + 2)] = 8 /5.Cross multiplying: 18 × 5 = 8 × s(s + 2) ⇒ 90 = 8s2 + 16 s. Bring all terms to one side: 8s2 + 16 s −
+
+90 = 0 . Divide both sides by 2: 4s2 + 8 s − 45 = 0 .Now, solving quadratic equation 4s2 + 8 s − 45 = 0 .Using quadratic formula: s = [ −b±√b2 − 4ac ]/2a.Here, a = 4 , b = 8 , c = −45 . Discriminant D =82 −4×4×(−45) = 64+720 = 784 . √784 = 28 .So, s = ( −8 ± 28) /8. We have two solutions: s =(−8+28) /8 = 20 /8 = 2 .5 and s = ( −8−28) /8 = −36 /8 = −4.5. But speed can’t be negative, so                                                   
+
+> s= 2 .5km/h. Now, let me find tfrom equation 1: 9/s +t/ 60 = 4 .So, 9/2.5 + t/ 60 = 4 . Compute 9/2.5: 9 divided by 2.5 is same as 9×2/5 = 18 /5 = 3 .6hours. So,
+> 3.6 + t/ 60 = 4 ⇒t/ 60 = 4 −3.6 = 0 .4hours. Convert 0.4 hours to minutes: 0.4×60 = 24 minutes. So, t= 24 minutes. So, now, the problem says: This morning, if she walks at s+1 /2km/h, how many minutes will the walk take, including the tminutes at the coffee shop? So, sis 2.5, so s+ 1 /2is 2.5 + 0 .5 = 3 km/h. So, her speed is 3 km/h. The distance is still 9 km. So, walking time is 9/3 = 3 hours. Then, total time is walking time +
+> tminutes = 3 hours + 24 minutes. Convert 3 hours to minutes: 3×60 = 180 minutes. Then add 24 minutes: 180 + 24 = 204 minutes. Therefore, the total time is 204 minutes. Let me check if this is consistent with the second day’s data. On the second day, she walked at s+ 2 = 2 .5 + 2 = 4 .5
+> km/h. Walking time is 9/4.5 = 2 hours. Then total time is 2 hours + 24 minutes = 2 hours 24 minutes, which is 2.4 hours, which matches the given data. So that’s correct. So, the answer should be 204 minutes.
+
+</think> 
+
+To determine how long Aya’s walk takes this morning, including the time spent at the coffee shop, we need to analyze the re-lationship between her walking speed, the distance, and the total time (including the fixed time at the coffee shop). 
+
+Step 1: Define the Variables 
+
+Let s be Aya’s walking speed in km/h and 
+
+t be the fixed time in minutes at the coffee shop. We are given: • Day 1: Speed s, Total time 4h. 
+
+9
+
+s + t
+
+60 = 4 (1) • Day 2: Speed s + 2 , Total time 2.4h. 
+
+9
+
+s + 2 + t
+
+60 = 2 .4 (2) 
+
+Step 2: Eliminate t to Solve for s
+
+Subtract equation (2) from equation (1): 
+
+ 9
+
+s − 9
+
+s + 2 
+
+
+
+= 4 − 2.4 = 1 .69
+
+ s + 2 − ss(s + 2) 
+
+
+
+= 1 .618 
+
+s(s + 2) = 8590 = 8 s2 + 16 s
+
+4s2 + 8 s − 45 = 0 
+
+Use the quadratic formula: 
+
+s = −8 ± p82 − 4(4)( −45) 2(4) = −8 ± √64 + 720 8= −8 ± 28 8
+
+We get s = 2 .5 (discarding s = −4.5). 
+
+Step 3: Solve for t
+
+Plug s = 2 .5 into equation (1): 
+
+92.5 + t
+
+60 = 4 3.6 + t
+
+60 = 4 ⇒ t = 24 minutes 
+
+Step 4: Compute Total Time This Morn-ing 
+
+This morning, Aya walks at s + 0 .5 = 3 
+
+km/h. Total Time = 93 hours + 24 minutes 
+
+= 3 × 60 + 24 = 180 + 24 = 204 minutes 
+
+Final Answer 
+
+204 
+
+D Generalization Capabilities 
+
+To verify the broad universality of Step-GRPO and rule out the possibility that our method overfits to specific models or domains, we evaluate its per-formance across two crucial dimensions: differing model architectures and non-mathematical reason-ing domains. 
+
+Generalization to Other Architectures We con-ducted supplementary experiments substituting the base model with the DeepSeek-R1-Distill-Llama-8B architecture. The experimental results show that Step-GRPO also demonstrates robust performance on the Llama architecture. Specif-ically, Step-GRPO achieved the best overall to-ken compression rate (CR = 66.79%) compared to Vanilla (100.00%), GRPO (109.03%), and GRPO-
+
+λ (81.83%) while maintaining a highly competitive overall accuracy of 65.40%. On highly challenging tasks like AIME and rel-atively difficult tasks such as GPQA, Step-GRPO Table 4: Generalization results on DeepSeek-R1-Distill-Llama-8B architecture.                                                                             
+
+> Method GSM8K GPQA Diamond MATH-500 AMC 23 AIME 2024 AIME 2025 Overall
+> Acc Tok Acc Tok Acc Tok Acc Tok Acc Tok Acc Tok Acc CR
+> Vanilla 87.95 1673.61 46.97 8919.74 89.80 4237.33 87.50 6151.73 46.67 15542.40 23.33 14925.97 63.70 100.00 GRPO 89.23 2228.22 50.51 9084.33 93.20 4476.27 90.00 7792.75 53.33 13407.43 26.67 15017.83 67.20 109.03 GRPO-λ86.96 987.39 52.02 8082.42 90.40 3138.21 87.50 5633.93 46.67 12711.67 30.00 14019.73 65.60 81.83
+> Step-GRPO (Ours) 87.49 976.08 51.01 6984.80 88.60 2710.77 85.00 5060.15 50.00 9105.30 30.00 8848.23 65.40 66.79
+
+achieves significant token compression while main-taining or even improving accuracy. This indicates that our formulation—optimizing relative semantic efficiency—effectively adapts to reasoning models with diverse, idiosyncratic output characteristics without relying on model-specific features. 
+
+Generalization to Non-Mathematical Domains 
+
+To further demonstrate that our approach transfers beyond domain-specific math problems, we evalu-ated Step-GRPO on BIG-Bench Hard (BBH) (Suz-gun et al., 2023), a benchmark emphasizing sym-bolic and abstract logical reasoning. As shown in Table 5, Step-GRPO achieves the highest accuracy (86 .51% ) across all methods while maintaining a superior compression rate compared to standard GRPO and SFT baselines. This confirms that the internalized cognitive state transitions captured by our linguistic triggers apply universally across di-verse reasoning paradigms. 
+
+Table 5: Performance on the BIG-Bench Hard (BBH) benchmark. 
+
+Method Acc Tokens CR 
+
+Vanilla 86.14 1337 100.0 GRPO 85.96 1247 93.2 DEER-SFT 84.89 1520 113.6 GRPO-λ 86.30 989 74.0 GRPO-LP 84.81 811 60.7 GRPO-SOP 86.46 1084 81.1 
+
+Step-GRPO (Ours) 86.51 1097 82.1 
+
+E Ablation on Confidence Threshold 
+
+The dynamic truncated rollout relies on the thresh-old δ to decide when to pause generation. A poten-tial concern is whether confidence estimates cor-relate perfectly with correctness, as models can be “confidently wrong” on harder instances. How-ever, Step-GRPO does not rely solely on the pre-trained priors; the RL process itself serves as a continuous calibration mechanism. During train-ing, trajectories that are “short, high-confidence, but factually incorrect” receive severe negative re-wards. This dense error-signal forces the model to gradually align its confidence probability with actual correctness. To demonstrate the robustness of our dynamic exit criterion, we performed an ab-lation on the threshold parameter δ. The overall results in Table 6 show that while lower thresh-olds ( δ = 0 .80 , δ = 0 .90 ) induce more aggressive truncation leading to faster performance drops, our chosen threshold ( δ = 0 .95 ) effectively balances accuracy and token usage. Notably, the method comfortably outperforms baselines across a broad, reasonable range of confidence thresholds, reinforc-ing the validity of the stopping criterion. 
+
+F Empirical Stability Evaluation 
+
+To further address variance and confirm stability, we conducted independent runs across all bench-marks on Qwen3-8B. Table 7 reports the Accuracy Mean ± Standard Deviation across three random seeds. Step-GRPO achieves the highest overall sta-bility, consistently minimizing outcome variance effectively. In contrast, static length-penalty meth-ods demonstrate significant instability, especially on highly demanding tasks such as AIME. 
+
+G Training Overhead 
+
+To clearly demonstrate the trade-off in computa-tional cost introduced by the Dynamic Truncated Rollout, we compare the average per-step time overhead (in seconds) of standard GRPO and Step-GRPO on the Qwen3-8B model. As shown in Ta-ble 8, we evaluate both the initial phase (first 50 steps) and the convergence phase (last 50 steps). While the Generation phase naturally incurs an initial overhead due to the dynamic confidence estimation and answer induction during rollout, this is effectively compensated for by significant time savings in the Update , Old Policy , and Refer-ence Model phases. This reduction occurs because as the model rapidly learns to generate shorter, more efficient sequences, the computational bur-den for backward passes and likelihood calcula-tions drops dramatically. Notably, as the model Table 6: Ablation on confidence threshold δ. We report Accuracy (%) across six benchmarks and Overall Compres-sion Rate (CR).                                            
+
+> Model / Threshold GSM8K GPQA MATH-500 AMC 23 AIME 24 AIME 25 Overall (Acc) Overall (CR)
+> Vanilla 93.2 62.1 96.8 97.5 70.0 60.0 79.9 100.0
+> δ= 0 .80 93.3 55.6 94.0 92.5 66.7 46.7 74.8 62.0
+> δ= 0 .90 93.4 56.1 95.4 90.0 70.0 56.7 76.9 64.0
+> Step-GRPO ( δ= 0 .95 )94.9 56.1 96.8 95.0 76.7 73.3 82.1 68.0
+
+Table 7: Accuracy (Mean ± Std) across 3 independent runs on Qwen3-8B. 
+
+Method GSM8K MATH-500 GPQA AMC 23 AIME 24 AIME 25 Overall 
+
+Vanilla 93.1 ± 0.4 96.5 ± 0.3 57.1 ± 0.0 95.0 ± 0.0 67.8 ± 5.1 62.2 ± 7.7 78.6 ± 2.3 DEER+SFT 90.8 ± 0.3 94.4 ± 0.7 46.8 ± 0.6 87.5 ± 2.5 57.8 ± 3.9 51.1 ± 3.9 71.4 ± 2.0 GRPO 93.3 ± 0.3 96.4 ± 0.2 57.7 ± 1.5 93.3 ± 1.4 76.7 ± 3.3 58.9 ± 6.9 79.4 ± 2.3 GRPO-λ 92.9 ± 0.2 96.1 ± 0.3 57.1 ± 2.2 92.5 ± 0.0 73.3 ± 3.3 54.5 ± 6.9 77.7 ± 2.2 GRPO+LP 93.7 ± 0.3 95.1 ± 0.2 58.3 ± 1.8 93.3 ± 2.9 68.9 ± 3.9 50.0 ± 5.8 76.5 ± 2.5 GRPO+SOP 92.5 ± 0.2 96.5 ± 0.1 57.2 ± 1.9 92.5 ± 0.0 75.6 ± 1.9 62.2 ± 5.1 79.4 ± 1.6 Step-GRPO 94.8 ± 0.0 96.5 ± 0.2 56.6 ± 0.9 95.8 ± 1.4 77.8 ± 5.1 68.9 ± 3.9 81.7 ± 1.9 
+
+Table 8: Average per-step time overhead (seconds) on Qwen3-8B.                          
+
+> Method Generation Update Old Policy Ref Model Reward
+> GRPO (0-50 steps) 1184.8 928.5 183.4 187.1 3.8 Step-GRPO (0-50 steps) 1678.1 659.2 101.3 101.1 3.8 GRPO (50-100 steps) 1111.6 904.1 179.4 183.1 3.6 Step-GRPO (50-100 steps) 1392.7 551.3 85.8 85.6 3.8
+
+converges (Steps 50-100), Step-GRPO actually be-comes faster overall due to these escalating effi-ciency gains, demonstrating that the initial rollout calculation is a highly worthwhile investment for an efficient training loop. 
+
+H Robustness of Heuristic Triggers 
+
+A natural concern regarding our methodology is the sensitivity of the heuristic trigger words ( e.g. ,“Wait”, “Alternatively”) used to segment semantic steps. While exploring parameter-free or learned segmentation models represents a promising fu-ture direction, we argue that our current approach provides sufficient robustness for two primary rea-sons. First, Action Transition Points : recent liter-ature (Yang et al., 2025b; Qiao et al., 2025) val-idates these markers as Action Transition Points that naturally signal a high-entropy cognitive shift from linear deduction to self-verification or branch correction. They serve as semantic anchors that effectively delineate valid reasoning steps from re-dundant loops, demonstrating that they are fun-damental to multi-step reasoning processes rather than artifacts of a specific writing style or language. Second, RL Adaptability and Invariance : while heuristic, these triggers serve as initial anchors for an adaptive RL process. Step-GRPO fundamentally relies on the group-relative baseline (Equation 4). Even if the chosen trigger set is imperfect—such as missing occasional boundary markers in a spe-cific domain—the resulting “step count bias” is uniformly applied across all completions within the same sample group G, ensuring the relative ranking of generation efficiency remains consis-tent and valid. Furthermore, the model learns to align its internal confidence with these structural boundaries to maximize the reward. This struc-tural resilience allows the RL gradient to correctly favor shorter valid paths, making the system inher-ently robust to minor linguistic variations and the absolute granularity defining a single “step”.

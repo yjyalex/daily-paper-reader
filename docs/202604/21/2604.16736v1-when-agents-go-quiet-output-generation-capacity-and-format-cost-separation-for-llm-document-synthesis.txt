@@ -1,0 +1,525 @@
+Title: When Agents Go Quiet: Output Generation Capacity and Format-Cost Separation for LLM Document Synthesis
+
+URL Source: https://arxiv.org/pdf/2604.16736v1
+
+Published Time: Tue, 21 Apr 2026 00:22:51 GMT
+
+Number of Pages: 12
+
+Markdown Content:
+# When Agents Go Quiet: Output Generation Capacity and Format-Cost Separation for LLM Document Synthesis 
+
+Justice Owusu Agyemang 1,2∗
+
+, Michael Agyare 3, Miriam Kobbinah 4,Nathaniel Agbugblah 2, Prosper Addo 2
+
+> 1
+
+Sperix Labs 2VIA Cybersecurity Lab, KNUST 3GCTU, Ghana 4NCA, Ghana 
+
+April 2026 
+
+# Abstract 
+
+LLM-powered coding agents suffer from a poorly understood failure mode we term output stalling :the agent silently produces empty responses when attempting to generate large, format-heavy docu-ments. We present a theoretical framework that explains and prevents this failure through three contributions. (1) We introduce Output Gener-ation Capacity (OGC), a formal measure of an agent’s effective ability to produce output given its current context state—distinct from and empiri-cally smaller than the raw context window. (2) We prove a Format-Cost Separation Theorem showing that deferred template rendering is always at least as token-efficient as direct generation for any for-mat with overhead multiplier μf > 1, and derive tight bounds on the savings. (3) We formalize 
+
+Adaptive Strategy Selection , a decision framework that maps the ratio of estimated output cost to available OGC into an optimal generation strat-egy (direct, chunked, or deferred). We validate the theory through controlled experiments across three models (Claude 3.5 Sonnet, GPT-4o, Llama 3.1 70B), four document types, and an ablation study isolating each component’s contribution. De-ferred rendering reduces LLM generation tokens by 48–72% across all conditions and eliminates output stalling entirely. We instantiate the framework as 
+
+Gen-Pilot , an open-source MCP server, demon-strating that the theory translates directly into a practical tool. 
+
+> ∗jay@sperixlabs.org
+
+# 1 Introduction 
+
+Tool-using LLM agents [23, 33, 15] now per-form complex software engineering tasks: writ-ing code [10], managing repositories [32], and pro-ducing formatted documents as part of multi-step workflows [28, 30]. Platforms such as Claude Code [4], Cursor [5], and SWE-agent [32] expose these capabilities through the Model Context Pro-tocol (MCP) [3]. A critical failure mode affects these agents when generating large, format-heavy outputs . Unlike hallucination [13, 12]—which produces visible (if incorrect) output— output stalling manifests as complete silence: the agent’s response is empty, no error is raised, and repeated attempts silently con-sume the context budget. We observed this fail-ure burning ∼50 ,000 tokens across five consecutive empty responses in a real agent session (Section 2). We argue that output stalling is not merely an engineering nuisance but reveals a fundamental gap in current agent architectures: the absence of 
+
+generation-capacity metacognition —the abil-ity of an agent to reason about whether it can pro-duce a given output before attempting to do so. This paper makes three theoretical contributions and validates them empirically: 1. Output Generation Capacity (OGC): We formalize the concept of effective generation ca-pacity as distinct from context window size, and show empirically that OGC degrades non-linearly as context fills (Section 3). 2. Format-Cost Separation Theorem: We de-1
+
+> arXiv:2604.16736v1 [cs.AI] 17 Apr 2026
+
+compose generation cost into content tokens 
+
+and format tokens , prove that deferred render-ing eliminates format tokens from LLM genera-tion, and derive the conditions under which each strategy is optimal (Section 4). 3. Adaptive Strategy Selection: We formalize a decision framework that maps OGC and es-timated output cost into an optimal strategy, with provable dominance ordering: deferred ⪰
+
+chunked ⪰ direct in feasibility (Section 5). We validate the theory through experiments across three LLMs, four document types, and a full ablation study (Section 7), and instantiate it as Gen-Pilot , an open-source MCP server (Sec-tion 6). 
+
+# 2 Motivating Incident 
+
+We briefly describe the real-world failure that mo-tivated our theoretical investigation. An LLM coding agent (Claude 3.5 Sonnet, 200K context) evaluated nine research papers, ac-cumulating ∼90 ,000 tokens of analysis. When asked to generate a formatted Word document via python-docx, the agent produced five consecu-tive empty responses , burning ∼50 ,000 tokens with zero output. Switching to LaTeX with chun-ked generation succeeded immediately, producing a 14-page PDF in one attempt using ∼10 ,000 tokens. 
+
+Key observation: The failure was not due to insufficient context window (200K tokens available) but to the agent attempting to generate ∼10 ,000 
+
+output tokens in a single turn while ∼90 ,000 to-kens of context were already occupied. The effec-tive generation capacity at 45% context occupancy was insufficient for the output size, but no mech-anism existed to detect this before the attempt. Note that newer models with larger context win-dows (e.g., 1M tokens) shift the absolute occupancy at which stalling occurs, but do not eliminate it— the OGC framework (Section 3) shows that degra-dation is a function of the occupancy ratio o/C , not the absolute context size. This incident raises three questions that the re-mainder of this paper addresses formally: (1) How does effective generation capacity relate to context occupancy? (2) Can we reduce the token cost of formatted output without reducing content? (3) Given limited capacity, what generation strategy minimizes failure risk? 
+
+# 3 Output Generation Capacity 
+
+We formalize the concept of Output Generation Ca-pacity (OGC)—the maximum number of tokens an LLM can reliably generate in a single turn given its current context state. 
+
+3.1 Formal Definition 
+
+Definition 1 (Context State) . A context state 
+
+σ = ( C, o ) consists of the model’s context limit C
+
+(maximum tokens) and the current context occu-pancy o (tokens consumed by conversation history, system prompts, and tool results), where 0 ≤ o ≤
+
+C.
+
+Definition 2 (Raw Headroom) . The raw head-room H(σ) = C − o is the maximum number of tokens the model could theoretically generate. 
+
+Definition 3 (Output Generation Capacity) . The 
+
+Output Generation Capacity OGC( σ) is the maxi-mum number of tokens the model can reliably gen-erate (with probability ≥ 1 − ϵ for a reliability threshold ϵ) in a single turn at context state σ. For-mally: 
+
+OGC( σ) = α 
+
+> (
+
+oC
+
+> )
+
+· H(σ) (1) 
+
+where α : [0 , 1] → [0 , 1] is a capacity degradation function satisfying α(0) = 1 , α(1) = 0 , and α is monotonically non-increasing. 
+
+The key insight is that OGC( σ) < H (σ) in gen-eral: effective generation capacity degrades faster than raw headroom as context fills. This is be-cause: (a) the model must allocate attention across all context tokens, reducing effective compute per output token [27, 16]; (b) internal generation limits (e.g., max_tokens ) may be smaller than the context window; and (c) the model’s internal planning for long outputs may fail when it cannot “see” enough empty space ahead. 
+
+3.2 Empirical Measurement of α
+
+We measure α empirically by prompting three models to generate documents of increasing length at varying context occupancy levels. For each 20 0.2 0.4 0.6 0.8 1
+
+> 0
+> 0.5
+> 1
+
+Context occupancy o/C  
+
+> α(o/C )
+> Claude 3.5 Sonnet
+> GPT-4o
+> Llama 3.1 70B
+> Linear ( α= 1 )
+
+Figure 1: Empirical capacity degradation α(o/C )
+
+across three models. All models degrade faster 
+
+than linear (dashed), with effective OGC dropping below 50% of raw headroom by o/C ≈ 0.55 . Mea-sured at ϵ = 0 .05 (95% reliability). 
+
+(o/C, target length ) pair, we record whether the model produces complete output, truncated out-put, or an empty response (stall). Figure 1 shows the measured degradation curves. All three models exhibit similar sigmoid-like decay, with α dropping sharply between o/C = 0 .4 and 
+
+o/C = 0 .7. Critically, at the incident’s context occupancy ( o/C = 0 .45 ), the effective OGC was only ∼77% of raw headroom for Claude, and the remaining capacity was insufficient for reliable gen-eration of the ∼10 ,000 -token python-docx output given the format overhead. 
+
+Proposition 1 (Sigmoid Approximation) .
+
+The empirical degradation function is well-approximated by a logistic sigmoid: 
+
+α(r) ≈ 11 + ek(r−r0) (2) 
+
+where r = o/C , k controls the steepness of degradation, and r0 is the midpoint. Fit-ted parameters: Claude ( k=8 .2, r 0=0 .58 ), GPT-4o ( k=8 .8, r 0=0 .55 ), Llama 3.1 ( k=9 .1, r 0=0 .52 ). RMSE < 0.03 for all models. 
+
+# 4 Format-Cost Separation 
+
+We now formalize the decomposition of genera-tion cost into content and format components, and prove that format-cost separation via deferred ren-dering is provably more efficient than direct gener-ation. Table 1: Format multipliers μf across models (mean ± std over 4 document types). Higher μf
+
+means more tokens per unit of content. 
+
+Format Claude GPT-4o Llama Mean 
+
+Raw text 1.00 1.00 1.00 1.00 Markdown 1.05 ±.02 1.06 ±.03 1.04 ±.02 1.05 JSON 1.15 ±.04 1.18 ±.05 1.12 ±.03 1.15 HTML 1.20 ±.03 1.22 ±.04 1.18 ±.03 1.20 LATEX 1.30 ±.05 1.33 ±.06 1.27 ±.04 1.30 python-docx 1.40 ±.07 1.45 ±.08 1.36 ±.06 1.40 
+
+4.1 Token Cost Model 
+
+Definition 4 (Format Multiplier) . For a document with raw content c (plain text) and target format f ,the format multiplier μf ≥ 1 is the ratio: 
+
+μf = |c|f
+
+|c|raw 
+
+(3) 
+
+where |c|f denotes the token count of content c ex-pressed in format f , and |c|raw is the token count of the raw content. 
+
+Table 1 reports empirically measured multipliers across three models and six formats. 
+
+Definition 5 (Generation Cost) . The generation cost of producing content c in format f using strat-egy s is: 
+
+Tdirect (c, f ) = |c|raw · μf (4) 
+
+Tdefer (c, f ) = |c|data + Ttpl (5) 
+
+Tchunk (c, f, k ) = 
+
+> k
+
+∑
+
+> i=1
+
+|ci|raw · μf + Tasm (6) 
+
+where |c|data is the token count of c as structured data (typically JSON), Ttpl is the one-time cost of template registration, k is the number of chunks, ci
+
+is the i-th chunk, and Tasm is the assembly over-head. 
+
+4.2 The Format-Cost Separation Theo-rem 
+
+Theorem 1 (Format-Cost Separation Bound) .
+
+For any content c with |c|raw > 0 and any format 
+
+f with multiplier μf > 1:
+
+Tdefer (c, f ) ≤ Tdirect (c, f ) iff 
+
+|c|data + Ttpl ≤ | c|raw · μf (7) 3Moreover, the token savings ratio is: 
+
+ρ = 1 − Tdefer 
+
+Tdirect 
+
+= 1 − |c|data + Ttpl 
+
+|c|raw · μf
+
+(8) 
+
+Proof. By Definition 5, Tdefer ≤ Tdirect is equiv-alent to |c|data + Ttpl ≤ | c|raw · μf . Since struc-tured data (JSON) contains only content without format markup, we have |c|data ≤ | c|raw ·μjson where 
+
+μjson ≈ 1.15 . For Ttpl amortized over documents of non-trivial size ( >500 tokens), the condition holds whenever μf > μ json + Ttpl /|c|raw . For typical doc-uments ( |c|raw ≥ 2000 , Ttpl ≤ 1500 ), this requires 
+
+μf > 1.15 + 0 .75 ≈ 1.20 —satisfied by HTML, LATEX, and python-docx. The savings ratio follows by algebraic substitution. 
+
+Corollary 1 (Asymptotic Savings) . As document size grows ( |c|raw → ∞ ), the template cost is amor-tized and: 
+
+ρ → 1 − μjson 
+
+μf
+
+(9) 
+
+For python-docx ( μf = 1 .40 ): ρ → 17 .9% . For LATEX ( μf = 1.30 ): ρ → 11 .5% . In practice, savings are larger because deferred rendering al-lows the LLM to produce compressed structured data (omitting redundant phrasing the template re-introduces), yielding |c|data < |c|raw .
+
+4.3 Empirical Savings 
+
+Figure 2 shows measured savings across four doc-ument types, confirming that practical savings ex-ceed the theoretical lower bound because of content compression. 
+
+# 5 Adaptive Strategy Selection 
+
+Given the OGC model and the format-cost decom-position, we now formalize the strategy selection problem. 
+
+5.1 Feasibility and Strategy Space 
+
+Definition 6 (Generation Feasibility) . A genera-tion task (c, f ) is feasible under strategy s at con-text state σ if the generation cost under s does not exceed the OGC: 
+
+Ts(c, f ) ≤ OGC eff (σ) (10) 
+
+where OGC eff (σ) = α(o/C ) · (C − o) from Defini-tion 3. 
+
+> Eval. report
+> API docs
+> Meeting notes
+> Data report
+> 0
+> 20
+> 40
+> 60
+> 80
+> 17 .9
+> 11 .5
+> 0
+> 17 .9
+> 55
+> 66
+> 48
+> 72
+
+Document type   
+
+> Token savings  ρ (%)  Theoretical ρmin
+> Measured ρ
+
+Figure 2: Token savings from deferred rendering. Measured savings (blue) substantially exceed the theoretical lower bound (gray) because the LLM produces compressed structured data. Eval. re-port and data report use python-docx ( μ=1 .4); API docs use L ATEX ( μ=1 .3); meeting notes use Markdown ( μ=1 .05 , theoretical bound is zero since 
+
+μjson > μ md , so all savings come from content com-pression). 
+
+Definition 7 (Strategy Space) . The strategy space 
+
+S = {direct , chunk k, defer } consists of: 
+
+• direct: generate the full formatted output in one turn 
+
+• chunk k: split generation into k sequential turns 
+
+• defer: generate structured data + template sep-arately 
+
+Theorem 2 (Strategy Dominance) . The strategies satisfy a feasibility dominance ordering: 
+
+Fdefer ⊇ F chunk ⊇ F direct (11) 
+
+where Fs is the set of (c, f, σ ) triples for which strategy s is feasible. That is, any task feasible un-der direct generation is also feasible under chunked and deferred, but not vice versa. Proof. For direct: feasible iff |c|raw · μf ≤
+
+OGC eff (σ).For chunk k: each chunk must satisfy |ci|raw ·μf ≤
+
+OGC eff (σi) where σi is the context state at chunk 
+
+i. Since |ci| ≤ | c|/k , chunking reduces the per-turn requirement, making more tasks feasible. For defer: the LLM generates only |c|data tokens (plus a one-time Ttpl ), with template rendering 40 0.2 0.4 0.6 0.8 
+
+> 0
+> 20
+> 40
+> Incident ( o/C =0 .45 )
+> Target: 10K tokens
+> Context occupancy o/C
+> Max feasible output (K tokens)
+> Deferred max
+> Chunked max ( k=4 )
+> Direct max
+
+Figure 3: Feasibility regions for the three strate-gies (Claude, C=200 K, μf =1 .4). At the incident’s occupancy ( o/C =0 .45 , red vertical), a 10K-token output (red horizontal) is infeasible for direct but feasible for defer. The gap between strategies widens with occupancy. consuming zero LLM tokens. Since |c|data ≤ | c|raw ·
+
+μf (strict inequality for all μf > 1), defer is feasi-ble whenever direct is, plus additional tasks where 
+
+|c|data ≤ OGC eff but |c|raw · μf > OGC eff .
+
+5.2 Optimal Strategy Selection 
+
+Given the dominance ordering, the optimal strat-egy minimizes cost while remaining feasible: 
+
+s∗ = arg min  
+
+> s∈S
+
+Ts(c, f ) s.t. Ts(c, f ) ≤ OGC eff (σ)
+
+(12) In practice, we implement this as a decision cas-cade: 
+
+s∗ =
+
+> 
+
+direct if Tdirect ≤ OGC eff · β
+
+chunk k if Tdirect /k ≤ OGC eff · β
+
+defer otherwise (13) where β ∈ (0 , 1) is a safety margin (we use 
+
+β = 0 .67 , requiring the estimated cost to be at most 67% of OGC to account for estimation un-certainty). The cascade prefers simpler strategies when feasible, falling back to more robust ones as capacity tightens. Figure 3 illustrates the feasibility regions, show-ing how the three strategies have nested feasibil-ity envelopes. At the incident’s context state, the 10K-token python-docx output falls outside the di-rect strategy’s envelope but well within the de-ferred strategy’s envelope—exactly matching the observed behavior. 
+
+# 6 Implementation 
+
+We instantiate the theoretical framework as Gen-Pilot , an open-source MCP server [3] that exposes seven tools organized into three layers correspond-ing to the three theoretical contributions. 
+
+Layer 1 (Budget) implements OGC estima-tion: gp_estimate computes |c|f = |c|raw · μf us-ing the cl100k_base tokenizer [18, 24]; gp_budget 
+
+computes OGC eff (σ) and returns the strategy rec-ommendation from Equation 13. 
+
+Layer 2 (Planning) implements adaptive strategy selection: gp_plan solves Equation 12 and returns an ordered step sequence; gp_replan ap-plies the dominance ordering (Theorem 2) to re-cover from failures by descending the cascade. 
+
+Layer 3 (Rendering) implements format-cost separation: gp_register_template stores Jinja2 [22] templates; gp_render performs the 
+
+Ttpl = 0 rendering step; gp_list_templates pro-vides template discovery with JSON Schema for each template’s expected data structure, enabling agents to construct valid input without trial-and-error. 
+
+Recovery bounds. The cascade in Equation 13 could in principle cycle between chunked and de-ferred strategies indefinitely. The implementation bounds recovery at three replans; beyond this, 
+
+gp_replan returns an actionable error recommend-ing context compaction or scope reduction. 
+
+Security. Templates are rendered inside Jinja2’s SandboxedEnvironment , preventing server-side template injection. HTML templates enable auto-escaping to prevent cross-site scripting when rendered output is viewed in a browser. Template names are validated against path traversal, directory separators, and null bytes. The implementation integrates with Resilient-Write [1] for atomic file writes. All state is persisted in .gen_pilot/ (templates, plans, configuration) with automatic garbage collection of stale plan files. The package ships with four pre-built templates and a calibration script for measuring μf on new content types. For-5mat multipliers are configurable per-workspace via .gen_pilot/config.json , allowing calibrated overrides to propagate consistently through budget estimation, planning, and replanning. 
+
+# 7 Evaluation 
+
+We evaluate the theoretical framework through four experiments: (1) a controlled comparison of strategies on the original incident, (2) generaliza-tion across document types, (3) cross-model val-idation, and (4) an ablation study isolating each component. 
+
+7.1 Experimental Setup 
+
+Models: Claude 3.5 Sonnet (200K context), GPT-4o (128K context), Llama 3.1 70B (128K context). All experiments use a controlled context occupancy of o/C ≈ 0.45 by pre-filling the context with anal-ysis data. 
+
+Document types: 
+
+1. Evaluation report : 14-page academic evaluation of 9 papers (incident scenario) 2. API documentation : Reference docs for 42 REST endpoints 3. Meeting notes : Structured notes with action items from a 2-hour session 4. Data report : Statistical analysis report with 15 tables and 8 figures 
+
+Strategies: (a) Direct —generate full formatted output in one shot; (b) Chunked —split into 4 se-quential chunks; (c) Deferred —structured data + template rendering. 
+
+Metrics: LLM tokens consumed (generation cost), success rate (complete output produced), wall-clock time, output quality (content complete-ness score 0–100). Each condition was run 5 times. We report means with 95% confidence intervals. 
+
+7.2 Experiment 1: Strategy Compari-son 
+
+Table 2 presents results for the incident scenario (evaluation report, Claude 3.5 Sonnet, o/C =0.45 ). Table 2: Strategy comparison on the evaluation report (Claude, o/C =0 .45 ). Mean ± 95% CI over 5 runs.                 
+
+> Strategy Tokens Succ. Time Qual.
+> Direct 9,940 ±380 0/5 ——Chunked 10 ,850 ±290 3/5 48 s 87 ±4
+> Deferred 4,480 ±120 5/5 19 s 94 ±2
+> Eval API Meeting Data
+> 0
+> 10
+> 20
+> 9.9
+> 18
+> 4.2
+> 21 .5
+> 4.5
+> 6.2
+> 2.2
+> 6
+> LLM tokens (K)  Direct
+> Deferred
+
+Figure 4: Token cost comparison: direct vs. deferred generation across four document types (Claude, moderate context occupancy). Deferred rendering saves 48–72% across all types. Direct generation failed in all 5 runs (output stalling). Chunked succeeded 60% of the time (3/5), with 2 runs producing truncated output on the final chunk. Deferred succeeded in all runs with 55% fewer tokens , 2.5 × faster wall-clock time, and higher quality (because the template enforces consistent formatting). 
+
+7.3 Experiment 2: Cross-Document Generalization 
+
+Figure 4 shows token costs across all four document types using deferred vs. direct generation. Deferred rendering consistently reduces token cost: 55% for evaluation reports, 66% for API documentation, 48% for meeting notes, and 72% for data reports. The savings are largest for data-heavy documents (tables, figures) where the format-to-content ratio is highest. 
+
+7.4 Experiment 3: Cross-Model Valida-tion 
+
+We replicate the evaluation report experiment on GPT-4o and Llama 3.1 70B to test whether the 6Claude GPT-4o Llama    
+
+> 0
+> 5
+> 10 9.9
+> 10 .8
+> 9.2
+> 10 .911 .5
+> 10 .1
+> 4.54.9
+> 4.1
+> LLM tokens (K)  Direct
+> Chunked
+> Deferred
+
+Figure 5: Token cost across models for the evalua-tion report. Deferred rendering provides consistent savings (53–56%) regardless of model, while chun-ked generation adds slight overhead from inter-chunk context. Table 3: Success rates across models and strategies (evaluation report, o/C ≈ 0.45 , 5 runs each). 
+
+Strategy Claude GPT-4o Llama 
+
+Direct 0/5 0/5 1/5 Chunked 3/5 2/5 3/5 Deferred 5/5 5/5 5/5 
+
+framework generalizes across model families. Table 3 confirms that output stalling is not model-specific : all three models stall under direct generation at moderate context occupancy. De-ferred rendering achieves 100% success across all models, validating that the OGC framework and format-cost separation are model-agnostic princi-ples. 
+
+7.5 Experiment 4: Ablation Study 
+
+We isolate the contribution of each theoretical com-ponent by selectively disabling layers: 
+
+• No framework : Naive direct generation (base-line) 
+
+• OGC only : Budget awareness prevents infeasi-ble attempts but does not change strategy (falls back to chunked) 
+
+• OGC + FCS : Budget awareness + deferred rendering, no adaptive planning (always uses de-fer) 
+
+• Full : All three components     
+
+> None OGC OGC+FCS Full
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100 Success (%)
+> Token savings (%)
+> Waste prevented (%)
+
+Figure 6: Ablation study on the evaluation re-port (Claude, o/C =0 .45 ). OGC alone eliminates wasted tokens by preventing infeasible attempts. Adding FCS provides the token savings. The full framework adds adaptive selection (choosing opti-mal strategy rather than always deferring). 
+
+Key findings (Figure 6): 1. OGC alone is sufficient to prevent waste— by detecting infeasibility before the attempt, it eliminates the ∼50 ,000 wasted tokens. However, it falls back to chunked generation (60% success rate). 2. Adding FCS brings success to 100% and de-livers 55% token savings, because deferred ren-dering operates well within OGC even at high context occupancy. 3. Adaptive selection adds marginal benefit in this high-pressure scenario (defer is always cho-sen), but matters at lower occupancy where direct or chunked generation is cheaper and equally reliable. This demonstrates that OGC and FCS are the two essential contributions, while adaptive selec-tion is an optimization that matters across the full occupancy spectrum. 
+
+7.6 Statistical Summary 
+
+Table 4 consolidates results across all conditions. 
+
+Discussion. Three patterns emerge from Ta-ble 4: 
+
+(1) Deferred rendering dominates across all con-ditions. It achieves 100% success rate in every cell (60 out of 60 runs) while reducing tokens by 48– 72%. No other strategy achieves universal success. 7Table 4: Consolidated results across models, document types, and strategies. Token counts in thousands (K). Success rate over 5 runs. Savings ρ computed relative to direct generation. Best result per row in 
+
+bold .                                                                                                                        
+
+> Claude 3.5 Sonnet GPT-4o Llama 3.1 70B Document Strategy Tok. Succ. ρTok. Succ. ρTok. Succ. ρ
+> Eval. report Direct 9.9K 0/5 —10.8K 0/5 —9.2K 1/5 —Chunked 10.9K 3/5 —11.5K 2/5 —10.1K 3/5 —Deferred 4.5K 5/5 55% 4.9K 5/5 55% 4.1K 5/5 55%
+> API docs Direct 18.0K 3/5 —19.2K 2/5 —16.8K 3/5 —Chunked 19.5K 5/5 —20.1K 5/5 —18.2K 5/5 —Deferred 6.2K 5/5 66% 6.8K 5/5 65% 5.7K 5/5 66%
+> Meeting Direct 4.2K 5/5 —4.5K 5/5 —3.9K 5/5 —Chunked 4.8K 5/5 —5.1K 5/5 —4.4K 5/5 —Deferred 2.2K 5/5 48% 2.4K 5/5 47% 2.0K 5/5 49%
+> Data report Direct 21.5K 1/5 —23.0K 0/5 —19.8K 1/5 —Chunked 22.8K 4/5 —24.1K 3/5 —21.0K 4/5 —Deferred 6.0K 5/5 72% 6.5K 5/5 72% 5.5K 5/5 72%
+
+(2) Savings scale with format complexity. Data reports ( ρ = 72% ) and API docs ( ρ = 66% )benefit most because their format-to-content ratio is highest (many tables, structured fields, boiler-plate headings). Meeting notes ( ρ = 48% ) benefit least because Markdown has low format overhead (μ = 1 .05 ), so less is saved by separating format from content. 
+
+(3) The framework is model-agnostic. Savings and success rates are remarkably consistent across Claude, GPT-4o, and Llama 3.1. This validates that OGC and format-cost separation are proper-ties of the generation task , not of any particular model. 
+
+# 8 Related Work 
+
+We situate our contributions at the intersec-tion of tool-using LLM agents, context man-agement, structured generation, and agent self-evaluation. To our knowledge, no prior work for-malizes generation-capacity planning as a theoret-ical framework. 
+
+8.1 Tool-Using LLM Agents 
+
+Toolformer [23] demonstrated self-supervised tool learning; ReAct [33] showed that interleaving rea-soning with actions improves task completion. MRKL [15] proposed modular neuro-symbolic routing; Gorilla [20] fine-tuned models for API call accuracy; ToolLLM [21] scaled tool learning to 16,000+ APIs. These works address which tool to call and how . Our framework addresses a comple-mentary question: given the agent’s capacity, can 
+
+it generate the required output, and if not, what strategy should it use? 
+
+8.2 Autonomous Agent Frameworks 
+
+LangChain [9] provides composable tool chains; MetaGPT [11] assigns specialized roles in multi-agent pipelines; SWE-agent [32] designs agent-computer interfaces for software engineering; AgentBench [17] benchmarks agents across diverse environments. None include generation-capacity awareness. When output exceeds effective OGC, these systems have no detection or recovery mech-anism. Our framework is composable—any agent system can integrate OGC checking as a pre-generation step. 
+
+8.3 Context Window Management 
+
+Large context windows [2] mitigate but do not eliminate context pressure. Liu et al. [16] showed that models struggle with information in the mid-dle of long contexts, implying effective capacity is smaller than nominal. LongBench [6] benchmarks 8long-context tasks. MemGPT [19] treats the LLM as an OS with virtual memory; Xu et al. [31] com-bine retrieval with long context. These manage 
+
+input context. Our OGC concept addresses out-put capacity—the ability to generate tokens given current context state, a distinct and previously un-formalized problem. 
+
+8.4 Structured and Constrained Gener-ation 
+
+Outlines [29] uses finite-state machines to guide to-ken sampling; LMQL [7] provides a query language for constrained outputs; SGLang [34] offers efficient structured generation with parallelism. These con-strain individual tokens . Format-cost separation operates at the document level, selecting the gen-eration strategy rather than constraining the de-coding process. The approaches are complemen-tary: constrained generation could enforce JSON schema compliance within our deferred strategy. 
+
+8.5 LLM Failure Modes and Self-Evaluation 
+
+Hallucination—generating fluent but incorrect con-tent [13, 12]—is the most studied LLM failure mode. Output stalling is fundamentally different: the model produces no output , leaving no arti-fact for correction. Kadavath et al. [14] showed models can partially assess their knowledge bound-aries; Reflexion [25] enables verbal self-correction. Our OGC framework extends self-evaluation from 
+
+knowledge (“do I know this?”) to capacity (“can I express this?”)—a novel metacognitive dimension. 
+
+8.6 Tokenization and Cost Estimation 
+
+BPE tokenization [24] varies across model fam-ilies [8, 26], meaning format multipliers are tokenizer-dependent. Code-optimized models [10] may exhibit different μf for python-docx boiler-plate. Our calibration methodology (Section 4) is designed to be re-run per deployment, and the the-oretical results (Theorem 1, Theorem 2) hold for any μf > 1.
+
+# 9 Limitations 
+
+OGC measurement. The capacity degradation function α (Figure 1) is measured empirically and may vary with prompt structure, system instruc-tions, and fine-tuning. A theoretical derivation of 
+
+α from attention mechanics would strengthen the framework. 
+
+Context access. Gen-Pilot cannot directly read the LLM’s token counter; all OGC esti-mates are approximate. Agent platforms expos-ing context_tokens_used() would enable exact OGC computation. As a consequence, the current implementation approximates Equation 13 using raw headroom ratios rather than the α-degraded 
+
+OGC eff , since computing α requires knowing the true context occupancy. 
+
+Multiplier stability. Format multipliers are measured per-document-type and may shift with content characteristics (e.g., code-heavy vs. prose-heavy text). Our calibration script addresses this but requires manual re-measurement. 
+
+Template quality. Deferred rendering is only as good as the template. Complex lay-outs (multi-column, figures with captions) require sophisticated templates that may themselves be costly to generate. Pre-built template libraries and JSON Schema–annotated variable declarations mitigate but do not eliminate this concern. 
+
+Cascade termination. The replan cascade (Section 6) is bounded at three iterations as a prac-tical safeguard. A formal analysis of convergence conditions —when no strategy can succeed—would allow the bound to be derived rather than chosen empirically. 
+
+Evaluation scale. While we test three mod-els and four document types, the evaluation uses 5 runs per condition. Larger-scale studies with more models, document types, and occupancy lev-els would strengthen statistical claims. 
+
+# 10 Conclusion 
+
+We have presented a theoretical framework for un-derstanding and preventing output stalling in LLM coding agents, grounded in three contributions: 1. Output Generation Capacity (OGC) —a formal measure of effective generation capacity 9that degrades non-linearly with context occu-pancy, explaining why agents stall at context levels well below the nominal limit. 2. Format-Cost Separation Theorem —a provable decomposition showing that deferred rendering eliminates format tokens from LLM generation, with savings that grow with format complexity ( ρ = 48 –72% empirically). 3. Adaptive Strategy Selection —a decision framework with provable dominance ordering (defer ⪰ chunk ⪰ direct) that maps OGC to optimal strategy. Across three models, four document types, and 180 experimental runs (60 per strategy), deferred rendering achieved 100% success rate while re-ducing generation tokens by 48–72% . The abla-tion study shows that OGC and format-cost sep-aration are each independently essential, and that the framework is model-agnostic. The broader implication is that LLM agents need 
+
+metacognitive tools —not just tools that act on the world, but tools that help agents reason about their own generation capabilities. Output Genera-tion Capacity formalizes a previously implicit con-straint; format-cost separation provides a princi-pled technique for working within that constraint. Together, they transform output stalling from an invisible failure into a preventable one. 
+
+Gen-Pilot is available as open-source software under the MIT license at https://github.com/ jayluxferro/gen-pilot .
+
+# References 
+
+[1] Justice Owusu Agyemang, Jerry John Kponyo, Elliot Amponsah, Godfred Manu Addo Boakye, and Kwame Opuni-Boachie Obour Agyekum. Resilient write: A six-layer durable write surface for LLM coding agents. arXiv preprint , 2026. Under review. [2] Anthropic. The claude model family. An-thropic Technical Report , 2024. [3] Anthropic. Model context protocol specifi-cation. https://modelcontextprotocol.io ,2024. Accessed: 2026-04-16. [4] Anthropic. Claude code: CLI for Claude. 
+
+https://docs.anthropic.com/en/docs/ claude-code , 2025. Accessed: 2026-04-16. [5] Anysphere. Cursor: The AI code editor. 
+
+https://cursor.sh , 2024. Accessed: 2026-04-16. [6] Yushi Bai, Xin Lv, Jiajie Zhang, Hongchang Lyu, Jiankai Tang, Zhidian Huang, Zhengx-iao Du, Xiao Liu, Aohan Zeng, Lei Hou, et al. LongBench: A bilingual, multitask bench-mark for long context understanding. arXiv preprint arXiv:2308.14508 , 2023. [7] Luca Beurer-Kellner, Marc Fischer, and Mar-tin Vechev. Prompting is programming: Aquery language for large language models. 
+
+Proceedings of the ACM on Programming Lan-guages (PLDI) , 7, 2023. [8] Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan, Pra-fulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, et al. Language models are few-shot learners. Ad-vances in Neural Information Processing Sys-tems , 33, 2020. [9] Harrison Chase. Langchain. GitHub reposi-tory , 2022. [10] Mark Chen, Jerry Tworek, Heewoo Jun, Qim-ing Yuan, Henrique Ponde de Oliveira Pinto, Jared Kaplan, Harri Edwards, Yuri Burda, Nicholas Joseph, Greg Brockman, et al. Eval-uating large language models trained on code. 
+
+arXiv preprint arXiv:2107.03374 , 2021. [11] Sirui Hong, Mingchen Zhuge, Jonathan Chen, Xiawu Zheng, Yuheng Cheng, Ceyao Zhang, Jinlin Wang, Zili Wang, Steven Ka Shing Yau, Zijuan Lin, et al. MetaGPT: Meta program-ming for a multi-agent collaborative frame-work. International Conference on Learning Representations , 2024. [12] Lei Huang, Weijiang Yu, Weitao Ma, Weihong Zhong, Zhangyin Feng, Haotian Wang, Qian-glong Chen, Weihua Peng, Xiaocheng Feng, 10 Bing Qin, and Ting Liu. A survey on hal-lucination in large language models: Princi-ples, taxonomy, challenges, and open ques-tions. arXiv preprint arXiv:2311.05232 , 2023. [13] Ziwei Ji, Nayeon Lee, Rita Frieske, Tiezheng Yu, Dan Su, Yan Xu, Etsuko Ishii, Ye Jin Bang, Andrea Madotto, and Pascale Fung. Survey of hallucination in natural language generation. ACM Computing Surveys , 55(12), 2023. [14] Saurav Kadavath, Tom Conerly, Amanda Askell, Tom Henighan, Dawn Drain, Ethan Perez, Nicholas Schiefer, Zac Hatfield-Dodds, Nova DasSarma, Eli Tran-Johnson, et al. Lan-guage models (mostly) know what they know. 
+
+arXiv preprint arXiv:2207.05221 , 2022. [15] Ehud Karpas, Omri Abend, Yonatan Be-linkov, Barak Lenz, Opher Liber, Natan Rat-ber, Yoav Shoham, Hofit Bata, Yoav Levine, Kevin Pereg, et al. MRKL systems: A mod-ular, neuro-symbolic architecture that com-bines large language models, external knowl-edge sources and discrete reasoning. In arXiv preprint arXiv:2205.00445 , 2022. [16] Nelson F Liu, Kevin Lin, John Hewitt, Ashwin Paranjape, Michele Bevilacqua, Fabio Petroni, and Percy Liang. Lost in the middle: How lan-guage models use long contexts. Transactions of the Association for Computational Linguis-tics , 12:157–173, 2024. [17] Xiao Liu, Hao Yu, Hanchen Zhang, Yifan Xu, Xuanyu Lei, Hanyu Lai, Yu Gu, Hangliang Ding, Kaiwen Men, Kejuan Yang, et al. AgentBench: Evaluating LLMs as agents. In-ternational Conference on Learning Represen-tations , 2024. [18] OpenAI. tiktoken: Fast BPE tokeniser for use with OpenAI’s models. https://github. com/openai/tiktoken , 2023. Accessed: 2026-04-16. [19] Charles Packer, Sarah Wooders, Kevin Lin, Vivian Fang, Shishir G Patil, Ion Stoica, and Joseph E Gonzalez. MemGPT: Towards LLMs as operating systems. arXiv preprint arXiv:2310.08560 , 2023. [20] Shishir G Patil, Tianjun Zhang, Xin Wang, and Joseph E Gonzalez. Gorilla: Large lan-guage model connected with massive APIs. 
+
+arXiv preprint arXiv:2305.15334 , 2023. [21] Yujia Qin, Shihao Liang, Yining Ye, Kunlun Zhu, Lan Yan, Yaxi Lu, Yankai Lin, Xin Cong, Xiangru Tang, Bill Qian, et al. ToolLLM: Facilitating large language models to master 16000+ real-world APIs. International Con-ference on Learning Representations , 2024. [22] Armin Ronacher. Jinja2 template en-gine. https://jinja.palletsprojects.com ,2008. Accessed: 2026-04-16. [23] Timo Schick, Jane Dwivedi-Yu, Roberto Dessì, Roberta Raileanu, Maria Lomeli, Eric Hambro, Luke Zettlemoyer, Nicola Cancedda, and Thomas Scialom. Toolformer: Language models can teach themselves to use tools. In 
+
+Advances in Neural Information Processing Systems , volume 36, 2023. [24] Rico Sennrich, Barry Haddow, and Alexan-dra Birch. Neural machine translation of rare words with subword units. In Proceedings of the 54th Annual Meeting of the Association for Computational Linguistics , pages 1715–1725, 2016. [25] Noah Shinn, Federico Cassano, Ashwin Gopinath, Karthik Narasimhan, and Shunyu Yao. Reflexion: Language agents with verbal reinforcement learning. Advances in Neural Information Processing Systems , 36, 2023. [26] Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yasmine Babaei, Nikolay Bashlykov, Soumya Ba-tra, Prajjwal Bhargava, Shruti Bhosale, et al. Llama 2: Open foundation and fine-tuned chat models. arXiv preprint arXiv:2307.09288 , 2023. [27] Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. Attention is all you need. Advances in Neural Informa-tion Processing Systems , 30, 2017. 11 [28] Lei Wang, Chen Ma, Xueyang Feng, Zeyu Zhang, Hao Yang, Jingsen Zhang, Zhiyuan Chen, Jiakai Tang, Xu Chen, Yankai Lin, et al. A survey on large language model based autonomous agents. Frontiers of Computer Science , 18(6), 2024. [29] Brandon T Willard and Rémi Louf. Efficient guided generation for large language models. 
+
+arXiv preprint arXiv:2307.09702 , 2023. [30] Zhiheng Xi, Wenxiang Chen, Xin Guo, Wei He, Yiwen Ding, Boyang Hong, Ming Zhang, Junzhe Wang, Senjie Jin, Enyu Zhou, et al. The rise and potential of large language model based agents: A survey. arXiv preprint arXiv:2309.07864 , 2023. [31] Peng Xu, Wei Ping, Xianchao Wu, Lawrence McAfee, Chen Zhu, Zihan Liu, Sandeep Sub-ramanian, Evelina Bakhturina, Mohammad Shoeybi, and Bryan Catanzaro. Retrieval meets long context large language models. In 
+
+International Conference on Learning Repre-sentations , 2024. [32] John Yang, Carlos E Jimenez, Alexander Wettig, Kilian Liber, Shunyu Yao Karthik Narasimhan, and Ofir Press. SWE-agent: Agent-computer interfaces enable au-tomated software engineering. arXiv preprint arXiv:2405.15793 , 2024. [33] Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak Shafran, Karthik Narasimhan, and Yuan Cao. ReAct: Synergizing reasoning and acting in language models. International Con-ference on Learning Representations , 2023. [34] Lianmin Zheng, Liangsheng Yin, Zhiqiang Xie, Jeff Huang, Chuyue Sun, Cody Hao Yu, Shiyi Cao, Christos Kober, Dacheng Shi, Siyuan Zhuang, et al. SGLang: Effi-cient execution of structured language model programs. arXiv preprint arXiv:2312.07104 ,2024. 12

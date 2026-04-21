@@ -1,0 +1,819 @@
+Title: MemoSight: Unifying Context Compression and Multi Token Prediction for Reasoning Acceleration
+
+URL Source: https://arxiv.org/pdf/2604.14889v1
+
+Published Time: Fri, 17 Apr 2026 01:03:31 GMT
+
+Number of Pages: 17
+
+Markdown Content:
+## MemoSight: Unifying Context Compression and Multi Token Prediction for Reasoning Acceleration 
+
+Xinyu Liu 1, Xin Liu 1, Bo Jin 1, Runsong Zhao 1, Pengcheng Huang 1,Junhao Ruan 1, Bei Li 2, Chunyang Xiao , Tong Xiao 1,3 Jingbo Zhu 1,3  
+
+> 1
+
+School of Computer Science and Engineering, Northeastern University, China  
+
+> 2
+
+Meituan Inc. 3 NiuTrans Research, Shenyang, China lxy1051493182@gmail.com {xiaotong, zhujingbo}@mail.neu.edu.com 
+
+Abstract 
+
+While Chain-of-thought (CoT) reasoning en-ables LLMs to solve challenging reasoning problems, as KV cache grows linearly with the number of generated tokens, CoT reason-ing faces scaling issues in terms of speed and memory usage. In this work, we propose Mem-oSight ( Memo ry-Fore sight -based reasoning), a unified framework that integrates both con-text compression and multi-token prediction to mitigate the efficiency issues while maintain-ing CoT reasoning performance. Our frame-work adopts the same minimalist design for both context compression and multi-token pre-diction via special tokens and their correspond-ing position layout tailored to each token type. Comprehensive experiments on four reasoning benchmarks demonstrate that MemoSight re-duces the KV cache footprint by up to 66% and accelerates inference by 1.56 ×, while outper-forming existing CoT compression methods. 
+
+1 Introduction 
+
+LLMs have demonstrated strong reasoning capabil-ities (Zhao et al., 2023) through Chain-of-Thought (CoT) reasoning, a behavior that recent works aim to elicit from LLMs by training models to rea-son (Guo et al., 2025; Jaech et al., 2024). However, for Transformer-based architectures (Vaswani et al., 2017), the Key-Value (KV) cache grows linearly with the number of generated tokens, creating la-tency and memory bottlenecks that hinder the real-world deployment of CoT reasoning (Arora and Zanette, 2025). Two complementary research directions offer promise in addressing these bottlenecks: context compression and multi-token prediction. Context compression (Chang et al., 2024; Zhang et al., 2025a) condenses reasoning steps into compact “memory tokens”. During generation, inference is conditioned solely on these tokens, reducing mem-ory footprint and accelerating generation. Multi token prediction (MTP) (Gloeckle et al., 2024; Liu et al., 2024a) trains a model to predict multiple tokens instead of predicting one token at a time, which not only helps capture long-range dependen-cies for improved performance but also enables inference acceleration when combined with specu-lative sampling. Critically, these two techniques address effi-ciency from different aspects. While context com-pression provides a compact representation of the 
+
+past reasoning trace, MTP accelerates the genera-tion of future tokens. Intuitively, combining both approaches could further improve efficiency. How-ever, we empirically observe that a naive combina-tion of the two hinders performance, as demon-strated in Section 5. We hypothesize that the core challenge lies in their divergence in training paradigms and architectural requirements. While context compression typically involves training “memory tokens” on task-specific data during post-training (Zhang et al., 2025a), MTP is more often used during pre-training with architectural changes (e.g. adding prediction heads (Liu et al., 2024a)). Consequently, a straightforward integration leads to architectural incompatibility and optimization conflicts. In this work, we technically unify context com-pression and MTP in our proposed MemoSight (Mem ory-Fore sight -based reasoning) framework. MemoSight requires no modifications to LLM ar-chitectures and provides a unified framework by leveraging the following design: • Special Tokens as Carriers. Inspired by recent developments from compression (Zhang et al., 2025a) and MTP (Gerontopoulos et al., 2025), we incorporate both mechanisms into our frame-work by leveraging special tokens with different roles: while memory tokens condense reason-ing steps into compact representations, foresight tokens trigger multi-token prediction. 1             
+
+> arXiv:2604.14889v1 [cs.AI] 16 Apr 2026 43
+> 2
+> Prompt Response
+> Prompt
+> Vanilla CoT CoT Compression Framework
+> Prompt
+> Prompt Memory
+> Memory tokens appended after Response Part 1.
+> Part 2 conditioned only on memory tokens.
+> <eos>
+> <b>
+> Memory <b>
+> <eos>
+> Response Part 2
+> Traditional Multi-Token Prediction Special Token based MTP
+> Transformer Blocks
+> LM Head1
+> x1x2x3
+> x2x5x3x4x3x6x4x5x4x7x5x6
+
+...   
+
+> LM Head
+> x1x2x3
+
+... <r> <r> x4<r> <r> 
+
+> Transformer Blocks
+
+... x2 x2 x3
+
+... x4x1+d x2+d x3+d x4+d          
+
+> 1Pos IDs Inputs Targets 231(1+d)-1 2(2+d)-1 3(3+d)-1 4(4+d)-1
+> Response Part 1
+> <e>
+> Response Part 1
+> <e>
+
+Figure 1: (Left) Context Compression: Contrary to Vanilla CoT, CoT compression utilizes memory tokens to compress context and reduce the KV cache footprint during the iterative reasoning and memory process. (Right) Multi-Token Prediction: Traditional MTP using multiple LM heads, contrasted with special token based MTP, which achieves parallel future prediction ( d steps ahead) using a single LM head and interleaved register tokens ⟨r⟩.
+
+• Position-Aware Alignment. Prior work has shown the effectiveness of designing position lay-out for context compression (Zhao et al., 2024) and MTP (Gerontopoulos et al., 2025) in isola-tion. MemoSight introduces a tailored position layout for each type of special tokens, aligning memory tokens with past reasoning and foresight tokens with future predictions. By integrating both context compression and MTP into our unified framework, we leverage the best of both worlds, as we demonstrate empirically in Section 4. Evaluations across four reasoning benchmarks show that our approach reduces KV cache usage by 66% and accelerates inference by 1.56 ×, while preserving reasoning accuracy com-pared to even uncompressed models, offering a better efficiency-performance tradeoff than state-of-the-art methods. 
+
+2 Background 
+
+MemoSight builds upon research from both context compression and multi-token prediction (MTP) to address the efficiency issues arising from CoT rea-soning. We briefly review both research areas be-low. Let V denote the vocabulary. We consider a to-ken sequence X = [ x1, . . . , x n], where each token 
+
+xt ∈ V . Standard autoregressive generation mod-els the probability as pθ(X) = Qnt=1 pθ(xt | x<t ).The special tokens we use for modelling purposes are denoted with ⟨·⟩ .
+
+Context Compression. We follow Light-Thinker (Zhang et al., 2025a) which iteratively compresses each reasoning step into “memory tokens”. We illustrate this process in Figure 1 (Left) where the response R consists of k reasoning steps R = [ R1, R 2, . . . , R k]. Once a reasoning step is completed, 1 LightThinker appends a fixed number of memory tokens M = [ ⟨m1⟩, . . . , ⟨ml⟩]
+
+to the reasoning step. Through training the memory tokens learn to capture the semantics of the reasoning step by aggregating the content of 
+
+Ri into their hidden states. The memory tokens always end with a trigger token ⟨b⟩ which marks the start of the next reasoning step Ri+1 .During inference, once the memory tokens have been computed, the corresponding reasoning to-kens (i.e. Ri that precede the memory tokens) can be discarded. The subsequent generation (e.g. step 
+
+Ri+1 ) is solely conditioned on the memory tokens from previous steps as well as the prompt. By hav-ing fewer memory tokens than reasoning tokens at each step (i.e. l < |Ri|), the memory footprint is reduced and inference speed is improved. Perfor-mance is expected to be maintained or even slightly improved if all the necessary information from rea-soning steps is captured by the memory tokens for each correponding step. 2
+
+Multi-Token Prediction. While standard autore-gressive models are trained with a next-token pre-diction (NTP) objective, multi-token prediction (MTP) extends this to predict d tokens simul-taneously. Formally, for a given token step t,MTP learns to model directly the distribution as 
+
+pθ(xt:t+d | x<t ) = Qdi=1 pθ(xt+i | x<t ) to ac-celerate inference and encourage planning. The conventional MTP approach branches the hidden states into d prediction heads, each responsible for a different future offset. Although effective, this introduces parameter overhead and requires inte-
+
+> 1
+
+Concretely, we consider a reasoning step finished when a delimiter ⟨e⟩ (e.g. a double newline) is generated. 
+
+> 2
+
+Performance can be expected to slightly improve because the context length reduction mitigates the “Lost-in-the-Middle” effect (Liu et al., 2024b). 
+
+2gration during pre-training, making it difficult to jointly optimize with post-training techniques like context compression. Recent work by Gerontopoulos et al. (2025) pro-poses an alternative that circumvents these con-straints by formulating MTP through sequence ma-nipulation. As illustrated in Figure 1 (Right), they introduce a “register token” ⟨r⟩ and assign it shifted position IDs to predict tokens with different offsets. For example, the ⟨r⟩ placed after token xt equipped with the position ID t + d − 1 will learn to pre-dict the token at t + d. Similar to conventional MTP (Liu et al., 2024a), ⟨r⟩ attends only to tokens up to xt but predicts d step ahead; however, instead of learning different heads, register tokens achieve predictions at different offsets through different position IDs assigned to the same register token. Gerontopoulos et al. (2025) show empirically that such design yields good model performance for a wide range of tasks including post-training tasks. 
+
+3 MemoSight 
+
+This section presents MemoSight (Memory-Foresight-based reasoning), a framework that jointly optimizes context compression and multi-token prediction (MTP) through the design of spe-cial tokens and shifted position IDs. This design introduces an inductive bias that encourages the model to learn compression and planning as com-plementary skills within a single training paradigm. Crucially, MemoSight achieves this without archi-tectural modifications, operating as a data-centric approach during supervised fine-tuning. We first describe how we construct training sequences to teach this behavior (Section 3.1), then present the training framework with a custom attention mask that enforces this inductive bias (Section 3.2), and finally, detail the iterative inference pipeline that leverages these skills for fast, memory-efficient rea-soning (Section 3.3). 
+
+3.1 Data Construction Pipeline 
+
+We construct MemoSight training instances from standard CoT trajectories by inserting two types of special tokens—memory tokens ⟨m⟩ for con-text compression and foresight tokens ⟨f⟩ for paral-lel planning—and manipulating their position IDs. This arrangement creates an inductive bias: The model must learn to compress its reasoning his-tory into the representations of ⟨m⟩, and leverage these memories to predict multiple steps at the ⟨f⟩
+
+positions. The output of this pipeline serves as a drop-in replacement for a standard fine-tuning dataset, requiring no changes to the model architec-ture. We detail this construction process below and illustrate in Figure 2. 
+
+Unified Sequence Formulation. To construct training sequences for MemoSight, we transform each reasoning step Ri = [ ri
+
+> 1
+
+, . . . , r in] through a series of augmentations that introduce compression and planning capabilities. For each token rit in the step, we first insert a foresight token ⟨f⟩ immedi-ately before it, yielding the augmented step: 
+
+ˆRi = [ ⟨f⟩, r i
+
+> 1
+
+, ⟨f⟩, r i
+
+> 2
+
+, . . . , ⟨f⟩, r in].
+
+These foresight tokens are trained to predict the token d steps ahead, enabling the model to plan multiple future tokens in parallel. After the aug-mented step, we append memory tokens Mi =[⟨m1⟩, . . . , ⟨ml⟩], whose length l = ⌈n/c ⌉ is deter-mined by a fixed compression rate c. Unlike prior work that uses a fixed number of memory tokens per step (Zhang et al., 2025a), this dynamic scaling ensures a consistent compression ratio regardless of step length. Finally, a boundary token ⟨b⟩ is appended to mark the transition to the next reason-ing step. Concatenating the initial prompt P and these augmented blocks yields the complete input sequence: 
+
+SMemoSight = [ P, ˆR1, M 1, ⟨b⟩, ˆR2, M 2, ⟨b⟩, . . . ].
+
+We assign specific training objectives to each to-ken type. Reasoning tokens rit follow standard next-token prediction to generate rit+1 . Foresight tokens ⟨f⟩ predict tokens d steps ahead; specifi-cally, a foresight token preceding rit uses rit+d as its target to encourage planning. Boundary tokens 
+
+⟨b⟩ predict the first token of the next step, ri+1 1 .We mask the training loss for memory tokens ⟨m⟩,as they only aggregate hidden states. Finally, we handle sequence endings and other boundary con-ditions to maintain compatibility with standard au-toregressive SFT. 3 Figure 2 shows an example of the MemoSight sequence and label alignment with a compression rate c = 3 and foresight offset 
+
+d = 2 .
+
+Position-Aware Alignment. While the unified sequence formulation interleaves all required to-kens, their effectiveness hinges on positional as-signment to establish the correct causal structure. 
+
+> 3See Appendix A for details on boundary handling.
+
+3Prompt Token Response Token Memory Token                                       
+
+> 1023456736910 11 10 13 14
+> p1p2r11r21r31r41r51r61<m 1> <m 2>r12r22r32<m 1>r13r23
+> Foresight Token
+> 3
+> <f>
+> 4
+> <f>
+> 5
+> <f>
+> 6
+> <f>
+> 7
+> <f>
+> 8
+> <f>
+> 10
+> <f>
+> 11
+> <f>
+> 12
+> <f>
+> 14
+> <f>
+> 15
+> <f> (i.e., compression rate c = 3, foresight offset d = 2, t he numbers within the blocks denote the position IDs. )
+> p2r21
+> r11r31r31r41r51r61
+> r41r51r61
+> None Label
+> r32r22
+> Foresight Label
+> r32r23
+> <eos>
+> r12
+
+A Data Construction Sample 
+
+> <b>
+> 8
+> <b>
+> r13
+> 12
+> <b>
+> input label
+
+Figure 2: MemoSight data sample with a compression rate c = 3 and foresight offset d = 2 . The top row depicts the unified input sequence, where foresight tokens ⟨f⟩ and memory tokens ⟨m⟩ are interleaved with reasoning tokens. The numbers within the blocks indicate the assigned PIDs. The bottom row displays the corresponding training labels, showing how the sequence is supervised for both MTP and context compression. Notably, training labels for terminal reasoning tokens (e.g., r16 ) and out-of-bounds foresight tokens are masked as None .
+
+To inject the desired inductive biases, we introduce a position-aware alignment strategy that computes position IDs (PIDs) for each token type. Formally, let ρit denote the PID of a reasoning token rit, and 
+
+ρin be the PID of the final token in step i. We assign the PIDs as follows: • Intra-Step Foresight Projection. To enable multi-token planning, each foresight token ⟨f⟩
+
+preceding rit is assigned the PID of ρit+d−1, ef-fectively projecting its representation d steps for-ward. This positional shift trains the foresight to-ken to predict rit+d (e.g., in Figure 2 with d = 2 ,the first ⟨f⟩ is assigned PID 3 to predict r13). To encourage robustness across varying horizons, we randomly sample d ∈ { 1, . . . , d max } during data construction. • Inter-Step Memory Condensation. After each augmented step ˆRi, we assign PIDs to the mem-ory tokens Mi by uniformly interpolating across the positional span of the current step (e.g., PIDs 3 and 6 for ⟨m1⟩ and ⟨m2⟩ in Figure 2). This interpolation, inspired by Zhao et al. (2024), en-courages the memory tokens to summarize the step’s content. Because these tokens reuse exist-ing positions rather than consuming new indices, the PID progression remains uninterrupted. The boundary token ⟨b⟩ thus takes the next available PID ( ρin + 1 , or PID 8 in Figure 2), and subse-quent reasoning steps inherit this continuous pro-gression. This design preserves the contiguous PID distribution expected by pre-trained models while enabling effective compression. 
+
+3.2 Joint Training Framework 
+
+Building on the data construction detailed above, we jointly optimize standard reasoning, context compression, and multi-token prediction through a standard SFT process. P
+
+> P
+> R1
+> R3
+> P
+> R2
+> R1
+> R2
+> R3
+> <b>
+> R2
+> M2
+> P
+> R1
+> P
+> R1
+> M1
+> M1
+> R2
+> M2
+> <b>
+> <b>
+> R3
+> <b>
+> R3
+> (3) MemoSight's Unified Attention Mask
+> f
+> f
+> f
+> f
+> f
+> <b>
+> f
+> f
+> r1
+> 1
+> M1
+> r1
+> 2
+> M2
+> f
+> r1
+> 3
+> r1
+> 1
+> r2
+> 1
+> M1
+> r2
+> 1
+> r2
+> 2
+> r1
+> 2
+> r2
+> 2
+> M2
+> r1
+> 3
+> <b> <b>
+> f
+> <b> (1) Vanilla CoT (2) Previous CoT Compression
+
+Attention Mask for Joint Training 
+
+> f
+> P
+> P
+
+Figure 3: Comparison of training attention masks. (1) 
+
+Vanilla CoT uses a standard causal mask. (2) Previous CoT Compression restricts attention to memory tokens 
+
+⟨m⟩ to discard historical reasoning steps. (3) Memo-Sight introduces a unified strategy: foresight tokens ⟨f⟩
+
+are structurally isolated to act as independent predictive branches, while memory tokens Mi aggregate the intra-step reasoning to serve as the context for future steps. 
+
+Attention Mask Strategy. A critical component of our training framework is the specialized atten-tion mask, illustrated in Figure 3. Instead of a standard causal mask, we enforce three structural rules that jointly enable predictive planning and memory compression: • Foresight Isolation. To prevent information leakage, a foresight token ⟨f⟩ preceding rit shares the identical attention context as rit (attending to 
+
+P , M<i , ⟨b⟩, and prior intra-step tokens), while additionally attending to itself. Critically, its own hidden state is masked out from all future tokens, allowing it to act as a parallel predictive branch without perturbing the main reasoning chain. • Intra-Step Causality. Within a reasoning step 
+
+ˆRi, standard tokens rit and memory tokens Mi
+
+follow a strict causal pattern over their predeces-sors, explicitly bypassing the isolated ⟨f⟩ tokens. 4CoT Acceleration via Foresight Tokens          
+
+> 10
+> p1p2
+> 2
+> <f>
+> 3
+> <f>
+> 4
+> <f>
+> 23
+> r11r21
+> 10
+> p1p2
+> 23
+> r11r21
+> 4
+> <f>
+> 5
+> <f>
+> 6
+> <f>
+> 756
+> r41r51r61
+> 4
+> r311️⃣
+> Generate future tokens in parallel based on <f>, then verify and accept the valid ones. 2️⃣
+> Continue this process until the current CoT step is complete (e.g., generating the end-of-step token at r 61).
+
+Iterative Inference Pipeline                            
+
+> CoT Compression via Memory Tokens
+> 10
+> p1p2
+> 2
+> r11
+> 756436
+> <m 1> <m 2>
+> 8
+> <b> 3️⃣ Memory and evict the verbose tokens.
+> 10
+> p1p2
+> 36
+> <m 1> <m 2>
+> 8
+> <b>
+> 910
+> r12r22
+> 3
+> r21
+> 11
+> r32
+> Prompt Token Response Token Memory Token Foresight Token <eos> <b>
+> r41r51r61
+> r31
+> 10
+> p1p2
+> 36
+> <m 1> <m 2>
+> 8
+> <b>
+> 10
+> <m 1>
+> 12
+> <b>
+> 13
+> r13
+> 14
+> r23
+> 10
+> p1p2
+> 36
+> <m 1> <m 2>
+> 8
+> <b>
+> 910
+> r12r22
+> 11
+> r32
+> 10
+> <m 1>
+> 12
+> <b>
+> Repeat  1️⃣ and  2️⃣ to complete the next reasoning step.
+> 💡 Output <eos> token and terminate the generation !
+> ✅✅✅✅✅✅
+
+Figure 4: The MemoSight iterative inference pipeline. (Left) Foresight Acceleration: Foresight tokens ⟨f⟩
+
+generate future token candidates in parallel, accelerating step generation via speculative decoding. (Right) Memory Acceleration: Upon completing a reasoning step, memory tokens ⟨m⟩ summarize the context, allowing the verbose raw reasoning tokens to be evicted from the KV cache. This process repeats until the final ⟨eos ⟩ token is generated. 
+
+This ensures the main trajectory relies solely on standard tokens and the condensed context. • Inter-Step Compression. On step transitions (triggered by ⟨b⟩), the mask enforces memory consolidation by restricting all subsequent tokens to attend exclusively to the prompt P , condensed memory tokens M≤i, and boundary tokens. The verbose reasoning tokens r<i of prior steps are structurally discarded, compelling the model to rely entirely on the compressed memory for his-torical context. 
+
+Joint Optimization Objective. We optimize MemoSight using a unified training objective. A standard next-token prediction loss, LNTP , is ap-plied to the reasoning tokens rit and boundary to-kens ⟨b⟩, while the loss for memory tokens ⟨m⟩ is explicitly masked out. To instill predictive planning capabilities, a multi-token prediction loss, LMTP ,supervises the foresight tokens ⟨f⟩ to predict their future counterparts rit+d. The overall objective is formulated as: 
+
+LMemoSight = λLNTP + (1 − λ)LMTP ,
+
+where λ is a hyperparameter balancing standard generation and lookahead planning. 
+
+3.3 Iterative Inference Pipeline 
+
+During inference, MemoSight executes an al-ternating “accelerate-then-compress” loop at the reasoning-step level (Figure 4). 4 To generate a specific reasoning step Ri, while the model can technically fall back to standard token-by-token au-toregressive decoding, its full potential is unlocked 
+
+> 4
+
+A detailed algorithmic description of this inference pipeline is provided in Appendix B. 
+
+by leveraging foresight tokens ⟨f⟩ to accelerate gen-eration. Specifically, at each decoding step, a block of ⟨f⟩ tokens is appended directly after the current position. By assigning these tokens future-shifted PIDs, the model simultaneously predicts multiple future candidates in a single forward pass. Given the current context R≤t, the parallel predictions are generated as: 
+
+ˆrt+1 , . . . , ˆrt+d
+
+ = arg max 
+
+r∈V 
+
+pθ
+
+ r | R≤t⊕[⟨f⟩]×d.
+
+These predictions serve as high-quality “drafts”. In the subsequent forward pass, a speculative de-coding mechanism verifies these draft tokens in parallel; accepted tokens are instantly committed, bypassing multiple sequential steps and drastically accelerating the reasoning process. Upon completing Ri, the process enters the com-pression phase: the inference engine appends the learned memory tokens Mi and the boundary to-ken ⟨b⟩ to the context. Leveraging the fact that the model is trained to bypass attention on past raw tokens, the inference engine safely evicts the KV cache entries corresponding to Ri. Generation for the next step Ri+1 proceeds conditioned solely on the compressed history Hi, defined as: 
+
+Hi = P, M 1, ⟨b⟩, M 2, ⟨b⟩, . . . , M i, ⟨b⟩.
+
+Despite the KV cache eviction, our position-aware alignment ensures the model perceives this com-pact sequence as a temporally contiguous context. This process repeats until the final ⟨eos ⟩ token is emitted, ensuring the KV cache footprint is bounded throughout the entire reasoning process. 5Method GSM8K MMLU GPQA BBH AVG.                                                                                                                                                                                                                                                                              
+
+> Acc ↑Speed ↑Peak ↓Acc ↑Speed ↑Peak ↓Acc ↑Speed ↑Peak ↓Acc ↑Speed ↑Peak ↓Acc ↑Speed ↑Peak ↓
+> Qwen2.5-7B Series
+> CoT 88.32 24.63 519 70.01 23.78 676 28.28 25.50 998 71.31 27.47 582 64.48 25.35 694 Distill-R1 60.58 24.82 522 31.26 21.49 1289 22.22 19.21 4383 51.31 29.35 905 41.34 23.72 1775 Vanilla 90.83 20.69 1559 65.92 18.6 2241 37.37 15.10 7184 81.01 24.32 2212 68.78 19.68 3299 + H2O 91.05 13.85 1024 62.32 10.36 1024 20.20 9.96 1024 75.76 14.14 1024 62.33 12.08 1024
+> + SepLLM 91.28 11.03 1024 59.20 10.97 1024 12.63 11.30 1024 69.70 14.27 1024 58.20 11.89 1024
+> LightThinker 87.26 22.56 684 60.66 22.58 827 37.37 22.38 1969 66.46 28.13 980 62.94 23.91 1115 MemoSight 89.84 22.56 745 63.49 22.45 900 40.91 21.75 2102 73.13 28.41 1059 66.84 23.79 1202 + SpecDec –30.94 ––27.54 ––27.64 ––32.26 ––29.60 –
+> Llama3.1-8B Series
+> CoT 64.52 21.41 497 60.18 19.23 698 24.75 21.40 2230 53.13 26.28 596 50.65 22.08 1005 Distill-R1 57.62 22.78 524 20.93 17.89 1611 30.81 16.40 5640 29.49 27.65 1146 34.71 21.18 2230 Vanilla 89.31 18.33 1702 71.08 16.26 2800 37.37 14.17 6824 78.18 21.63 2515 68.99 17.60 3460 + H2O 89.31 11.65 1024 69.52 9.03 1024 23.23 8.51 1024 81.62 13.04 1024 65.92 10.56 1024
+> + SepLLM 88.32 19.74 1024 64.85 19.02 1024 15.66 19.27 1024 72.32 24.12 1024 60.29 20.54 1024
+> LightThinker 85.82 21.38 664 60.86 20.53 932 37.37 19.89 1933 72.93 26.11 999 64.25 21.98 1132 MemoSight 87.19 20.91 750 64.07 20.26 933 35.86 20.44 1942 78.38 25.92 866 66.38 21.88 1123 + SpecDec –27.91 ––25.89 ––26.67 ––33.45 ––28.48 –
+
+Table 1: Main results on the Qwen2.5-7B and Llama3.1-8B models. CoT and Ditill-R1 are built upon the instruction-following model, while Vanilla, LightThinker, and MemoSight are all based on Distill-R1. Acceleration methods are highlighted in blue, with bold and underlined values indicating the best and second-best results among them. The Acc of Vanilla serves as the upper bound for Acc of acceleration methods. Peak and Speed denote maximum context token counts and generated tokens per second, respectively. 
+
+4 Experiments 
+
+4.1 Experimental Settings Baselines. We evaluate MemoSight on two main-stream architectures, Qwen2.5-7B (Hui et al., 2024) and Llama-3.1-8B (Dubey et al., 2024), against six representative baselines categorized into three groups: (1) CoT Models: The standard instruc-tion model utilizing Chain-of-Thought prompting (CoT ), alongside the DeepSeek-R1-Distill model (Distill-R1 ) (Guo et al., 2025). (2) Tuned Rea-soning Models: A Vanilla baseline and Light-Thinker (Zhang et al., 2025a), both initialized from Distill-R1 and further instruction-tuned on the Bespoke-Stratos-17k dataset. (3) Training-Free Acceleration: Two post-hoc acceleration methods (H2O (Zhang et al., 2023) and SepLLM (Chen et al., 2025)) applied directly to the Vanilla model, which attempt to retain important KV Cache states through specific heuristic strategies. Further con-figuration details for all baselines are provided in Appendix C.1. 
+
+Benchmarks and Metrics. Our evaluation spans four benchmarks covering the primary reason-ing paradigms of LLMs: mathematical reason-ing (GSM8K (Cobbe et al., 2021)), algorith-mic and compositional reasoning (BBH (Suz-gun et al., 2023)), knowledge-based reasoning (MMLU (Hendrycks et al., 2020)), and expert-level scientific reasoning (GPQA (Rein et al., 2024)). We assess the models from two primary perspectives: task performance and computational cost. Task performance is measured by accuracy (Acc). Com-putational cost is quantified by two metrics: peak context tokens (Peak) indicating memory footprint, and generation tokens per second (Speed) reflecting inference throughput. 
+
+Implementation Details. All models are trained for 5 epochs with a global batch size of 64. Base-line models use a maximum sequence length of 4096. For MemoSight, we extend this to 8192 to accommodate register tokens alongside the 4096 text tokens. We set the NTP loss weight λ = 0 .7,the compression ratio c = 5 (i.e., one memory token per five reasoning tokens) and the max fore-sight offset dmax = 2 (i.e., randomly sampling 
+
+d ∈ { 0, 1, 2} per training sample, which enables the parallel prediction of two future tokens during inference). During evaluation, we employ greedy decoding with a maximum output length of 10240 to ensure deterministic reasoning paths. Please refer to Appendix C.2 for more details. 6Qwen-2.5-7B Llama-3.1-8B                   
+
+> 0
+> 1k
+> 2k
+> 3k
+> 4k
+> Generated Tokens
+> 2934 3095
+> 3863 4020
+> 2714
+> 3034
+> 2678 2835
+> (a) Generated Output Length
+> Vanilla
+> H2O
+> LightThinker
+> MemoSight
+> 2x 4x 8x 16x
+> Compression Ratio c
+> 50.0
+> 52.5
+> 55.0
+> 57.5
+> 60.0
+> 62.5
+> 65.0
+> 67.5
+> 70.0
+> Accuracy (%)
+> (b) Impact of Compression Ratio c
+> LightThinker Acc: 62.94
+> 68.41
+> 65.52 64.71
+> 61.72
+> MemoSight Acc
+> LightThinker Acc
+> MemoSight Peak
+> LightThinker Peak
+> 1234
+> Foresight Offset d
+> 58
+> 60
+> 62
+> 64
+> 66
+> 68
+> 70
+> Accuracy (%)  64.94
+> 66.19 66.08
+> 65.01
+> (c) Impact of Foresight Offset d
+> MemoSight Acc MemoSight Speed
+> 0
+> 500
+> 1000
+> 1500
+> 2000
+> 2500
+> Peak Context Tokens
+> LightThinker Peak: 1115
+> 15
+> 20
+> 25
+> 30
+> 35
+> 40
+> 45
+> 50
+> 55
+> Speed
+> 23.79
+> 29.60 30.63 29.84
+
+Figure 5: Efficiency Analysis. (a) Average generated tokens across all benchmarks for Vanilla, H2O, LightThinker, and MemoSight on Qwen-2.5-7B and Llama-3.1-8B. MemoSight generates the fewest tokens. (b) Compression Impact: Accuracy and peak context token count under compression levels from 2× to 16 ×. Higher compression reduces memory footprint but incurs accuracy degradation. (c) Offset Impact: Accuracy and inference speed across foresight offsets ( d = 1 to 4) using speculative decoding. An offset of d = 2 achieves the highest accuracy. 
+
+4.2 Main Results 
+
+Table 1 presents our main results. Distill-R1 un-derperforms CoT due to its limited instruction-following ability, consistent with prior findings (Li et al., 2025a). Fine-tuning on reasoning data (Vanilla ) establishes a performance upper bound. Among the acceleration methods, MemoSight out-performs post-hoc approaches ( H2O , SepLLM ) and the context compression baseline ( Lightthinker ), achieving performance closest to the uncompressed 
+
+Vanilla bound. Regarding inference speed, without speculative decoding, MemoSight matches Lightthinker and is faster than Vanilla and post-hoc methods. Post-hoc methods trail Vanilla , as their runtime process-ing overhead outweighs the context compression benefits. Integrating speculative decoding, Memo-Sight gains an additional 24.4% (Qwen) and 30.2% (Llama) speedup, achieving the fastest inference speed while maintaining high performance. Regarding memory footprint, at a 5× compres-sion ratio, MemoSight maintains peak context to-kens comparable to Lightthinker , well below the 
+
+Vanilla baseline. Inherently, context compression faces a trade-off between memory efficiency and reasoning capability. However, MemoSight’s ad-justable design allows us to flexibly navigate this balance. As detailed in Section 5, MemoSight can further scale down memory at higher compression ratios while still outperforming Lightthinker .
+
+5 Analyses 
+
+5.1 Efficiency 
+
+In this section, we conduct an indepth analysis of MemoSight’s efficiency, focusing on the following three questions: 
+
+Does MemoSight generate more tokens than other methods? Zhang et al. (2025a) analyze the generated token lengths of various compres-sion methods and claim to achieve the shortest output length. We conduct a similar evaluation. Figure 5(a) illustrates the average generated to-kens for Vanilla, H2O, LightThinker, and Memo-Sight across four datasets. While confirming Light-Thinker’s claims, MemoSight further decreases this count, achieving the lowest token generation. Com-pared to Vanilla, MemoSight yields an average re-duction of 9% on Qwen and 8% on Llama. 
+
+How does the compression rate ( c) affect perfor-mance and efficiency? We evaluate MemoSight across compression ratios from 2× to 16 ×. Fig-ure 5(b) shows the trade-off between accuracy and peak context tokens: while higher ratios predictably reduce memory, moderate compression ( 2×–8×)maintains competitive performance with minimal degradation. Notably, at 8× compression, Mem-oSight consumes fewer peak tokens than Light-Thinker yet achieves superior accuracy (+1.77). Conversely, aggressive compression ( 16 ×) triggers a substantial performance drop, marking the limit of efficient information retention. Overall, Mem-oSight cuts peak memory by 66% compared to 
+
+Vanilla (Table 1). This reduced footprint also yields secondary gains in inference speed, particularly for long sequences (see Appendix D.1). 
+
+How does the MTP offset ( d) affect performance and efficiency? Figure 5(c) shows how foresight offset ( d) impacts accuracy and inference speedup under speculative decoding. Accuracy peaks at 7Method GSM8K MMLU GPQA BBH Avg.                     
+
+> MemoSight 89.84 63.49 40.91 73.13 66.84
+> w/o PAA 88.10 59.49 39.90 67.47 63.74 w/o MTP 89.99 60.86 37.37 71.72 64.99 w/o CCR 86.96 59.10 32.32 69.90 62.07
+
+Table 2: Ablation of MemoSight’s core components.                         
+
+> Method Param. GSM8K MMLU GPQA BBH Avg.
+> MemoSight 4K 89.84 63.49 40.91 73.13 66.84
+> MTP Middle 103M 88.17 62.03 43.43 74.55 64.45 MTP Last 103M 85.06 61.34 32.83 71.11 62.59
+
+Table 3: Comparison with traditional MTP variants. 
+
+d = 2 (66.19%) and remains comparable at d = 3 
+
+(66.08%), while d = 1 (64.94%) and d = 4
+
+(65.01%) both yield lower performance. This in-dicates that a moderate lookahead during training provides the strongest planning signal, whereas too small an offset lacks sufficient future context, while an overly large one introduces optimization noise. When coupled with speculative decoding, using 2, 3, or 4 foresight tokens yields similar in-ference speedups. Based on these results, we adopt 
+
+d = 2 as the default configuration to achieve the best performance-efficiency trade-off. 
+
+5.2 Ablation Study 
+
+We further ablate the core components of Memo-Sight, including Position-Aware Alignment (PAA), Constant Compression Ratio (CCR), and foresight-token-based MTP, on the Qwen series (see Ap-pendix C.3 for details). The full model achieves the highest average score (66.84); removing any module degrades performance, validating their col-lective necessity (Table 2). Among the components, CCR proves most critical; its absence (w/o CCR) triggers the sharpest average decline (4.77 points), particularly on the knowledge-intensive GPQA (-8.59). Similarly, removing PAA (w/o PAA) results in the second-largest reduction of 3.10 points, no-tably impacting BBH. Finally, omitting MTP (w/o MTP) leads to a 1.85 point decrease, confirming that the foresight-token mechanism bolsters reason-ing stability alongside inference acceleration. 
+
+5.3 Comparison with Traditional MTP 
+
+We compare MemoSight against DeepSeek-V3’s MTP (MTP Last) (Liu et al., 2024a) and a middle-layer variant (MTP Middle) (Wang et al., 2025) under identical compression settings (see Ap-pendix C.4 for details). As shown in Table 3, com-bining traditional MTP with context compression degrades performance compared to the MTP-free baseline (i.e, MemoSight w/o mtp in Table 2). We attribute this to traditional MTP’s massive parame-ter overhead and pre-training-centric design, which hinder joint optimization with post-training context compression. In contrast, MemoSight improves performance. By unifying MTP and compression within a single special-token based architecture, MemoSight minimizes parameter overhead and en-ables effective joint optimization. 
+
+6 Related Work 
+
+While CoT has proven powerful in enabling com-plex reasoning (Wei et al., 2022; Zhao et al., 2023), its KV cache grows linearly with gener-ated tokens, hampering inference speed and ne-cessitating optimization. Recent studies propose compressing these CoT steps into a latent space (e.g., CoConut (Hao et al., 2025) and its vari-ants CODI (Shen et al., 2025) and SIM-CoT (Wei et al., 2025)). However, latent reasoning lacks interpretability and is prone to learning pseudo-reasoning mechanisms (Zhang et al., 2025b). Build-ing upon LightThinker (Zhang et al., 2025a), which compresses CoT step-by-step, our frame-work introduces memory tokens equipped with a compression-tailored position layout inspired by (Zhao et al., 2024). To our knowledge, we are the first to combine MTP with CoT compression. While most exist-ing MTP frameworks require architectural modi-fications to the LLM (Liu et al., 2024a; Gloeckle et al., 2024), we demonstrate that such changes hinder model performance when paired with CoT compression. Instead, our unified framework inte-grates MTP via special token and a tailored position layout, leveraging techniques proposed in (Geron-topoulos et al., 2025). Due to page limits, we pro-vide a more comprehensive discussion of related work in Appendix E. 
+
+7 Conclusion 
+
+We present MemoSight, a unified framework that integrates context compression and multi-token pre-diction to address memory and latency bottlenecks in Chain-of-Thought reasoning. By leveraging memory and foresight tokens with position-aware alignment, our approach reduces the KV cache foot-print by 66% and accelerates inference by 1.56x, effectively optimizing the efficiency-performance tradeoff for reasoning tasks. 8References 
+
+Daman Arora and Andrea Zanette. 2025. Training lan-guage models to reason efficiently. arXiv preprint arXiv:2502.04463 .Tianle Cai, Yuhong Li, Zhengyang Geng, Hongwu Peng, Jason D Lee, Deming Chen, and Tri Dao. 2024a. Medusa: Simple llm inference acceleration frame-work with multiple decoding heads. arXiv preprint arXiv:2401.10774 .Zefan Cai, Yichi Zhang, Bofei Gao, Yuliang Liu, Yucheng Li, Tianyu Liu, Keming Lu, Wayne Xiong, Yue Dong, Junjie Hu, and 1 others. 2024b. Pyra-midkv: Dynamic kv cache compression based on pyramidal information funneling. arXiv preprint arXiv:2406.02069 .Kaiyan Chang, Songcheng Xu, Chenglong Wang, Yingfeng Luo, Xiaoqian Liu, Tong Xiao, and Jingbo Zhu. 2024. Efficient prompting methods for large language models: A survey. arXiv preprint arXiv:2404.01077 .Guoxuan Chen, Han Shi, Jiawei Li, Yihang Gao, Xi-aozhe Ren, Yimeng Chen, Xin Jiang, Zhenguo Li, Weiyang Liu, and Chao Huang. 2025. SepLLM: Ac-celerate large language models by compressing one segment into one separator. In Forty-second Interna-tional Conference on Machine Learning .Alexis Chevalier, Alexander Wettig, Anirudh Ajith, and Danqi Chen. 2023. Adapting language models to compress contexts. In Proceedings of the 2023 Con-ference on Empirical Methods in Natural Language Processing , pages 3829–3846. Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian, Mark Chen, Heewoo Jun, Lukasz Kaiser, Matthias Plappert, Jerry Tworek, Jacob Hilton, Reiichiro Nakano, and 1 others. 2021. Training verifiers to solve math word problems. arXiv preprint arXiv:2110.14168 .Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Amy Yang, Angela Fan, and 1 others. 2024. The llama 3 herd of models. 
+
+arXiv e-prints , pages arXiv–2407. Tao Ge, Jing Hu, Lei Wang, Xun Wang, Si-Qing Chen, and Furu Wei. 2023. In-context autoencoder for con-text compression in a large language model. arXiv preprint arXiv:2307.06945 .Anastasios Gerontopoulos, Spyros Gidaris, and Nikos Komodakis. 2025. Multi-token prediction needs reg-isters. arXiv preprint arXiv:2505.10518 .Fabian Gloeckle, Badr Youbi Idrissi, Baptiste Rozière, David Lopez-Paz, and Gabriel Synnaeve. 2024. Bet-ter & faster large language models via multi-token prediction. arXiv preprint arXiv:2404.19737 .Daya Guo, Dejian Yang, Haowei Zhang, Song, and 1 others. 2025. Deepseek-r1 incentivizes reason-ing in llms through reinforcement learning. Nature ,645(8081):633–638. Shibo Hao, Sainbayar Sukhbaatar, DiJia Su, Xian Li, Zhiting Hu, Jason Weston, and Yuandong Tian. 2025. Training large language models to reason in a contin-uous latent space. Preprint , arXiv:2412.06769. Dan Hendrycks, Collin Burns, Steven Basart, Andy Zou, Mantas Mazeika, Dawn Song, and Jacob Steinhardt. 2020. Measuring massive multitask language under-standing. arXiv preprint arXiv:2009.03300 .Binyuan Hui, Jian Yang, Zeyu Cui, Jiaxi Yang, Dayiheng Liu, Lei Zhang, Tianyu Liu, Jiajun Zhang, Bowen Yu, Keming Lu, and 1 others. 2024. Qwen2. 5-coder technical report. arXiv preprint arXiv:2409.12186 .Aaron Jaech, Adam Kalai, Adam Lerer, Adam Richard-son, Ahmed El-Kishky, Aiden Low, Alec Helyar, Aleksander Madry, Alex Beutel, Alex Carney, and 1 others. 2024. Openai o1 system card. arXiv preprint arXiv:2412.16720 .Haoxiang Jia, Earl T Barr, and Sergey Mechtaev. 2026. Compressing code context for llm-based issue reso-lution. arXiv preprint arXiv:2603.28119 .Huiqiang Jiang, Qianhui Wu, Chin-Yew Lin, Yuqing Yang, and Lili Qiu. 2023. Llmlingua: Compressing prompts for accelerated inference of large language models. In Proceedings of the 2023 conference on empirical methods in natural language processing ,pages 13358–13376. Xiaomin Li, Zhou Yu, Zhiwei Zhang, Xupeng Chen, Ziji Zhang, Yingying Zhuang, Narayanan Sadagopan, and Anurag Beniwal. 2025a. When thinking fails: The pitfalls of reasoning for instruction-following in llms. arXiv preprint arXiv:2505.11423 .Yuhong Li, Yingbing Huang, Bowen Yang, Bharat Venkitesh, Acyr Locatelli, Hanchen Ye, Tianle Cai, Patrick Lewis, and Deming Chen. 2024a. Snapkv: Llm knows what you are looking for before gener-ation. Advances in Neural Information Processing Systems , 37:22947–22970. Yuhui Li, Fangyun Wei, Chao Zhang, and Hongyang Zhang. 2024b. Eagle: Speculative sampling re-quires rethinking feature uncertainty. arXiv preprint arXiv:2401.15077 .Zongqian Li, Yixuan Su, and Nigel Collier. 2025b. 500xcompressor: Generalized prompt compression for large language models. In Proceedings of the 63rd Annual Meeting of the Association for Compu-tational Linguistics (Volume 1: Long Papers) , pages 25081–25091. Aixin Liu, Bei Feng, Bing Xue, Bingxuan Wang, Bochao Wu, Chengda Lu, Chenggang Zhao, Chengqi Deng, Chenyu Zhang, Chong Ruan, and 1 others. 
+
+92024a. Deepseek-v3 technical report. arXiv preprint arXiv:2412.19437 .Nelson F Liu, Kevin Lin, John Hewitt, Ashwin Paran-jape, Michele Bevilacqua, Fabio Petroni, and Percy Liang. 2024b. Lost in the middle: How language models use long contexts. Transactions of the associ-ation for computational linguistics , 12:157–173. Xin Liu, Runsong Zhao, Pengcheng Huang, Xinyu Liu, Junyi Xiao, Chunyang Xiao, Tong Xiao, Shengx-iang Gao, Zhengtao Yu, and Jingbo Zhu. 2025. Autoencoding-free context compression for llms via contextual semantic anchors. arXiv preprint arXiv:2510.08907 .Zhuoshi Pan, Qianhui Wu, Huiqiang Jiang, Menglin Xia, Xufang Luo, Jue Zhang, Qingwei Lin, Victor Rühle, Yuqing Yang, Chin-Yew Lin, and 1 others. 2024. Llmlingua-2: Data distillation for efficient and faithful task-agnostic prompt compression. arXiv preprint arXiv:2403.12968 .Weizhen Qi, Yu Yan, Yeyun Gong, Dayiheng Liu, Nan Duan, Jiusheng Chen, Ruofei Zhang, and Ming Zhou. 2020. Prophetnet: Predicting future n-gram for sequence-to-sequencepre-training. In Findings of the Association for Computational Linguistics: EMNLP 2020 , pages 2401–2410. David Rein, Betty Li Hou, Asa Cooper Stickland, Jack-son Petty, Richard Yuanzhe Pang, Julien Dirani, Ju-lian Michael, and Samuel R Bowman. 2024. Gpqa: A graduate-level google-proof q&a benchmark. In 
+
+First conference on language modeling .Zhenyi Shen, Hanqi Yan, Linhai Zhang, Zhanghao Hu, Yali Du, and Yulan He. 2025. Codi: Compress-ing chain-of-thought into continuous space via self-distillation. arXiv preprint arXiv:2502.21074 .Mirac Suzgun, Nathan Scales, Nathanael Schärli, Se-bastian Gehrmann, Yi Tay, Hyung Won Chung, Aakanksha Chowdhery, Quoc Le, Ed Chi, Denny Zhou, and 1 others. 2023. Challenging big-bench tasks and whether chain-of-thought can solve them. In Findings of the Association for Computational Linguistics: ACL 2023 , pages 13003–13051. Ashish Vaswani, Noam Shazeer, Niki Parmar, Jakob Uszkoreit, Llion Jones, Aidan N Gomez, Łukasz Kaiser, and Illia Polosukhin. 2017. Attention is all you need. Advances in neural information processing systems , 30. Jianjin Wang, Runsong Zhao, Xiaoqian Liu, Yuan Ge, Ziqiang Xu, Tong Xiao, Shengxiang Gao, Zhengtao Yu, and Jingbo Zhu. 2025. Mtp-s2ut: Enhancing speech-to-speech translation quality with multi-token prediction. arXiv preprint arXiv:2510.10003 .Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, brian ichter, Fei Xia, Ed H. Chi, Quoc V Le, and Denny Zhou. 2022. Chain of thought prompt-ing elicits reasoning in large language models. In 
+
+Advances in Neural Information Processing Systems .Xilin Wei, Xiaoran Liu, Yuhang Zang, Xiaoyi Dong, Yuhang Cao, Jiaqi Wang, Xipeng Qiu, and Dahua Lin. 2025. Sim-cot: Supervised implicit chain-of-thought. arXiv preprint arXiv:2509.20317 .Heming Xia, Chak Tou Leong, Wenjie Wang, Yongqi Li, and Wenjie Li. 2025. Tokenskip: Controllable chain-of-thought compression in llms. arXiv preprint arXiv:2502.12067 .Yige Xu, Xu Guo, Zhiwei Zeng, and Chunyan Miao. 2025. Softcot: Soft chain-of-thought for efficient reasoning with llms. In Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 23336– 23351. Jiangnan Ye, Hanqi Yan, Zhenyi Shen, Heng Chang, Ye Mao, and Yulan He. 2026. Context compression via explicit information transmission. arXiv preprint arXiv:2602.03784 .Jintian Zhang, Yuqi Zhu, Mengshu Sun, Yujie Luo, Shuofei Qiao, Lun Du, Da Zheng, Huajun Chen, and Ningyu Zhang. 2025a. Lightthinker: Think-ing step-by-step compression. arXiv preprint arXiv:2502.15589 .Peitian Zhang, Zheng Liu, Shitao Xiao, Ninglu Shao, Qiwei Ye, and Zhicheng Dou. 2024. Long context compression with activation beacon. arXiv preprint arXiv:2401.03462 .Yuyi Zhang, Boyu Tang, Tianjie Ju, Sufeng Duan, and Gongshen Liu. 2025b. Do latent to-kens think? a causal and adversarial analysis of chain-of-continuous-thought. arXiv preprint arXiv:2512.21711 .Zhenyu Zhang, Ying Sheng, Tianyi Zhou, Tianlong Chen, Lianmin Zheng, Ruisi Cai, Zhao Song, Yuan-dong Tian, Christopher Re, Clark Barrett, Zhangyang Wang, and Beidi Chen. 2023. H2o: Heavy-hitter ora-cle for efficient generative inference of large language models. In Thirty-seventh Conference on Neural In-formation Processing Systems .Runsong Zhao, Xin Liu, Xinyu Liu, Pengcheng Huang, Chunyang Xiao, Tong Xiao, and Jingbo Zhu. 2024. Position ids matter: An enhanced position layout for efficient context compression in large language models. arXiv preprint arXiv:2409.14364 .Wayne Xin Zhao, Kun Zhou, Junyi Li, Tianyi Tang, Xiaolei Wang, Yupeng Hou, Yingqian Min, Beichen Zhang, Junjie Zhang, Zican Dong, and 1 others. 2023. A survey of large language models. arXiv preprint arXiv:2303.18223 , 1(2). Yiqing Zhou, Yu Lei, Shuzheng Si, Qingyan Sun, Wei Wang, Yifei Wu, Hao Wen, Gang Chen, Fanchao Qi, and Maosong Sun. 2025. From context to edus: Faith-ful and structured context compression via elemen-tary discourse unit decomposition. arXiv preprint arXiv:2512.14244 .
+
+10 A Boundary Formulation in MemoSight Data Construction 
+
+This section details the label assignment rules at the boundaries of each reasoning step within the MemoSight training data. Specifically, we mask the training loss in two scenarios: • Terminal Reasoning Token ( rin): The final to-ken of Ri, denoted as ⟨e⟩ (e.g., \n\n ), serves as a hard trigger for context compression. Since generating ⟨e⟩ during inference immediately sus-pends text generation to append memory tokens, it is not tasked with predicting subsequent text. Thus, its training label is set to None .• Out-of-Bounds Foresight Tokens ( ⟨f⟩): We also mask foresight tokens whose prediction targets (t + d) exceed the step length n. Under spec-ulative decoding, if a foresight token success-fully predicts ⟨e⟩, the model initiates compres-sion early. Consequently, any targets projecting beyond the terminal token become invalid and require no supervision. Figure 2 illustrates these boundary label align-ments. 
+
+B Inference Procedure 
+
+To provide a formal characterization of the reason-ing and compression cycle illustrated in Figure 2, we outline the iterative inference procedure in Al-gorithm 1. 
+
+Algorithm 1 MemoSight Iterative Inference                                                            
+
+> Require: Prompt P, Model M, Foresight offset d, Compres-sion rate c
+> 1: S←Prefill (P)// Initialize KV cache 2: while not ⟨eos ⟩do
+> 3: // Phase 1: Foresight-based Acceleration
+> 4: repeat
+> 5: ˆR, A ←SpeculativeStep (M, S, d )// Parallel draft and verify 6: S←S∪A// Update cache 7: until ⟨e⟩ ∈ Aor ⟨eos ⟩ ∈ A
+> 8: // Phase 2: Dynamic Compression
+> 9: if ⟨e⟩ ∈ Athen
+> 10: l← ⌈| Rcurrent |/c ⌉// Set memory length 11: M←Forward (M,⟨m1, . . . , ml,b⟩)
+> 12: Evict (Rcurrent )// Free verbose tokens 13: S←(S\Rcurrent )∪M// Context transition 14: end if
+> 15: end while
+
+C Experimental Details 
+
+C.1 Baseline Details 
+
+During evaluation, we employ greedy decoding with a maximum output length of 10,240 tokens for all models. We compare MemoSight against the following baselines: • CoT: A baseline that applies few-shot Chain-of-Thought (CoT) prompting to the Qwen2.5-7B (Hui et al., 2024) and Llama-3.1-8B (Dubey et al., 2024) models without additional training. • Distill-R1 (Guo et al., 2025): A reasoning model distilled from DeepSeek-R1’s response data, built upon the Qwen and Llama architec-tures. • Vanilla: A standard full-parameter instruction-tuned model. Operating without any compres-sion or acceleration mechanisms, it serves as the empirical upper bound for reasoning accuracy. • H2O (Zhang et al., 2023): A training-free KV cache eviction strategy that retains "Heavy Hit-ter" tokens and a local window. We apply H2O to the Vanilla model using a sliding window of 1024 and a heavy-hitter budget of 512 tokens. • SepLLM (Chen et al., 2025): A training-free framework that preserves KV caches for initial tokens, separators, and a local window. We con-figure SepLLM with an initial cache size of 384, a separator budget of 64, and a local window of 256, maintaining a total cache capacity of 1024. • LightThinker (Zhang et al., 2025a): A post-training method that compresses each reasoning step into a fixed number of memory tokens. Upon reaching a step boundary, the model generates memory tokens to summarize the context, after which the original reasoning tokens are evicted from the KV cache. 
+
+C.2 Training Details 
+
+The Vanilla baseline, LightThinker and MemoSight are initialized from DeepSeek-R1-Distill (Guo et al., 2025) and trained on the Bespoke-Stratos-17k (BS17K) dataset for 5 epochs. Experiments are conducted on 8 H200 GPUs using DeepSpeed ZeRO-3 offload. We use a micro-batch size of 2 and 4 gradient accumulation steps, yielding a global batch size of 64. We employ a cosine learn-ing rate schedule with a 0.05 warmup ratio. The peak learning rate for Vanilla is set to 1e-5, while 11 for the other models, it is set to 2e-5. To accommodate the additional foresight tokens introduced during training, MemoSight requires a maximum sequence length of 8192, whereas all other models are trained with a sequence length of 4096. For MemoSight specifically, we set the compression ratio to c = 5 and randomly sam-ple the foresight offset d ∈ { 0, 1, 2} during data construction. The standard LM loss and the MTP loss are weighted at 0.7 and 0.3, respectively (i.e., 
+
+λ = 0 .7). 
+
+C.3 Ablation Details 
+
+This section outlines the experimental setup for our ablation studies. We isolate and evaluate three core components of MemoSight: Position-Aware Alignment (PAA), Constant Compression Ratio (CCR), and foresight-token-based MTP. • MemoSight w/o PAA: This variant ablates the position-aware alignment mechanism by assign-ing monotonically increasing position IDs to both memory and reasoning tokens. Foresight to-kens retain their original position IDs (i.e., set to 
+
+t + d − 1 when predicting the token at t + d). • MemoSight w/o CCR: Rather than maintaining a constant compression ratio, this variant uses a fixed budget of 9 memory tokens per step, match-ing the LightThinker configuration. • MemoSight w/o MTP: This variant removes foresight tokens and the multi-token prediction objective, relying solely on memory tokens for context compression. All ablation experiments use the Qwen series models. To ensure fair comparison, training set-tings remain consistent across all variants, identical to those of MemoSight and LightThinker. 
+
+C.4 Traditional MTP Details 
+
+To assess the effectiveness of our foresight-token-based MTP, we establish traditional MTP baselines operating under identical context compression set-tings. Following DeepSeek-V3 (Liu et al., 2024a), the standard configuration sequentially appends two transformer blocks to the final layer’s hidden states, predicting the next two tokens via a shared LM head. Furthermore, inspired by Wang et al. (2025), who demonstrated that leveraging interme-diate representations yields superior performance in speech tasks, we evaluate an additional variant that feeds intermediate layer hidden states—rather than the final layer’s output—into the MTP mod-ule. 
+
+C.5 Evaluation Details 
+
+During inference, we evaluate all models us-ing greedy decoding with a repetition penalty of 1.1. Prompt configurations for Table 1 are as follows: Vanilla, H2O, SepLLM, LightThinker, and MemoSight share the same system prompt (Figure 11) and task prompts (Figure 12). R1-Distill uses these task prompts but omits the sys-tem prompt. The CoT baseline uses a few-shot system prompt (Figure 9) alongside task-specific prompts for different benchmarks (Figure 10). For MMLU (Hendrycks et al., 2020) and GPQA (Rein et al., 2024), multiple-choice options are random-ized to prevent positional bias. 
+
+D More Analyses and Discussions 
+
+D.1 Long-Context Efficiency Analysis 
+
+Figure 6 compares the peak memory and inference time of MemoSight against the vanilla baseline during autoregressive generation. We set a fixed compression ratio of 7, compressing every 56 to-kens. Results show that context compression ef-fectively reduces memory consumption, lowering peak memory by over 80%. Regarding inference speed, since KV cache reduction primarily acceler-ates the attention layer rather than other modules, the speed improvement only becomes evident when the context length exceeds 8k. 
+
+D.2 Case Study 
+
+Figure 8 illustrates how preserving intermediate reasoning states prevents cascading errors in multi-step calculations. In this nutritional calculation problem, the baseline model, LightThinker, cor-rectly computes the remaining calorie budget but skips calculating the grams per serving. As a re-sult, it computes an incorrect energy density by dividing the per-serving calories by the whole-bag weight ( 250 ÷ 300 ), leading to a flawed self-verification and an incorrect final answer of 120 g. In contrast, MemoSight explicitly preserves all intermediate states. It calculates the correct serving size ( 300 ÷ 5 = 60 ) before applying the calorie constraint. This ensures the final scaling step is grounded in the correct premise ( (200 ÷250) ×60 ), allowing the model to consistently arrive at the cor-rect answer of 48 g. 12 1024 2048 4096 8192 16384 32768 
+
+> Generated Tokens
+> 0
+> 200
+> 400
+> 600
+> 800
+> 1000
+> 1200
+> Time (s)
+> MemoSight
+> Vanilla
+> (a) n=1024
+> 1168
+> 336
+> Peak Tokens
+> (b) n=2048
+> 2192
+> 480
+> Peak Tokens
+> (c) n=4096
+> 4240
+> 776
+> Peak Tokens
+> (d) n=8192
+> 8336
+> 1360
+> Peak Tokens
+> (e) n=16384
+> 16528
+> 2528
+> Peak Tokens
+> (f) n=32768
+> 32912
+> 4872
+> Peak Tokens
+
+Figure 6: Time and memory efficiency evaluation. The main plot shows the inference time of MemoSight and Vanilla as the number of generated tokens increases. The inset charts (a)-(f) compare the peak token usage at different sequence lengths. 
+
+D.3 Impact of Loss Weights 
+
+We investigate the effect of the loss weight distri-bution by comparing two configurations: a higher weight on the standard Language Modeling (LM) loss (λ = 0 .7) and an equal weighting (λ = 0 .5) .As illustrated in Figure 7, the 0.7/0.3 configuration consistently outperforms the equal weighting base-line across various compression ratios ( c). Notably, allocating a larger weight to the MTP objective (0.5) degrades average accuracy, suggesting that excessive planning supervision interferes with the primary generation task. Conversely, a moderate MTP weight ( 0.3) achieves a more effective bal-ance, preserving core reasoning capabilities while still benefiting from the lookahead training signal. 
+
+E Related Work 
+
+E.1 Context Compression 
+
+Context compression mitigates the computational and memory overhead of processing long se-quences by condensing inputs while retaining se-mantic integrity. LLM inference involves a pre-filling phase for comprehension and a generation phase for decoding. Because our work focuses on the long-text generation phase, prefilling accel-eration methods like AutoCompressor (Chevalier et al., 2023), ICAE (Ge et al., 2023), LLMLin-gua (Jiang et al., 2023), ActivationBeacon (Zhang et al., 2024), PyramidKV (Cai et al., 2024b), SnapKV (Li et al., 2024a) and SAC (Liu et al., 2025) are excluded from this discussion. Context compression for the generation phase generally falls into three paradigms: latent reason-ing, explicit token selection, and implicit latent con-densation. 1) Latent reasoning. To bypass the ver-bosity of explicit CoT, methods like Coconut (Hao et al., 2025) and SoftCoT (Xu et al., 2025) perform reasoning in a continuous latent space. To mitigate instability and latent collapse, CODI (Shen et al., 2025) distills natural language CoT via hidden state alignment, while SIM-CoT (Wei et al., 2025) uses an auxiliary decoder to provide step-level supervi-sion. However, Zhang et al. (2025b) argue that cur-rent latent models tend to learn pseudo-reasoning mechanisms rather than true reasoning. 2) Explicit token selection. Early methods prune discrete to-kens based on importance metrics (e.g., LLmLin-gua (Jiang et al., 2023; Pan et al., 2024)), which can disrupt local coherence and logical dependencies. Recent work favors structure-aware compression. The EDU-based Context Compressor (Zhou et al., 2025) parses text into discourse trees to maintain global structure, SWEzze (Jia et al., 2026) extracts minimal sufficient subsequences for code reposito-ries, and TokenSkip (Xia et al., 2025) learns to omit 13 redundant tokens dynamically during reasoning. 3) Implicit latent condensation compress contexts into continuous latent embeddings, or memory to-kens. Frameworks like ICAE (Ge et al., 2023) and 500xCompressor (Li et al., 2025b) achieve high compression ratios but suffer from positional bias due to causal attention and end-of-sequence token placement. EPL (Zhao et al., 2024) addresses this by uniformly distributing memory token position IDs across the original context. Building on this, ComprExIT (Ye et al., 2026) explicitly transmits information over frozen hidden states to decouple compression from internal model dynamics. 
+
+E.2 Multi-Token Prediction 
+
+Multi-Token Prediction (MTP) extends the stan-dard next-token prediction objective to predict mul-tiple future tokens simultaneously, densifying the training signal and facilitating long-term planning. While early methods like ProphetNet (Qi et al., 2020) introduced MTP for sequence-to-sequence tasks, their multi-stream attention scales poorly to large models. Recent research addresses this architectural bottleneck using auxiliary decoding heads: Gloeckle et al. (2024) employ parallel heads to improve generative performance, and Liu et al. (2024a) adopt sequential heads to enhance implicit planning within hidden states. However, these ben-efits are primarily observed during pretraining. To adapt MTP for fine-tuning scenarios, Gerontopou-los et al. (2025) recently proposed a special-token-based mechanism. To the best of our knowledge, our work is the first to integrate MTP with con-text compression, further accelerating inference through speculative decoding (Cai et al., 2024a; Li et al., 2024b). 14 c=2 c=4 c=6 c=8 
+
+62.0% 
+
+63.0% 
+
+64.0% 
+
+65.0% 
+
+66.0% 
+
+67.0% 
+
+68.0% 
+
+69.0% 
+
+70.0% 
+
+Average accuracy (%) 
+
+68.41% 
+
+65.52% 
+
+66.19% 
+
+64.71% 
+
+66.82% 
+
+65.47% 
+
+63.29% 63.15% 
+
+LM=0.7, MTP=0.3 LM=0.5, MTP=0.5 Figure 7: Impact of loss weight configuration ( λ) on average accuracy across varying compression ratios ( c). The blue solid line represents a higher weight on the standard LM loss ( λ = 0 .7), while the orange dashed line represents an equal weighting ( λ = 0 .5). The answer is 48g. Question:  According to its nutritional info, a bag of chips has 250 calories per serving. If a 300g bag has 5 servings, how many grams can you eat if your daily calorie target is 2000 and you have already consumed 1800 calories? 
+
+LightThinker  ✗ Wrong 
+
+💡  Model's Thoughts 
+
+⌨ Model's Solution 
+
+Remaining calories: 2000 − 1800 =  200 kcal 
+
+Calories per gram:  250 ÷ 300 = 5/6 kcal/g 
+
+Grams allowed: 200 × (3/5) =  120 g
+
+Root cause:  Step ② (300g ÷ 5 = 60 g/serving) was skipped. Using whole-bag density instead of per-serving density inflates the answer by 2.5×. The self-verification loop confirmed the wrong result. 
+
+## 120 g 
+
+2.5× the correct answer  ✗
+
+MemoSight  ✓ Correct 
+
+💡  Model's Thoughts 
+
+⌨ Model's Solution 
+
+Remaining calories: 2000 − 1800 =  200 kcal 
+
+Serving size: 300g ÷ 5 =  60 g/serving 
+
+Grams allowed: (200 ÷ 250) × 60 =  48 g
+
+All intermediate states preserved. Per-serving size correctly computed before scaling — thoughts and solution fully consistent. Final result is traceable and matches the expected answer exactly. 
+
+## 48 g 
+
+Correct answer  ✓
+
+✓Step ① Remaining calories 
+
+2000 − 1800 =  200 kcal 
+
+Missing ✗Step ② Grams per serving — skipped 
+
+300g ÷ 5 =  60 g/serving  was never computed 
+
+Wrong ✗Step ③ Density from whole bag (wrong) 
+
+250 ÷ 300 = 5/6 kcal/g  → 200 × 3/5 = 120g 
+
+Self-verification passed on wrong premise 
+
+✓Step ① Remaining calories 
+
+2000 − 1800 =  200 kcal 
+
+✓Step ② Grams per serving 
+
+300g ÷ 5 servings =  60 g/serving 
+
+✓Step ③ Scale by remaining calories 
+
+(200 ÷ 250) × 60 = 48 g
+
+Self-verification passed on correct premise 
+
+Figure 8: Case Study comparing the reasoning trajectories of LightThinker and MemoSight. 
+
+15 System Prompt: 
+
+Below is a question. Please think through it step by step, and then provide the final answer. If options are provided, please select the correct one. ## Output format: Use “<THOUGHT>...</THOUGHT>” to outline your reasoning process, and enclose the final answer in ‘\boxed{}’. ## Example 1: Question: What is 2 + 3? Output: <THOUGHT>First, I recognize that this is a simple addition problem. Adding 2 and 3 together gives 5.</THOUGHT> Therefore, the final answer is \boxed{5}. ## Example 2: Question: What is 2 + 3? A. 4 B. 5 C. 10 Output: <THOUGHT>First, I recognize that this is a simple addition problem. Adding 2 and 3 together gives 5.</THOUGHT> Therefore, the final answer is \boxed{B}. 
+
+> Figure 9: System prompt for Qwen2.5-7B-Instruct and Llama3.1-8B-Instruct.
+
+GSM8K: 
+
+Return your final response within \boxed{}. {Question} 
+
+MMLU: 
+
+Please select the option that best answers the question. Return your final response within \boxed{}. Here are the Question: {Question} 
+
+GPQA: 
+
+Given a question, please select the option that best answers it. Return your final response within \boxed{}. {Question} 
+
+BBH: 
+
+Return your final response within \boxed{}. If options are provided, please select the correct one. {Question} 
+
+> Figure 10: Task prompt for Qwen2.5-7B-Instruct and Llama3.1-8B-Instruct.
+
+16 System Prompt: 
+
+Your role as an assistant involves thoroughly exploring questions through a systematic long think-ing process before providing the final precise and accurate solutions. This requires engaging in a comprehensive cycle of analysis, summarizing, exploration, reassessment, reflection, backtracking, and iteration to develop well-considered thinking process. Please structure your response into two main sections: Thought and Solution. In the Thought section, detail your reasoning process using the specified format: <|begin_of_thought|> {thought with steps separated with ‘\n\n’} <|end_of_thought|> Each step should include detailed considerations such as analisyng questions, summarizing relevant findings, brainstorming new ideas, verifying the accuracy of the current steps, refining any errors, and revisiting previous steps. In the Solution section, based on various attempts, explorations, and reflections from the Thought section, systematically present the final solution that you deem correct. The solution should remain a logical, accurate, concise expression style and detail necessary step needed to reach the conclusion, formatted as follows: <|begin_of_solution|> {final formatted, precise, and clear solution} <|end_of_thought|> Now, try to solve the following question through the above guidelines: 
+
+> Figure 11: The shared system prompt applied to Vanilla, H2O, SepLLM, LightThinker, and MemoSight across the Qwen and Llama series.
+
+GSM8K/MMLU/GPQA/BBH: 
+
+Return your final response within \boxed{}. {Question} 
+
+> Figure 12: The shared task prompt applied to Vanilla, H2O, SepLLM, LightThinker, and MemoSight across the Qwen and Llama series.
+
+17

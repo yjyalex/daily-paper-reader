@@ -1,0 +1,968 @@
+Title: Visual Preference Optimization with Rubric Rewards
+
+URL Source: https://arxiv.org/pdf/2604.13029v1
+
+Published Time: Wed, 15 Apr 2026 01:46:57 GMT
+
+Number of Pages: 25
+
+Markdown Content:
+Technical Report on Rubric-Based Post-Training I: Preference Optimization 
+
+# Visual Preference Optimization with Rubric Rewards 
+
+Ya-Qi Yu ∗,†B, Fangyu Hong ∗, Xiangyang Qu ∗, Hao Wang ∗,Gaojie Wu, Qiaoyu Luo, Nuo Xu, Huixin Wang, Wuheng Xu, Yongxin Liao, Zihao Chen, Haonan Li, Ziming Li, Dezhi Peng, Minghui Liao, Jihao Wu, Haoyu Ren, Dandan Tu  
+
+> ∗
+
+Core Contributors † Project Leader 
+
+Huawei Technologies Co., Ltd. 
+
+Abstract 
+
+The effectiveness of Direct Preference Optimization (DPO) depends on preference data that reflect the quality differences that matter in multimodal tasks. Existing pipelines often rely on off-policy perturbations or coarse outcome-based signals, which are not well suited to fine-grained visual reasoning. We propose rDPO , a preference optimization framework based on instance-specific rubrics. For each image-instruction pair, we create a checklist-style rubric of essential and additional criteria to score responses from any possible policies. The instruction-rubric pool is built offline and reused during the construction of on-policy data. On public reward modeling benchmarks, rubric-based prompting massively improves a 30B-A3B judge and brings it close to GPT-5.4. On public downstream benchmarks, rubric-based filtering raises the macro average to 82.69, whereas outcome-based filtering drops it to 75.82 from 81.14. When evaluating scalability on a comprehensive benchmark, rDPO achieves 61.01, markedly outperforming the style-constrained baseline (52.36) and surpassing the 59.48 base model. Together, these results show that visual preference optimization benefits from combining on-policy data construction with instance-specific criterion-level feedback. 
+
+1 Introduction 
+
+Direct Preference Optimization (DPO) [ 1 ] is now a common approach for aligning Vision-Language Models (VLMs) [ 2, 3, 4, 5 ], helping improve response quality and reduce hallucinations. Its effec-tiveness, however, depends critically on the quality of the underlying preference data. Early pipelines for constructing preference pairs fell into two broad categories: response-oriented methods that inject hallucinations or exploit “strong-weak” model outputs [ 6, 7, 8, 9 , 10 , 11 , 12 , 13 ], and vision-oriented 
+
+methods that perturb visual inputs via diffusion noise or image editing [ 6 , 14 , 15 , 16 , 17 , 18 , 19 ]. These methods are useful in specific settings, but they often produce off-policy pairs. As a result, the constructed preference data can drift away from the target model’s actual generation behavior. Recent work has moved toward on-policy and self-improving pipelines. Methods such as RLAIF-V [ 13 ] and MMPR [ 12 ] group model-generated responses by hallucination count or final correctness, while OPA-DPO [ 20 ] and online DPO variants [ 21 , 22 ] repeatedly sample from the latest policy during training. This line of work reduces the distribution mismatch between constructed pairs and the target model. However, most existing pipelines still rely on a reward signal of limited granularity, and they often miss differences in grounding, completeness, and reasoning quality. To obtain richer supervision, many studies use VLM-as-a-Judge and Reward Models (RMs) to score candidate responses [ 23 , 24 , 25 , 26 , 27 , 28 ]. This makes large-scale data filtering practical, but it also makes judge quality the main bottleneck. Large proprietary models can provide strong annotations, 
+
+> B
+
+E-mail: yuyaqi5@huawei.com Preprint.                
+
+> arXiv:2604.13029v1 [cs.CV] 14 Apr 2026 Cri
+> Model-Agnostic Seed & Rubric Collection
+> Data Pool Seed Mining Rubric Drafting Instruction-Rubric Pool
+> Sampling Scoring Pair Mining Iterative DPO
+> On-Policy Data Curation & Optimization
+> Qwen2.5-VL TextHawk2
+> InternVL3.5 Qwen3-VL
+> Weight Criterion Reference
+> Generation + Aggregation
+> Essential
+> Additional
+> ?
+> Essential
+> Additional
+> ?
+> 32 y
+> ……
+> 3y
+> 2y
+> 1y
+> Rollout
+> Engine
+> Base Model ?
+> ……
+> r32
+> r6
+> r5
+> r4
+> r3
+> r2
+> r1
+> y32
+> y6
+> y5
+> y4
+> y3
+> y2
+> y1
+> VLM-as-a-Judge
+> Essential
+> Additional
+> ✓
+> ✗
+> ……
+> ✓
+> ✗
+> ·Qualification
+> ·Margin
+> ·Learnability
+> ·Diversity
+> Rules
+> ……
+> Margin
+> Qualification Filtered
+> Split 3 +
+> Final Reference
+> Split 2 +
+> Intermediate
+> Reference
+> Split 1 +
+> Initial Reference
+
+Figure 1: Overview of rDPO. The top lane constructs a model-agnostic instruction-rubric pool by mining challenging seeds via model ensembles and drafting instance-specific rubrics with structured “essential” and “additional” criteria. The bottom lane achieves on-policy data curation and optimiza-tion by sampling responses from a target policy, scoring them via rubric-grounded judging, and mining preference pairs to drive iterative DPO. yet they are expensive to use at scale. Open-source judge models [ 29 , 30 , 31 , 32 , 33 , 34 ] are more practical, but they are often prompted with fixed templates and yield coarse scores or rankings, which lack the transparency and fine-grained feedback needed to penalize reasoning errors or hallucinations. In the Large Language Model (LLM) setting, rubric-based evaluation has improved both automated assessment and alignment by breaking quality into explicit criteria [ 35 , 36 , 37 , 38 , 39 ]. In multimodal settings, however, rubric-based reward modeling remains underexplored. Concurrent work such as Omni-RRM [40] moves in this direction, but it relies on fixed combinations of predefined criteria. We therefore propose rDPO, a visual preference optimization framework grounded in instance-specific rubrics. Fig 1 summarizes the overall pipeline. For each image-instruction pair, we build a checklist-style rubric of essential and additional criteria. These rubrics provide structured guidance that helps a moderately-sized 30B-A3B open-source judge produce more fine-grained feedback. The instruction-rubric pool is built offline and then reused during the construction of on-policy data. We evaluate the method from three angles: judge quality on public reward modeling benchmarks, a method-validation setting where rubric-based filtering outperforms outcome-based filtering under the same on-policy setup, and a scaling-validation setting on a comprehensive in-house benchmark. In summary, the main contributions of this work are as follows: • We propose rDPO, a visual preference optimization framework based on instance-specific rubric-based reward modeling. The method differs from template-based rubric composition by generating per-instance criteria for visual preference construction. • On public reward-modeling benchmarks, instance-specific rubrics improve the judgment quality of a moderately-sized 30B-A3B open-source judge without additional training. • We construct a 300K instruction-rubric pool and provide an automated pipeline for generating on-policy preference data for target-policy-specific training. • In method validation, outcome-based filtering reduces the macro average from 81.14 to 75.82, while rDPO raises it to 82.69. In scaling validation, rDPO achieves 61.01, markedly outperforming the style-constrained baseline (52.36) and surpassing the 59.48 base model. 22 Related Works 
+
+2.1 Reward Models for Multimodal Alignment 
+
+Aligning VLMs with complex human intent has motivated the curation of large-scale multimodal preference datasets. Early datasets relied on extensive human feedback, including LLaVA-RLHF [ 23 ], RLHF-V [ 24 ], MM-RLHF [ 28 ], WildVision [ 25 ], and VisionArena [ 41 ]. To reduce annotation costs, AI feedback mechanisms followed, as seen in VLFeedback [ 26 ], RLAIF-V [ 13 ], MIA-DPO [ 27 ], and LLaVA-Critic [ 31 ]. In parallel, specialized visual RMs have been developed as automated evaluators. Early explorations like Prometheus-Vision [ 29 ], SIMA [ 30 ], and LLaVA-Critic [ 31 ] established the foundation. Recent work has further refined RM capabilities: CAREVL [ 42 ] distills language reward knowledge into visual RMs, SVIP-Reward [ 43 ] incorporates stepwise visual programs, and comprehensive models like MM-RLHF-Reward [ 28 ], IXC-2.5-Reward [ 33 ], and Skywork-VL Reward [ 34 ] integrate diverse multimodal preference corpora. Despite this progress, existing RMs typically produce scalar scores or rely on rigid prompting templates, and lack the transparency and multi-dimensional granularity needed to guide nuanced visual reasoning. 
+
+2.2 Rubric-Grounded Evaluation and Alignment 
+
+Moving from generic scoring to rubric-based frameworks has delivered substantial improvements in LLM evaluation and alignment. For evaluation, customized rubrics have proven essential for complex, multi-dimensional tasks [ 35 , 36 , 44 , 45 , 46 ]. In post-training, frameworks such as Rubrics-as-Rewards [ 47 ], Rubicon [ 48 ], and CARMO [ 37 ] use rubrics to provide structured reward signals. To generate discriminative rubrics, methods like RLCF [ 38 ], OpenRubrics [ 49 ], and Rubrichub [ 50 ]employ contrastive generation. Dynamic refinement processes are introduced by OnlineRubrics [ 51 ], Auto-Rubric [ 52 ], and Rubric-ARM [ 53 ] to mitigate reward over-optimization. RuscaRL [ 39 ] further introduces rubrics for both reward modeling and hint-guided rollout generation. In the multimodal domain, rubric-based alignment remains in its early stages. Recent evaluation benchmarks like JudgeAnything [ 54 ] and Multi-Crit [ 55 ] have introduced instance-specific checklists for multi-criteria assessment, highlighting the demand for structured evaluation. For model alignment, the concurrent work Omni-RRM [ 40 ] represents an early attempt to provide fine-grained feedback. However, it relies on fixed combinations of predefined rubric templates. Our method differs in that it generates instance-specific criteria for preference pair mining during data construction. 
+
+3 Preliminaries 
+
+3.1 DPO 
+
+This work centers on self-improvement through preference alignment, adopting DPO [ 1 ] as the primary framework. DPO obviates explicit reward modeling by leveraging the analytical mapping between the reward function and the optimal policy under the Bradley-Terry preference model [56]. Consider a dataset D consisting of preference triplets (x, y c, y r ), where x denotes the input (com-prising both image and text prompts), while yc and yr represent the chosen and rejected responses, respectively. The DPO objective is defined as: 
+
+LDPO (πθ ; π0) = − log σ
+
+
+
+β log πθ (yc | x)
+
+π0(yc | x) − β log πθ (yr | x)
+
+π0(yr | x)
+
+
+
+, (1) where σ is the sigmoid function, β is the KL penalty coefficient, and πθ represents the policy model parameterized by θ, which is initialized from the reference model π0.The derivation [1] of the gradient of the DPO loss with respect to θ can be written as follows: 
+
+∇θ LDPO (πθ ; π0) = −β σ (ˆ rθ (x, y r ) − ˆrθ (x, y c)) 
+
+| {z }
+
+> scaling by reward margin
+
+
+
+∇θ log π(yc | x)
+
+| {z } 
+
+> increase likelihood of yc
+
+− ∇ θ log π(yr | x)
+
+| {z } 
+
+> decrease likelihood of yr
+
+
+
+, (2) where ˆrθ (x, y ) = β log πθ (y|x) 
+
+> π0(y|x)
+
+represents the implicit reward. This gradient structure intuitively scales the updates based on the reward margin, increasing the likelihood of yc while penalizing yr .33.2 MPO 
+
+To integrate preference learning with the stability of Supervised Fine-Tuning (SFT), we introduce a simplified version of Mixed Preference Optimization (MPO) [ 12 ]. This formulation augments the DPO objective with an auxiliary SFT loss: 
+
+LMPO (πθ ; π0) = LDPO (πθ ; π0) + LSFT (πθ ). (3) Specifically, the SFT term reinforces the chosen response yc, acting as a form of rejection sampling: 
+
+LSFT (πθ ) = −α log σ (log πθ (yc | x)) , (4) where α is a scaling coefficient. Here, we exclude the length normalization to ensure the magnitude remains consistent with the DPO term. The resulting gradient: 
+
+∇θ LSFT (πθ ) = −α ∇θ log π(yc | x)
+
+| {z } 
+
+> increase likelihood of yc
+
+, (5) effectively increases the weight of the gradient on the chosen response to prevent policy collapse. 
+
+3.3 Rubric 
+
+To enhance the self-improvement cycle, we sample on-policy responses y ∼ π0(·| x) and introduce a rubric-based RM for evaluation. Scoring against the target model’s own outputs reduces the mismatch introduced by static offline datasets. Specifically, our framework employs Generative RMs (GenRMs) that evaluate responses against a structured, instance-specific checklist. For each input x ∈ X , we define a localized rubric encompassing K distinct criteria (e.g., factual accuracy, instruction following), denoted as a set Cx:
+
+Cx = {cx 
+
+> 1
+
+, c x 
+
+> 2
+
+, . . . , c xK } . (6) Formally, the reward model rϕ is defined as a function that takes an input x ∈ X , a generated response y ∈ Y , and the corresponding rubric Cx ∈ C to yield a multi-dimensional feedback vector 
+
+s ∈ RK . Compared to traditional scalar rewards, this formulation provides greater transparency and interpretability. Furthermore, it enables fine-grained data filtering and facilitates the construction of nuanced preference pairs for subsequent optimization. 
+
+4 Methodology 
+
+Our data construction pipeline consists of three stages: (1) Seed Mining , which filters high-quality seed instructions from a broader data pool; (2) Rubric Drafting , which generates instance-specific rubrics for the selected seeds; and (3) Preference Data Curation , which samples on-policy responses and constructs preference pairs for a specific target policy model. The first two stages are model-agnostic : the resulting instruction-rubric pool can be reused across different target models. 
+
+4.1 Seed Mining 
+
+To curate a high-quality and challenging set of instructions, we employ a disagreement-based filtering mechanism, which operates in two steps: 
+
+Large-Scale Rollout. We first conduct a large-scale parallel rollout to collect initial responses. To capture diverse model behaviors, we use an ensemble of moderately-sized models spanning both dense and Mixture-of-Experts (MoE) architectures: TextHawk2-7B [ 57 ], Qwen2.5-VL-7B [ 58 ], InternVL3.5-30B-A3B [2], and Qwen3-VL-30B-A3B [5]. 
+
+Disagreement-based Filtering. We then apply a reference-free, disagreement-based filtering strategy. We retain only those instances where the ensemble models fail to reach a consensus. Such disagree-ment often identifies complex, ambiguous, or edge cases that are highly informative for preference optimization. Finally, to maintain domain balance, we apply uniform sampling across all original data sources to construct the final seed set. 44.2 Rubric Drafting 
+
+To ensure that the evaluation criteria are mutually exclusive and strictly verifiable by an RM, our construction process adheres to four core principles: (1) Atomic: Each criterion targets a single, indivisible key point or sub-query within the original instruction. (2) Comprehensive: The criteria list jointly covers all vital dimensions of the user query, so that no critical aspect of a complete response is overlooked. (3) Precise: The evaluation aligns strictly with the user query, avoiding redundant checks or extraneous information. (4) Objective: Assessments are grounded in observable facts, empirical evidence, or reference answers, eliminating variance from subjective interpretations. Based on these principles, we explicitly categorize the criteria into two distinct types: essential and 
+
+additional . Essential criteria capture the core information prioritized by the query; satisfying these is a prerequisite for a conceptually sound response. Additional criteria encompass relevant image facts, supplementary knowledge, or intermediate steps required to derive the answer. Formally, each check item is structured as a triplet comprising a criterion , a reference , and a fixed-point weight . The criterion dictates a concrete and observable assertion to be verified. The reference 
+
+serves as the ground truth, strictly derived from image facts. Finally, the weight quantifies the item’s importance across three discrete levels: 1 (Auxiliary) for helpful but non-critical information; 
+
+2 (Important) for content that significantly enhances the user experience; and 3 (Key) for critical elements where any omission or deviation constitutes a definitive error. To generate rubrics following this schema, we employ frontier reasoning models to generate instance-specific checklists in JSON format (see Appendix A). To account for varying annotation quality across seed datasets, we adapt our generation strategy accordingly: 
+
+Expert-Grounded Generation. For datasets with trustworthy human annotations, the rubric genera-tion is explicitly conditioned on the provided ground truths. This ensures that the resulting rubrics are firmly anchored in expert knowledge and factual accuracy. 
+
+Answer-Agnostic Generation. Conversely, for datasets characterized by noisy or missing annota-tions, we deliberately exclude the original answers from the prompt. This prevents the generation process from being misled by subpar reference responses. Furthermore, relying on a single model for generation risks introducing systematic bias or persistent perception errors. To mitigate this and expand coverage, we independently prompt multiple models and synthesize their candidate rubrics into a unified checklist via a secondary aggregation prompt. 
+
+4.3 Preference Data Curation 
+
+In this stage, we sample and score multiple responses per instruction from the target policy using the instruction-rubric pool. This rollout yields a diverse candidate set for preference pair construction. 
+
+4.3.1 Reward Modeling Scoring. To evaluate the generated candidates, we employ rubric-grounded VLM-as-a-Judge via zero-shot prompting. For each criterion specified in the rubric, the judge assigns a discrete score 
+
+s ∈ { 0, 0.5, 1}, corresponding to no credit , partial credit , and full credit , respectively. To facilitate reliable parsing, the judge is instructed to output the evaluation in JSON format (see Appendix A). 
+
+Voting. To reduce the variance and hallucination of VLM-as-a-Judge, we run the scoring process three times independently for each response and adopt the median score for each criterion. 
+
+Aggregation. The criterion-level scores are aggregated to compute the overall reward for a given input x and response y. Assume each criterion cxk is associated with a reference answer axk and a weight wxk , we compute the overall reward as follows: 
+
+rϕ(x, y, C x) = X
+
+> k
+
+wxk · sϕ(x, y, c xk , a xk ). (7) 
+
+4.3.2 Pair Mining 
+
+Once all candidate responses are scored, we construct the final preference pairs by applying the following filtering criteria. This guarantees that the reward margin reflects a genuine and interpretable difference in quality. The pairing process strictly adheres to the following rules: 5Table 1: Comprehensive evaluation results across diverse preference benchmarks. Accuracy (%) is reported. + Rubric denotes our proposed strategy. Macro presents a triplet: (Full Average / Average excluding MM-RB & VL-RB / Average excluding VA-B & WV-B). Gray numbers indicate potential data contamination. If a model has contaminated entries, the corresponding macro averages are ignored (-). The best performance in each section is bolded , and the second best is underlined.                                                                                                      
+
+> Model Evaluator MM-RB VL-RB MaaJ VA-B WV-B Macro (Full / - RB / - B)
+> Proprietary Frontier VLMs
+> Claude 4.6 Opus 82.23 74.42 71.39 78.83 74.00 76.17 /74.74 / 76.01 GPT-5.4 81.91 78.27 70.35 74.25 69.75 74.91 / 71.45 / 76.84
+> Gemini 3.1 Pro 88.79 86.45 66.56 76.25 73.33 -/ 72.05 / -Gemini 3.0 Flash 87.90 85.89 66.60 76.66 73.42 -/ 72.23 / -Gemini 3.1 Flash-Lite 82.25 81.40 64.31 74.33 67.00 -/ 68.55 / -
+> Open-source Generalist VLMs
+> Qwen3-VL-30B-A3B-Instruct 75.82 65.52 70.74 74.08 72.50 71.73 / 72.44 / 70.69
+> + CoT 72.49 60.22 70.20 72.17 70.83 69.18 / 71.07 / 67.64
+> + Rubric 82.06 73.54 69.13 75.50 73.92 74.83 / 72.85 / 74.91 Qwen3-VL-32B-Instruct 79.35 70.73 72.18 75.42 71.83 73.90 / 73.14 / 74.09
+> + CoT 81.19 72.15 71.83 74.58 72.50 74.45 / 72.97 / 75.06
+> + Rubric 83.02 72.49 68.93 76.83 74.00 75.05 /73.25 / 74.81
+> Open-source Specialist RMs
+> IXC-2.5-Reward 69.12 66.64 69.15 86.25 89.83 -/-/ 68.30 Skywork-VL Reward 74.25 73.54 59.93 71.67 65.08 68.89 / 65.56 / 69.24
+
+• Rule 1 (Chosen Qualification): The chosen response yc must meet basic correctness thresholds. It must receive full credit ( s = 1 ) on most essential criteria, allowing at most one partial credit (s = 0 .5). Furthermore, responses exhibiting repetition loops or language mixing are discarded. • Rule 2 (Rejected Qualification): The rejected response yr must exhibit definitive flaws. It must either fail ( s = 0 ) at least one essential criterion or receive partial credit ( s = 0 .5) on at least two. • Rule 3 (Margin Constraint): To ensure a meaningful qualitative gap, the overall reward dif-ference must satisfy a margin constraint: rϕ(x, y c, C x) − rϕ(x, y r , C x) ≥ δ, where δ > 0 is an empirical margin hyperparameter to ensure a distinct quality gap. • Rule 4 (Maximum Learning Capacity): Among all valid pairs satisfying the above criteria for a given instruction, we select the top four pairs (yc, y r ) that maximize the overall reward margin. • Rule 5 (Diversity Control): To prevent the policy model from overfitting, each unique response is allowed to appear a maximum of twice across all preference pairs in the final dataset. 
+
+5 Experiment 
+
+5.1 Evaluation Results of Reward Modeling Benchmarks. To validate the effectiveness of the proposed rubrics in multimodal reward modeling, we compare it against established visual judges across several preference benchmarks. These encompass Multimodal RewardBench (MM-RB) [ 59 ], VL-RewardBench (VL-RB) [ 60 ], MLLM-as-a-Judge (MaaJ) [61], VisionArena-Battle (VA-B) [41], and WildVision-Battle (WV-B) [25]. Across all benchmarks, we exclude tie samples to focus on clear preferences. Furthermore, we sub-sample 1,200 pairs from VA-B and WV-B, respectively, to optimize evaluation efficiency. 
+
+Baselines. To ensure a rigorous evaluation, we benchmark our approach against a wide range of state-of-the-art models: (1) Proprietary Frontier VLMs, such as Claude 4.6 Opus [ 62 ], GPT-5.4 [ 63 ], and the Gemini series [ 64 ]; (2) Open-source Generalist VLMs, specifically the Qwen3-VL series [ 5]; and (3) Open-source Specialist RMs, including IXC-2.5-Reward [ 33 ] and Skywork-VL Reward [ 34 ]. Table 1 shows that rubric prompting improves both Qwen3-VL judges over their vanilla prompts, whereas CoT prompting does not consistently help. For Qwen3-VL-30B-A3B, rubric prompting raises the overall macro average from 71.73 to 74.83. For Qwen3-VL-32B, it raises the macro average from 73.90 to 75.05. The gray entries indicate likely contamination in some baselines, so we do not 6Table 2: Results in the method-validation setting on AI2D, ChartQA, and M3CoT. Note that for the ChartQA evaluation, we adopt LLM-as-a-Judge, which is stricter than relaxed accuracy. For the latter two rows, each entry reports the metric followed by its absolute change relative to the base model.                         
+
+> Policy Model AI2D ChartQA M3CoT Macro Avg.
+> Qwen3-VL-30B-A3B-Instruct 84.10 82.32 77.00 81.14
+> + Outcome-based Filtering 78.53 −5.57 75.48 −6.84 73.45 −3.55 75.82 −5.32
+> + Rubric-based Filtering (Ours) 85.95 +1 .85 83.02 +0 .70 79.11 +2 .11 82.69 +1 .55
+
+Table 3: Results in the scaling-validation setting on the comprehensive benchmark before and after DPO. The initial policy is Qwen3-VL-30B-A3B-Instruct. + Prompting denotes the baseline explicitly instructed to generate concise responses, mitigating the default model’s verbosity and markdown abuse. + rDPO denotes the model aligned using our generated preference dataset under the concise constraint. Absolute performance gains ( ∆) represent improvements over the Prompting baseline.                           
+
+> Policy Model Basic Capabilities Advanced Cognition Avg. Perception Understanding Knowledge Reasoning
+> Qwen3-VL-30B-A3B-Instruct 56.26 74.10 71.94 51.53 59.48
+> + Prompting 55.67 68.57 61.02 42.86 52.36
+> + rDPO (Ours) 62.82 77.00 71.27 51.62 61.01
+> Absolute Gain ( ∆)+7.15 +8.43 +10.25 +8.76 +8.65
+
+compare full macro averages for those settings. These results validate that instance-specific rubrics consistently enhance zero-shot judge quality, consistently lifting Qwen3-VL judges and bringing the 30B-A3B model close to GPT-5.4 on the reported suite (74.83 vs. 74.91). 
+
+5.2 Evaluation Results of Preference Optimization Data Curation. We construct two downstream preference datasets and study them in two comple-mentary settings. The first is a method-validation setting designed to isolate the effect of rubric-based data curation. Here we use the training splits of AI2D [ 65 ], ChartQA [ 66 ], and M3CoT [ 67 ] as seed sources, evaluate the resulting policies on the corresponding test sets, and compare outcome-based filtering against rubric-based filtering under the same base policy and training recipe. The second is a scaling-validation setting designed to test the pipeline in a broader multi-task regime. Here we use the seed pool described in Section 4.1 and evaluate the resulting policy on our comprehensive in-house benchmark under concise-response constraints. In both settings, we sample 32 candidate responses per prompt and score and filter them with the procedure in Section 4.3.2 to construct model-specific preference pairs. Prompts that yield no valid pairs are discarded. 
+
+Training Details. We select Qwen3-VL-30B-A3B-Instruct as the initial policy. The optimization is driven by AdamW with a constant learning rate of 1 × 10 −6, β = 0 .5, and α = 0 . We use a global batch size of 128 for the method-validation setting and 512 for the scaling-validation setting. For the latter, we further divide the constructed dataset into three splits and apply iterative DPO [22]. Table 2 summarizes the method-validation setting. Outcome-based filtering lowers performance on all three tasks relative to the base model: AI2D drops from 84.10 to 78.53, ChartQA from 82.32 to 75.48, and M3CoT from 77.00 to 73.45, reducing the macro average from 81.14 to 75.82. In contrast, rubric-based filtering improves all three metrics over the base model, reaching 85.95 on AI2D, 83.02 on ChartQA, and 79.11 on M3CoT, with a macro average of 82.69. These results suggest that on-policy data alone is not sufficient in this setting, and the gains depend on pairing those rollouts with instance-specific criterion-level feedback. As shown in Table 3, the default baseline achieves an average score of 59.48, though it tends to produce overly verbose responses with excessive Markdown formatting. Attempting to control this verbosity via concise system prompts causes the score to drop to 52.36. In contrast, by training on conciseness-constrained on-policy data, rDPO reaches a superior score of 61.01 and delivers an 8.65 point improvement over the prompting baseline. 70 500 1000 1500 2000 
+
+> Training Step
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> DPO Loss
+> DPO
+> MPO
+> SFT-to-DPO
+
+(a) DPO Loss 0 500 1000 1500 2000  
+
+> Training Step
+> 50
+> 60
+> 70
+> 80
+> 90
+> Reward Acc. (%)
+> DPO
+> MPO
+> SFT-to-DPO
+
+(b) Reward Accuracy 0.01 0.02 0.05 0.1 0.2 0.5 1.0  
+
+> β
+> 48.0
+> 50.5
+> 53.0
+> 55.5
+> 58.0
+> 60.5
+> Average Acc. (%)
+
+(c) KL Penalty OCR Chart STEM Count   
+
+> Domain
+> 2
+> 4
+> 6
+> 8
+> 10
+> Absolute Gain (%)
+> 3.0 2.7
+> 10.2
+> 3.9
+> 7.0
+> 4.4
+> 2.2
+> 5.1
+> DPO
+> MPO
+
+(d) Domain Performance 
+
+Figure 2: Training dynamics and hyperparameter ablations. (a)(b) Convergence curves for three training paradigms on off-policy data, showing loss and reward accuracy. (c) Effect of varying the KL penalty coefficient β. (d) Effect of the SFT loss broken down by task domain. Compared with the original base model, rDPO is slightly higher on average (61.01 vs. 59.48) and improves perception and understanding, while the knowledge dimension remains slightly lower than the base model (71.27 vs. 71.94). Together with the method-validation results, this supports the view that on-policy data becomes more effective when paired with rubric-guided criterion-level scoring. In the scaling-validation setting, rDPO recovers the drop introduced by prompt-only conciseness enforcement and slightly improves average score over the base model. 
+
+5.3 Ablation Study Ablation Study of Policy Alignment. To investigate the necessity of on-policy data during alignment, we analyze preference optimization under severe distribution shifts using the MMPR dataset [ 12 ], which was originally gathered for the InternVL series [ 2]. We evaluate three different training configurations on the Qwen3-VL-30B-A3B-Instruct model: • DPO (Off-Policy): Standard DPO on MMPR with the base checkpoint as π0 and KL penalty coefficient β = 0 .001 , leaving the full distributional mismatch unresolved. • MPO (Off-Policy): MPO training with an identical SFT scaling coefficient α = 0 .001 ; the SFT term provides additional supervision on chosen responses but does not alter π0.• SFT-to-DPO (On-Policy Approximation): A two-stage progressive approach designed to simulate on-policy optimization. The model first undergoes SFT on the chosen responses; the resulting checkpoint πsft then serves as the reference model for subsequent DPO training, thereby narrowing the distribution gap between the policy and the preference data. Fig. 2a and Fig. 2b show clear differences in convergence. Standard DPO converges slowly because the reference policy and off-policy data distribution are mismatched, leading to unstable gradients. MPO’s loss drops unevenly—starting fast, then slowing down, before speeding up again—which suggests the policy is shifting throughout the process. In contrast, SFT-to-DPO is the most stable, achieving the lowest final loss and the highest reward accuracy. Our analysis reveals that DPO is inherently sensitive to distribution shift, which degrades the accuracy of the implicit reward. The “inflection point” observed during MPO training likely indicates an initial phase where the model first resolve formatting discrepancies before it can effectively learn from preference signals. The SFT-to-DPO pipeline avoids this bottleneck by ensuring the reference policy matches the data distribution, leading to more stable gradient updates throughout training. 
+
+Ablation on the KL Penalty Coefficient. Contrary to previous literature, we empirically find that the KL penalty coefficient reaches an optimal trade-off at β = 0 .5 (Fig. 2c). Maintaining a substantial penalty anchors the policy to the reference distribution, mitigating policy collapse by preventing the reduction of chosen-response likelihoods [68] or implicit reward overfitting [69]. 
+
+Ablation on the SFT Scaling Coefficient. Figure 2d compares the greatest performance gain of DPO and MPO across different domains. We observe that the effect of the SFT loss depends on the specific task. In most cases, MPO leads to worse results. Although SFT loss improves training stability, it may cause overfitting on low-complexity samples. However, MPO remains effective for tasks where the base model has undesirable priors. A typical example is counting, where giving the final answer before counting step-by-step reduces accuracy. In these cases, the SFT loss acts as a constraint that aligns the model with the high-quality distribution obtained through rejection sampling. 8Table 4: Comprehensive ablation studies on our in-house benchmark. The first row represents our full rDPO pipeline (the baseline for this ablation). Subsequent rows denote variants where specific alignment modules are either removed or altered.                                       
+
+> Ablation Variant Basic Capabilities Advanced Cognition Avg. Perception Understanding Knowledge Reasoning
+> rDPO (Full Pipeline) 62.82 77.00 71.27 51.62 61.01
+> Single-stage DPO 63.02 75.73 71.27 48.62 59.27 w/o essential qualification 60.76 75.20 67.93 48.62 58.36 Random reward margin ( ≥δ)63.22 77.69 71.27 50.74 60.76 Minimum reward margin ( ≥δ)62.03 76.22 69.71 50.52 59.96 w/o diversity control 61.95 76.73 70.14 49.00 59.34
+
+Ablation on Iterative Optimization. We compare the standard single-stage DPO with an iterative paradigm (i.e., the full rDPO pipeline), in which the preference dataset is partitioned into three sequential training splits. As shown in Table 4, iterative DPO achieves better overall performance (61.01 vs. 59.27). In this setup, progressively updating the reference model on partitioned data helps calibrate the implicit reward, thereby leading to enhanced model performance. 
+
+Ablation on Essential Qualification. We compare our approach against a baseline lacking the essential/additional criteria distinction (Rules 1 & 2). As shown in Table 4, enforcing this qualification rule improves average performance from 58.36 to 61.01. This pattern suggests that separating fundamental errors from additional criteria helps produce cleaner preference pairs in our setup. 
+
+Ablation on Learning Capacity. We compare models trained on datasets constructed using maxi-mum, minimum, and random reward margins (Rule 3 & 4, all strictly bounded by δ = 5 to prevent tie samples). Table 4 shows that selecting pairs with the maximum reward margin gives the best overall performance (61.01 vs. 59.96 vs. 60.76). In this setting, larger reward margins appear to provide a more useful training signal than smaller or randomly selected margins. 
+
+Ablation on Diversity Control. We evaluate the impact of limiting response frequency (Rule 5). Removing this constraint degrades the average performance to 59.34, suggesting that reducing exposure to repetitive response patterns enhances downstream performance. 
+
+6 Conclusion and Limitations 
+
+We presented rDPO, a visual preference optimization framework built on instance-specific rubric-based reward modeling. The pipeline separates offline instruction-rubric pool construction from rollout, scoring, and on-policy data curation. On public reward modeling benchmarks, rubric prompting improves both Qwen3-VL judges over their vanilla prompts, whereas CoT prompting does not consistently help. It brings the moderately-sized 30B-A3B judge close to GPT-5.4 on the reported suite (74.83 vs. 74.91). In the method-validation setting, under the same on-policy rollout setup, outcome-based filtering lowers the macro average from 81.14 to 75.82, while rubric-based filtering raises it to 82.69. When evaluating scalability on our comprehensive benchmark, rDPO achieves 61.01, markedly outperforming the style-constrained baseline (52.36) and surpassing the 59.48 base model. Taken together, these results suggest that effective visual preference optimization requires not only on-policy data, but also instance-specific criterion-level feedback. 
+
+Limitations and future work. The current pipeline still consumes rubric feedback indirectly: instance-specific criteria are used to construct preference pairs, and the policy is then optimized with iterative DPO. This design is stable and modular, but it leaves the criterion-level signal outside the optimization loop. A natural next step is to move toward more online training, where rubric-guided rewards can evolve with the policy itself. In particular, extending rubric-based supervision to Group Relative Policy Optimization (GRPO) [ 70 ] may offer a more direct way to optimize groups of sampled responses against structured criteria. We leave this tighter integration of rubric feedback and online policy optimization to follow-up work. 9References 
+
+[1] Rafael Rafailov, Archit Sharma, Eric Mitchell, Christopher D. Manning, Stefano Ermon, and Chelsea Finn. Direct preference optimization: Your language model is secretly a reward model. In Alice Oh, Tristan Naumann, Amir Globerson, Kate Saenko, Moritz Hardt, and Sergey Levine, editors, Advances in Neural Information Processing Systems 36: Annual Conference on Neural Information Processing Systems 2023, NeurIPS 2023, New Orleans, LA, USA, December 10 -16, 2023 , 2023. [2] Weiyun Wang, Zhangwei Gao, Lixin Gu, Hengjun Pu, Long Cui, Xingguang Wei, Zhaoyang Liu, Linglin Jing, Shenglong Ye, Jie Shao, Zhaokai Wang, Zhe Chen, Hongjie Zhang, Ganlin Yang, Haomin Wang, Qi Wei, Jinhui Yin, Wenhao Li, Erfei Cui, Guanzhou Chen, Zichen Ding, Changyao Tian, Zhenyu Wu, JingJing Xie, Zehao Li, Bowen Yang, Yuchen Duan, Xuehui Wang, Zhi Hou, Haoran Hao, Tianyi Zhang, Songze Li, Xiangyu Zhao, Haodong Duan, Nianchen Deng, Bin Fu, Yinan He, Yi Wang, Conghui He, Botian Shi, Junjun He, Yingtong Xiong, Han Lv, Lijun Wu, Wenqi Shao, Kaipeng Zhang, Huipeng Deng, Biqing Qi, Jiaye Ge, Qipeng Guo, Wenwei Zhang, Songyang Zhang, Maosong Cao, Junyao Lin, Kexian Tang, Jianfei Gao, Haian Huang, Yuzhe Gu, Chengqi Lyu, Huanze Tang, Rui Wang, Haijun Lv, Wanli Ouyang, Limin Wang, Min Dou, Xizhou Zhu, Tong Lu, Dahua Lin, Jifeng Dai, Weijie Su, Bowen Zhou, Kai Chen, Yu Qiao, Wenhai Wang, and Gen Luo. Internvl3.5: Advancing open-source multimodal models in versatility, reasoning, and efficiency. CoRR , abs/2508.18265, 2025. [3] Zihao Yue, Zhenru Lin, Yifan Song, Weikun Wang, Shuhuai Ren, Shuhao Gu, Shicheng Li, Peidian Li, Liang Zhao, Lei Li, Kainan Bao, Hao Tian, Hailin Zhang, Xiao-Gang Wang, Dawei Zhu, Cici, Chenhong He, Bowen Ye, Bowen Shen, Zihan Zhang, Zihan Jiang, Zhixian Zheng, Zhichao Song, Zhenbo Luo, Yue Yu, Yudong Wang, Yuanyuan Tian, Yu Tu, Yihan Yan, Yi Huang, Xu Wang, Xinzhe Xu, Xingchen Song, Xing Zhang, Xing Yong, Xin Zhang, Xiangwei Deng, Wenyu Yang, Wenhan Ma, Weiwei Lv, Weiji Zhuang, Wei Liu, Sirui Deng, Shuo Liu, Shimao Chen, Shihua Yu, Shaohui Liu, Shande Wang, Rui Ma, Qiantong Wang, Peng Wang, Nuo Chen, Menghang Zhu, Kangyang Zhou, Kang Zhou, Kai Fang, Jun Shi, Jinhao Dong, Jiebao Xiao, Jiaming Xu, Huaqiu Liu, Hongshen Xu, Heng Qu, Haochen Zhao, Hanglong Lv, Guoan Wang, Duo Zhang, Dong Zhang, Di Zhang, Chong Ma, Chang Liu, Can Cai, and Bingquan Xia. Mimo-vl technical report. CoRR , abs/2506.03569, 2025. [4] Biao Yang, Bin Wen, Boyang Ding, Changyi Liu, Chenglong Chu, Chengru Song, Chongling Rao, Chuan Yi, Da Li, Dunju Zang, Fan Yang, Guorui Zhou, Guowang Zhang, Han Shen, Hao Peng, Haojie Ding, Hao Wang, Haonan Fan, Hengrui Ju, Jiaming Huang, Jiangxia Cao, Jiankang Chen, Jingyun Hua, Kaibing Chen, Kaiyu Jiang, Kaiyu Tang, Kun Gai, Muhao Wei, Qiang Wang, Ruitao Wang, Sen Na, Shengnan Zhang, Siyang Mao, Sui Huang, Tianke Zhang, Tingting Gao, Wei Chen, Wei Yuan, Xiangyu Wu, Xiao Hu, Xingyu Lu, Yifan Zhang, Yiping Yang, Yulong Chen, Zeyi Lu, Zhenhua Wu, Zhixin Ling, Zhuoran Yang, Ziming Li, Di Xu, Haixuan Gao, Hang Li, Jing Wang, Lejian Ren, Qigen Hu, Qianqian Wang, Shiyao Wang, Xinchen Luo, Yan Li, Yuhang Hu, and Zixing Zhang. Kwai keye-vl 1.5 technical report. CoRR ,abs/2509.01563, 2025. [5] Qwen Team. Qwen3-vl technical report. CoRR , abs/2511.21631, 2025. [6] Yiyang Zhou, Chenhang Cui, Rafael Rafailov, Chelsea Finn, and Huaxiu Yao. Aligning modalities in vision large language models via preference fine-tuning. CoRR , abs/2402.11411, 2024. [7] Zhiyuan Zhao, Bin Wang, Linke Ouyang, Xiaoyi Dong, Jiaqi Wang, and Conghui He. Beyond multimodal hallucinations: Enhancing lvlms through hallucination-aware direct preference optimization. In IEEE International Conference on Multimedia and Expo, ICME 2025, Nantes, France, June 30 - July 4, 2025 , pages 1–6. IEEE, 2025. [8] Renjie Pi, Tianyang Han, Wei Xiong, Jipeng Zhang, Runtao Liu, Rui Pan, and Tong Zhang. Strengthening multimodal large language model with bootstrapped preference optimization. In Ales Leonardis, Elisa Ricci, Stefan Roth, Olga Russakovsky, Torsten Sattler, and Gül Varol, editors, Computer Vision - ECCV 2024 - 18th European Conference, Milan, Italy, September 29-October 4, 2024, Proceedings, Part XXXIII , volume 15091 of Lecture Notes in Computer Science , pages 382–398. Springer, 2024. 10 [9] Yihe Deng, Pan Lu, Fan Yin, Ziniu Hu, Sheng Shen, Quanquan Gu, James Y. Zou, Kai-Wei Chang, and Wei Wang. Enhancing large vision language models with self-training on image comprehension. In Amir Globersons, Lester Mackey, Danielle Belgrave, Angela Fan, Ulrich Paquet, Jakub M. Tomczak, and Cheng Zhang, editors, Advances in Neural Information Processing Systems 38: Annual Conference on Neural Information Processing Systems 2024, NeurIPS 2024, Vancouver, BC, Canada, December 10 - 15, 2024 , 2024. [10] Ke Zhu, Liang Zhao, Zheng Ge, and Xiangyu Zhang. Self-supervised visual preference alignment. In Jianfei Cai, Mohan S. Kankanhalli, Balakrishnan Prabhakaran, Susanne Boll, Ramanathan Subramanian, Liang Zheng, Vivek K. Singh, Pablo César, Lexing Xie, and Dong Xu, editors, Proceedings of the 32nd ACM International Conference on Multimedia, MM 2024, Melbourne, VIC, Australia, 28 October 2024 - 1 November 2024 , pages 291–300. ACM, 2024. [11] Shijian Deng, Wentian Zhao, Yu-Jhe Li, Kun Wan, Daniel Miranda, Ajinkya Kale, and Yapeng Tian. Efficient self-improvement in multimodal large language models: A model-level judge-free approach. CoRR , abs/2411.17760, 2024. [12] Weiyun Wang, Zhe Chen, Wenhai Wang, Yue Cao, Yangzhou Liu, Zhangwei Gao, Jinguo Zhu, Xizhou Zhu, Lewei Lu, Yu Qiao, and Jifeng Dai. Enhancing the reasoning ability of multimodal large language models via mixed preference optimization. CoRR , abs/2411.10442, 2024. [13] Tianyu Yu, Haoye Zhang, Qiming Li, Qixin Xu, Yuan Yao, Da Chen, Xiaoman Lu, Ganqu Cui, Yunkai Dang, Taiwen He, Xiaocheng Feng, Jun Song, Bo Zheng, Zhiyuan Liu, Tat-Seng Chua, and Maosong Sun. RLAIF-V: open-source AI feedback leads to super GPT-4V trustworthiness. In IEEE/CVF Conference on Computer Vision and Pattern Recognition, CVPR 2025, Nashville, TN, USA, June 11-15, 2025 , pages 19985–19995. Computer Vision Foundation / IEEE, 2025. [14] Songtao Jiang, Yan Zhang, Ruizhe Chen, Tianxiang Hu, Yeying Jin, Qinglin He, Yang Feng, Jian Wu, and Zuozhu Liu. Modality-fair preference optimization for trustworthy MLLM alignment. In Proceedings of the Thirty-Fourth International Joint Conference on Artificial Intelligence, IJCAI 2025, Montreal, Canada, August 16-22, 2025 , pages 403–411. ijcai.org, 2025. [15] Fei Wang, Wenxuan Zhou, James Y. Huang, Nan Xu, Sheng Zhang, Hoifung Poon, and Muhao Chen. mdpo: Conditional preference optimization for multimodal large language models. In Yaser Al-Onaizan, Mohit Bansal, and Yun-Nung Chen, editors, Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing, EMNLP 2024, Miami, FL, USA, November 12-16, 2024 , pages 8078–8088. Association for Computational Linguistics, 2024. [16] Yuxi Xie, Guanzhen Li, Xiao Xu, and Min-Yen Kan. V-DPO: mitigating hallucination in large vision language models via vision-guided direct preference optimization. In Yaser Al-Onaizan, Mohit Bansal, and Yun-Nung Chen, editors, Findings of the Association for Computational Linguistics: EMNLP 2024, Miami, Florida, USA, November 12-16, 2024 , volume EMNLP 2024 of Findings of ACL , pages 13258–13273. Association for Computational Linguistics, 2024. [17] Tiange Luo, Ang Cao, Gunhee Lee, Justin Johnson, and Honglak Lee. Probing visual language priors in vlms. In Aarti Singh, Maryam Fazel, Daniel Hsu, Simon Lacoste-Julien, Felix Berkenkamp, Tegan Maharaj, Kiri Wagstaff, and Jerry Zhu, editors, Forty-second International Conference on Machine Learning, ICML 2025, Vancouver, BC, Canada, July 13-19, 2025 ,volume 267 of Proceedings of Machine Learning Research . PMLR / OpenReview.net, 2025. [18] Shuo Xing, Peiran Li, Yuping Wang, Ruizheng Bai, Yueqi Wang, Chan-Wei Hu, Chengxuan Qian, Huaxiu Yao, and Zhengzhong Tu. Re-align: Aligning vision language models via retrieval-augmented direct preference optimization. In Christos Christodoulopoulos, Tanmoy Chakraborty, Carolyn Rose, and Violet Peng, editors, Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing, EMNLP 2025, Suzhou, China, November 4-9, 2025 , pages 2379–2397. Association for Computational Linguistics, 2025. [19] Wenqi Liu, Xuemeng Song, Jiaxi Li, Yinwei Wei, Na Zheng, Jianhua Yin, and Liqiang Nie. Mit-igating hallucination through theory-consistent symmetric multimodal preference optimization. 
+
+CoRR , abs/2506.11712, 2025. 11 [20] Zhihe Yang, Xufang Luo, Dongqi Han, Yunjian Xu, and Dongsheng Li. Mitigating halluci-nations in large vision-language models via DPO: on-policy data hold the key. In IEEE/CVF Conference on Computer Vision and Pattern Recognition, CVPR 2025, Nashville, TN, USA, June 11-15, 2025 , pages 10610–10620. Computer Vision Foundation / IEEE, 2025. [21] Shujun Liu, Siyuan Wang, Zejun Li, Jianxiang Wang, Cheng Zeng, and Zhongyu Wei. Ovip: Online vision-language preference learning. CoRR , abs/2505.15963, 2025. [22] Chengzhi Yu, Yifan Xu, Yifan Chen, and Wenyi Zhang. Optimizing lvlms with on-policy data for effective hallucination mitigation. CoRR , abs/2512.00706, 2025. [23] Zhiqing Sun, Sheng Shen, Shengcao Cao, Haotian Liu, Chunyuan Li, Yikang Shen, Chuang Gan, Liangyan Gui, Yu-Xiong Wang, Yiming Yang, Kurt Keutzer, and Trevor Darrell. Aligning large multimodal models with factually augmented RLHF. In Lun-Wei Ku, Andre Martins, and Vivek Srikumar, editors, Findings of the Association for Computational Linguistics, ACL 2024, Bangkok, Thailand and virtual meeting, August 11-16, 2024 , volume ACL 2024 of Findings of ACL , pages 13088–13110. Association for Computational Linguistics, 2024. [24] Tianyu Yu, Yuan Yao, Haoye Zhang, Taiwen He, Yifeng Han, Ganqu Cui, Jinyi Hu, Zhiyuan Liu, Hai-Tao Zheng, and Maosong Sun. RLHF-V: towards trustworthy mllms via behavior alignment from fine-grained correctional human feedback. In IEEE/CVF Conference on Computer Vision and Pattern Recognition, CVPR 2024, Seattle, WA, USA, June 16-22, 2024 , pages 13807–13816. IEEE, 2024. [25] Yujie Lu, Dongfu Jiang, Wenhu Chen, William Yang Wang, Yejin Choi, and Bill Yuchen Lin. Wildvision: Evaluating vision-language models in the wild with human preferences. In Amir Globersons, Lester Mackey, Danielle Belgrave, Angela Fan, Ulrich Paquet, Jakub M. Tomczak, and Cheng Zhang, editors, Advances in Neural Information Processing Systems 38: Annual Conference on Neural Information Processing Systems 2024, NeurIPS 2024, Vancouver, BC, Canada, December 10 - 15, 2024 , 2024. [26] Lei Li, Zhihui Xie, Mukai Li, Shunian Chen, Peiyi Wang, Liang Chen, Yazheng Yang, Benyou Wang, and Lingpeng Kong. Silkie: Preference distillation for large visual language models. 
+
+CoRR , abs/2312.10665, 2023. [27] Ziyu Liu, Yuhang Zang, Xiaoyi Dong, Pan Zhang, Yuhang Cao, Haodong Duan, Conghui He, Yuanjun Xiong, Dahua Lin, and Jiaqi Wang. MIA-DPO: multi-image augmented direct prefer-ence optimization for large vision-language models. In The Thirteenth International Conference on Learning Representations, ICLR 2025, Singapore, April 24-28, 2025 . OpenReview.net, 2025. [28] Yifan Zhang, Tao Yu, Haochen Tian, Chaoyou Fu, Peiyan Li, Jianshu Zeng, Wulin Xie, Yang Shi, Huanyu Zhang, Junkang Wu, Xue Wang, Yibo Hu, Bin Wen, Tingting Gao, Zhang Zhang, Fan Yang, Di Zhang, Liang Wang, and Rong Jin. MM-RLHF: the next step forward in multimodal LLM alignment. In Aarti Singh, Maryam Fazel, Daniel Hsu, Simon Lacoste-Julien, Felix Berkenkamp, Tegan Maharaj, Kiri Wagstaff, and Jerry Zhu, editors, Forty-second International Conference on Machine Learning, ICML 2025, Vancouver, BC, Canada, July 13-19, 2025 ,volume 267 of Proceedings of Machine Learning Research . PMLR / OpenReview.net, 2025. [29] Seongyun Lee, Seungone Kim, Sue Hyun Park, Geewook Kim, and Minjoon Seo. Prometheus-vision: Vision-language model as a judge for fine-grained evaluation. In Lun-Wei Ku, Andre Martins, and Vivek Srikumar, editors, Findings of the Association for Computational Linguistics, ACL 2024, Bangkok, Thailand and virtual meeting, August 11-16, 2024 , volume ACL 2024 of 
+
+Findings of ACL , pages 11286–11315. Association for Computational Linguistics, 2024. [30] Xiyao Wang, Jiuhai Chen, Zhaoyang Wang, Yuhang Zhou, Yiyang Zhou, Huaxiu Yao, Tianyi Zhou, Tom Goldstein, Parminder Bhatia, Taha A. Kass-Hout, Furong Huang, and Cao Xiao. Enhancing visual-language modality alignment in large vision language models via self-improvement. In Luis Chiruzzo, Alan Ritter, and Lu Wang, editors, Findings of the Association for Computational Linguistics: NAACL 2025, Albuquerque, New Mexico, USA, April 29 - May 4, 2025 , volume NAACL 2025 of Findings of ACL , pages 268–282. Association for Computational Linguistics, 2025. 12 [31] Tianyi Xiong, Xiyao Wang, Dong Guo, Qinghao Ye, Haoqi Fan, Quanquan Gu, Heng Huang, and Chunyuan Li. Llava-critic: Learning to evaluate multimodal models. In IEEE/CVF Conference on Computer Vision and Pattern Recognition, CVPR 2025, Nashville, TN, USA, June 11-15, 2025 , pages 13618–13628. Computer Vision Foundation / IEEE, 2025. [32] Di Zhang, Jingdi Lei, Junxian Li, Xunzhi Wang, Yujie Liu, Zonglin Yang, Jiatong Li, Weida Wang, Suorong Yang, Jianbo Wu, Peng Ye, Wanli Ouyang, and Dongzhan Zhou. Critic-v: VLM critics help catch VLM errors in multimodal reasoning. In IEEE/CVF Conference on Computer Vision and Pattern Recognition, CVPR 2025, Nashville, TN, USA, June 11-15, 2025 , pages 9050–9061. Computer Vision Foundation / IEEE, 2025. [33] Yuhang Zang, Xiaoyi Dong, Pan Zhang, Yuhang Cao, Ziyu Liu, Shengyuan Ding, Shenxi Wu, Yubo Ma, Haodong Duan, Wenwei Zhang, Kai Chen, Dahua Lin, and Jiaqi Wang. Internlm-xcomposer2.5-reward: A simple yet effective multi-modal reward model. In Wanxiang Che, Joyce Nabende, Ekaterina Shutova, and Mohammad Taher Pilehvar, editors, Findings of the Association for Computational Linguistics, ACL 2025, Vienna, Austria, July 27 - August 1, 2025 , volume ACL 2025 of Findings of ACL , pages 6547–6563. Association for Computational Linguistics, 2025. [34] Xiaokun Wang, Peiyu Wang, Jiangbo Pei, Wei Shen, Yi Peng, Yunzhuo Hao, Weijie Qiu, Ai Jian, Tianyidan Xie, Xuchen Song, Yang Liu, and Yahui Zhou. Skywork-vl reward: An effective reward model for multimodal understanding and reasoning. CoRR , abs/2505.07263, 2025. [35] Helia Hashemi, Jason Eisner, Corby Rosset, Benjamin Van Durme, and Chris Kedzie. Llm-rubric: A multidimensional, calibrated approach to automated evaluation of natural language texts. In Lun-Wei Ku, Andre Martins, and Vivek Srikumar, editors, Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), ACL 2024, Bangkok, Thailand, August 11-16, 2024 , pages 13806–13834. Association for Computational Linguistics, 2024. [36] Giulio Starace, Oliver Jaffe, Dane Sherburn, James Aung, Jun Shern Chan, Leon Maksin, Rachel Dias, Evan Mays, Benjamin Kinsella, Wyatt Thompson, Johannes Heidecke, Amelia Glaese, and Tejal Patwardhan. Paperbench: Evaluating ai’s ability to replicate AI research. In Aarti Singh, Maryam Fazel, Daniel Hsu, Simon Lacoste-Julien, Felix Berkenkamp, Tegan Maharaj, Kiri Wagstaff, and Jerry Zhu, editors, Forty-second International Conference on Machine Learning, ICML 2025, Vancouver, BC, Canada, July 13-19, 2025 , volume 267 of 
+
+Proceedings of Machine Learning Research . PMLR / OpenReview.net, 2025. [37] Taneesh Gupta, Shivam Shandilya, Xuchao Zhang, Rahul Madhavan, Supriyo Ghosh, Chetan Bansal, Huaxiu Yao, and Saravan Rajmohan. CARMO: dynamic criteria generation for context aware reward modelling. In Wanxiang Che, Joyce Nabende, Ekaterina Shutova, and Moham-mad Taher Pilehvar, editors, Findings of the Association for Computational Linguistics, ACL 2025, Vienna, Austria, July 27 - August 1, 2025 , volume ACL 2025 of Findings of ACL , pages 2202–2261. Association for Computational Linguistics, 2025. [38] Vijay Viswanathan, Yanchao Sun, Shuang Ma, Xiang Kong, Meng Cao, Graham Neubig, and Tongshuang Wu. Checklists are better than reward models for aligning language models. CoRR ,abs/2507.18624, 2025. [39] Yang Zhou, Sunzhu Li, Shunyu Liu, Wenkai Fang, Jiale Zhao, Jingwen Yang, Jianwei Lv, Kongcheng Zhang, Yihe Zhou, Hengtong Lu, Wei Chen, Yan Xie, and Mingli Song. Breaking the exploration bottleneck: Rubric-scaffolded reinforcement learning for general LLM reasoning. 
+
+CoRR , abs/2508.16949, 2025. [40] Zicheng Kong, Dehua Ma, Zhenbo Xu, Alven Yang, Yiwei Ru, Haoran Wang, Zixuan Zhou, Fuqing Bie, Liuyu Xiang, Huijia Wu, Jian Zhao, and Zhaofeng He. Omni-rrm: Advancing omni reward modeling via automatic rubric-grounded preference synthesis. CoRR , abs/2602.00846, 2026. [41] Christopher Chou, Lisa Dunlap, Koki Mashita, Krishna Mandal, Trevor Darrell, Ion Stoica, Joseph E. Gonzalez, and Wei-Lin Chiang. Visionarena: 230k real world user-vlm conversations with preference labels. In IEEE/CVF Conference on Computer Vision and Pattern Recognition, 
+
+13 CVPR 2025, Nashville, TN, USA, June 11-15, 2025 , pages 3877–3887. Computer Vision Foundation / IEEE, 2025. [42] Muzhi Dai, Jiashuo Sun, Zhiyuan Zhao, Shixuan Liu, Rui Li, Junyu Gao, and Xuelong Li. From captions to rewards (carevl): Leveraging large language model experts for enhanced reward modeling in large vision-language models. In Cathal Gurrin, Klaus Schoeffmann, Min Zhang, Luca Rossetto, Stevan Rudinac, Duc-Tien Dang-Nguyen, Wen-Huang Cheng, Phoebe Chen, and Jenny Benois-Pineau, editors, Proceedings of the 33rd ACM International Conference on Multimedia, MM 2025, Dublin, Ireland, October 27-31, 2025 , pages 4972–4981. ACM, 2025. [43] Minghe Gao, Xuqi Liu, Zhongqi Yue, Yang Wu, Shuang Chen, Juncheng Li, Siliang Tang, Fei Wu, Tat-Seng Chua, and Yueting Zhuang. Benchmarking multimodal cot reward model stepwise by visual program. CoRR , abs/2504.06606, 2025. [44] Rahul K. Arora, Jason Wei, Rebecca Soskin Hicks, Preston Bowman, Joaquin Quiñonero Candela, Foivos Tsimpourlas, Michael Sharman, Meghan Shah, Andrea Vallone, Alex Beutel, Johannes Heidecke, and Karan Singhal. Healthbench: Evaluating large language models towards improved human health. CoRR , abs/2505.08775, 2025. [45] Zhilin Wang, Jaehun Jung, Ximing Lu, Shizhe Diao, Ellie Evans, Jiaqi Zeng, Pavlo Molchanov, Yejin Choi, Jan Kautz, and Yi Dong. Profbench: Multi-domain rubrics requiring professional knowledge to answer and judge. CoRR , abs/2510.18941, 2025. [46] Afra Feyza Akyürek, Advait Gosai, Chen Bo Calvin Zhang, Vipul Gupta, Jaehwan Jeong, Anisha Gunjal, Tahseen Rabbani, Maria Mazzone, David Randolph, Mohammad Mahmoudi Meymand, Gurshaan Chattha, Paula Rodriguez, Diego Mares, Pavit Singh, Michael Liu, Subodh Chawla, Pete Cline, Lucy Ogaz, Ernesto Hernandez, Zihao Wang, Pavi Bhatter, Marcos Ayestaran, Bing Liu, and Yunzhong He. Prbench: Large-scale expert rubrics for evaluating high-stakes professional reasoning. CoRR , abs/2511.11562, 2025. [47] Anisha Gunjal, Anthony Wang, Elaine Lau, Vaskar Nath, Bing Liu, and Sean Hendryx. Rubrics as rewards: Reinforcement learning beyond verifiable domains. CoRR , abs/2507.17746, 2025. [48] Zenan Huang, Yihong Zhuang, Guoshan Lu, Zeyu Qin, Haokai Xu, Tianyu Zhao, Ru Peng, Jiaqi Hu, Zhanming Shen, Xiaomeng Hu, Xijun Gu, Peiyi Tu, Jiaxin Liu, Wenyu Chen, Yuzhuo Fu, Zhiting Fan, Yanmei Gu, Yuanyuan Wang, Zhengkai Yang, Jianguo Li, and Junbo Zhao. Reinforcement learning with rubric anchors. CoRR , abs/2508.12790, 2025. [49] Tianci Liu, Ran Xu, Tony Yu, Ilgee Hong, Carl Yang, Tuo Zhao, and Haoyu Wang. Openrubrics: Towards scalable synthetic rubric generation for reward modeling and LLM alignment. CoRR ,abs/2510.07743, 2025. [50] Sunzhu Li, Jiale Zhao, Miteto Wei, Huimin Ren, Yang Zhou, Jingwen Yang, Shunyu Liu, Kaike Zhang, and Wei Chen. Rubrichub: A comprehensive and highly discriminative rubric dataset via automated coarse-to-fine generation. CoRR , abs/2601.08430, 2026. [51] MohammadHossein Rezaei, Robert Vacareanu, Zihao Wang, Clinton Wang, Bing Liu, Yunzhong He, and Afra Feyza Akyürek. Online rubrics elicitation from pairwise comparisons. CoRR ,abs/2510.07284, 2025. [52] Lipeng Xie, Sen Huang, Zhuo Zhang, Anni Zou, Yunpeng Zhai, Dingchao Ren, Kezun Zhang, Haoyuan Hu, Boyin Liu, Haoran Chen, Zhaoyang Liu, and Bolin Ding. Auto-rubric: Learning to extract generalizable criteria for reward modeling. CoRR , abs/2510.17314, 2025. [53] Ran Xu, Tianci Liu, Zihan Dong, Tony Yu, Ilgee Hong, Carl Yang, Linjun Zhang, Tao Zhao, and Haoyu Wang. Alternating reinforcement learning for rubric-based reward modeling in non-verifiable llm post-training. CoRR , abs/2602.01511, 2026. [54] Shu Pu, Yaochen Wang, Dongping Chen, Yuhang Chen, Guohao Wang, Qi Qin, Zhongyi Zhang, Zhiyuan Zhang, Zetong Zhou, Shuang Gong, Yi Gui, Yao Wan, and Philip S. Yu. Judge anything: MLLM as a judge across any modality. In Luiza Antonie, Jian Pei, Xiaohui Yu, Flavio Chierichetti, Hady W. Lauw, Yizhou Sun, and Srinivasan Parthasarathy, editors, Proceedings of the 31st ACM SIGKDD Conference on Knowledge Discovery and Data Mining, V.2, KDD 2025, Toronto ON, Canada, August 3-7, 2025 , pages 5742–5753. ACM, 2025. 14 [55] Tianyi Xiong, Yi Ge, Ming Li, Zuolong Zhang, Pranav Kulkarni, Kaishen Wang, Qi He, Zeying Zhu, Chenxi Liu, Ruibo Chen, Tong Zheng, Yanshuo Chen, Xiyao Wang, Renrui Zhang, Wenhu Chen, and Heng Huang. Multi-crit: Benchmarking multimodal judges on pluralistic criteria-following. CoRR , abs/2511.21662, 2025. [56] Ralph Allan Bradley and Milton E Terry. Rank analysis of incomplete block designs: I. the method of paired comparisons. Biometrika , 39(3/4):324–345, 1952. [57] Ya-Qi Yu, Minghui Liao, Jiwen Zhang, and Jihao Wu. Texthawk2: A large vision-language model excels in bilingual OCR and grounding with 16x fewer tokens. CoRR , abs/2410.05261, 2024. [58] Shuai Bai, Keqin Chen, Xuejing Liu, Jialin Wang, Wenbin Ge, Sibo Song, Kai Dang, Peng Wang, Shijie Wang, Jun Tang, Humen Zhong, Yuanzhi Zhu, Ming-Hsuan Yang, Zhaohai Li, Jianqiang Wan, Pengfei Wang, Wei Ding, Zheren Fu, Yiheng Xu, Jiabo Ye, Xi Zhang, Tianbao Xie, Zesen Cheng, Hang Zhang, Zhibo Yang, Haiyang Xu, and Junyang Lin. Qwen2.5-vl technical report. CoRR , abs/2502.13923, 2025. [59] Michihiro Yasunaga, Luke Zettlemoyer, and Marjan Ghazvininejad. Multimodal rewardbench: Holistic evaluation of reward models for vision language models. CoRR , abs/2502.14191, 2025. [60] Lei Li, Yuancheng Wei, Zhihui Xie, Xuqing Yang, Yifan Song, Peiyi Wang, Chenxin An, Tianyu Liu, Sujian Li, Bill Yuchen Lin, Lingpeng Kong, and Qi Liu. Vl-rewardbench: A challenging benchmark for vision-language generative reward models. In IEEE/CVF Conference on Computer Vision and Pattern Recognition, CVPR 2025, Nashville, TN, USA, June 11-15, 2025 , pages 24657–24668. Computer Vision Foundation / IEEE, 2025. [61] Dongping Chen, Ruoxi Chen, Shilin Zhang, Yaochen Wang, Yinuo Liu, Huichi Zhou, Qihui Zhang, Yao Wan, Pan Zhou, and Lichao Sun. Mllm-as-a-judge: Assessing multimodal llm-as-a-judge with vision-language benchmark. In Ruslan Salakhutdinov, Zico Kolter, Katherine A. Heller, Adrian Weller, Nuria Oliver, Jonathan Scarlett, and Felix Berkenkamp, editors, Forty-first International Conference on Machine Learning, ICML 2024, Vienna, Austria, July 21-27, 2024 , volume 235 of Proceedings of Machine Learning Research , pages 6562–6595. PMLR / OpenReview.net, 2024. [62] Anthropic. Introducing claude opus 4.6. https://www.anthropic.com/news/ introducing-claude-opus-4-6 , 2026. Released February 5, 2026. [63] OpenAI. Gpt-5.4 thinking system card. https://openai.com/index/ gpt-5-4-thinking-system-card/ , 2026. Released March 5, 2026. [64] Google Gemini Team. Gemini 3: A family of highly capable multimodal reasoning models. 
+
+arXiv preprint arXiv:2512.03267 , 2025. [65] Aniruddha Kembhavi, Mike Salvato, Eric Kolve, Min Joon Seo, Hannaneh Hajishirzi, and Ali Farhadi. A diagram is worth a dozen images. In Bastian Leibe, Jiri Matas, Nicu Sebe, and Max Welling, editors, Computer Vision - ECCV 2016 - 14th European Conference, Amsterdam, The Netherlands, October 11-14, 2016, Proceedings, Part IV , Lecture Notes in Computer Science, pages 235–251. Springer, 2016. [66] Ahmed Masry, Do Xuan Long, Jia Qing Tan, Shafiq R. Joty, and Enamul Hoque. Chartqa: A benchmark for question answering about charts with visual and logical reasoning. In Smaranda Muresan, Preslav Nakov, and Aline Villavicencio, editors, Findings of the Association for Computational Linguistics: ACL 2022, Dublin, Ireland, May 22-27, 2022 , Findings of ACL, pages 2263–2279. Association for Computational Linguistics, 2022. [67] Qiguang Chen, Libo Qin, Jin Zhang, Zhi Chen, Xiao Xu, and Wanxiang Che. M3cot: A novel benchmark for multi-domain multi-step multi-modal chain-of-thought. In Lun-Wei Ku, Andre Martins, and Vivek Srikumar, editors, Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), ACL 2024, Bangkok, Thailand, August 11-16, 2024 , pages 8199–8221. Association for Computational Linguistics, 2024. 15 [68] Arka Pal, Deep Karkhanis, Samuel Dooley, Manley Roberts, Siddartha Naidu, and Colin White. Smaug: Fixing failure modes of preference optimisation with dpo-positive. CoRR ,abs/2402.13228, 2024. [69] Ryan Park, Rafael Rafailov, Stefano Ermon, and Chelsea Finn. Disentangling length from quality in direct preference optimization. In Lun-Wei Ku, Andre Martins, and Vivek Srikumar, editors, 
+
+Findings of the Association for Computational Linguistics, ACL 2024, Bangkok, Thailand and virtual meeting, August 11-16, 2024 , volume ACL 2024 of Findings of ACL , pages 4998–5017. Association for Computational Linguistics, 2024. [70] Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Mingchuan Zhang, Y. K. Li, Y. Wu, and Daya Guo. Deepseekmath: Pushing the limits of mathematical reasoning in open language models. CoRR , abs/2402.03300, 2024. 16 A Prompt Templates for Rubric Construction and Scoring 
+
+This appendix presents the complete system prompts used across the stages of rubric generation, rubric aggregation, and reward modeling, alongside the JSON schemas for their respective outputs. Each prompt is delivered as the system message to the reasoning model; the corresponding user message supplies the image and question, together with any stage-specific auxiliary inputs (ground-truth annotations or candidate rubric lists). 
+
+A.1 Output JSON Schemas 
+
+Both rubric generation and response scoring produce structured JSON outputs, which facilitate reliable parsing and enable fine-grained programmatic aggregation and filtering. 
+
+Rubric Schema. The checklist-style rubric is a JSON object with two top-level arrays: essential 
+
+and additional , corresponding to the two criterion categories defined in Section 4.2. Each element in either array is a triplet: • criterion : a concrete, observable assertion that the judge can verify directly from the image, question, and candidate response. • reference : the ground-truth answer strictly grounded in image facts or common knowledge. • weight : a three-level integer encoding the criterion’s importance— 1 (Auxiliary: supplementary information), 2 (Important: noticeably affects the user experience), 3 (Key: critical elements where any omission or deviation constitutes a definitive error).                   
+
+> {" essential ": [{" criterion ": " string " , // assertion to be verified " reference ": " string " , // ground - truth " weight ": 1|2|3// importance }]" additional ": [... ]}
+
+Scoring Schema. The scoring output is a JSON array with one element per criterion, preserving the same ordering as the input rubric. Each element contains three fields: • criterion : the assertion copied verbatim from the input rubric, serving as an explicit confirma-tion that the judge is addressing the correct item. • rationale : a brief (1–2 sentence) explanation of the judgment, providing transparency and enabling post-hoc error analysis. • credit : a three-level score— 0 (incorrect or missing), 0.5 (partially correct with minor errors), 1
+
+(fully correct or semantically equivalent). Critically, credit is a qualitative correctness grade 
+
+independent of weight ; the weighted aggregation across all scored criteria is performed externally (Eq. 7).                      
+
+> [{" criterion ": " string " , // repeat the criterion to confirm " rationale ": " string " , // rationale for the judgment " credit ": 0|0.5 |1// assigned credit }]
+
+17 A.2 Rubric Generation 
+
+The generation prompt instructs the reasoning model to construct an instance-specific checklist-style rubric for a given image-question pair, following the principles described in Section 4.2: 
+
+Expert-Grounded Generation. When trustworthy ground-truth annotations are available, the prompt includes a dual verification step: before finalizing the rubric, the model must confirm that the provided ground-truth fully satisfies all essential criteria, ensuring that no correct response would be penalized by an erroneous check item. 
+
+System Prompt: Expert-Grounded Rubric Generation 
+
+You are a multimodal evaluation expert. Given the user question and associated image, construct a instance-specific Checklist-Style Rubric for evaluating the accuracy of model responses. The criteria in this Checklist serve as the sole evaluation standard for the reward model. 
+
+Construction Principles 
+
+• Atomic: Each check item targets exactly one key point or atomic sub-question within the query. • Comprehensive: The combined set of items covers all critical dimensions of the user’s question. • Precise: Exclude redundant checks and checks unrelated to the question. • Objective: Ground assessments in image facts or logical truths; avoid subjective uncertainty. 
+
+Field Definitions 
+
+Two categories of check items: • essential: Core information prioritized by the query. Satisfying these is a prerequisite for a conceptually sound response regardless of its verbosity. • additional: Relevant image facts, supplementary knowledge, or intermediate steps required to derive the answer. Optional, the list may be empty. Fields per item: • criterion: A concrete and observable assertion to be verified. • reference: Ground-truth fact derived from the image and common knowledge. • weight: A three-level integer quantifying the criterion’s importance ranging from 1 (Auxiliary: supplementary information) through 2 (Important: noticeable impact on the user experience) to 3 (Key: critical elements where any omission or deviation constitutes a definitive error). Think from a scoring perspective: do not double-count and avoid over-decomposing key points. 
+
+Dual Verification 
+
+Before finalizing the Checklist, verify that the provided reference answer satisfies all essential items. Any unsatisfied item indicates a construction error—the item is either incorrect or superfluous. 
+
+Output Format 
+
+{Structured JSON following the rubric schema in Appendix A.1.} 
+
+Answer-Agnostic Generation. For datasets with noisy or absent annotations, the dual verification 
+
+step is omitted, preventing the model from anchoring on a potentially unreliable reference answer. 
+
+System Prompt: Answer-Agnostic Rubric Generation 
+
+You are a multimodal evaluation expert. Given the user question and associated image, construct a instance-specific Checklist-Style Rubric for evaluating the accuracy of model responses. The criteria in this Checklist serve as the sole evaluation standard for the reward model. 
+
+Construction Principles 
+
+• Atomic: Each check item targets exactly one key point or atomic sub-question within the query. • Comprehensive: The combined set of items covers all critical dimensions of the user’s question. • Precise: Exclude redundant checks and checks unrelated to the question. • Objective: Ground assessments in image facts or logical truths; avoid subjective uncertainty. 
+
+Field Definitions 
+
+Two categories of check items: • essential: Core information prioritized by the query. Satisfying these is a prerequisite for a conceptually sound response regardless of its verbosity. 
+
+18 • additional: Relevant image facts, supplementary knowledge, or intermediate steps required to derive the answer. Optional, the list might be empty. Fields per item: • criterion: A concrete and observable assertion to be verified. • reference: Ground-truth fact derived from the image and common knowledge. • weight: A three-level integer quantifying the criterion’s importance ranging from 1 (Auxiliary: supplementary information) through 2 (Important: noticeable impact on the user experience) to 3 (Key: critical elements where any omission or deviation constitutes a definitive error). Think from a scoring perspective: do not double-count and avoid over-decomposing key points. 
+
+Output Format 
+
+{Structured JSON following the rubric schema in Appendix A.1.} 
+
+A.3 Rubric Aggregation 
+
+After independent rubric generation by multiple models (Section 4.2), an aggregation prompt merges the candidate checklists into a single unified rubric. The model first applies the same four construction principles as in rubric generation, then executes the additional aggregation instructions below to apply majority-vote filtering, deduplicate overlapping check items, and verify the correctness of all references. 
+
+System Prompt: Rubric Aggregation 
+
+You are a multimodal evaluation expert. Given the user question and associated image, construct a instance-specific Checklist-Style Rubric for evaluating the accuracy of model responses. The criteria in this Checklist serve as the sole evaluation standard for the reward model. 
+
+Construction Principles 
+
+• Atomic: Each check item targets exactly one key point or atomic sub-question within the query. • Comprehensive: The combined set of items covers all critical dimensions of the user’s question. • Precise: Exclude redundant checks and checks unrelated to the question. • Objective: Ground assessments in image facts or logical truths; avoid subjective uncertainty. 
+
+Field Definitions 
+
+Two categories of check items: • essential: Core information prioritized by the query. Satisfying these is a prerequisite for a conceptually sound response regardless of its verbosity. • additional: Relevant image facts, supplementary knowledge, or intermediate steps required to derive the answer. Optional, the list might be empty. Fields per item: • criterion: A concrete and observable assertion to be verified. • reference: Ground-truth fact derived from the image and common knowledge. • weight: A three-level integer quantifying the criterion’s importance ranging from 1 (Auxiliary: supplementary information) through 2 (Important: noticeable impact on the user experience) to 3 (Key: critical elements where any omission or deviation constitutes a definitive error). Think from a scoring perspective: do not double-count and avoid over-decomposing key points. 
+
+Checklist Aggregation 
+
+Do not construct the Checklist from scratch. Multiple models have each independently generated a candidate Checklist for the same question; your task is to merge them into a single unified rubric. Based on the construction principles, ensure that: • All retained check items are necessary. Specifically: 
+
+– Retain only items that the majority of candidates agree should be checked. 
+
+– Remove redundant or duplicate checks. 
+
+– Remove checks unrelated to the question. • Do not over-decompose check items. • All reference values are correct. 
+
+Output Format 
+
+{Structured JSON following the rubric schema in Appendix A.1.} 
+
+19 A.4 Response Scoring 
+
+The scoring prompt instructs the judge model to evaluate a candidate response against the finalized rubric, assigning a credit score to each criterion independently on a three-point scale. 
+
+System Prompt: Response Scoring 
+
+You are a multimodal evaluation expert. Given the user question, associated image, and a Checklist-Style Rubric, evaluate the accuracy of the model response. Make sure that the criteria in the Checklist are used as the sole evaluation standard .
+
+Checklist Fields 
+
+Two categories of check items: • essential: Core information prioritized by the query. Satisfying these is a prerequisite for a conceptually sound response regardless of its verbosity. • additional: Relevant image facts, supplementary knowledge, or intermediate steps required to derive the answer. Optional, the list might be empty. Fields per item: • criterion: A concrete and observable assertion to be verified. • reference: Ground-truth fact derived from the image and common knowledge. 
+
+Scoring Fields 
+
+For each criterion, output: • criterion: The assertion to be verified ( copied verbatim from input ). • rationale: Core reasoning for the judgment (1–2 sentences). • credit: A three-level score ranging from 0 (No Credit: incorrect or missing) through 0.5 (Partial Credit: partially correct with minor errors) to 1 (Full Credit: fully correct or semantically equivalent). 
+
+Output Format 
+
+{Structured JSON following the scoring schema in Appendix A.1.} 
+
+B Case Study of Reward Modeling 
+
+Count 
+
+Question: 
+
+How many planes are visible? 
+
+Response A: 
+
+Three planes are visible. 
+
+Response B: 
+
+Three planes are visible. The one on top is an F-22 stealth fighter, the one in the middle is a P-51 Mustang propeller plane, and the one below is an F-16 fighter jet. 
+
+Type / Weight Criterion / Reference Rationale / Credit 
+
+Essential / 3 Crit.: Accurately state the total number of plane visible in the image. 
+
+Ref.: 3
+
+A: The model response correctly identifies that there are three planes visible in the image, which matches the reference. / 1
+
+B: The model correctly states that there are three planes visible in the image, which matches the reference. / 1
+
+Additional / 1 Crit.: Identify the aircraft model in the top-left. 
+
+Ref.: F-22 Raptor 
+
+A: The model response does not provide any identification of the aircraft models, so this criterion is not addressed. / 0
+
+B: The model identifies the top-left aircraft as an F-22 stealth fighter, which is correct and matches the reference. / 1
+
+Additional / 1 Crit.: Identify the aircraft model in the middle. 
+
+Ref.: P-51 Mustang 
+
+A: The model response does not provide any identification of the aircraft models, so this criterion is not addressed. / 0
+
+B: The model correctly identifies the middle aircraft as a P-51 Mustang, which is accurate and aligns with the reference. / 1
+
+Additional / 1 Crit.: Identify the aircraft model at the bottom. 
+
+Ref.: F-16 Fighting Falcon 
+
+A: The model response does not provide any identification of the aircraft models, so this criterion is not addressed. / 0
+
+B: The model correctly identifies the bottom aircraft as an F-16 fighter jet, which is accurate and matches the reference. / 1
+
+20 VQA 
+
+Question: 
+
+Is the door open? 
+
+Response A: 
+
+Yes, the door is open. The image shows the white fence gate in an open position, providing access to the courtyard behind. 
+
+Response B: 
+
+Yes, the gate in the center of the image is open. The black door on the right is closed. 
+
+Type / Weight Criterion / Reference Rationale / Credit 
+
+Essential / 3 Crit.: Determine the status of the white fence gate in the picture. 
+
+Ref.: The white fence gate in the picture is open. 
+
+A: The model correctly identifies that the white fence gate is open, which aligns with the reference. The gate is visibly ajar, allowing access to the courtyard. / 1
+
+B: The model correctly identifies that the white gate in the center of the image is open, which matches the reference. / 1
+
+Essential / 3 Crit.: Determine the status of the black door on the building on the right. 
+
+Ref.: The black door in the picture is closed. 
+
+A: The model fails to address the black door on the right, which is closed. The response incorrectly implies the door is open, which is not supported by the image. / 0
+
+B: The model correctly states that the black door on the right is closed, which is consistent with the reference. / 1
+
+Additional / 1 Crit.: Determine the status of the door on the white building on the left. 
+
+Ref.: The door on the left in the picture is closed. 
+
+A: The model does not mention the door on the left building, which is closed. While this is an additional criterion, the model’s failure to address the primary open door (the gate) is the main issue. / 0
+
+B: The model does not address the status of the door on the left building, which is an additional criterion. However, since the question only asks about ’the door’ and the most prominent door is the black one, the response is still considered accurate. / 0.5 
+
+Knowledge 
+
+Question: 
+
+Which architect designed this historic house museum? 
+
+Response A: 
+
+Bridgeman designed this historic house; he is a famous British master architect whose works integrate classical styles. 
+
+Response B: 
+
+This historic house is Blenheim Palace, designed by English architect Sir John Vanbrugh. He incorporated Baroque styles to make the palace appear grand and magnificent. 
+
+Type / Weight Criterion / Reference Rationale / Credit 
+
+Essential / 3 Crit.: Accurately identify the name of the building in the picture. 
+
+Ref.: Blenheim Palace, also frequently called the Churchill Manor. 
+
+A: The model response does not identify the building as Blenheim Palace, which is the correct name of the structure shown in the image. Instead, it incorrectly refers to ’Bridgeman,’ which is not the name of the building. / 0
+
+B: The model correctly identifies the building as Blenheim Palace, which aligns with the reference. / 1
+
+Essential / 3 Crit.: Accurately state the name of the primary architect who designed the building. 
+
+Ref.: Sir John Vanbrugh. 
+
+A: The model response incorrectly identifies the architect as ’Bridgeman,’ which is factually incorrect. The actual primary architect of Blenheim Palace is Sir John Vanbrugh. The response fails to provide the correct name. / 0
+
+B: The model correctly states that Sir John Vanbrugh was the primary architect, matching the reference. / 1
+
+Additional / 1 Crit.: Mention another architect who made significant contributions to the design of the building. 
+
+Ref.: Nicholas Hawksmoor. 
+
+A: The model response does not mention Nicholas Hawksmoor, who was a significant contributor to the design of Blenheim Palace. This information is missing from the response. / 0
+
+B: The model does not mention Nicholas Hawksmoor, who is noted in the reference as a significant contributor, so this criterion is not met. / 0
+
+Additional / 1 Crit.: Mention the architectural style of the building. 
+
+Ref.: English Baroque style. 
+
+A: The model response does not mention the architectural style of the building, which is English Baroque. This information is absent from the response. / 0
+
+B: The model correctly identifies the architectural style as Baroque, which is consistent with the reference. / 1
+
+21 Molecular 
+
+Question: 
+
+What is the molecular formula of allicin? 
+
+Response A: 
+
+The structure you provided is allicin, and its molecular formula is C6H10 S2. It contains two sulfur atoms and two allyl groups, which is why it’s also known as diallyl disulfide. It is the primary source of garlic’s pungent flavor. 
+
+Response B: 
+
+Based on the image you provided, the chemical formula of allicin (chemical name: diallyl thiosulfinate) is: 
+
+C6H10 OS 2.
+
+Type / Weight Criterion / Reference Rationale / Credit 
+
+Essential / 3 Crit.: Correctly answer the text-based question and identify the molecular formula of Allicin. 
+
+Ref.: C6H10 OS 2
+
+A: The model incorrectly identifies the molecular formula as 
+
+C6H10 S2, which is inaccurate. The correct molecular formula for allicin is C6H10 OS 2. Additionally, the model misidentifies the compound in the image as allicin, which is incorrect. / 0
+
+B: The model correctly identifies the molecular formula of allicin as 
+
+C6H10 OS 2, which matches the reference. / 1
+
+Additional / 2 Crit.: Clearly state that the molecule in the image is not the same substance as the Allicin mentioned in the question, and provide the correct molecular formula for the molecule in the image. 
+
+Ref.: The molecular structure in the image is different from that of allicin; its molecular formula is 
+
+C5H8OS 2.
+
+A: The model fails to recognize that the molecule in the image is not allicin. It incorrectly states that the provided structure is allicin and does not provide the correct molecular formula for the actual molecule shown ( C5H8OS 2). / 0
+
+B: The model fails to acknowledge that the molecule in the provided image is structurally different from allicin and does not provide the correct molecular formula ( C5H8OS 2) for the structure shown. / 0
+
+Additional / 1 Crit.: Provide the chemical names for Allicin and the molecule in the image respectively. 
+
+Ref.: The chemical name of Allicin is diallyl thiosulfinate. The chemical name of the molecule in the image is S-allyl ethenesulfinothioate (or S-allyl vinyl thiosulfinate). 
+
+A: The model does not provide the chemical name for allicin or the molecule in the image. It incorrectly identifies the image as allicin and calls it diallyl disulfide, which is a different compound. / 0
+
+B: The model provides the correct chemical name for allicin (C6H10 OS 2) but does not provide the name for the molecule in the image. / 0.5 
+
+Additional / 1 Crit.: Briefly explain the core structural difference between Allicin and the molecule in the image. 
+
+Ref.: Allicin’s structure consists of two allyl groups attached to the central thiosulfinate group (−S(O)S−), whereas the molecule in the image consists of one allyl group and one vinyl group attached to that same central structure. 
+
+A: The model does not explain any structural differences because it incorrectly assumes the image shows allicin. It fails to recognize the structural difference between allicin (two allyl groups) and the molecule in the image (one allyl and one vinyl group). / 0
+
+B: The model does not explain the structural difference between allicin and the molecule in the image. / 0
+
+TabMWP 
+
+Question: 
+
+If Romero picks a marble at random, what is the probability that it is not red? 
+
+Response A: 
+
+There are a total of 2 + 1 + 5 + 3 = 11 marbles, among which there are 2 + 1 = 3 red ones. There are 11 - 3 = 8 non-red marbles. Therefore, the probability of it being non-red is 8/11. 
+
+Response B: 
+
+The total number of marbles is 2 + 1 + 5 + 3 = 11. The non-red ones are green, and there are 1 + 3 = 4. Therefore, the probability of it being non-red is 4/11. 
+
+Type / Weight Criterion / Reference Rationale / Credit 
+
+Essential / 3 Crit.: Accurately provide the probability of randomly picking a non-red marble. 
+
+Ref.: 4/11 
+
+A: The model incorrectly calculates the number of red marbles as 3 (2 + 1) instead of 7 (2 + 5), leading to an incorrect count of non-red marbles (8 instead of 4) and a final probability of 8/11 instead of the correct 4/11. / 0
+
+B: The model correctly calculates the probability of picking a non-red marble as 4/11, which matches the reference value. / 1
+
+Additional / 1 Crit.: Correctly calculate the total number of all marbles. 
+
+Ref.: According to the table, the total number of marbles is 2 + 1 + 5 + 3 = 11 .
+
+A: The model correctly calculates the total number of marbles as 11 (2 + 1 + 5 + 3), which matches the reference. / 1
+
+B: The model correctly sums the values in the table (2 + 1 + 5 + 3) to find the total number of marbles as 11, which is accurate. / 1
+
+Additional / 1 Crit.: Correctly calculate the total number of non-red (i.e., green) marbles. 
+
+Ref.: According to the table, non-red marbles are the green marbles, and the count is 1 + 3 = 4 .
+
+A: The model incorrectly identifies non-red marbles as 8, but the correct count is 4 (1 green big + 3 green small). The model’s error stems from misidentifying the red marbles. / 0
+
+B: The model correctly identifies the green marbles as the non-red ones and sums their counts (1 + 3) to get 4, which is accurate. / 1
+
+22 ChartQA 
+
+Question: 
+
+Which is the most popular dating app in Mexico in 2021? 
+
+Response A: 
+
+In 2021, the most popular dating app in Mexico was Tinder, accounting for 48% of the market. It was followed by Bumble (29%) and Badoo (9%). 
+
+Response B: 
+
+Based on the pie chart provided, the app with the largest share is Tinder at 48%. However, please note that the flag icon on the right side of the image is the flag of Spain, which suggests this data is for Spain, not Mexico. 
+
+Type / Weight Criterion / Reference Rationale / Credit 
+
+Essential / 3 Crit.: Based on the chart, clearly identify the most popular dating app and its market share. 
+
+Ref.: According to the chart, the most popular dating app is Tinder, with a market share of 48%. 
+
+A: The model correctly identifies Tinder as the most popular app with 48% market share, which is directly supported by the chart data. / 1
+
+B: The model correctly identifies Tinder as the most popular app with a 48% share, which is the largest segment in the pie chart. / 1
+
+Additional / 1 Crit.: Point out that the geographical scope of the chart data may not match the user’s question and provide a reason. 
+
+Ref.: The user’s question concerns Mexico, but there is a Spanish flag icon in the toolbar on the right side of the chart, which may indicate the data pertains to Spain rather than Mexico. 
+
+A: The model fails to address the discrepancy between the question about Mexico and the Spanish flag icon in the chart, which suggests the data might be for Spain, not Mexico. / 0
+
+B: The model correctly observes the Spanish flag icon and correctly infers that the data is likely for Spain, not Mexico, which is a key point of discrepancy. / 1
+
+Additional / 1 Crit.: List the other dating apps in the chart and their shares in descending order of market share. 
+
+Ref.: The other apps in the chart and their market shares are: Bumble (29%), Badoo (9%), Happn (8%), and Grindr (6%). 
+
+A: The model lists Bumble (29%) and Badoo (9%), which are correct, but omits the other apps (Happn, Grindr) and does not present them in descending order. / 0.5 
+
+B: The model does not list the other apps or their market shares, which is a missing piece of information from the checklist. / 0
+
+TQA 
+
+Question: 
+
+Which label refers to the neutron? 
+
+Response A: 
+
+In the image, C is a positively charged particle, which is a proton. X is a neutral particle, uncharged, and is emitted from the nuclear reaction. Neutrons are uncharged and are common products of nuclear reactions. Therefore, X refers to the neutron. 
+
+Response B: 
+
+The image shows the process of nuclear fusion, with atomic nuclei at the center surrounded by positively charged particles (protons) and neutral particles. Label U points to an uncharged particle, which fits the characteristics of a neutron. 
+
+Type / Weight Criterion / Reference Rationale / Credit 
+
+Essential / 3 Crit.: Correctly select the letter refers to the neutron. 
+
+Ref.: U
+
+A: The model incorrectly identifies label X as the neutron. According to the checklist, the correct label for the neutron is U. The model’s answer is factually incorrect. / 0
+
+B: The model correctly identifies that label U refers to the neutron, which is the uncharged particle shown in the image. / 1
+
+Additional / 2 Crit.: Explain why label U represents a neutron based on the image information. 
+
+Ref.: In the image, spheres with a "+" sign are protons, and the uncharged purple spheres are neutrons. Label U points to a single, uncharged purple sphere, therefore representing a neutron. 
+
+A: The model does not address this criterion. It fails to explain why U represents a neutron, instead providing a flawed explanation for X. This criterion is completely missed. / 0
+
+B: The model correctly explains that U points to an uncharged particle, which is the defining characteristic of a neutron, consistent with the image’s depiction. / 1
+
+Additional / 1 Crit.: Identify the physical process shown in the figure. 
+
+Ref.: The image shows a nuclear fusion reaction. Specifically, a deuterium nucleus (C) and a tritium nucleus (F) fuse to produce a helium nucleus (X) and a neutron (U), while releasing energy (R). 
+
+A: The model does not identify the physical process shown in the figure. This criterion is not addressed at all. / 0
+
+B: The model correctly identifies the process as nuclear fusion, which is the correct interpretation of the image showing nuclei combining and releasing energy. / 1
+
+Additional / 1 Crit.: Explain why the other options (B, C, D) are incorrect by identifying the particles represented by labels X, F, and C. 
+
+Ref.: The other options are incorrect. C represents a deuterium nucleus (1 proton, 1 neutron), F represents a tritium nucleus (1 proton, 2 neutrons), and X represents a helium nucleus (2 protons, 2 neutrons). They are all atomic nuclei composed of multiple particles, rather than a single neutron. 
+
+A: The model incorrectly identifies X as the neutron, so it cannot provide a correct explanation for why the other labels are incorrect. It fails to identify C and F correctly, and its explanation for X is wrong. This criterion is not addressed correctly. / 0
+
+B: The model does not address the other labels (X, F, C) or explain why they are incorrect, which is a significant omission from the checklist. / 0
+
+23 C Case Study of Preference Optimization 
+
+Misleading 
+
+Question: 
+
+Based on the information on the cover, which series does this book likely belong to? 
+
+Before: 
+
+Based on the information on the cover, this book may belong to the "FREEDOM" series. 
+
+After: 
+
+Based on the information in the picture, this is likely not a book, but a makeup product—a blush. It belongs to the "FREEDOM" series, and the brand is Professional Formula. The packaging says "BE FREE TO MAKE UP," emphasizing the concept of makeup freedom. The shade of this blush is "BLUSH," a warm nude pink. 
+
+Fine-Grained Perception 
+
+Question: 
+
+Is there a cobblestone road surface? 
+
+Before: 
+
+There’s no cobblestone path in the picture; the ground is dirt and grass, with green mats nearby. It looks like an outdoor children’s play area. 
+
+After: 
+
+Yes, there is a cobblestone path on the right side of the picture. This path extends from the lower right corner of the image into the distance, with grassy areas and some tourists strolling along it. 
+
+Knowledge 
+
+Question: 
+
+Which movie is this from? 
+
+Before: 
+
+This is a scene from the movie “The Wolf of Wall Street”, in which Leonardo DiCaprio plays the protagonist, Jordan Belfort. 
+
+After: 
+
+This is a scene from the film “Catch Me If You Can”, starring Leonardo DiCaprio. Directed by Steven Spielberg and released in 2002, the film is an adaptation of Frank Abagnale’s autobiography. 
+
+Count 
+
+Question: 
+
+If the number of bottles doubles, how many bottles will you see? 
+
+Before: 
+
+There were originally 4 bottles; doubling that number results in 8. Count the bottles in the picture: 3 on the left, 2 on the right, for a total of 5. Therefore, if the number of bottles is doubled, you will see 10 bottles. 
+
+After: 
+
+In the image, the following bottles are present: - 3 small bottles on the left - 1 bottle with blue cap in the middle - 2 bottles on the right (one tall, one short) - 1 bottle behind the fruit basket, partially visible That’s 7. So if bottle count becomes 2 times, then 7 * 2 = 14. Therefore, you would see 14 bottles. 
+
+OCR 
+
+Question: 
+
+最下面的那个蓝色牌子写了啥
+
+What does the blue sign at the very bottom say? 
+
+Before: 
+
+牌子上写着“请勿在花丛中 踩踏 ”。
+
+The sign says: "Do not trample on the flowers." 
+
+After: 
+
+最下面的蓝色牌子上写着：“请爱护花草树木”The blue sign at the bottom says: "Please care for the flowers, grass, and trees." 
+
+24 Implicit Reasoning 
+
+Question: 
+
+帮我记一下 我的车位号
+
+Help me remember my parking space number. 
+
+Before: 
+
+好的，您的车位号是006 。下次停车时记得找这个号码哦，我也会帮您记住的。
+
+Sure, your parking space number is 006. Remember to look for this number next time you park, and I will help you remember it as well. 
+
+After: 
+
+好的，您的车位号是007 。旁边还 有个006 车位，您停在了绿色的标线区域内，位置很清晰。出口
+
+方向就在右边柱子上，写着“出口EXLL” 和箭头哦。
+
+Sure, your parking space number is 007. There is a space 006 next to it; you are parked within the green marked area, and the location is very clear. The exit direction is on the pillar to the right, which says "EXIT" with an arrow. 
+
+Common Sense Reasoning 
+
+Question: 
+
+这是哪个城市的公交车？
+
+Which city is this bus from? 
+
+Before: 
+
+这辆 公交车是广西柳州的。车身上有“柳州市公共 交通集团”的标志，车牌是桂C开头，这是柳州的
+
+车牌代码。车头显示16 路公交已到“犀小筑”站，车身写着“纯电动0排放”，说明是 当地的新能源公
+
+交车。
+
+This bus is from Liuzhou, Guangxi. The bus body features the "Liuzhou Public Transport Group" logo, and the license plate starts with "Gui C," which is the plate code for Liuzhou. The front of the bus shows that Route 16 has arrived at the "Xixiaozhu" station, and the body says "Pure Electric, 0 Emissions," indicating it is a local new energy bus. 
+
+After: 
+
+这辆 公交车是广西桂林的16 路，车身显示“桂C·03323D” ，属于桂林公交集团。车身上有“纯电
+
+动0排放”的标识，说明是 环保车型。从线路和车牌可以判断，这是桂林市的公交系统。
+
+This bus is Route 16 from Guilin, Guangxi. The body displays "Gui C·03323D" and belongs to the Guilin Bus Group. It has a "Pure Electric, 0 Emissions" label, indicating it is an environmentally friendly model. Based on the route and the license plate, it can be determined that this is part of the Guilin city bus system. 
+
+Cuisine 
+
+Question: 
+
+这个小龙虾开过背了吗
+
+Has this crawfish been deveined (back-cut)? 
+
+Before: 
+
+看这盘小龙虾，外壳红亮，个头饱满，确实挺诱人的。不过从图片上看，这些小龙虾的背部没有
+
+明显 的开刀痕迹，应该还是完整的。不过有些店家会提前处理好，所以也 有可能是特意没开背。
+
+您想 吃的时候可以问问 服务员哦 。
+
+Looking at this plate of crawfish, the shells are bright red and the size is plump, which looks very tempting. however, from the image, there are no obvious cut marks on the backs of these crawfish; they appear to be intact. Some shops might process them beforehand, so it’s possible they were intentionally not cut along the back. You can ask the waiter when you are ready to eat. 
+
+After: 
+
+从图片来看，这些小龙虾的虾背是打开的。可以看到很多小龙虾的背部被切开，露出了里面的虾
+
+线和虾肉，这是烹饪前常见的处理方式，方便入味和 食用。
+
+另外，它们的颜色非常红亮，酱汁浓郁，看起来是经过了爆炒或香辣等烹饪手法处理过的。这种
+
+做法通常会先对小龙虾进行开背处理，再进行后续的烹饪步骤。所以可以判断，这些小龙虾已经
+
+开过背了。
+
+From the image, the backs of these crawfish are open. You can see that the backs of many crawfish have been cut, exposing the vein and the meat inside. This is a common processing method before cooking to make it easier to season and eat. Additionally, their color is very bright red and the sauce is rich, appearing to have been stir-fried or cooked with spicy seasoning. This preparation method usually involves deveining the crawfish before the subsequent cooking steps. Therefore, it can be determined that these crawfish have been back-cut. 
+
+25
