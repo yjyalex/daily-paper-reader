@@ -1,0 +1,723 @@
+Title: EVPO: Explained Variance Policy Optimization for Adaptive Critic Utilization in LLM Post-Training
+
+URL Source: https://arxiv.org/pdf/2604.19485v1
+
+Published Time: Wed, 22 Apr 2026 01:19:48 GMT
+
+Number of Pages: 19
+
+Markdown Content:
+# EVPO: Explained Variance Policy Optimization for Adaptive Critic Utilization in LLM Post-Training 
+
+Chengjun Pan 1∗
+
+, Shichun Liu 2∗, Jiahang Lin 2∗, Dingwei Zhu 2,Jiazheng Zhang 2, Shihan Dou 2, Songyang Gao 4, Zhenhua Han 3,Binghai Wang 2, Rui Zheng 3, Xuanjing Huang 2, Tao Gui 2†, Yansong Feng 1†
+
+> 1
+
+Peking University, 2Fudan University, 3Shanghai Qiji Zhifeng Co., Ltd., 4Shanghai AI Lab 
+
+## Abstract 
+
+Reinforcement learning (RL) for LLM post-training faces a fundamental design choice: whether to use a learned critic as a baseline for policy optimization. Classical theory favors critic-based methods such as PPO for variance reduction, yet critic-free alternatives like GRPO have gained widespread adoption due to their simplicity and competitive performance. We show that in sparse-reward settings, a learned critic can inject estimation noise that exceeds the state signal it captures, increasing rather than reducing advantage variance. By casting baseline selection as a Kalman filtering problem, we unify PPO and GRPO as two extremes of the Kalman gain and prove that explained variance (EV), computable from a single training batch, identifies the exact boundary: positive EV indicates the critic reduces variance, while zero or negative EV signals that it inflates variance. Building on this insight, we propose Explained Variance Policy Optimization (EVPO ), which monitors batch-level EV at each training step and adaptively switches between critic-based and batch-mean advantage estimation, provably achieving no greater variance than the better of the two at every step. Across four tasks spanning classical control, agentic interaction, and mathematical reasoning, EVPO consistently outperforms both PPO and GRPO regardless of which fixed baseline is stronger on a given task. Further analysis confirms that the adaptive gating tracks critic maturation over training and that the theoretically derived zero threshold is empirically optimal. q 
+
+> Critic Model
+> Rollout EV Gating
+> Policy Model
+> Critic Mode
+> Batch-mean Mode
+> Advantage
+> EVPO: Explained Variance Policy Optimization
+> Variance Guarantee
+
+Figure 1: Overview of EVPO. The EV gating module selects between the critic baseline (EV > 0)and the batch-mean baseline (EV ≤ 0), guaranteeing advantage variance no greater than the minimum of PPO and GRPO. 
+
+> ∗
+
+Equal contribution. †Corresponding authors: tgui@fudan.edu.cn, fengyansong@pku.edu.cn 
+
+Preprint. 
+
+> arXiv:2604.19485v1 [cs.LG] 21 Apr 2026
+
+## 1 Introduction 
+
+Reinforcement learning (RL) has become a central paradigm for LLM post-training, driving advances in mathematical reasoning [ 10 , 27 , 21 , 33 ], instruction following [ 37 , 6, 8 ], and interactive decision-making [ 26 , 31 , 3]. A prominent instantiation is reinforcement learning with verifiable rewards 
+
+(RLVR) [ 10 ], where a sparse reward is assigned only at the terminal step via an automatic verifier. A fundamental algorithmic choice in this setting is whether to employ a critic (a learned value function) as a baseline for policy optimization. Classical RL theory holds that a critic reduces policy-gradient variance by providing a state-dependent baseline [ 28 , 24 ], forming the foundation of actor-critic methods including PPO [ 23 ]. In practice, however, critic-free methods such as GRPO [ 25 , 10 ] have gained widespread adoption, as they are cheaper and can match or even surpass PPO [ 11 ]. Rather than treating the critic as a binary design choice, we ask: 
+
+In sparse-reward LLM post-training, when does a learned critic help and when does it hurt? 
+
+To answer this, we identify three progressive sub-questions. Q1: Is the boundary observable? Critic quality fluctuates during training, and we need to measure its impact on policy optimization in a controlled setting. Q2: Where exactly is the boundary? In sparse-reward LLM generation, the critic may inject more estimation noise than the state signal it captures. We need a precise characterization of when this happens. Q3: Can this boundary be exploited online? If the helpful-vs-harmful regime can be detected in real time, we can build an algorithm that adapts rather than committing to a fixed choice. We adopt explained variance (EV), the fraction of return variance accounted for by the critic, as a real-time proxy for critic usefulness. Empirically ( Q1), EV remains negative during the early stage of training, and controlled interventions (suppressing the critic or injecting noise) confirm that performance degrades once EV falls to zero or below, suggesting that its sign reliably indicates whether the critic helps or hurts (Section 2.2). To pinpoint the boundary ( Q2), we cast baseline selection as a Kalman filtering problem [ 14 ] in which the critic and the batch-mean return are two competing estimators of the true state value, with PPO and GRPO corresponding to the two extremes of the Kalman gain (Section 2.3). We prove that the sign of EV, computable from a single batch, is sufficient to determine which extreme is preferable (Theorem 1), placing the boundary at EV = 0 .Exploiting this boundary online ( Q3), we propose Explained Variance Policy Optimization (EVPO) , which implements this adaptive hard gating at each training step. EVPO maintains a standard PPO-style critic alongside the policy, and at each iteration computes batch-level EV as a scalar indicator. When EV is positive, the critic captures meaningful state-dependent signal, and EVPO uses its predictions as the baseline (the PPO mode); when EV falls to zero or below, EVPO discards the critic and falls back to the batch-mean return (the GRPO mode). We prove that this switching rule yields advantage-estimator variance no greater than the better of PPO and GRPO at every step, so EVPO never underperforms either fixed choice. We evaluate EVPO on four tasks spanning classical control, interactive decision-making, and math-ematical reasoning. Across all tasks, EVPO achieves the best final performance and maintains its advantage throughout training, regardless of whether PPO or GRPO is the stronger fixed baseline on a given task. Further analysis confirms that the adaptive gating tracks critic maturation over training and that the theoretically motivated zero threshold is empirically optimal. Our main contributions are: 1. Indicator and theory. We unify PPO and GRPO as two extremes of a Kalman baseline-selection spectrum and prove that the sign of explained variance is the exact boundary separating the variance-reducing from the variance-inflating critic regime (Theorem 1). 2. Algorithm. We propose EVPO, a lightweight method that switches between critic-based and critic-free advantage estimation via batch-level EV, with a provable guarantee of no greater variance than the better of PPO and GRPO at every step. 3. Empirical validation. EVPO consistently outperforms fixed PPO and GRPO across four tasks spanning classical control, agentic interaction, and mathematical reasoning. Analysis experiments confirm that the zero threshold is empirically optimal and that the adaptive gating reflects critic maturation across training stages. 22 Preliminaries 
+
+This section establishes that the critic is not uniformly beneficial. We review PPO and GRPO as two baseline-selection extremes (Section 2.1), then show empirically that the sign of explained variance reliably predicts whether the critic helps or hurts (Section 2.2). 
+
+2.1 RL for LLM Post-Training 
+
+We model autoregressive text generation as a token-level Markov Decision Process [ 18 , 29 , 36 ]. Given a prompt x, the policy πθ generates a response y = ( y1, . . . , y T ) token by token, where the state at step t is st = ( x, y <t ) and the action is at = yt ∼ πθ (· | st).In the reinforcement learning with verifiable rewards (RLVR) setting [ 10 , 31 ], a scalar reward is assigned only at the terminal step: rT = R(x, y ), rt = 0 for t < T . With discount factor γ = 1 ,the return from any state equals the terminal reward: Gt = rT ≜ G. The state-value function is 
+
+V π (s) = Eπ [G | st = s], and the observed return G is a stochastic realization whose variance arises solely from the randomness of future actions under π.
+
+PPO and GRPO. Both PPO [ 23 ] and GRPO [ 10 , 25 ] optimize a clipped surrogate objective but differ in how they estimate advantages. Under RLVR conditions ( γ=λ=1 , terminal-only reward), the PPO advantage reduces to (see Appendix A.2 for the full GAE derivation): 
+
+ˆAPPO  
+
+> t
+
+= G − ˆVϕ(st), (1) where ˆVϕ is a learned critic providing a state-dependent baseline. GRPO eliminates the critic and instead computes a response-level advantage from batch statistics. Concretely, for each prompt x, a batch of K responses {y(i)}Ki=1 is sampled from the current policy, yielding returns {Gi}Ki=1 with batch mean ¯GB = 1
+
+> K
+
+PKi=1 Gi and standard deviation σ(GB). The GRPO advantage is then: 
+
+ˆAGRPO  
+
+> i
+
+= Gi − ¯GB
+
+σ(GB) , (2) where ¯GB and σ(GB) are the batch mean and standard deviation of returns, serving as a constant 
+
+baseline shared across all tokens. 
+
+2.2 The Impact of Critic Quality on Policy Optimization 
+
+Returning to Q1 (is the boundary observable?), we quantify critic quality via the explained variance 
+
+(EV) metric, a standard indicator from regression analysis [22]: 
+
+ev = 1 − Var( G − ˆVϕ(s)) Var( G) , (3) which measures the fraction of return variance accounted for by the critic. Intuitively, ev > 0
+
+indicates that the critic captures meaningful state-dependent signal, whereas ev ≤ 0 means the critic’s estimation noise exceeds the signal it provides—its predictions are worse than a constant baseline. 0 100 200 300 400 
+
+> Step
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> Explained Variance
+> PPO Baseline
+
+(a) Explained Variance 0 200 400  
+
+> Step
+> 1.25
+> 1.50
+> 1.75
+> 2.00
+> 2.25
+> Gradient Norm
+
+(b) Gradient Norm 0 200 400  
+
+> Step
+> 0.15
+> 0.20
+> Success Rate
+
+(c) Train Success 0 50 100 150 200  
+
+> Step
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> Success Rate
+> =0
+> =0.3
+> =0.5
+> =1
+> =10
+
+(d) Noise Injection 
+
+Figure 2: Training dynamics of PPO on Sokoban. (a) Batch-level EV over training steps. (b) Policy gradient norms. (c) Training success rate. The shaded region in (a–c) marks the early phase where EV is low. (d) Effect of injecting Gaussian noise into a converged critic on FrozenLake. 3Observation 1: A noisy critic hurts the actor. We train a PPO policy on Sokoban and track the batch-level EV throughout training (see Appendix D.1 for details). As shown in Figure 2a, EV remains consistently low during the first ∼150 training steps, indicating that the critic’s predictions are less accurate than a simple constant baseline during this phase. This poor critic quality has two visible consequences: gradient norms are notably elevated (Figure 2b), reflecting high-variance policy updates driven by noisy advantage estimates, and the training success rate remains low and unstable (Figure 2c), showing that the actor struggles to learn under unreliable critic guidance. To further confirm the causal link between critic quality and actor performance, we conduct a controlled experiment: injecting Gaussian noise ( σδ = 0 .3; the mean absolute state value is ≈ 0.5)into a converged critic’s outputs. As shown in Figure 2d, performance degrades monotonically as the noise level increases, with complete collapse at σ=10 where EV is driven far below zero. This confirms that negative EV is a reliable indicator of harmful critic influence , and that the relationship between critic quality and actor performance is not merely correlational but causal. 0 100 200 300 400     
+
+> Step
+> 0.2
+> 0.3
+> 0.4
+> Success Rate
+> Sokoban
+> PPO
+> Cold-start 050 100 150 200
+> Step
+> 0.2
+> 0.4
+> 0.6
+> Success Rate
+> FrozenLake
+
+(a) Cold-start 0 200 400      
+
+> Step
+> 0.15
+> 0.20
+> 0.25
+> 0.30
+> Success Rate
+> Sokoban
+> PPO
+> Critic Warmup 050 100 150 200
+> Step
+> 0.2
+> 0.4
+> 0.6
+> Success Rate
+> FrozenLake
+
+(b) Critic Warmup 
+
+Figure 3: Reducing critic variance helps the actor. (a) Cold-start: replacing the critic output with ¯GB
+
+during early training on Sokoban (left) and FrozenLake (right). (b) Critic Warmup: pre-training the critic before actor training begins. 
+
+Observation 2: Reducing critic variance helps the actor. We conduct two complementary interventions on the same Sokoban and FrozenLake setups (see Appendix D.2 for details): (i) Cold-start : replacing the critic’s output with the batch mean ¯GB during the first 50/25 steps, and (ii) Warm-up : pre-training the critic alone for 200 steps before the actor begins updating. Both interventions yield faster convergence and more stable training curves (Figure 3), confirming that suppressing critic variance during low-quality phases directly benefits the policy .These observations suggest that the choice between a learned critic and a batch-mean baseline should not be fixed a priori, but should adapt to the critic’s current quality. In the following subsection, we formalize this intuition through a Kalman filtering lens. 
+
+2.3 A Kalman Filtering Perspective on Baseline Selection 
+
+To precisely locate the boundary ( Q2), we observe that choosing a baseline is fundamentally a 
+
+state-estimation problem: both the critic ˆVϕ(s) and the batch mean ¯GB are noisy estimates of the true value V π (s), and the best baseline is the one with lower estimation error. This is exactly the setting addressed by the Kalman filter [ 14 , 19 ], which optimally fuses two noisy estimates by weighting each inversely to its error variance. 
+
+Setup. The observed return decomposes as G = V π (s)+ ϵ with sampling noise R ≜ E[Var( G | s)] .The two competing baselines have distinct error structures: (i) the critic ˆVϕ(s) = V π (s) + δ(s)
+
+with estimation error variance PA ≜ Var( δ), and (ii) the batch mean ¯GB whose deviation from any specific state value has variance PB ≜ Var s(V π (s)) . The minimum-variance linear combination of these two estimators assigns the critic a weight of 1−K∗ with the optimal gain K∗ = PA/(PA +PB )
+
+(see Appendix A.1 for the full derivation). 
+
+Connection to explained variance. The EV metric (Eq. (3) ) directly encodes the relative reliability of the two estimators. Substituting the variance decomposition into the definition of EV yields: 
+
+ev = PB − PA
+
+PB + R . (4) 4Since the denominator PB + R is always positive, the sign of EV is determined solely by PB − PA.This means ev = 0 marks the exact boundary where PA = PB , i.e., where the critic’s estimation noise equals the state signal it captures. Above this boundary ( ev > 0), the critic outperforms the batch mean; below it ( ev ≤ 0), critic noise dominates. The sampling noise R compresses the magnitude of EV but preserves its sign, keeping this boundary robust under high stochasticity. 
+
+## 3 Methodology 
+
+Building on the Kalman filtering framework of Section 2.3, we now formalize when a critic helps or hurts (Section 3.1), unify PPO and GRPO as two extremes of the Kalman gain (Section 3.2), and derive the EVPO algorithm (Section 3.3). 
+
+3.1 The Performance Collapse Boundary 
+
+From Eq. (4), the sign of EV is governed by PB − PA. We formalize this as: 
+
+Theorem 1 (Performance Collapse Boundary) . Let ˆVϕ(s) = V π (s) + δ(s) with δ ⊥ ϵ, and let 
+
+PA = Var( δ), PB = Var s(V π (s)) , K = PA/(PA + PB ). Then the following are equivalent: 
+
+ev ≤ 0 ⇐⇒ PA ≥ PB ⇐⇒ K ≥ 12 . (5) In words, the critic inflates advantage variance whenever its estimation noise ( PA) exceeds the state signal it captures ( PB ), and ev = 0 is the exact tipping point. Since the sign of EV is computable from a single batch, this boundary is directly observable during training. 
+
+Computing EV from a training batch. Replacing the population variances in Eq. (3) with sample variances over a batch of M rollouts B = {(ym, G m)}Mm=1 from the same prompt gives the batch-level EV: 
+
+bev B = 1 − Var B(Gm − ˆVϕ(sm)) Var B(Gm) , (6) computed from the critic values already obtained for advantage estimation, with no additional forward passes. 
+
+3.2 PPO and GRPO as Kalman Extremes 
+
+Under RLVR conditions ( γ=λ=1 , terminal-only reward), PPO and GRPO can be unified into the form ˆAt = G − b(st), differing only in the choice of baseline b(st) (see Appendix A.2 for the detailed derivation). This difference maps directly onto the Kalman gain K:• PPO (critic mode, K=0 , full critic trust): b(st) = ˆVϕ(st). The baseline is entirely model-driven; the Kalman filter places zero weight on the evidence-driven estimator. • GRPO (batch-mean mode, K=1 , no critic trust): b(st) = ¯GB. (Since 1/σ (GB) does not affect the gradient direction.) The baseline is entirely evidence-driven; the critic is discarded and the batch mean serves as a constant baseline for all tokens. In other words, PPO and GRPO are not fundamentally different algorithms but rather two extreme operating points of the same Kalman baseline-selection spectrum. PPO implicitly assumes PA ≪ PB
+
+(the critic is always reliable), while GRPO implicitly assumes PA ≫ PB (the critic is never worth using). Neither assumption holds uniformly across training, motivating an adaptive approach. 
+
+3.3 EVPO: Adaptive Baseline Selection via EV Gating 
+
+Having established where the collapse boundary lies ( Q2), we now turn to Q3: can this boundary be exploited online? The Kalman framework prescribes the optimal baseline as a continuous interpolation of the two estimators: 
+
+b(s) = (1 − K) ˆVϕ(s) + K ¯GB, K = PA
+
+PA + PB
+
+∈ [0 , 1] . (7) 5Algorithm 1 Explained Variance Policy Optimization (EVPO) 
+
+Require: Policy πθ , critic ˆVϕ, task set D, group size M , number of tasks N 
+
+> 1:
+
+for each training iteration do  
+
+> 2:
+
+Sample N tasks {xj }Nj=1 ∼ D  
+
+> 3:
+
+for j = 1 , . . . , N do  
+
+> 4:
+
+Rollout a batch with M trajectories B = {ym}Mm=1 ∼ πθ (· | xj ) 
+
+> 5:
+
+Obtain rewards Gm = R(xj , y m); compute critic values vm,t ← ˆVϕ(sm,t ) 
+
+> 6:
+
+bev B ← 1 − Var B(Gm − vm) / Var B(Gm) 
+
+> 7:
+
+if bev B > 0 then  
+
+> 8:
+
+bm,t ← vm,t ▷ Critic mode  
+
+> 9:
+
+else  
+
+> 10:
+
+bm,t ← ¯GB = 1
+
+> M
+
+PMm=1 Gm ▷ Batch-mean mode  
+
+> 11:
+
+end if  
+
+> 12:
+
+ˆAm,t ← Gm − bm,t  
+
+> 13:
+
+end for  
+
+> 14:
+
+Aggregate gradients over N tasks; update πθ and ˆVϕ 
+
+> 15:
+
+end for 
+
+However, computing K directly is infeasible: both PA = Var( ˆVϕ(s) − V π (s)) and PB =Var s(V π (s)) depend on the unknown true value V π (s), making the continuous K non-identifiable in practice. We therefore reduce the domain of K to {0, 1}, corresponding to the two extremes: 
+
+K=0 (PPO, full critic trust) and K=1 (GRPO, no critic). The decision boundary PA 
+
+> PA+PB
+
+= 12 (i.e., 
+
+PA = PB ) corresponds exactly to ev = 0 by Theorem 1. While the value of K is non-identifiable, its position relative to 12 can be determined by the sign of bev B (Eq. (6) ). This yields the EVPO switching rule :
+
+b(st) = 
+
+( ˆVϕ(st), if bev B > 0 (K < 12 : trust critic ),
+
+¯GB, if bev B ≤ 0 (K ≥ 12 : retreat to batch mean ), (8) where bev B is the batch-level EV defined in Eq. (6). 
+
+Variance guarantee. By construction, EVPO selects the lower-variance baseline at each step: 
+
+Var( ˆAEVPO ) = R + min( PA, P B ), (9) which is no greater than Var( ˆAPPO ) = R + PA or Var( ˆAGRPO ) = R + PB at every training step. Over the course of training, this per-step guarantee accumulates: EVPO avoids the critic’s noisy cold-start phase ( PA ≫ PB ) while fully exploiting a mature critic ( PA ≪ PB ). 
+
+## 4 Experiments 
+
+Our experiments aim to validate that the per-step variance reduction of EVPO (Eq. 9) translates into consistent performance gains over fixed baselines (Section 4.2). We further analyze whether EV serves as a reliable indicator of the PA-vs-PB balance throughout training (Section 4.3) and whether the theoretically derived collapse boundary ev = 0 (Theorem 1) coincides with the empirically optimal switching threshold (Section 4.4). 
+
+4.1 Experimental Setup Evaluation. We evaluate on four tasks that span diverse agent interaction paradigms. Sokoban [ 13 ]and FrozenLake [ 5] are multi-turn grid-world games requiring sequential planning under sparse rewards, with FrozenLake additionally introducing environmental stochasticity. WebShop [34 ]is an interactive web-based agentic task involving multi-step instruction following and decision making. MATH targets competition-level mathematical reasoning trained and evaluated on problems in DAPO-Math-17k [35]. 6Baseline. We compare EVPO against the Base LLM without RL post-training, two critic-based methods ( PPO [23 ] and StarPO-S [ 31 ]), and two critic-free methods ( GRPO [ 25 ] and DAPO [35 ]). For the Math task we use Qwen2.5-7B-Instruct [ 20 ] as the base model; the other three tasks use Qwen2.5-3B-Instruct [ 20 ]. To ensure fair comparison, the hyperparameter recipe is tuned indepen-dently per task but kept consistent across all methods on the same task. Full configurations are provided in Appendix B. 
+
+4.2 Main Results 
+
+Table 1: Best validation success rate across four tasks. Bold indicates the best result per task. For each task, the success rate is calculated based on a total of 512 experimental results, obtained by sampling 16 times for each of the 32 queries. 
+
+Method Sokoban FrozenLake WebShop MATH 
+
+Base LLM 0.139 0.133 0.025 0.332 
+
+Critic-based methods 
+
+PPO 0.314 0.611 0.252 0.373 StarPO-S 0.455 0.359 0.178 0.371 
+
+Critic-free methods 
+
+GRPO 0.156 0.234 0.143 0.379 DAPO 0.162 0.207 0.127 0.385 
+
+EVPO (ours ) 0.604 0.684 0.303 0.416 
+
+Finding 1: EVPO improves over both PPO and GRPO regardless of which fixed baseline is stronger on a given task. The stronger fixed baseline varies across tasks: critic-based methods (PPO, StarPO-S) clearly outperform critic-free methods (GRPO, DAPO) on Sokoban, FrozenLake, and WebShop, while critic-free methods are more competitive on MATH. EVPO surpasses both families in every case (Table 1), confirming that it is not tied to a single favorable regime but adapts to the task-specific 
+
+PA-vs-PB balance. 0 200 400 
+
+> Step
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> Success Rate  PPO
+> GRPO
+> DAPO
+> StarPO-S
+> EVPO
+
+(a) Sokoban (Train) 0 100 200  
+
+> Step
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> Success Rate
+
+(b) FrozenLake (Train) 0 50 100  
+
+> Step
+> 0.1
+> 0.2
+> 0.3
+> Success Rate
+
+(c) WebShop (Train) 0 100 200  
+
+> Step
+> 0.15
+> 0.20
+> 0.25
+> 0.30
+> Success Rate
+
+(d) MATH (Train) 0 200 400 
+
+> Step
+> 0.0
+> 0.2
+> 0.4
+> Success Rate  PPO
+> GRPO
+> DAPO
+> StarPO-S
+> EVPO
+
+(e) Sokoban (Val) 0 100 200  
+
+> Step
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> Success Rate
+
+(f) FrozenLake (Val) 0 50 100  
+
+> Step
+> 0.1
+> 0.2
+> Success Rate
+
+(g) WebShop (Val) 0 100 200  
+
+> Step
+> 0.325
+> 0.350
+> 0.375
+> 0.400
+> Success Rate
+
+(h) MATH (Val) 
+
+Figure 4: Training and validation curves across four tasks. Top row: training success rate (smoothed). 
+
+Bottom row: validation success rate (unsmoothed; stars mark each method’s peak). EVPO tracks or exceeds the best competing method throughout most of training. 
+
+Finding 2: EVPO’s advantage persists throughout training, not just at convergence. 7As shown in Figure 4, EVPO leads or matches the strongest baseline at most training stages across all four tasks. This indicates that adaptive switching takes effect continuously—not by recovering from a poor start or catching up late, but by maintaining lower-variance advantage estimates throughout the optimization trajectory. The per-step variance guarantee (Eq. 9) predicts exactly this behavior: since EVPO selects the lower-variance baseline at every step, its cumulative benefit should manifest as a sustained advantage rather than a late-stage correction. 
+
+4.3 Gating Behavior Analysis 0 200 400 
+
+> Step
+> 0.6
+> 0.7
+> 0.8
+> 0.9
+> 1.0
+> P(use critic)
+
+(a) Sokoban 0 100 200  
+
+> Step
+> 0.5
+> 0.6
+> 0.7
+> 0.8
+> P(use critic)
+
+(b) FrozenLake 0 50 100  
+
+> Step
+> 0.7
+> 0.8
+> 0.9
+> 1.0
+> P(use critic)
+
+(c) WebShop 0 100 200  
+
+> Step
+> 0.4
+> 0.6
+> P(use critic)
+
+(d) MATH 
+
+Figure 5: Gating trigger probability ( bev B > 0, i.e., selection of critic over batch mean) across training. 
+
+Finding 3: In most tasks, gating frequency decreases monotonically over training, reflecting critic maturation from PA > P B to PA < P B .Figure 5 tracks the critic-selection probability over training. Across Sokoban, WebShop, and MATH, the batch-mean mode is triggered frequently in early training and progressively less as training continues, consistent with the expectation that PA decreases as the critic improves. A notable exception is FrozenLake, where gating frequency reverses around step 80, coinciding with training stagnation (Figure 4(b)). This suggests that when the policy enters a difficult region, critic quality can temporarily regress, and the adaptive gating responds by retreating to the batch-mean baseline. 
+
+4.4 EV Threshold Sensitivity -0.2 -0.1 0 0.1 0.2  
+
+> EV Threshold ( )
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> Best Train Success Rate
+
+(a) Sokoban (Train) 0 200 400  
+
+> Step
+> 0.1
+> 0.2
+> 0.3
+> Success Rate
+> =-0.2
+> =-0.1
+> =0
+> =0.1
+> =0.2
+
+(b) Sokoban (Train) -0.2 -0.1 0 0.1 0.2   
+
+> EV Threshold ( )
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> Best Train Success Rate
+
+(c) FrozenLake (Train) 0 100 200  
+
+> Step
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> Success Rate
+
+(d) FrozenLake (Train) -0.2 -0.1 0 0.1 0.2  
+
+> EV Threshold ( )
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> Best Val Success Rate
+
+(e) Sokoban (Val) 0 200 400  
+
+> Step
+> 0.2
+> 0.4
+> Success Rate
+> =-0.2
+> =-0.1
+> =0
+> =0.1
+> =0.2
+
+(f) Sokoban (Val) -0.2 -0.1 0 0.1 0.2   
+
+> EV Threshold ( )
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> Best Val Success Rate
+
+(g) FrozenLake (Val) 0 100 200  
+
+> Step
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> Success Rate
+
+(h) FrozenLake (Val) 
+
+Figure 6: Threshold sensitivity analysis. Top row: training metrics (smoothed); bottom row: 
+
+validation metrics (unsmoothed). (a, c, e, g) Best success rate as a function of the EV switching threshold; stars mark τ =0 . (b, d, f, h) Full curves under each threshold setting. Performance peaks at 
+
+τ =0 on both tasks. 
+
+Finding 4: Performance peaks at ev = 0 and degrades in either direction, with positive and negative deviations inducing distinct failure modes. 8We vary the switching threshold across {− 0.2, −0.1, 0, 0.1, 0.2} while keeping all other configura-tions fixed. As shown in Figure 6(a, c, e, g), the theoretically derived boundary ev = 0 (Theorem 1) is not merely a theoretical convenience but the practically optimal operating point. The training landscape in Figure 6(b, d, f, h) reveals an asymmetry in the two deviation directions. A positive threshold under-utilizes the critic: training progresses normally in early stages but collapses later when policy refinement requires state-dependent advantage estimates that the batch mean cannot provide. A negative threshold over-utilizes the critic: the immature critic’s noise slows early training, and in later stages, unreliable value predictions on certain state subsets continue to inject variance. These two failure modes reveal that, as we argued theoretically, the zero threshold is precisely the boundary separating the PA > P B and PA < P B regimes. 
+
+## 5 Related Work 
+
+Reinforcement Learning with Verifiable Rewards for LLMs. RL-based LLM post-training has evolved from actor-critic architectures such as PPO [ 23 ], which rely on a learned value function for variance reduction via GAE [ 24 ], toward critic-free alternatives that bypass the value network entirely. GRPO [ 25 , 10 , 30 ] replaces the learned baseline with intra-group reward normalization and has become the dominant paradigm; REINFORCE++ [ 11 ] further stabilizes this family via global batch normalization, and similar estimators like RLOO [ 1] and DAPO [ 35 ] further demonstrate that a critic is often dispensable for single-turn, verifiable tasks. Yet critic-free methods face two systematic challenges: group-relative advantages introduce statistical bias, systematically underestimating hard prompts and overestimating easy ones [ 12 , 16 ], and uniform trajectory-level credit assignment degrades severely in long-horizon settings lacking early termination [ 4, 7], compelling multi-turn frameworks such as RAGEN [ 31 ] to reintroduce the critic for stable training. All existing approaches resolve this tension between critic-free simplicity and critic-based credit assignment [ 15 ] through a static, a priori architectural commitment that either always uses or always discards the critic, regardless of its current predictive quality. 
+
+Adaptive Baselines and Explained Variance. Reducing policy-gradient variance without detri-mental bias is a foundational RL challenge [ 32 , 28 ]. State-dependent baselines are theoretically unbiased but rely on the assumption that the value network is accurate; in LLM post-training, the vast state space and sparse rewards frequently violate this assumption, causing the baseline subtraction to inject more noise than it removes. Prior work addresses this through two complementary strategies: redesigning the baseline structure itself [ 2 ], or using critic quality as a signal to adapt hyperparameters such as λ in GAE [17] or to filter uninformative transitions [9]. However, these methods treat critic quality as a signal to tune hyperparameters or curate data while preserving the actor-critic architecture. EVPO departs from both strategies by elevating EV from a passive diagnostic to a architecture selection criterion that determines whether the critic is used at all, switching to critic-free estimation when the value network becomes mathematically harmful. 
+
+## 6 Conclusion 
+
+We presented EVPO, an adaptive RL method for LLM post-training that uses explained variance to switch between critic-based and batch-mean advantage estimation at each training step. By casting baseline selection as a Kalman filtering problem, we proved that the sign of EV is the exact boundary separating the variance-reducing from the variance-inflating critic regime (Theorem 1), and that EVPO’s per-step switching yields advantage variance no greater than the better of PPO and GRPO at every step. Across four tasks spanning multi-turn planning, agentic interaction, and mathematical reasoning, EVPO consistently outperforms both fixed baselines, regardless of which one is stronger on a given task. The gating analysis confirms that EVPO’s adaptation tracks critic maturation over training, and the threshold sensitivity study validates that the theoretically derived zero boundary is empirically optimal. 9Limitations 
+
+Population vs. batch EV. Theorem 1 characterizes the collapse boundary in terms of population EV, whereas EVPO switches on batch EV computed from finite samples. We do not provide finite-sample concentration bounds for the switching rule, though the threshold sensitivity analysis (Section 4.4) suggests that zero is a robust practical threshold. 
+
+Resource overhead. EVPO maintains a critic network throughout training, including iterations where the batch-mean mode is selected, and therefore retains the memory footprint of PPO rather than matching fully critic-free methods. 
+
+Task coverage. Our evaluation spans four tasks across three domains. Tasks with dense intermediate rewards, learned reward models, or substantially different rollout lengths may exhibit different EV dynamics. 
+
+## References 
+
+[1] Arash Ahmadian, Chris Cremer, Matthias Gallé, Marzieh Fadaee, Julia Kreutzer, Olivier Pietquin, Ahmet Üstün, and Sara Hooker. Back to basics: Revisiting reinforce style optimization for learning from human feedback in llms, February 2024. URL http://arxiv.org/abs/ 2402.14740 .[2] Oron Anschel, Nir Baram, and Nahum Shimkin. Averaged-dqn: Variance reduction and stabi-lization for deep reinforcement learning. In Proceedings of the 34th International Conference on Machine Learning , pages 176–185. PMLR, July 2017. URL https://proceedings.mlr. press/v70/anschel17a.html .[3] Cong Chen, Kaixiang Ji, Hao Zhong, Muzhi Zhu, Anzhou Li, Guo Gan, Ziyuan Huang, Cheng Zou, Jiajia Liu, Jingdong Chen, Hao Chen, and Chunhua Shen. Gui-shepherd: Reliable process reward and verification for long-sequence gui tasks, September 2025. URL http: //arxiv.org/abs/2509.23738 .[4] Bryan L. M. de Oliveira, Felipe V. Frujeri, Marcos P. C. M. Queiroz, Luana G. B. Martins, Telma W. de L. Soares, and Luckeciano C. Melo. Learning without critics? revisiting grpo in classical reinforcement learning environments, November 2025. URL http://arxiv.org/ abs/2511.03527 .[5] Paolo Dell’Aversana. The frozen lake problem. an example of optimization policy, December 2021. URL https://www.researchgate.net/publication/357420847_The_Frozen_ Lake_Problem_An_example_of_optimization_policy .[6] Deming Ding, Shichun Liu, Enhui Yang, Jiahang Lin, Ziying Chen, Shihan Dou, Honglin Guo, Weiyu Cheng, Pengyu Zhao, Chengjun Xiao, Qunhong Zeng, Qi Zhang, Xuanjing Huang, Qidi Xu, and Tao Gui. Octobench: Benchmarking scaffold-aware instruction following in repository-grounded agentic coding, January 2026. URL http://arxiv.org/abs/2601.10343 .[7] Guanting Dong, Hangyu Mao, Kai Ma, Licheng Bao, Yifei Chen, Zhongyuan Wang, Zhongxia Chen, Jiazhen Du, Huiyang Wang, Fuzheng Zhang, Guorui Zhou, Yutao Zhu, Ji-Rong Wen, and Zhicheng Dou. Agentic reinforced policy optimization. In The Fourteenth International Conference on Learning Representations , October 2025. URL https://openreview.net/ forum?id=TX4k7BF6aO .[8] Shihan Dou, Ming Zhang, Zhangyue Yin, Chenhao Huang, Yujiong Shen, Junzhe Wang, Jiayi Chen, Yuchen Ni, Junjie Ye, Cheng Zhang, Huaibing Xie, Jianglu Hu, Shaolei Wang, Weichao Wang, Yanling Xiao, Yiting Liu, Zenan Xu, Zhen Guo, Pluto Zhou, Tao Gui, Zuxuan Wu, Xipeng Qiu, Qi Zhang, Xuanjing Huang, Yu-Gang Jiang, Di Wang, and Shunyu Yao. Cl-bench: A benchmark for context learning, February 2026. URL http://arxiv.org/abs/2602.03587 .[9] Yannis Flet-Berliac and Philippe Preux. Only relevant information matters: Filtering out noisy samples to boost rl, April 2019. URL https://arxiv.org/abs/1904.04025v5 .10 [10] Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Peiyi Wang, Qihao Zhu, Runxin Xu, Ruoyu Zhang, Shirong Ma, Xiao Bi, Xiaokang Zhang, Xingkai Yu, Yu Wu, Z. F. Wu, Zhibin Gou, Zhihong Shao, Zhuoshu Li, Ziyi Gao, Aixin Liu, Bing Xue, Bingxuan Wang, Bochao Wu, Bei Feng, Chengda Lu, Chenggang Zhao, Chengqi Deng, Chong Ruan, Damai Dai, Deli Chen, Dongjie Ji, Erhang Li, Fangyun Lin, Fucong Dai, Fuli Luo, Guangbo Hao, Guanting Chen, Guowei Li, H. Zhang, Hanwei Xu, Honghui Ding, Huazuo Gao, Hui Qu, Hui Li, Jianzhong Guo, Jiashi Li, Jingchang Chen, Jingyang Yuan, Jinhao Tu, Junjie Qiu, Junlong Li, J. L. Cai, Jiaqi Ni, Jian Liang, Jin Chen, Kai Dong, Kai Hu, Kaichao You, Kaige Gao, Kang Guan, Kexin Huang, Kuai Yu, Lean Wang, Lecong Zhang, Liang Zhao, Litong Wang, Liyue Zhang, Lei Xu, Leyi Xia, Mingchuan Zhang, Minghua Zhang, Minghui Tang, Mingxu Zhou, Meng Li, Miaojun Wang, Mingming Li, Ning Tian, Panpan Huang, Peng Zhang, Qiancheng Wang, Qinyu Chen, Qiushi Du, Ruiqi Ge, Ruisong Zhang, Ruizhe Pan, Runji Wang, R. J. Chen, R. L. Jin, Ruyi Chen, Shanghao Lu, Shangyan Zhou, Shanhuang Chen, Shengfeng Ye, Shiyu Wang, Shuiping Yu, Shunfeng Zhou, Shuting Pan, S. S. Li, Shuang Zhou, Shaoqing Wu, Tao Yun, Tian Pei, Tianyu Sun, T. Wang, Wangding Zeng, Wen Liu, Wenfeng Liang, Wenjun Gao, Wenqin Yu, Wentao Zhang, W. L. Xiao, Wei An, Xiaodong Liu, Xiaohan Wang, Xiaokang Chen, Xiaotao Nie, Xin Cheng, Xin Liu, Xin Xie, Xingchao Liu, Xinyu Yang, Xinyuan Li, Xuecheng Su, Xuheng Lin, X. Q. Li, Xiangyue Jin, Xiaojin Shen, Xiaosha Chen, Xiaowen Sun, Xiaoxiang Wang, Xinnan Song, Xinyi Zhou, Xianzu Wang, Xinxia Shan, Y. K. Li, Y. Q. Wang, Y. X. Wei, Yang Zhang, Yanhong Xu, Yao Li, Yao Zhao, Yaofeng Sun, Yaohui Wang, Yi Yu, Yichao Zhang, Yifan Shi, Yiliang Xiong, Ying He, Yishi Piao, Yisong Wang, Yixuan Tan, Yiyang Ma, Yiyuan Liu, Yongqiang Guo, Yuan Ou, Yuduan Wang, Yue Gong, Yuheng Zou, Yujia He, Yunfan Xiong, Yuxiang Luo, Yuxiang You, Yuxuan Liu, Yuyang Zhou, Y. X. Zhu, Yanping Huang, Yaohui Li, Yi Zheng, Yuchen Zhu, Yunxian Ma, Ying Tang, Yukun Zha, Yuting Yan, Z. Z. Ren, Zehui Ren, Zhangli Sha, Zhe Fu, Zhean Xu, Zhenda Xie, Zhengyan Zhang, Zhewen Hao, Zhicheng Ma, Zhigang Yan, Zhiyu Wu, Zihui Gu, Zijia Zhu, Zijun Liu, Zilin Li, Ziwei Xie, Ziyang Song, Zizheng Pan, Zhen Huang, Zhipeng Xu, Zhongyu Zhang, and Zhen Zhang. Deepseek-r1 incentivizes reasoning in llms through reinforcement learning. Nature ,645(8081):633–638, September 2025. ISSN 1476-4687. doi: 10.1038/s41586-025-09422-z. URL https://www.nature.com/articles/s41586-025-09422-z .[11] Jian Hu, Jason Klein Liu, Haotian Xu, and Wei Shen. Reinforce++: Stabilizing critic-free policy optimization with global advantage normalization, November 2025. URL http://arxiv. org/abs/2501.03262 .[12] Samyak Jain, Ayush Agrawal, and Navin Goyal. Towards understanding the optimization landscape of grpo and its variants. In First Workshop on Foundations of Reasoning in Language Models , December 2025. URL https://openreview.net/forum?id=DSX0b1Ds0j .[13] Andreas Junghanns and Jonathan Schaeffer. Sokoban: Enhancing general single-agent search methods using domain knowledge. Artificial Intelligence , 129(1):219–251, June 2001. ISSN 0004-3702. doi: 10.1016/S0004-3702(01)00109-6. URL https://www.sciencedirect. com/science/article/pii/S0004370201001096 .[14] R. E. Kalman. A new approach to linear filtering and prediction problems. Journal of Basic Engineering , 82(1):35–45, March 1960. ISSN 0021-9223. doi: 10.1115/1.3662552. URL 
+
+https://doi.org/10.1115/1.3662552 .[15] Lijun Li, Xiaoyu Wang, Jianan Liu, Haoran Chen, Minghao Zhang, Zixuan Yang, and Haoran Zhang. Unifying ppo, dpo, and grpo: A theoretical and empirical study on llm post-training, November 2025. URL https://www.researchgate.net/publication/ 397211705_Unifying_PPO_DPO_and_GRPO_A_Theoretical_and_Empirical_Study_ on_LLM_Post-Training .[16] Jiahang Lin, Kai Hu, Binghai Wang, Yuhao Zhou, Zhiheng Xi, Honglin Guo, Shichun Liu, Junzhe Wang, Shihan Dou, Enyu Zhou, Hang Yan, Zhenhua Han, Tao Gui, Qi Zhang, and Xuanjing Huang. Mm-doc-r1: Training agents for long document visual question answering through multi-turn reinforcement learning, April 2026. URL http://arxiv.org/abs/2604. 13579 .11 [17] Naemeh Mohammadpour, Meysam Fozi, Mohammad Mehdi Ebadzadeh, Ali Azimi, and Ali Kamali. Proximal policy optimization with adaptive generalized advantage estimate: Critic-aware refinements, 2024. URL https://github.com/naempr/PPO-with-adaptive-GAE .[18] OpenAI, Aaron Jaech, Adam Kalai, Adam Lerer, Adam Richardson, Ahmed El-Kishky, Aiden Low, Alec Helyar, Aleksander Madry, Alex Beutel, Alex Carney, Alex Iftimie, Alex Karpenko, Alex Tachard Passos, Alexander Neitz, Alexander Prokofiev, Alexander Wei, Allison Tam, Ally Bennett, Ananya Kumar, Andre Saraiva, Andrea Vallone, Andrew Duberstein, Andrew Kondrich, Andrey Mishchenko, Andy Applebaum, Angela Jiang, Ashvin Nair, Barret Zoph, Behrooz Ghorbani, Ben Rossen, Benjamin Sokolowsky, Boaz Barak, Bob McGrew, Borys Minaiev, Botao Hao, Bowen Baker, Brandon Houghton, Brandon McKinzie, Brydon Eastman, Camillo Lugaresi, Cary Bassin, Cary Hudson, Chak Ming Li, Charles de Bourcy, Chelsea Voss, Chen Shen, Chong Zhang, Chris Koch, Chris Orsinger, Christopher Hesse, Claudia Fischer, Clive Chan, Dan Roberts, Daniel Kappler, Daniel Levy, Daniel Selsam, David Dohan, David Farhi, David Mely, David Robinson, Dimitris Tsipras, Doug Li, Dragos Oprica, Eben Freeman, Eddie Zhang, Edmund Wong, Elizabeth Proehl, Enoch Cheung, Eric Mitchell, Eric Wallace, Erik Ritter, Evan Mays, Fan Wang, Felipe Petroski Such, Filippo Raso, Florencia Leoni, Foivos Tsimpourlas, Francis Song, Fred von Lohmann, Freddie Sulit, Geoff Salmon, Giambattista Parascandolo, Gildas Chabot, Grace Zhao, Greg Brockman, Guillaume Leclerc, Hadi Salman, Haiming Bao, Hao Sheng, Hart Andrin, Hessam Bagherinezhad, Hongyu Ren, Hunter Lightman, Hyung Won Chung, Ian Kivlichan, Ian O’Connell, Ian Osband, Ignasi Clavera Gilaberte, Ilge Akkaya, Ilya Kostrikov, Ilya Sutskever, Irina Kofman, Jakub Pachocki, James Lennon, Jason Wei, Jean Harb, Jerry Twore, Jiacheng Feng, Jiahui Yu, Jiayi Weng, Jie Tang, Jieqi Yu, Joaquin Quiñonero Candela, Joe Palermo, Joel Parish, Johannes Heidecke, John Hallman, John Rizzo, Jonathan Gordon, Jonathan Uesato, Jonathan Ward, Joost Huizinga, Julie Wang, Kai Chen, Kai Xiao, Karan Singhal, Karina Nguyen, Karl Cobbe, Katy Shi, Kayla Wood, Kendra Rimbach, Keren Gu-Lemberg, Kevin Liu, Kevin Lu, Kevin Stone, Kevin Yu, Lama Ahmad, Lauren Yang, Leo Liu, Leon Maksin, Leyton Ho, Liam Fedus, Lilian Weng, Linden Li, Lindsay McCallum, Lindsey Held, Lorenz Kuhn, Lukas Kondraciuk, Lukasz Kaiser, Luke Metz, Madelaine Boyd, Maja Trebacz, Manas Joglekar, Mark Chen, Marko Tintor, Mason Meyer, Matt Jones, Matt Kaufer, Max Schwarzer, Meghan Shah, Mehmet Yatbaz, Melody Y. Guan, Mengyuan Xu, Mengyuan Yan, Mia Glaese, Mianna Chen, Michael Lampe, Michael Malek, Michele Wang, Michelle Fradin, Mike McClay, Mikhail Pavlov, Miles Wang, Mingxuan Wang, Mira Murati, Mo Bavarian, Mostafa Rohaninejad, Nat McAleese, Neil Chowdhury, Neil Chowdhury, Nick Ryder, Nikolas Tezak, Noam Brown, Ofir Nachum, Oleg Boiko, Oleg Murk, Olivia Watkins, Patrick Chao, Paul Ashbourne, Pavel Izmailov, Peter Zhokhov, Rachel Dias, Rahul Arora, Randall Lin, Rapha Gontijo Lopes, Raz Gaon, Reah Miyara, Reimar Leike, Renny Hwang, Rhythm Garg, Robin Brown, Roshan James, Rui Shu, Ryan Cheu, Ryan Greene, Saachi Jain, Sam Altman, Sam Toizer, Sam Toyer, Samuel Miserendino, Sandhini Agarwal, Santiago Hernandez, Sasha Baker, Scott McKinney, Scottie Yan, Shengjia Zhao, Shengli Hu, Shibani Santurkar, Shraman Ray Chaudhuri, Shuyuan Zhang, Siyuan Fu, Spencer Papay, Steph Lin, Suchir Balaji, Suvansh Sanjeev, Szymon Sidor, Tal Broda, Aidan Clark, Tao Wang, Taylor Gordon, Ted Sanders, Tejal Patwardhan, Thibault Sottiaux, Thomas Degry, Thomas Dimson, Tianhao Zheng, Timur Garipov, Tom Stasi, Trapit Bansal, Trevor Creech, Troy Peterson, Tyna Eloundou, Valerie Qi, Vineet Kosaraju, Vinnie Monaco, Vitchyr Pong, Vlad Fomenko, Weiyi Zheng, Wenda Zhou, Wes McCabe, Wojciech Zaremba, Yann Dubois, Yinghai Lu, Yining Chen, Young Cha, Yu Bai, Yuchen He, Yuchen Zhang, Yunyun Wang, Zheng Shao, and Zhuohan Li. Openai o1 system card, December 2024. URL http://arxiv.org/abs/2412.16720 .[19] Yan Pei, Swarnendu Biswas, Donald S. Fussell, and Keshav Pingali. An elementary introduction to kalman filtering, June 2019. URL http://arxiv.org/abs/1710.04055 .[20] Qwen, An Yang, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chengyuan Li, Dayiheng Liu, Fei Huang, Haoran Wei, Huan Lin, Jian Yang, Jianhong Tu, Jianwei Zhang, Jianxin Yang, Jiaxi Yang, Jingren Zhou, Junyang Lin, Kai Dang, Keming Lu, Keqin Bao, Kexin Yang, Le Yu, Mei Li, Mingfeng Xue, Pei Zhang, Qin Zhu, Rui Men, Runji Lin, Tianhao Li, Tianyi Tang, Tingyu Xia, Xingzhang Ren, Xuancheng Ren, Yang Fan, Yang Su, Yichang Zhang, Yu Wan, Yuqiong Liu, Zeyu Cui, Zhenru Zhang, and Zihan Qiu. Qwen2.5 technical report, January 2025. URL http://arxiv.org/abs/2412.15115 .12 [21] Qwen Team. Qwen3.5: Towards native multimodal agents, February 2026. URL https: //qwen.ai/blog?id=qwen3.5 .[22] John Schulman. The nuts and bolts of deep rl research, December 2016. URL http://joschu. net/docs/nuts-and-bolts.pdf .[23] John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. Proximal policy optimization algorithms, August 2017. URL http://arxiv.org/abs/1707.06347 .[24] John Schulman, Philipp Moritz, Sergey Levine, Michael Jordan, and Pieter Abbeel. High-dimensional continuous control using generalized advantage estimation, October 2018. URL 
+
+http://arxiv.org/abs/1506.02438 .[25] Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan Zhang, Y. K. Li, Y. Wu, and Daya Guo. Deepseekmath: Pushing the limits of mathematical reasoning in open language models, April 2024. URL http://arxiv.org/ abs/2402.03300 .[26] Mohit Shridhar, Xingdi Yuan, Marc-Alexandre Côté, Yonatan Bisk, Adam Trischler, and Matthew Hausknecht. Alfworld: Aligning text and embodied environments for interactive learning, March 2021. URL http://arxiv.org/abs/2010.03768 .[27] Aaditya Singh, Adam Fry, Adam Perelman, Adam Tart, Adi Ganesh, Ahmed El-Kishky, Aidan McLaughlin, Aiden Low, A. J. Ostrow, Akhila Ananthram, Akshay Nathan, Alan Luo, Alec Helyar, Aleksander Madry, Aleksandr Efremov, Aleksandra Spyra, Alex Baker-Whitcomb, Alex Beutel, Alex Karpenko, Alex Makelov, Alex Neitz, Alex Wei, Alexandra Barr, Alexandre Kirchmeyer, Alexey Ivanov, Alexi Christakis, Alistair Gillespie, Allison Tam, Ally Bennett, Alvin Wan, Alyssa Huang, Amy McDonald Sandjideh, Amy Yang, Ananya Kumar, Andre Saraiva, Andrea Vallone, Andrei Gheorghe, Andres Garcia Garcia, Andrew Braunstein, Andrew Liu, Andrew Schmidt, Andrey Mereskin, Andrey Mishchenko, Andy Applebaum, Andy Rogerson, Ann Rajan, Annie Wei, Anoop Kotha, Anubha Srivastava, Anushree Agrawal, Arun Vijayvergiya, Ashley Tyra, Ashvin Nair, Avi Nayak, Ben Eggers, Bessie Ji, Beth Hoover, Bill Chen, Blair Chen, Boaz Barak, Borys Minaiev, Botao Hao, Bowen Baker, Brad Lightcap, Brandon McKinzie, Brandon Wang, Brendan Quinn, Brian Fioca, Brian Hsu, Brian Yang, Brian Yu, Brian Zhang, Brittany Brenner, Callie Riggins Zetino, Cameron Raymond, Camillo Lugaresi, Carolina Paz, Cary Hudson, Cedric Whitney, Chak Li, Charles Chen, Charlotte Cole, Chelsea Voss, Chen Ding, Chen Shen, Chengdu Huang, Chris Colby, Chris Hallacy, Chris Koch, Chris Lu, Christina Kaplan, Christina Kim, C. J. Minott-Henriques, Cliff Frey, Cody Yu, Coley Czarnecki, Colin Reid, Colin Wei, Cory Decareaux, Cristina Scheau, Cyril Zhang, Cyrus Forbes, Da Tang, Dakota Goldberg, Dan Roberts, Dana Palmie, Daniel Kappler, Daniel Levine, Daniel Wright, Dave Leo, David Lin, David Robinson, Declan Grabb, Derek Chen, Derek Lim, Derek Salama, Dibya Bhattacharjee, Dimitris Tsipras, Dinghua Li, Dingli Yu, D. J. Strouse, Drew Williams, Dylan Hunn, Ed Bayes, Edwin Arbus, Ekin Akyurek, Elaine Ya Le, Elana Widmann, Eli Yani, Elizabeth Proehl, Enis Sert, Enoch Cheung, Eri Schwartz, Eric Han, Eric Jiang, Eric Mitchell, Eric Sigler, Eric Wallace, Erik Ritter, Erin Kavanaugh, Evan Mays, Evgenii Nikishin, Fangyuan Li, Felipe Petroski Such, Filipe de Avila Belbute Peres, Filippo Raso, Florent Bekerman, Foivos Tsimpourlas, Fotis Chantzis, Francis Song, Francis Zhang, Gaby Raila, Garrett McGrath, Gary Briggs, Gary Yang, Giambattista Parascandolo, Gildas Chabot, Grace Kim, Grace Zhao, Gregory Valiant, Guillaume Leclerc, Hadi Salman, Hanson Wang, Hao Sheng, Haoming Jiang, Haoyu Wang, Haozhun Jin, Harshit Sikchi, Heather Schmidt, Henry Aspegren, Honglin Chen, Huida Qiu, Hunter Lightman, Ian Covert, Ian Kivlichan, Ian Silber, Ian Sohl, Ibrahim Hammoud, Ignasi Clavera, Ikai Lan, Ilge Akkaya, Ilya Kostrikov, Irina Kofman, Isak Etinger, Ishaan Singal, Jackie Hehir, Jacob Huh, Jacqueline Pan, Jake Wilczynski, Jakub Pachocki, James Lee, James Quinn, Jamie Kiros, Janvi Kalra, Jasmyn Samaroo, Jason Wang, Jason Wolfe, Jay Chen, Jay Wang, Jean Harb, Jeffrey Han, Jeffrey Wang, Jennifer Zhao, Jeremy Chen, Jerene Yang, Jerry Tworek, Jesse Chand, Jessica Landon, Jessica Liang, Ji Lin, Jiancheng Liu, Jianfeng Wang, Jie Tang, Jihan Yin, Joanne Jang, Joel Morris, Joey Flynn, Johannes Ferstad, Johannes Heidecke, John Fishbein, John Hallman, Jonah Grant, Jonathan Chien, Jonathan Gordon, Jongsoo Park, Jordan Liss, Jos Kraaijeveld, Joseph Guay, Joseph Mo, Josh Lawson, Josh McGrath, Joshua Vendrow, Joy Jiao, Julian Lee, Julie Steele, Julie Wang, Junhua Mao, Kai Chen, Kai Hayashi, Kai Xiao, Kamyar Salahi, Kan Wu, Karan Sekhri, Karan 13 Sharma, Karan Singhal, Karen Li, Kenny Nguyen, Keren Gu-Lemberg, Kevin King, Kevin Liu, Kevin Stone, Kevin Yu, Kristen Ying, Kristian Georgiev, Kristie Lim, Kushal Tirumala, Kyle Miller, Lama Ahmad, Larry Lv, Laura Clare, Laurance Fauconnet, Lauren Itow, Lauren Yang, Laurentia Romaniuk, Leah Anise, Lee Byron, Leher Pathak, Leon Maksin, Leyan Lo, Leyton Ho, Li Jing, Liang Wu, Liang Xiong, Lien Mamitsuka, Lin Yang, Lindsay McCallum, Lindsey Held, Liz Bourgeois, Logan Engstrom, Lorenz Kuhn, Louis Feuvrier, Lu Zhang, Lucas Switzer, Lukas Kondraciuk, Lukasz Kaiser, Manas Joglekar, Mandeep Singh, Mandip Shah, Manuka Stratta, Marcus Williams, Mark Chen, Mark Sun, Marselus Cayton, Martin Li, Marvin Zhang, Marwan Aljubeh, Matt Nichols, Matthew Haines, Max Schwarzer, Mayank Gupta, Meghan Shah, Melody Huang, Meng Dong, Mengqing Wang, Mia Glaese, Micah Carroll, Michael Lampe, Michael Malek, Michael Sharman, Michael Zhang, Michele Wang, Michelle Pokrass, Mihai Florian, Mikhail Pavlov, Miles Wang, Ming Chen, Mingxuan Wang, Minnia Feng, Mo Bavarian, Molly Lin, Moose Abdool, Mostafa Rohaninejad, Nacho Soto, Natalie Staudacher, Natan LaFontaine, Nathan Marwell, Nelson Liu, Nick Preston, Nick Turley, Nicklas Ansman, Nicole Blades, Nikil Pancha, Nikita Mikhaylin, Niko Felix, Nikunj Handa, Nishant Rai, Nitish Keskar, Noam Brown, Ofir Nachum, Oleg Boiko, Oleg Murk, Olivia Watkins, Oona Gleeson, Pamela Mishkin, Patryk Lesiewicz, Paul Baltescu, Pavel Belov, Peter Zhokhov, Philip Pronin, Phillip Guo, Phoebe Thacker, Qi Liu, Qiming Yuan, Qinghua Liu, Rachel Dias, Rachel Puckett, Rahul Arora, Ravi Teja Mullapudi, Raz Gaon, Reah Miyara, Rennie Song, Rishabh Aggarwal, R. J. Marsan, Robel Yemiru, Robert Xiong, Rohan Kshirsagar, Rohan Nuttall, Roman Tsiupa, Ronen Eldan, Rose Wang, Roshan James, Roy Ziv, Rui Shu, Ruslan Nigmatullin, Saachi Jain, Saam Talaie, Sam Altman, Sam Arnesen, Sam Toizer, Sam Toyer, Samuel Miserendino, Sandhini Agarwal, Sarah Yoo, Savannah Heon, Scott Ethersmith, Sean Grove, Sean Taylor, Sebastien Bubeck, Sever Banesiu, Shaokyi Amdo, Shengjia Zhao, Sherwin Wu, Shibani Santurkar, Shiyu Zhao, Shraman Ray Chaudhuri, Shreyas Krishnaswamy, Shuaiqi, Xia, Shuyang Cheng, Shyamal Anadkat, Simón Posada Fishman, Simon Tobin, Siyuan Fu, Somay Jain, Song Mei, Sonya Egoian, Spencer Kim, Spug Golden, S. Q. Mah, Steph Lin, Stephen Imm, Steve Sharpe, Steve Yadlowsky, Sulman Choudhry, Sungwon Eum, Suvansh Sanjeev, Tabarak Khan, Tal Stramer, Tao Wang, Tao Xin, Tarun Gogineni, Taya Christianson, Ted Sanders, Tejal Patwardhan, Thomas Degry, Thomas Shadwell, Tianfu Fu, Tianshi Gao, Timur Garipov, Tina Sriskandarajah, Toki Sherbakov, Tomer Kaftan, Tomo Hiratsuka, Tongzhou Wang, Tony Song, Tony Zhao, Troy Peterson, Val Kharitonov, Victoria Chernova, Vineet Kosaraju, Vishal Kuo, Vitchyr Pong, Vivek Verma, Vlad Petrov, Wanning Jiang, Weixing Zhang, Wenda Zhou, Wenlei Xie, Wenting Zhan, Wes McCabe, Will DePue, Will Ellsworth, Wulfie Bain, Wyatt Thompson, Xiangning Chen, Xiangyu Qi, Xin Xiang, Xinwei Shi, Yann Dubois, Yaodong Yu, Yara Khakbaz, Yifan Wu, Yilei Qian, Yin Tat Lee, Yinbo Chen, Yizhen Zhang, Yizhong Xiong, Yonglong Tian, Young Cha, Yu Bai, Yu Yang, Yuan Yuan, Yuanzhi Li, Yufeng Zhang, Yuguang Yang, Yujia Jin, Yun Jiang, Yunyun Wang, Yushi Wang, Yutian Liu, Zach Stubenvoll, Zehao Dou, Zheng Wu, and Zhigang Wang. Openai gpt-5 system card, December 2025. URL http://arxiv.org/abs/2601.03267 .[28] Richard S Sutton, David McAllester, Satinder Singh, and Yishay Mansour. Policy gradient meth-ods for reinforcement learning with function approximation. In Advances in Neural Information Processing Systems , volume 12. MIT Press, 1999. URL https://papers.nips.cc/paper_ files/paper/1999/hash/464d828b85b0bed98e80ade0a5c43b0f-Abstract.html .[29] Luong Trung, Xinbo Zhang, Zhanming Jie, Peng Sun, Xiaoran Jin, and Hang Li. Reft: Reasoning with reinforced fine-tuning. In Lun-Wei Ku, Andre Martins, and Vivek Sriku-mar, editors, Proceedings of the 62nd Annual Meeting of the Association for Computa-tional Linguistics (Volume 1: Long Papers) , pages 7601–7614, Bangkok, Thailand, August 2024. Association for Computational Linguistics. doi: 10.18653/v1/2024.acl-long.410. URL 
+
+https://aclanthology.org/2024.acl-long.410/ .[30] Junzhe Wang, Zhiheng Xi, yajie yang, Hao Luo, Shihan Dou, Tao Gui, and Qi Zhang. Enhancing llm-based search agents via contribution weighted group relative policy optimization, April 2026. URL http://arxiv.org/abs/2604.14267 .[31] Zihan Wang, Kangrui Wang, Qineng Wang, Pingyue Zhang, Linjie Li, Zhengyuan Yang, Xing Jin, Kefan Yu, Minh Nhat Nguyen, Licheng Liu, Eli Gottlieb, Yiping Lu, Kyunghyun Cho, Jiajun Wu, Li Fei-Fei, Lijuan Wang, Yejin Choi, and Manling Li. Ragen: Understanding 14 self-evolution in llm agents via multi-turn reinforcement learning, May 2025. URL http: //arxiv.org/abs/2504.20073 .[32] Ronald J. Williams. Simple statistical gradient-following algorithms for connectionist reinforce-ment learning. Machine Learning , 8(3):229–256, May 1992. ISSN 1573-0565. doi: 10.1007/ BF00992696. URL https://link.springer.com/article/10.1007/BF00992696 .[33] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, Chujie Zheng, Dayiheng Liu, Fan Zhou, Fei Huang, Feng Hu, Hao Ge, Haoran Wei, Huan Lin, Jialong Tang, Jian Yang, Jianhong Tu, Jianwei Zhang, Jianxin Yang, Jiaxi Yang, Jing Zhou, Jingren Zhou, Junyang Lin, Kai Dang, Keqin Bao, Kexin Yang, Le Yu, Lianghao Deng, Mei Li, Mingfeng Xue, Mingze Li, Pei Zhang, Peng Wang, Qin Zhu, Rui Men, Ruize Gao, Shixuan Liu, Shuang Luo, Tianhao Li, Tianyi Tang, Wenbiao Yin, Xingzhang Ren, Xinyu Wang, Xinyu Zhang, Xuancheng Ren, Yang Fan, Yang Su, Yichang Zhang, Yinger Zhang, Yu Wan, Yuqiong Liu, Zekun Wang, Zeyu Cui, Zhenru Zhang, Zhipeng Zhou, and Zihan Qiu. Qwen3 technical report, May 2025. URL 
+
+http://arxiv.org/abs/2505.09388 .[34] Shunyu Yao, Howard Chen, John Yang, and Karthik R. Narasimhan. Webshop: Towards scalable real-world web interaction with grounded language agents. In Advances in Neural Information Processing Systems , October 2022. URL https://openreview.net/forum? id=R9KnuFlvnU .[35] Qiying Yu, Zheng Zhang, Ruofei Zhu, Yufeng Yuan, Xiaochen Zuo, Yu Yue, Weinan Dai, Tiantian Fan, Gaohong Liu, Lingjun Liu, Xin Liu, Haibin Lin, Zhiqi Lin, Bole Ma, Guangming Sheng, Yuxuan Tong, Chi Zhang, Mofan Zhang, Wang Zhang, Hang Zhu, Jinhua Zhu, Jiaze Chen, Jiangjie Chen, Chengyi Wang, Hongli Yu, Yuxuan Song, Xiangpeng Wei, Hao Zhou, Jingjing Liu, Wei-Ying Ma, Ya-Qin Zhang, Lin Yan, Mu Qiao, Yonghui Wu, and Mingxuan Wang. Dapo: An open-source llm reinforcement learning system at scale, May 2025. URL 
+
+http://arxiv.org/abs/2503.14476 .[36] Rui Zheng, Shihan Dou, Songyang Gao, Yuan Hua, Wei Shen, Binghai Wang, Yan Liu, Senjie Jin, Qin Liu, Yuhao Zhou, Limao Xiong, Lu Chen, Zhiheng Xi, Nuo Xu, Wenbin Lai, Minghao Zhu, Cheng Chang, Zhangyue Yin, Rongxiang Weng, Wensen Cheng, Haoran Huang, Tianxiang Sun, Hang Yan, Tao Gui, Qi Zhang, Xipeng Qiu, and Xuanjing Huang. Secrets of rlhf in large language models part i: Ppo, July 2023. URL http://arxiv.org/abs/2307.04964 .[37] Jeffrey Zhou, Tianjian Lu, Swaroop Mishra, Siddhartha Brahma, Sujoy Basu, Yi Luan, Denny Zhou, and Le Hou. Instruction-following evaluation for large language models, November 2023. URL http://arxiv.org/abs/2311.07911 .
+
+## A Extended Proofs and Derivations 
+
+Detailed proofs and derivations are provided in this appendix. 
+
+A.1 Detailed Kalman Filtering Analogy 
+
+We provide here the full state estimation analogy and derivation that motivates the EV-based switching criterion introduced in Section 2.3. 
+
+State estimation analogy. We cast baseline construction as a scalar state estimation problem. The hidden state to be estimated is the true value function x = V π (s). For each sample in a training batch, the observed return decomposes as 
+
+G = V π (s) + ϵ, ϵ ∼ (0 , R ), R ≜ E[Var( G | s)] , (10) where R is the irreducible sampling noise arising from the stochasticity of future actions under π.Two competing estimators of V π (s) are available at each training step: 15 • Model-driven prediction (Critic). ˆxA = ˆVϕ(s) = V π (s) + δ(s), where δ(s) denotes the critic’s estimation error with variance PA ≜ Var( δ). This parallels the state prediction in a Kalman filter: it exploits learned state features but carries modelling noise whose magnitude depends on the critic’s current training quality. • Evidence-driven observation (Batch mean). ˆxB = ¯GB, the empirical mean return over the batch, which approximates E[V π (s)] . Its error relative to any specific state s has variance PB ≜ Var s(V π (s)) , paralleling the observation noise in a Kalman filter: it reflects how much true state values vary within the batch, and is large when the batch covers heterogeneous states. The sampling noise R affects both estimators symmetrically and controls the sensitivity of the EV diagnostic without altering its sign .
+
+Optimal fusion and the Kalman gain. The Kalman filter combines the two estimators via a linear combination b(s) = (1 − K) ˆ xA + K ˆxB that minimizes the mean squared error E[( b(s) − V π (s)) 2].The optimal Kalman gain is: 
+
+K∗ = PA
+
+PA + PB
+
+. (11) When K∗ < 12 (i.e., PA < P B ), the critic is more reliable than the batch mean and should receive higher weight; when K∗ ≥ 12 (i.e., PA ≥ PB ), the critic’s estimation noise dominates the state signal it provides, and the baseline should retreat toward the batch mean. 
+
+Connection to explained variance. Substituting the variance decompositions from Eq. (10) into the definition of EV yields: 
+
+ev = PB − PA
+
+PB + R . (12) Since the denominator is always positive, the sign of EV is determined solely by PB − PA:• ev > 0 ⇐⇒ PA < P B ⇐⇒ K∗ < 12 : the critic outperforms the batch mean, corresponding to the regime where PPO’s state-dependent baseline is advantageous; • ev ≤ 0 ⇐⇒ PA ≥ PB ⇐⇒ K∗ ≥ 12 : the critic’s noise exceeds its signal, corresponding to the regime where GRPO’s constant baseline is preferable. 
+
+A.2 GAE Derivation under RLVR Conditions 
+
+Proximal Policy Optimization [ 23 ] estimates advantages via Generalized Advantage Estimation (GAE) [24]: 
+
+ˆAGAE  
+
+> t
+
+= 
+
+> T−1−t
+
+X
+
+> l=0
+
+(γλ )lδt+l, δt = rt + γ ˆVϕ(st+1 ) − ˆVϕ(st), (13) where ˆVϕ is a learned critic and λ ∈ [0 , 1] controls the bias–variance trade-off. The policy is updated by maximizing a clipped surrogate objective that constrains the ratio πθ (at|st)/π θold (at|st).Under RLVR conditions ( γ = λ = 1 , terminal-only reward rT = R(x, y ), rt = 0 for t < T ), GAE reduces to: 
+
+ˆAPPO  
+
+> t
+
+= 
+
+> T−1
+
+X
+
+> l=t
+
+ rl + ˆVϕ(sl+1 ) − ˆVϕ(sl) = G − ˆVϕ(st), (14) where the telescoping sum cancels all intermediate critic terms (with the terminal state value defined as 0), leaving the advantage as the deviation of the observed return from the critic’s state-dependent prediction. 
+
+## B Tasks 
+
+We evaluate on four tasks spanning multi-turn grid-world control, interactive web agents, and single-turn mathematical reasoning. All training code is based on the RAGEN2 framework [ 31 ], which wraps 
+
+verl for PPO-style LLM post-training and provides multi-turn agent environments. 16 Sokoban. We use the CoordSokoban variant of the RAGEN2 Sokoban environment [ 13 ]. Each episode instantiates a 6 × 6 grid with one box and one target, procedurally generated from an envi-ronment seed. The observation at each step is a symbol grid together with zero-indexed coordinates of the player, the box, and the target. The action space is {UP, DOWN , LEFT , RIGHT }; the policy is prompted to emit an action sequence of length up to two per turn, separated by “ || ” and enclosed in 
+
+<answer>...</answer> tags. A trajectory consists of up to 10 executed actions across up to 5 turns. The reward is terminal and binary: +1 if all boxes end on targets, 0 otherwise, with an additional format penalty of −0.1 for malformed outputs. 
+
+FrozenLake. We use the CoordFrozenLake variant wrapping the Gymnasium FrozenLake-v1 
+
+environment [ 5]. The map is a 4 × 4 grid with randomly placed holes, the start tile, and the goal tile; the map layout is resampled per environment seed. Transitions are stochastic ( is_slippery=True ): the commanded action succeeds with probability 1/3, and with probability 2/3 the agent slips perpendicular to the intended direction. The observation is again a symbol grid plus coordinates of start, goal, player, and all holes. The action space is {LEFT , DOWN , RIGHT , UP}, with up to 10 
+
+actions per trajectory across up to 5 turns. The reward is terminal and binary: +1 if the player reaches the goal, 0 if the player falls into a hole or exhausts the action budget; a format penalty of −0.1 is applied for malformed outputs. 
+
+WebShop. WebShop [ 34 ] is an interactive web-navigation task in which the agent must locate and purchase a product matching a natural-language instruction. We use the webshop-minimal fork with the small product catalogue shipped with RAGEN2. At each turn the agent observes the current page (search box, product list, or product detail) together with the list of clickable elements, and produces exactly one action drawn from search[ keywords ] or click[ element ], again wrapped in <answer>...</answer> . A trajectory consists of up to 9 actions across up to 9 turns. The reward is the built-in WebShop matching score in [0 , 1] , delivered only at the terminal click[buy now] .
+
+MATH. We use DAPO-Math-17k [ 35 ] (17,267 competition-level problems) for both training and validation: the full training set is used for RL updates, and a fixed subset of 32 problems , held out from training, is used for evaluation. Each problem is a single-turn reasoning task ( max_turn=1 ): the policy is prompted with the problem statement and must emit a <think>...</think> block followed by the final numerical answer inside <answer>...</answer> . The reward is terminal and binary: +1 if the final answer matches the ground truth (after normalization), 0 otherwise. 
+
+## C Baselines and Hyperparameters 
+
+We compare EVPO against a Base-LLM reference and four RL baselines that span both critic-based and critic-free families. • Base LLM. Instruction-tuned Qwen2.5 without any RL post-training, prompted zero-shot with the same task template as the RL runs. • PPO [ 23 ]. Standard clipped-surrogate PPO with GAE advantages. Under our RLVR setting (γ=λ=1 , terminal-only reward) this reduces to the PPO advantage of Eq. (1) with a learned, state-dependent critic. • StarPO-S [ 31 ]. A multi-turn PPO variant introduced by RAGEN that filters the lowest-variance rollouts before each update (rollout_filter_ratio = 0.25 ,
+
+rollout_filter_metric =reward_variance) to stabilize long-horizon agentic training. • GRPO [25 ]. Critic-free; the baseline is the response-level batch mean, normalized by the batch standard deviation. • DAPO [ 35 ]. A modern critic-free variant built on GRPO with (i) dynamic sam-pling that discards groups whose rewards are all identical and resamples up to 
+
+max_num_gen_batches =5 times until enough informative groups are collected; (ii) 
+
+clip-higher asymmetry (εlow , ε high ) = (0 .2, 0.28) ; (iii) token-level loss aggregation (loss_agg_mode =token-mean); and (iv) no std normalization of advantages and no in-reward KL term. All five methods (PPO, StarPO-S, GRPO, DAPO, EVPO) share the same rollout stack, tokenizer, and environment code, and differ only in the advantage estimator and the listed hyperparameters. EVPO 17 itself uses PPO-style training (critic and actor with clipped surrogate) and only changes the baseline subtracted from the return, as prescribed by the EV-gating rule (Eq. (8)). Table 2 lists the hyperparameters that differ across methods or tasks. Learning rates are tuned per task on the Base-LLM vs. PPO gap on a single seed and then kept identical across methods on the same task for fair comparison, except where a differing value is itself a defining feature of the algorithm (see the caption of Table 2). Table 2: Per-task / per-method hyperparameter overrides. εlo /ε hi are the PPO-style clip thresholds. Where DAPO and StarPO-S show different values from the other methods on the same task (e.g., DAPO’s clip-higher asymmetry, or the StarPO-S Sokoban configuration that preserves the original RAGEN recipe), those settings are defining features of the respective algorithms rather than tuning choices, and we therefore do not force them to match the other methods.                                                                                                           
+
+> Task Method lr actor lr critic εlo /ε hi KL coef. Steps Sokoban ( 6×6)PPO 4e −61e −50.20 /0.28 0500
+> StarPO-S 1e −61e −50.20 /0.28 0400
+> GRPO 4e −6–0.20 /0.28 0400
+> DAPO 4e −6–0.20 /0.28 0400
+> EVPO 4e −61e −50.20 /0.28 0500
+> FrozenLake ( 4×4)PPO 1e −61e −50.20 /0.28 0200
+> StarPO-S 1e −61e −50.20 /0.28 0200
+> GRPO 1e −6–0.20 /0.28 0200
+> DAPO 1e −6–0.20 /0.28 0200
+> EVPO 1e −61e −50.20 /0.28 0200
+> WebShop PPO 5e −75e −60.20 /0.20 10 −2100
+> StarPO-S 1e −61e −50.20 /0.28 0100
+> GRPO 5e −7–0.20 /0.20 10 −2100
+> DAPO 5e −7–0.20 /0.28 10 −2100
+> EVPO 5e −75e −60.20 /0.20 10 −2100
+> MATH PPO 2e −61e −50.20 /0.20 0200
+> StarPO-S 2e −61e −50.20 /0.28 0200
+> GRPO 2e −6–0.20 /0.20 0200
+> DAPO 2e −6–0.20 /0.28 0200
+> EVPO 2e −61e −50.20 /0.20 0200
+
+## D Details of the Preliminary Experiments 
+
+This section gives the exact protocols for the two preliminary studies that motivate EVPO in Section 2. 
+
+D.1 PPO on Sokoban: EV, Gradient Norm, Success Rate (Figure 2) 
+
+We train a PPO agent on Sokoban using the same setting as the Sokoban PPO main experiment (Sokoban PPO row of Table 2). At every step we record, over the same batch of M = 16 × 8 = 128 
+
+rollouts used for the update: (i) the batch-level EV bev B defined in Eq. (6) ; (ii) the pre-clipping gradient norm of the actor; (iii) the training success rate (fraction of rollouts with terminal reward 
+
+= 1 ). Shaded regions in Figure 2(a–c) highlight the first ≈ 150 steps where bev B remains near or below 0.
+
+Noise-injection experiment (Figure 2d). We first train a PPO agent on FrozenLake to convergence under the same hyperparameters as the FrozenLake row of Table 2 for 200 steps, then continue training with i.i.d. Gaussian noise added to every critic output: ˆVϕ(s) 7 → ˆVϕ(s) + ξ with ξ ∼ N (0 , σ 2 
+
+> δ
+
+). We sweep σδ ∈ { 0.3, 1, 3, 10 }, corresponding to noise magnitudes from well below to well above the mean absolute state value ( ≈ 0.5). Each noise level is run for an additional 150 training steps, starting from the same converged checkpoint. We report the smoothed validation success rate; Fig. 2d shows monotone degradation with complete collapse at σδ =10 , precisely the regime where bev B is driven far below zero. 18 D.2 Cold-start and Critic Warmup (Figure 3) 
+
+We run two interventions on top of the Sokoban and FrozenLake PPO setups. 
+
+Cold-start. During the first Kcold training steps we replace every critic output in the advantage computation by the batch mean, ˆAcold-start  
+
+> t
+
+= G − ¯GB; after step Kcold we resume standard PPO with the original critic. We set Kcold = 50 on Sokoban and Kcold = 25 on FrozenLake, chosen to cover the EV-negative phase of Fig. 2a. The critic itself is always trained with its usual MSE loss so that by step Kcold it has had time to warm up. 
+
+Critic warmup. Before the actor receives any gradient, we train the critic alone for Kwarm = 200 
+
+steps using the same rollouts as full PPO but with ∇θ Lactor set to zero. After step Kwarm we switch on actor updates and continue with standard PPO. In both interventions all other hyperparameters match the PPO rows of Table 2. Figure 3 compares each intervention against the unmodified PPO baseline under the same seed and hardware; the consistent improvements confirm that it is specifically the suppression of critic-driven variance (rather than any secondary effect of the interventions) that benefits the policy. 19
