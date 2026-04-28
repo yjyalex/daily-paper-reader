@@ -1,0 +1,463 @@
+Title: Improving Vision-language Models with Perception-centric Process Reward Models
+
+URL Source: https://arxiv.org/pdf/2604.24583v1
+
+Published Time: Tue, 28 Apr 2026 02:07:33 GMT
+
+Number of Pages: 11
+
+Markdown Content:
+# Improving Vision-language Models with Perception-centric Process Reward Models 
+
+## Yingqian Min 1,2 *
+
+## , Kun Zhou 3*
+
+## , Yifan Li 1,2 *
+
+## , Yuhuan Wu 4, Han Peng 1
+
+## Yifan Du 1, Wayne Xin Zhao 1†
+
+## , Min Yang 2, Ji-Rong Wen 1
+
+> 1
+
+## Gaoling School of Artificial Intelligence, Renmin University of China. 
+
+> 2
+
+## Bytedance. 3University of California, San Diego. 
+
+> 4
+
+## The Hong Kong University of Science and Technology. 
+
+## yingqianm@ruc.edu.cn, batmanfly@gmail.com 
+
+## Abstract 
+
+Recent advancements in reinforcement learning with verifi-able rewards (RLVR) have significantly improved the com-plex reasoning ability of vision-language models (VLMs). However, its outcome-level supervision is too coarse to di-agnose and correct errors within the reasoning chain. To this end, we propose Perceval, a process reward model (PRM) that enables token-level error grounding, which can extract image-related claims from the response and com-pare them one by one with the visual evidence in the im-age, ultimately returning claims that contain perceptual er-rors. Perceval is trained with perception-intensive super-vised training data. We then integrate Perceval into the RL training process to train the policy models. Specifically, compared to traditional GRPO, which applies sequence-level advantages, we apply token-level advantages by tar-geting penalties on hallucinated spans identified by Perce-val, thus enabling fine-grained supervision signals. In addi-tion to augmenting the training process, Perceval can also assist VLMs during the inference stage. Using Perceval, we can truncate the erroneous portions of the model’s re-sponse, and then either have the model regenerate the re-sponse directly or induce the model to reflect on its pre-vious output. This process can be repeated multiple times to achieve test-time scaling. Experiments show significant improvements on benchmarks from various domains across multiple reasoning VLMs trained with RL, highlighting the promise of perception-centric supervision as a general-purpose strategy. For test-time scaling, it also demonstrates consistent performance gains over other strategies, such as major voting. Our code and data will be publicly released at https://github.com/RUCAIBox/Perceval .
+
+> *Equal contributions.
+> †Corresponding author.
+
+## 1. Introduction 
+
+Vision–language models (VLMs) [3, 7, 12] deliver strong results across tasks such as multimodal mathematics [26, 38], chart analysis [24, 27], and general VQA [50]. How-ever, they still falter on complex visual reasoning tasks, where multi-step chains of thought can be brittle and pro-duce perceptual or logical mistakes [6, 11, 42]. To im-prove the performance, reinforcement learning with veri-fiable rewards (RLVR) [13, 33, 35] has become a widely used post-training strategy. Built on policy-gradient meth-ods like PPO and GRPO, RLVR assigns outcome-level re-wards to explicit reasoning traces and optimizes the policy toward more consistent, robust multi-step visual reasoning. Despite these advances, outcome-level supervision in RLVR is poorly matched to the inherently multi-step na-ture of visual reasoning. In fact, sequence-level rewards are too coarse to identify which perception or reasoning steps went wrong, creating a hard credit-assignment prob-lem. In practice, VLMs often insert hallucinated objects or spatial relations and drift from the image context mid-chain [1, 19, 20, 22, 53], but only the final reward offers little guidance about whether the failure arose from visual grounding or subsequent logic. Thus, the sparse-reward regime ultimately bottlenecks RLVR’s gains on VLMs [48]. To overcome the sparse-reward limitation, we introduce a process reward model (PRM) that supervises intermediate steps rather than only the final outcome [39]. Prior work shows that PRMs can effectively guide both training and inference by rewarding stepwise, chain-of-thought correct-ness [21, 55]. However, building a high-quality PRM is difficult because step-level annotations are expensive and some steps are only verifiable after later derivations, com-plicating labeling and consistency [17, 54]. Fortunately, in visual reasoning many intermediate steps are percep-tual claims ( e.g ., objects, attributes, or spatial relations) that can be grounded directly in the image, enabling au-
+
+> arXiv:2604.24583v1 [cs.CV] 27 Apr 2026
+
+tomatic checks for “image–text misalignment” (hallucina-tion). Therefore, it is promising to develop a perception-centric PRM that detects and explains such misalignments to provide fine-grained feedback, alleviating sparse-reward issue and improving learning of the reasoning ability. To operationalize this, we first define a perception-level error-finding schema for a perception-centric PRM. We curate training queries from perception-intensive set-tings—such as goal-directed visual search and referring-expression grounding—and use a strong LLM to produce structured annotations that mark image–text misalignments (hallucinatory spans and their visual counter-evidence). Af-ter supervised fine-tuning on this corpus, the PRM can re-liably flag hallucinations that arise within multi-step ra-tionales and return well-structured feedback. Building on this, we integrate the PRM into RLVR by decomposing the sequence-level advantage and assigning fine-grained, token-level penalties to spans identified as hallucinatory, yielding more precise credit assignment than GRPO alone. Finally, based on PRM’s structured outputs, we employ a simple Truncation–Regeneration loop at inference. In this way, suspect spans are pruned and regenerated, trading a bit more compute for stronger factual grounding. Experimental results demonstrate that, compared to di-rect GRPO, our training method significantly enhances the model’s perceptual capabilities, boosting performance on perception-centric tasks. Furthermore, we observe a sur-prising and significant generalization effect: even without applying PRM supervision during the training for complex reasoning tasks, this foundational improvement in percep-tion nonetheless generalizes, leading to a comprehensive enhancement of the model’s overall reasoning abilities. Our main contributions are as follows: • We propose a novel, perception-centric process reward model (PRM) that can explicitly identify perception er-rors in the reasoning process. • We introduce a fine-grained, token-level advantage re-allocation framework that integrates our PRM with GRPO, to solve the sparse reward issue. • We design a test-time iterative refinement strategy that leverages our PRM to actively detect and correct percep-tual errors from the policy model. 
+
+## 2. Preliminary 
+
+We introduce foundational concepts and notations used throughout this paper: the architecture of vision-language models (VLMs), the reinforcement-learning framework with verifiable rewards (RLVR) which our method builds on, and our problem statement for designing a perception-centric process reward model. 
+
+Vision-Language Models. A vision-language model (VLM) accepts multimodal input, typically an image v and a text query q, and generates the text output o, denoted as 
+
+πθ (o|q, v ). For reasoning tasks, the text output is generally a chain of language reasoning steps. Typical architecture combines a visual encoder ( e.g . ViT) to embed I and a large language model (LLM) to decode the output. Typically, the two modalities are linked via a connection layer. 
+
+Reinforcement Learning with Verifiable Rewards. RL with verifiable rewards (RLVR) has become the key tech-nique to improve the performance of VLMs in reasoning tasks [45]. It aims to train the VLM to not only generate plausible outputs but also satisfy measurable criteria ( e.g ., correctness, spatial consistency). One algorithm is Group Relative Policy Optimization (GRPO) [33]: given the input prompt q and image v, a reference policy πθ (o|q, v ) samples multiple responses {oi}. Each response will be assigned with a scalar reward Ri from the verified function or reward model. The advantage of the i-th response is calculated by normalizing its reward relative to the group: 
+
+ˆAi = Ri − mean ({Rj }Gj=1 )
+
+std ({Rj }Gj=1 ) (1) Note that this advantage ˆAi is a sequence-level signal, which is constant for all tokens within the i-th response. Hence, GRPO optimizes a clipped surrogate objective to update the policy πθ based on the advantage: 
+
+J(θ) = E(q, {oi})∼πθ 
+
+> "
+
+1
+
+G
+
+> G
+
+X
+
+> i=1
+> |oi|
+
+X
+
+> t=1
+
+min 
+
+ri,t (θ) ˆAi,
+
+clip (ri,t (θ), 1 − ϵ, 1 + ϵ) ˆA′
+
+> i,t
+
+
+
+− βD KL (πθ || πref )
+
+#
+
+(2) where ϵ is the clipping hyperparameter and ri,t (θ) is the importance sampling ratio for token t.
+
+Problem Statement. A key limitation of reinforcement learning with verifiable rewards (RLVR) is reward sparsity :conventional approaches provide a single scalar reward only at the end of the reasoning chain, so each token or step is credited equally regardless of its individual correctness or contribution. This coarse, sequence-level feedback makes it difficult to correct localized errors in perception or rea-soning and undermines the model’s ability to generalize ro-bustly. To overcome this, we propose training a perception-centric process reward model (PRM) that evaluates interme-diate perceptual outputs and produces step-wise feedback. Concretly, the PRM checks whether the model’s percep-tion content in response ( e.g ., a grounding, visual feature, or intermediate state) is correct relative to the input v, q ,and generate structured outputs that can be used to provide fine-grained supervision. During inference, the PRM can Policy 
+
+Model 𝑂 ! 𝑂 " 𝑂 #
+
+# ……
+
+Sequence -level Advantage 
+
+# Perceval 
+
+𝑂 !: <think> \nThe object in question is 
+
+a desk with various items on it .. . The 
+
+main color of the desk appears to be 
+
+dark brown or black , which contrasts 
+
+with the lighter background indicating 
+
+a cluttered workspace. \n</think> 
+
+<answer> \nThe color of the desk is 
+
+dark brown or black. \n<answer> 
+
+𝑉 $ 𝑉 ! 𝑉 "
+
+𝑈 !
+
+𝑈 "
+
+𝑈 #
+
+𝑈 $
+
+𝑉 !: <think> \n- Claims identified in 
+
+response: … 2. The main color of the desk 
+
+appears to be dark brown or black. 
+
+- Checking each claim against visuals: … 2. It 
+
+is not dark brown or black. 
+
+- Issues identified: .\n</think> 
+
+<answer> \n[“The main color of the desk appears 
+
+to be dark brown or black” , …]\n</answer> 
+
+𝑂 $
+
+# … …
+
+# …
+
+# …
+
+# …
+
+# …
+
+# … …
+
+𝐴 $
+
+𝐴 !
+
+𝐴 %
+
+𝐴 !
+
+# …
+
+# …
+
+# …
+
+# …
+
+# …
+
+Token -Level Advantage 
+
+What is the color of 
+
+the computer desk ?
+
+𝑉 #
+
+# … …
+
+# … …
+
+# …
+
+# …
+
+# …
+
+# … …
+
+# …
+
+# …
+
+# …
+
+# … …
+
+𝑈 $
+
+𝑈 "
+
+𝑈 #
+
+𝑈 & =
+
+𝐴 $
+
+"
+
+𝐴 !
+
+"
+
+𝐴 #
+
+"
+
+𝐴 "
+
+%
+
+# …
+
+Token -level Advantage Rescale 
+
+# …Figure 1. An overview of our Process-Supervised GRPO framework. For each generated response, we use the Perceval to create a token-level penalty mask. This mask is used to calculate a fine-grained token-level advantage, which is then incorporated into the GRPO objective to penalize hallucinatory tokens and improve the model’s perceptual grounding. 
+
+be used to guide the selection of intermediate steps. Dur-ing training, by designing proper learning objective with the PRM, we encourage correct intermediate perceptual rea-soning, enabling more fine-grained supervision for effective learning. 
+
+## 3. Methodology 
+
+In this section, we devise our perception-centric process re-ward model for providing fine-grained, process-level super-vision to guide VLMs. We first introduce the design and how to train the PRM, and then present how to integrate it with RLVR during training and how to perform test-time scaling with PRM guidance. 
+
+3.1. Perception-Centric Process Reward Model 
+
+To overcome the sparse supervision issue, we propose PERCEVAL (Perc eption-centric process reward eval uation model), which serves as an external, fine-grained, and inter-pretable critic for guiding VLM policy. 
+
+Error-finding Schema Design. Given a tuple of image, text query, and model’s response ⟨v, q, o ⟩, P ERCEVAL gen-erates a structured verification V to assess the factual con-sistency with respect to v (conditioned on q). To improve reliability, P ERCEVAL follows the well-known think-then-answer paradigm [13]: it first analyzes each claim and out-puts the thought process within <think>...</think> ,where each statement in o is evaluated for consistency with the visual evidence in v. Based on these analy-ses, PERCEVAL provides the final decision wrapped in 
+
+<answer>...</answer> . If no perceptual errors are found, the final answer is simply "The response is correct." ; otherwise, the answer is formatted as a Python list containing the exact strings from o that are iden-tified as errors. 
+
+Process Reward Model Training. We train P ERCEVAL 
+
+using a dataset constructed via a four-stage pipeline: 
+
+• Query selection : to emphasize perceptual grounding, we primarily source the images and queries from visual search datasets [42, 56] that require locating specific ob-jects in large images, and we include a small proportion from other domains ( e.g ., mathematical reasoning and gen-eral understanding [10]) to preserve breadth; 
+
+• Rollout generation : based on the images and queries, we use an open-source VLM ( e.g ., Qwen2.5-VL-7B) to produce responses, whose imperfect perceptual alignment yields realistic hallucinations as negative examples; 
+
+• Automated annotation and verification : for each re-sponse, we adopt a strong models ( e.g ., Gemini-2.5-Pro) to perform hallucination-focused, step-by-step checks. The generated annotations follow our designed format. 
+
+• Supervised fine-tuning : we fine-tune the P ERCEVAL 
+
+backbone with a standard SFT objective on the aggregated data to emulate detailed, perception-centric verification and produce the prescribed structured output. 
+
+3.2. RLVR with Process-level Supervision 
+
+Building on P ERCEVAL , we revise the GRPO objective to support process-level supervision by replacing the coarse sequence-level advantage ˆAi (Eq. 1) with a token-level ad-vantage ˆA′
+
+> i,t
+
+. The key change is to let advantage com-putation accept per-token signals so that perceptual errors within a response are directly penalized during learning. To achieve it, for each response, we use P ERCEVAL to iden-tify the token spans that realize perception-induced halluci-nations, and then re-assign advantages for those tokens to provide a reduced (or more negative) learning signal. Given a response oi of length Li and the P ERCEVAL ver-ification, we parse the <answer> content and select the identified problematic substrings. We locate each substring in oi via exact string match to obtain its token span [jk, l k],and define Ui = SKk=1 [jk, l k]. From Ui we construct a bi-nary mask Mi = [ mi, 1, . . . , m i,L i ] with mi,t = 1 if t ∈ Ui
+
+and 0 otherwise. Then, we modulate the sequence-level sig-nal with this mask to form the token-level advantage: 
+
+ˆA′ 
+
+> i,t
+
+:= ˆAi − α · mi,t · | ˆAi|, (3) where α ∈ [0 , 1] controls penalty strength. Thus, cor-rect tokens ( mi,t = 0 ) keep ˆA′ 
+
+> i,t
+
+= ˆAi, while hallucina-tion tokens ( mi,t = 1 ) are downweighted: when ˆAi > 0,
+
+ˆA′ 
+
+> i,t
+
+= ˆAi(1 − α); when ˆAi < 0, ˆA′ 
+
+> i,t
+
+= ˆAi(1 + α), mak-ing the penalty stronger. Finally, we substitute ˆA′ 
+
+> i,t
+
+into the GRPO objective in Eq. 2 to add the process supervi-sion. Such a way injects direct, token-level corrective pres-sure into GRPO, which preserve sequence-level preferences while explicitly suppressing ungrounded content. 
+
+3.3. Test-Time Scaling with PRM Guidance 
+
+Beyond training-time use, PERCEVAL (our perception-centric PRM) enables test-time scaling by supplying tar-geted error-correction during inference. We introduce two pragmatic refinement loops: 
+
+Truncate–then–Regenerate. When PERCEVAL detects an erroneous claim, it returns the offending span in the model’s rationale. We truncate the hypothesis before the first token of that span, preserving only the verified prefix as context. The policy model then continues to regenerate 
+
+the answer following this cleaned prefix. As the original image and question are given, the VLM just needs to resam-ple the detected hallucinated part, without rewriting verified content. This truncate–continue cycle repeats until no new errors are flagged or a maximum of k iterations is reached. The iteration cap k bounds latency while typically yielding large accuracy gains with only a few refinement steps. 
+
+Truncate–Thinking–then–Regenerate. To further en-courage self-correction, we augment the above method with a lightweight guidance for thinking. After truncating at the error, we append a brief thinking prompt in P ERCE -
+
+> VAL
+
+’s output, e.g ., “ Wait, I need to reconsider this reasoning more carefully: the mug is not on the brick in the image. ”, which guides the model to think and then regenerate from the augmented context. The added thinking process enables self-reflection on the failure mode (object/at-tribute/spatial mismatch), improving the likelihood that the continuation repairs the specific misalignment. As with Truncate–then–Regenerate, we iterate up to k times or stop early when no further errors are found, trading modest extra compute for stronger factual grounding. 
+
+## 4. Experiment 
+
+4.1. Experimental Setup 
+
+Benchmarks. We select multiple visual reasoning bench-marks, covering visual search, perception-intensive reason-ing, mathematical and chart-based reasoning. 1. V* (V-Star) [42]: introduces an LLM-guided visual search mechanism and a dedicated benchmark, to as-sess models’ ability to localize and reason about small, target objects within information-dense images. It con-tains 191 high-resolution images with two subtasks, i.e .attribute recognition and spatial-relation reasoning that require precise grounding before reasoning. 2. MME-RealWorld [50]: targets practical applications across five domains (OCR-in-the-wild, remote sensing, diagrams/tables, monitoring, autonomous driving). We use its subset MME-RealWorld-Lite for testing. 3. BLINK [11]: reframes 14 classic computer-vision tasks (e.g . relative depth, visual correspondence, image foren-sics, multi-view reasoning) into 3,807 multiple-choice items to probe foundational perceptual skills that resist purely linguistic mediation. 4. MMStar [6]: compiles 1,500 carefully selected, human-curated samples to probe six core capability areas along 18 fine-grained axes, focusing on cases where vision is indispensable (rather than solvable by text priors). 5. RealWorldQA [43]: contains 700 images captured from vehicles and other real-world settings, each paired with a question and an easily verifiable answer. 6. MathVista [26]: aggregates 6,141 examples from 28 ex-isting multimodal sources and three new sets (IQTest, FunctionQA, PaperQA) to test numeracy, geometry/-diagram understanding, tables/plots, and compositional visual-math reasoning. 7. MATH-Vision [38]: offers 3,040 problems sourced from real competitions, spanning 16 mathematical dis-ciplines and five difficulty levels, each embedded in a visual context (figures, diagrams, plots). 8. ChartQA [27]: contains 9.6K human-written and 23.1K generated questions over diverse chart types, requiring both visual parsing and table/logic operations. 
+
+Baselines. We compare our methods with multiple reasoning-oriented VLMs. 1. VLM-R1 [34]: extends R1-style RLVR to VLMs by leveraging tasks with deterministic visual ground truth. 2. LMM-R1 [30]:leverages text-only data with rule-based RL and multimodal generalization training to transfer gains to vision reasoning task. 3. R1-VL [47]: proposes StepGRPO, replacing sequence-level rewards with dense step-wise rule-based rewards to stabilize visual reasoning ability learning. 4. Perception-R1 [45]: targets perception-heavy tasks and utilizes GRPO with perception-oriented rewards. 5. Jigsaw-R1 [41]: is first trained on jigsaw puzzles data to improve generation, and then visual reasoning datasets. 6. DeepEyes [56]: is end-to-end trained with RL to think with images and interleaves the visual grounding step inside the whole reasoning process. 7. PixelReasoner [37]: adopts pixel-space reasoning ( e.g .zoom and crop) and a two-phase training: fine-tuning on synthesized data, then curiosity-driven RL. 8. Vision-R1 [14]: cold-starts via a synthetic dataset, then applies GRPO with a hard formatting reward and a pro-gressive thinking suppression training strategy. 9. VL-Rethinker [36]: uses GRPO with selective sample replay to mitigate vanishing advantages and adds forced rethinking triggers to elicit reflection. 10. VLAA-Thinker [5]: is trained using mixed verifiable rewards on multimodal CoT dataset with GRPO. 11. OpenVLThinker [8]: iterate fine-tuning on distilled data and RL for improvement until convergence. 12. MM-Eureka [28]: scales up the training data for rule-based RL in multimodal settings. 
+
+Implementation Details. We select Qwen2.5-VL as the backbone for both reward and policy models. We first train two versions of P ERCEVAL of 3B and 7B sizes, follow-ing the procedures outlined in section 3.1, and then corre-spondingly train two policy models of the same sizes us-ing the proposed method. As for the training data, the su-pervised fine-tuning data are collected from DeepEyes [56] and SophiaVL-R1 [10], each of which is rolled out 3 times using the backbone models. The RL training data is also derived from [56], with the primary objective of enhancing the model’s perception capabilities, while also containing a subset of general-purpose reasoning data. Consequently, during the RL training phase, we implement a conditional strategy: P ERCEVAL is used only on perception-related data to perform fine-grained advantage rescaling. For all other training data ( e.g ., mathematical reasoning), no additional intervention is applied, and we revert to using direct GRPO. This experimental design allows us to investigate whether fine-grained supervision focused on perception tasks can generalize and yield performance gains in other domains. 
+
+Evaluation Setup. To ensure fair and reproducible eval-uation, we establish a unified evaluation pipeline. We em-ploy greedy decoding for all models and utilize the same prompt template to collect responses. We then extract the fi-nal answer following the official procedures of each bench-mark. Finally, the accuracy is determined through a two-stage judging process: we first apply an exact match (EM) judge for each extracted answer against the ground truth. For any answer that does not match, a robust judge model (i.e . GPT-4o-mini) is utilized for a final verification to ac-count for minor formatting variations. Additionally, we re-port the relaxed accuracy for ChartQA [27], aligned with the official evaluation of the benchmark, which uses the methodology of PlotQA [29]. 
+
+4.2. Main Results 
+
+RL Training with PRM. As shown in Table 1, our method significantly and consistently outperforms the GRPO baseline across both 3B and 7B model scales. Specifically, for the 3B model, our approach achieves av-erage improvements of approximately 4% in the Visual Search category, 3% in Math and Chart reasoning, and 1% in Perception-intensive Reasoning relative to the GRPO baseline. This result strongly demonstrates that our method provides richer and more fine-grained supervision. Adeeper analysis of the Visual Search sub-tasks reveals that the most substantial gains originate from V ∗ 
+
+> pos
+
+(Positional Perception), particularly at the 3B scale (e.g., improving from 86.95 to 90.43). This strongly suggests that our fine-grained process supervision has successfully guided the model to enhance its precise spatial localization capabili-ties. Concurrently, the improvements on benchmarks like BLINK and MMStar also indicate that this enhanced per-ception leads to higher fidelity and fewer hallucinations. A crucial finding is the model’s strong generalization ability. As discussed in Section 4.1, although our PRM training and RL intervention were predominantly focused on Vi-sual Search tasks, the model still exhibits consistent per-Table 1. Main results on multimodal benchmarks regarding visual search, perception-intensive reasoning and math&chart tasks. MRW and RWQA denote MME-RealWorld and RealWorldQA, respectively. Best and second best results in each group are highlighted in bold and underlined, respectively. ∗ indicates models capable of calling tools.                                                                                                                                                                                                                               
+
+> Models #Param Visual Search Perception-intensive Reasoning Math & Chart V∗
+> attr V∗
+> pos V∗
+> all BLINK MMStar MRW RWQA MathVision MathVista ChartQA
+> VLM-R1 [34] 3B 75.65 67.11 72.25 46.25 56.7 42.3 61.5 21.71 65.1 83.48 LMM-R1 [31] 3B 46.09 53.95 49.21 46.60 56.7 35.8 58.7 24.47 63.5 85.04 R1-VL [47] 2B 59.13 57.89 58.64 42.81 38.9 32.4 49.2 10.20 47.0 68.08 Perception-R1 [45] 3B 57.39 48.68 53.92 46.44 54.8 37.5 55.8 22.03 58.1 81.60 Jigsaw-R1 [41] 3B 72.17 65.79 69.63 45.01 54.4 42.2 57.9 19.40 61.0 84.60 Qwen2.5-VL [4] 3B 57.39 65.79 60.73 46.94 52.1 41.7 63.4 21.40 61.6 83.12 + GRPO 3B 86.95 69.73 80.10 49.13 55.3 46.8 62.1 23.36 65.1 83.32 + Ours 3B 90.43 72.37 83.25 48.75 55.8 47.6 64.9 26.32 65.6 86.48
+> DeepEyes [56] ∗7B 91.30 81.58 87.43 50.98 62.7 46.5 67.0 12.50 69.9 75.84 Pixel-Reasoner [31] ∗7B --84 .30 51.10 63.1 43.5 64.0 22.03 69.4 77.36 Vision-R1 [14] 7B ---49.72 55.4 49.6 64.1 36.18 71.3 83.36 VL-Rethinker [36] 7B 54.78 59.21 56.54 49.91 64.0 38.8 64.0 31.91 72.6 85.60 VLAA-Thinker [5] 7B 43.47 52.63 47.12 49.38 64.0 48.0 62.0 27.96 70.3 85.36 R1-VL [47] 7B 47.83 67.11 55.50 47.19 55.5 40.5 59.5 22.37 64.1 82.80 OpenVLThinker [8] 7B 76.52 80.26 78.01 51.36 62.8 59.1 66.5 32.57 71.1 89.00
+> MM-Eureka [28] 7B 42.61 56.58 48.17 50.23 63.4 46.4 62.3 32.23 72.4 82.36 Qwen2.5-VL [4] 7B 60.87 64.47 62.30 48.56 62.3 43.0 60.6 26.97 70.2 84.28 + GRPO 7B 85.22 82.89 84.29 53.55 62.0 49.5 66.4 27.96 71.7 85.16 + Ours 7B 86.09 86.84 86.39 54.49 63.8 50.0 67.4 30.92 72.0 84.44
+
+Table 2. Comparison of different test-time scaling strategies, where Truncate and Truncate-Thinking denote our proposed Trun-cate–then–Regenerate and Truncate–Thinking–then–Regenerate methods, respectively.                                         
+
+> Sample Method V∗
+> BLINK Attr Pos All
+> k=4 Major voting 91.30 76.32 85.34 48.24 Truncate 93.04 77.63 87.96 49.13
+> Truncate-Thinking 94.78 76.32 86.91 48.85 k=8 Major voting 92.17 76.32 85.86 48.41 Truncate 93.91 78.95 87.96 49.25
+> Truncate-Thinking 94.78 77.63 87.96 49.25
+> k=16 Major voting 92.17 76.32 85.86 48.41 Truncate 94.78 81.57 89.53 49.45
+> Truncate-Thinking 94.78 78.95 88.48 49.38
+
+formance gains across all other domains, including gen-eral perception and math reasoning. We attribute this “ca-pability transfer” to the fact that tasks in Math & Chart (such as MathVision and ChartQA) are fundamentally re-liant on precise, fine-grained perceptual abilities ( e.g ., local-izing data points on a chart, reading text). By strengthening the model’s foundational perceptual accuracy, our method successfully generalizes this improvement to broader and more complex reasoning tasks. Furthermore, our 7B model trained with our method also surpasses Pixel-Reasoner and achieves performance competitive with DeepEyes on Visual Search tasks. It is noteworthy that the latter two models both rely on external tool manipulation to assist in object grounding. This result indicates that enhancing the intrinsic perceptual abilities of multimodal base models is a highly promising research direction, capable of rivaling the perfor-mance of tool-augmented SOTA methods. 
+
+Test-time Scaling with PRM. As mentioned earlier, PERCEVAL has the potential to assist in the test-time scaling of policy models with the Truncate or Feedback strategies. To validate their effectiveness, we compare them with the major voting strategy, a classic test-time scaling method, where the policy model generate responses for multiple times and selects the most common answer as the final re-sponse. We conducted the experiment on the 3B policy model and present the results in Table 2. With different sampling times k, the PRM-based strategies consistently outperform major voting on V* and BLINK. The Truncate strategy, in particular, shows a more significant improve-ment compared to the Feedback strategy. We hypothesize that the model’s training data does not contain sufficient re-flective data, which results in poorer instruction-following quality when the reflective prompts are inserted in the Feed-back strategy. In contrast, the Truncate strategy allows the model to regenerate the response based on its own gener-ated context, aligning more closely with the model’s orig-inal distribution, thus producing more stable and reliable outputs. Another observation is that the major voting strat-0
+
+> 20
+> 40
+> 60
+> 80
+> 100
+> 120
+> 140
+> 160
+> 180
+> 200
+> 220
+> 240
+> 260
+> 280
+> 300
+> 320
+> 340
+> Step
+> 0.30
+> 0.35
+> 0.40
+> 0.45
+> 0.50
+> 0.55
+> 0.60
+> Hallucination Rate
+
+Figure 2. The proportion of responses identified by P ERCEVAL as containing hallucinations during training. 
+
+egy quickly converges on difficult tasks ( e.g ., the Pos subset of V*) and fails to show further improvement. This suggests that without external intervention, the model’s inherent ca-pabilities are insufficient to rectify its errors. 
+
+4.3. Further Analysis 
+
+Reward Hacking Test. A critical challenge in reinforce-ment learning with reward models (RMs) is reward hack-ing , where the policy overfits the RM’s scoring function. This issue is particularly pronounced with traditional RMs that output a single scalar reward for an entire response. Such a direct and holistic score, which is often influenced by the RM’s own intrinsic biases, provides a simple signal for the policy to exploit, leading to score inflation without genuine quality improvement. Our proposed P ERCEVAL 
+
+is designed to mitigate this specific vulnerability. Instead of providing a direct scalar reward, P ERCEVAL intervenes during the advantage calculation stage. Specifically, it re-duces the advantage values of only those tokens within a response that are identified as contributing to a hallucina-tion. This fine-grained, indirect guidance mechanism is in-herently more difficult for the policy to overfit and simulta-neously enhances the contrast between correct and incorrect tokens within the same sequence. The effectiveness of this approach is demonstrated in Figure 2, which plots the pro-portion of responses identified by P ERCEVAL as containing hallucinations during training. The curve initially shows a decline, indicating that the policy is successfully learning to reduce hallucinations. Crucially, the rate then stabilizes rather than continuing to drop. A continuously decreasing curve would suggest that the policy is learning to deceive the PRM—a clear sign of reward hacking. The observed stability therefore confirms that our proposed P ERCEVAL 
+
+effectively guides the policy toward genuine improvement while avoiding significant reward hacking. 
+
+Hyperparameter Tuning. Our proposed RL training with PRM framework introduces the hyperparameter α
+
+(Equation 3), which governs the penalty strength applied 
+
+Table 3. Ablation study on the penalty strength hyperparameter α.
+
+α V∗ RealWorldQA MathVision ChartQA 
+
+0.0 80.10 62.17 23.36 83.32 0.03 81.68 63.09 22.70 84.44 0.1 83.25 64.92 26.32 85.04 
+
+0.3 78.53 61.78 22.04 84.56 GRPO: <think>The blue truck is visible in    
+
+> the image, positioned to the left of the
+> white vehicle. This can be determined by
+> observing the relative positions of the
+> vehicles in the image.</think>
+> <answer> B. The blue truck is on the left
+> side of the white vehicle. </answer>"
+> Question: Is the blue truck on
+> the left or right side of the
+> white vehicle?
+> Ours: <think>To determine the correct
+> position of the blue truck, I need to
+> identify the white vehicle first. The white
+> vehicle appears to be a car parked near
+> the building with the red roof in the
+> center of the image. The blue truck is
+> positioned to the right of this white
+> vehicle.</think>
+> <answer> A. The blue truck is on the right
+> side of the white vehicle .</answer>
+
+Figure 3. Case study of the visual reasoning process from models trained with GRPO and our method. 
+
+to tokens identified as hallucinatory. The selection of an optimal α is critical, as it requires balancing the suppres-sion of hallucinations against the preservation of overall response quality. To quantitatively determine this opti-mal value, we conduct a series of experiments, varying α
+
+across {0.03 , 0.1, 0.3} and benchmarking against a stan-dard GRPO baseline ( α = 0 ). The results, summarized in Table 3, reveal a distinct non-monotonic trend. A min-imal value of α = 0 .03 provides an insufficient corrective gradient. While offering a marginal improvement over the baseline, the penalty is too subtle to effectively steer the model away from ingrained hallucinatory patterns. Con-versely, an excessively large α of 0.3 proves counterpro-ductive. We attribute this to collateral “penalization”: since the P ERCEVAL flags entire substrings, a high penalty in-discriminately punishes all tokens within that span, includ-ing syntactically necessary but factually benign words (e.g., articles, prepositions). This introduces significant train-ing noise and degrades overall performance. The analy-sis reveals that α = 0 .1 strikes the optimal balance. It is potent enough to achieve a substantial reduction in hallu-cinations while avoiding the destabilizing effects of over-penalization. Therefore, we adopt α = 0 .1 as the canonical value for all other experiments. 
+
+Qualitative Analysis. To clearly demonstrate the efficacy of our method, we present a qualitative analysis of model outputs in Figure 3. This case study compares the outputs from a model trained with direct GRPO against one trained with our method on an identical query. The task necessi-tates locating two minuscule objects ( i.e ., a blue vehicle and a vehicle car) to determine their spatial relationship. The baseline model, trained with direct GRPO, bypasses the per-ceptual task and directly outputs a relative position (“left”). This is a classic example of hallucination, as the model pro-vides an answer without seemingly grounding its response in the visual evidence. In sharp contrast, our model ex-hibits a deliberate, step-by-step process. It first attempts to locate the white car, subsequently searches for the blue car, and then correctly deduces their relative positions. This case study demonstrates that our RL training process signif-icantly enhances the model’s perceptual capabilities, com-pelling its responses to be faithfully grounded in the visual content. 
+
+## 5. Related Work 
+
+Vision-language Models The field of vision-language models (VLMs) has evolved from foundational represen-tation alignment to complex multimodal reasoning. Early breakthroughs such as CLIP [32] and ALIGN [16] demon-strate that contrastive pre-training on web-scale image-text pairs yields powerful, transferable representations, setting the stage for Large Vision Language Models (LVLMs) that bridge pre-trained visual encoders with LLMs [2, 18, 23]. “Visual Instruction Tuning” [23] emerges as a critical paradigm for unlocking multimodal instruction-following, rapidly scaled in open-source models like Qwen-VL [3] and InternVL [57]. By incorporating large-scale SFT and RL, advanced VLMs [12, 44] achieve strong performance on complex reasoning tasks. However, perceptual capabili-ties remain a critical bottleneck: models frequently exhibit hallucinations [19, 20] or are unduly dominated by textual priors [1, 22, 53], highlighting a persistent gap in reliable, fine-grained visual perception. 
+
+Reinforcement Learning for VLMs The application of RL to VLMs has rapidly evolved toward capability incen-tivization for complex multimodal reasoning. This shift was catalyzed by breakthroughs in LLMs demonstrating that large-scale RL can elicit emergent “slow-thinking” behav-iors [13, 15, 35], inspiring a new wave of VLM research that optimizes the synergy between visual perception and logical deliberation [14, 30, 34]. Beyond adapting LLM strategies, researchers explore reflection techniques tailored to the visual domain and “thinking with images” paradigms that leverage image manipulation tools to support reason-ing. However, a critical limitation persists: methods based on RLVR predominantly rely on GRPO, which provides only coarse, outcome-level supervision and lacks the fine-grained signals necessary for improving complex, step-by-step reasoning. 
+
+Multimodal Reward Models Multimodal reward mod-els [40, 46, 52] play a pivotal role in Reinforcement Learn-ing from Human Feedback (RLHF) by aligning model out-puts with human preferences. With the recent proliferation of reinforcement learning in complex reasoning tasks, RMs are also increasingly employed to supplement methods like Reinforcement Learning with Verifiable Rewards (RLVR). This becomes particularly crucial in domains where verifi-able ground truth is inaccessible, such as open-ended cre-ative tasks [25], which are environments where methods re-liant on verifiable rewards consequently struggle. The pre-dominant approach for these RMs involves training them to directly output a single scalar score, which represents the overall quality of a given trajectory [39, 46]. Recognizing the limitations of this direct scoring, more recent research efforts have sought to integrate “slow thinking” or delib-erate reasoning paradigms into reward modeling [49, 51]. These approaches enable the RM to generate a rationale or critique before assigning the final score, aiming for more meticulous and robust evaluations [9]. However, a funda-mental limitation persists: whether generated directly or after deliberation, the feedback from existing RMs ulti-mately collapses into a single scalar reward. This offers only sparse, outcome-level supervision for algorithms like GRPO. We propose a perception-centric reward model that provides a more fine-grained signal, which enabling token-level adjustments of advantages, thereby offering a more precise supervision. 
+
+## 6. Conclusion 
+
+In this work, we introduced P ERCEVAL , a perception-centric process reward model (PRM) that addresses the sparse reward issue in RLVR by enabling token-level er-ror grounding. Unlike traditional outcome-level supervi-sion, P ERCEVAL detects image–text misalignments within the model’s reasoning process and provides grounded, step-aware feedback. We trained P ERCEVAL with perception-intensive data and integrate it into both the training and in-ference stages of VLMs. At the training stage, we lever-age P ERCEVAL to apply token-level penalties to halluci-nated spans, improving fine-grained credit assignment and surpassing the capabilities of sequence-level methods like GRPO. During inference, P ERCEVAL enables a Trunca-tion–Regeneration loop that prunes erroneous responses and induces model reflection. Our experiments demonstrate that P ERCEVAL substantially improves visual grounding on perception-heavy benchmarks and facilitates better transfer to multi-step reasoning tasks. This method represents a significant advancement in fine-tuning the reasoning capa-bilities of VLMs, with the potential to generalize across do-mains and tasks. 7. Acknowledge 
+
+This work was partially supported by the National Natural Science Foundation of China No. 92470205 and Beijing Major Science and Technology Project under Contract No. Z251100008425002. 
+
+## References 
+
+[1] Aakriti Agrawal, Gouthaman KV, Rohith Aralikatti, Gauri Jagatap, Jiaxin Yuan, Vijay Kamarshi, Andrea Fanelli, and Furong Huang. Towards mitigating hallucinations in large vision-language models by refining textual embeddings. 
+
+arXiv preprint arXiv:2511.05017 , 2025. 1, 8 [2] Jean-Baptiste Alayrac, Jeff Donahue, Pauline Luc, Antoine Miech, Iain Barr, Yana Hasson, Karel Lenc, Arthur Men-sch, Katherine Millican, Malcolm Reynolds, et al. Flamingo: a visual language model for few-shot learning. Advances in neural information processing systems , 35:23716–23736, 2022. 8 [3] Jinze Bai, Shuai Bai, Keqin Chen, Mengfei Du, Yang Fan, Zhihao Fan, Wenbin Ge, Dayiheng Liu, Rui Men, Xu-ancheng Ren, et al. Qwen-vl: A versatile vision-language model for understanding, localization, text reading, and be-yond. arXiv preprint arXiv:2308.12966 , 2023. 1, 8 [4] Shuai Bai, Keqin Chen, Xuejing Liu, Jialin Wang, Wenbin Ge, Sibo Song, Kai Dang, Peng Wang, Shijie Wang, Jun Tang, Humen Zhong, Yuanzhi Zhu, Mingkun Yang, Zhao-hai Li, Jianqiang Wan, Pengfei Wang, Wei Ding, Zheren Fu, Yiheng Xu, Jiabo Ye, Xi Zhang, Tianbao Xie, Zesen Cheng, Hang Zhang, Zhibo Yang, Haiyang Xu, and Jun-yang Lin. Qwen2.5-vl technical report. arXiv preprint arXiv:2502.13923 , 2025. 6 [5] Hardy Chen, Haoqin Tu, Fali Wang, Hui Liu, Xianfeng Tang, Xinya Du, Yuyin Zhou, and Cihang Xie. Sft or rl? an early investigation into training r1-like reasoning large vision-language models, 2025. 5, 6 [6] Lin Chen, Jinsong Li, Xiaoyi Dong, Pan Zhang, Yuhang Zang, Zehui Chen, Haodong Duan, Jiaqi Wang, Yu Qiao, Dahua Lin, et al. Are we on the right way for evaluating large vision-language models? arXiv preprint arXiv:2403.20330 ,2024. 1, 4 [7] Zhe Chen, Jiannan Wu, Wenhai Wang, Weijie Su, Guo Chen, Sen Xing, Muyan Zhong, Qinglong Zhang, Xizhou Zhu, Lewei Lu, et al. Internvl: Scaling up vision foundation mod-els and aligning for generic visual-linguistic tasks. In Pro-ceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 24185–24198, 2024. 1 [8] Yihe Deng, Hritik Bansal, Fan Yin, Nanyun Peng, Wei Wang, and Kai-Wei Chang. Openvlthinker: Complex vision-language reasoning via iterative sft-rl cycles, 2025. 5, 6 [9] Kaixuan Fan, Kaituo Feng, Haoming Lyu, Dongzhan Zhou, and Xiangyu Yue. Sophiavl-r1: Reinforcing mllms reasoning with thinking reward, 2025. 8 [10] Kaixuan Fan, Kaituo Feng, Haoming Lyu, Dongzhan Zhou, and Xiangyu Yue. Sophiavl-r1: Reinforcing mllms reasoning with thinking reward, 2025. 3, 5 [11] Xingyu Fu, Yushi Hu, Bangzheng Li, Yu Feng, Haoyu Wang, Xudong Lin, Dan Roth, Noah A Smith, Wei-Chiu Ma, and Ranjay Krishna. Blink: Multimodal large language models can see but not perceive. arXiv preprint arXiv:2404.12390 ,2024. 1, 4 [12] Gemini Team, Rohan Anil, Sebastian Borgeaud, Jean-Baptiste Alayrac, Jiahui Yu, Radu Soricut, Johan Schalkwyk, Andrew M. Dai, Anja Hauth, Katie Millican, David Silver, et al. Gemini: A family of highly capable multimodal mod-els. arXiv preprint arXiv:2508.11630 , 2025. 1, 8 [13] Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Ruoyu Zhang, Runxin Xu, Qihao Zhu, Shirong Ma, Peiyi Wang, Xiao Bi, et al. Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement learning. arXiv preprint arXiv:2501.12948 , 2025. 1, 3, 8 [14] Wenxuan Huang, Bohan Jia, Zijie Zhai, Shaosheng Cao, Zheyu Ye, Fei Zhao, Zhe Xu, Yao Hu, and Shaohui Lin. Vision-r1: Incentivizing reasoning capability in multimodal large language models. arXiv preprint arXiv:2503.06749 ,2025. 5, 6, 8 [15] Aaron Jaech, Adam Kalai, Adam Lerer, Adam Richard-son, Ahmed El-Kishky, Aiden Low, Alec Helyar, Aleksander Madry, Alex Beutel, Alex Carney, et al. Openai o1 system card. arXiv preprint arXiv:2412.16720 , 2024. 8 [16] Chao Jia, Yinfei Yang, Ye Xia, Yi-Ting Chen, Zarana Parekh, Hieu Pham, Quoc Le, Yun-Hsuan Sung, Zhen Li, and Tom Duerig. Scaling up visual and vision-language representa-tion learning with noisy text supervision. In International conference on machine learning , pages 4904–4916. PMLR, 2021. 8 [17] Hadi Khalaf, Claudio Mayrink Verdun, Alex Oesterling, Himabindu Lakkaraju, and Flavio du Pin Calmon. Inference-time reward hacking in large language models, 2025. 1 [18] Junnan Li, Dongxu Li, Silvio Savarese, and Steven Hoi. Blip-2: Bootstrapping language-image pre-training with frozen image encoders and large language models. In In-ternational conference on machine learning , pages 19730– 19742. PMLR, 2023. 8 [19] Yifan Li, Yifan Du, Kun Zhou, Jinpeng Wang, Wayne Xin Zhao, and Ji-Rong Wen. Evaluating object hallucina-tion in large vision-language models. arXiv preprint arXiv:2305.10355 , 2023. 1, 8 [20] Yifan Li, Kun Zhou, Wayne Xin Zhao, Lei Fang, and Ji-Rong Wen. Analyzing and mitigating object hallucination: A training bias perspective. arXiv preprint arXiv:2508.04567 ,2025. 1, 8 [21] Hunter Lightman, Vineet Kosaraju, Yuri Burda, Harrison Ed-wards, Bowen Baker, Teddy Lee, Jan Leike, John Schulman, Ilya Sutskever, and Karl Cobbe. Let’s verify step by step. In The Twelfth International Conference on Learning Repre-sentations , 2023. 1 [22] Chengzhi Liu, Zhongxing Xu, Qingyue Wei, Juncheng Wu, James Zou, Xin Eric Wang, Yuyin Zhou, and Sheng Liu. More thinking, less seeing? assessing amplified halluci-nation in multimodal reasoning models. arXiv preprint arXiv:2505.21523 , 2025. 1, 8 [23] Haotian Liu, Chunyuan Li, Qingyang Wu, and Yong Jae Lee. Visual instruction tuning. Advances in neural information processing systems , 36:34892–34916, 2023. 8 [24] Yuliang Liu, Zhang Li, Mingxin Huang, Biao Yang, Wenwen Yu, Chunyuan Li, Xu-Cheng Yin, Cheng-Lin Liu, Lianwen Jin, and Xiang Bai. Ocrbench: on the hidden mystery of ocr in large multimodal models. Science China Information Sciences , 67(12):220102, 2024. 1 [25] Zijun Liu, Peiyi Wang, Runxin Xu, Shirong Ma, Chong Ruan, Peng Li, Yang Liu, and Yu Wu. Inference-time scaling for generalist reward modeling, 2025. 8 [26] Pan Lu, Hritik Bansal, Tony Xia, Jiacheng Liu, Chunyuan Li, Hannaneh Hajishirzi, Hao Cheng, Kai-Wei Chang, Michel Galley, and Jianfeng Gao. Mathvista: Evaluating mathemat-ical reasoning of foundation models in visual contexts. In In-ternational Conference on Learning Representations (ICLR) ,2024. 1, 5 [27] Ahmed Masry, Do Long, Jia Qing Tan, Shafiq Joty, and Ena-mul Hoque. ChartQA: A benchmark for question answer-ing about charts with visual and logical reasoning. In Find-ings of the Association for Computational Linguistics: ACL 2022 , pages 2263–2279, Dublin, Ireland, 2022. Association for Computational Linguistics. 1, 5 [28] Fanqing Meng, Lingxiao Du, Zongkai Liu, Zhixiang Zhou, Quanfeng Lu, Daocheng Fu, Tiancheng Han, Botian Shi, Wenhai Wang, Junjun He, Kaipeng Zhang, Ping Luo, Yu Qiao, Qiaosheng Zhang, and Wenqi Shao. Mm-eureka: Ex-ploring the frontiers of multimodal reasoning with rule-based reinforcement learning, 2025. 5, 6 [29] Nitesh Methani, Pritha Ganguly, Mitesh M. Khapra, and Pratyush Kumar. Plotqa: Reasoning over scientific plots. In 
+
+The IEEE Winter Conference on Applications of Computer Vision (WACV) , 2020. 5 [30] Yingzhe Peng, Gongrui Zhang, Miaosen Zhang, Zhiyuan You, Jie Liu, Qipeng Zhu, Kai Yang, Xingzhong Xu, Xin Geng, and Xu Yang. Lmm-r1: Empowering 3b lmms with strong reasoning abilities through two-stage rule-based rl. 
+
+arXiv preprint arXiv:2503.07536 , 2025. 5, 8 [31] Yingzhe Peng, Gongrui Zhang, Miaosen Zhang, Zhiyuan You, Jie Liu, Qipeng Zhu, Kai Yang, Xingzhong Xu, Xin Geng, and Xu Yang. Lmm-r1: Empowering 3b lmms with strong reasoning abilities through two-stage rule-based rl, 2025. 6 [32] Alec Radford, Jong Wook Kim, Chris Hallacy, Aditya Ramesh, Gabriel Goh, Sandhini Agarwal, Girish Sastry, Amanda Askell, Pamela Mishkin, Jack Clark, et al. Learning transferable visual models from natural language supervi-sion. In International conference on machine learning , pages 8748–8763. PmLR, 2021. 8 [33] Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan Zhang, Y. K. Li, Y. Wu, and Daya Guo. Deepseekmath: Pushing the limits of mathematical reasoning in open language models, 2024. 1, 2 [34] Haozhan Shen, Peng Liu, Jingcheng Li, Chunxin Fang, Yibo Ma, Jiajia Liao, Qiaoli Shen, Zilun Zhang, Kangjia Zhao, Qianqian Zhang, et al. Vlm-r1: A stable and generaliz-able r1-style large vision-language model. arXiv preprint arXiv:2504.07615 , 2025. 5, 6, 8 [35] Kimi Team, Yifan Bai, Yiping Bao, Guanduo Chen, Jiahao Chen, Ningxin Chen, Ruijue Chen, Yanru Chen, Yuankun Chen, Yutian Chen, et al. Kimi k2: Open agentic intelli-gence. arXiv preprint arXiv:2507.20534 , 2025. 1, 8 [36] Haozhe Wang, Chao Qu, Zuming Huang, Wei Chu, Fangzhen Lin, and Wenhu Chen. Vl-rethinker: Incentivizing self-reflection of vision-language models with reinforcement learning. arXiv preprint arXiv:2504.08837 , 2025. 5, 6 [37] Haozhe Wang, Alex Su, Weiming Ren, Fangzhen Lin, and Wenhu Chen. Pixel reasoner: Incentivizing pixel-space rea-soning with curiosity-driven reinforcement learning, 2025. 5 [38] Ke Wang, Junting Pan, Weikang Shi, Zimu Lu, Houxing Ren, Aojun Zhou, Mingjie Zhan, and Hongsheng Li. Mea-suring multimodal mathematical reasoning with math-vision dataset. In The Thirty-eight Conference on Neural Infor-mation Processing Systems Datasets and Benchmarks Track ,2024. 1, 5 [39] Peiyi Wang, Lei Li, Zhihong Shao, Runxin Xu, Damai Dai, Yifei Li, Deli Chen, Yu Wu, and Zhifang Sui. Math-shepherd: Verify and reinforce llms step-by-step without hu-man annotations. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 9426–9439, 2024. 1, 8 [40] Yibin Wang, Zhimin Li, Yuhang Zang, Chunyu Wang, Qinglin Lu, Cheng Jin, and Jiaqi Wang. Unified multimodal chain-of-thought reward model through reinforcement fine-tuning, 2025. 8 [41] Zifu Wang, Junyi Zhu, Bo Tang, Zhiyu Li, Feiyu Xiong, Ji-aqian Yu, and Matthew B. Blaschko. Jigsaw-r1: A study of rule-based visual reinforcement learning with jigsaw puz-zles, 2025. 5, 6 [42] Penghao Wu and Saining Xie. V*: Guided visual search as a core mechanism in multimodal llms. arXiv preprint arXiv:2312.14135 , 2023. 1, 3, 4 [43] xAI. Grok-1.5 vision preview. https://x.ai/news/ grok-1.5v , 2024. Accessed: 2024-08-27. 4 [44] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et al. Qwen3 technical report. arXiv preprint arXiv:2505.09388 , 2025. 8 [45] En Yu, Kangheng Lin, Liang Zhao, Jisheng Yin, Yana Wei, Yuang Peng, Haoran Wei, Jianjian Sun, Chunrui Han, Zheng Ge, Xiangyu Zhang, Daxin Jiang, Jingyu Wang, and Wen-bing Tao. Perception-r1: Pioneering perception policy with reinforcement learning, 2025. 2, 5, 6 [46] Yuhang Zang, Xiaoyi Dong, Pan Zhang, Yuhang Cao, Ziyu Liu, Shengyuan Ding, Shenxi Wu, Yubo Ma, Haodong Duan, Wenwei Zhang, Kai Chen, Dahua Lin, and Jiaqi Wang. Internlm-xcomposer2.5-reward: A simple yet effec-tive multi-modal reward model, 2025. 8 [47] Jingyi Zhang, Jiaxing Huang, Huanjin Yao, Shunyu Liu, Xikun Zhang, Shijian Lu, and Dacheng Tao. R1-vl: Learning to reason with multimodal large language models via step-wise group relative policy optimization, 2025. 5, 6 [48] Jipeng Zhang, Kehao Miao, Renjie Pi, Zhaowei Wang, Run-tao Liu, Rui Pan, and Tong Zhang. Vl-genrm: Enhancing vision-language verification via vision experts and iterative training. arXiv preprint arXiv:2506.13888 , 2025. 1 [49] Xiangxiang Zhang, Jingxuan Wei, Donghong Zhong, Qi Chen, Caijun Jia, Cheng Tan, Jinming Gu, Xiaobo Qin, Zhiping Liu, Liang Hu, Tong Sun, Yuchen Wu, Zewei Sun, Chenwei Lou, Hua Zheng, Tianyang Zhan, Changbao Wang, Shuangzhi Wu, Zefa Lin, Chang Guo, Sihang Yuan, Riwei Chen, Shixiong Zhao, Yingping Zhang, Gaowei Wu, Bi-hui Yu, Jiahui Wu, Zhehui Zhao, Qianqian Liu, Ruofeng Tang, Xingyue Huang, Bing Zhao, Mengyang Zhang, and Youqiang Zhou. Structvrm: Aligning multimodal reasoning with structured and verifiable reward models, 2025. 8 [50] Yi-Fan Zhang, Huanyu Zhang, Haochen Tian, Chaoyou Fu, Shuangqing Zhang, Junfei Wu, Feng Li, Kun Wang, Qing-song Wen, Zhang Zhang, et al. Mme-realworld: Could your multimodal llm challenge high-resolution real-world scenarios that are difficult for humans? arXiv preprint arXiv:2408.13257 , 2024. 1, 4 [51] Yi-Fan Zhang, Xingyu Lu, Xiao Hu, Chaoyou Fu, Bin Wen, Tianke Zhang, Changyi Liu, Kaiyu Jiang, Kaibing Chen, Kaiyu Tang, Haojie Ding, Jiankang Chen, Fan Yang, Zhang Zhang, Tingting Gao, and Liang Wang. R1-reward: Train-ing multimodal reward model through stable reinforcement learning, 2025. 8 [52] Yi-Fan Zhang, Haihua Yang, Huanyu Zhang, Yang Shi, Zezhou Chen, Haochen Tian, Chaoyou Fu, Haotian Wang, Kai Wu, Bo Cui, Xu Wang, Jianfei Pan, Haotian Wang, Zhang Zhang, and Liang Wang. Basereward: A strong base-line for multimodal reward model, 2025. 8 [53] Zhuoran Zhang, Tengyue Wang, Xilin Gong, Yang Shi, Hao-tian Wang, Di Wang, and Lijie Hu. When modalities conflict: How unimodal reasoning uncertainty governs preference dy-namics in mllms. arXiv preprint arXiv:2511.02243 , 2025. 1, 8[54] Zhenru Zhang, Chujie Zheng, Yangzhen Wu, Beichen Zhang, Runji Lin, Bowen Yu, Dayiheng Liu, Jingren Zhou, and Junyang Lin. The lessons of developing process reward models in mathematical reasoning, 2025. 1 [55] Congming Zheng, Jiachen Zhu, Zhuoying Ou, Yuxiang Chen, Kangning Zhang, Rong Shan, Zeyu Zheng, Mengyue Yang, Jianghao Lin, Yong Yu, et al. A survey of process re-ward models: From outcome signals to process supervisions for large language models. arXiv preprint arXiv:2510.08049 ,2025. 1 [56] Ziwei Zheng, Michael Yang, Jack Hong, Chenxiao Zhao, Guohai Xu, Le Yang, Chao Shen, and Xing Yu. Deep-eyes: Incentivizing "thinking with images" via reinforcement learning, 2025. 3, 5, 6 [57] Jinguo Zhu, Weiyun Wang, Zhe Chen, Zhaoyang Liu, Shen-glong Ye, Lixin Gu, Hao Tian, Yuchen Duan, Weijie Su, Jie Shao, et al. Internvl3: Exploring advanced training and test-time recipes for open-source multimodal models. arXiv preprint arXiv:2504.10479 , 2025. 8
