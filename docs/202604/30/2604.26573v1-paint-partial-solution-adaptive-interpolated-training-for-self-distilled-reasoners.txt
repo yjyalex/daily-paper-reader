@@ -1,0 +1,1052 @@
+Title: PAINT: Partial-Solution Adaptive Interpolated Training for Self-Distilled Reasoners
+
+URL Source: https://arxiv.org/pdf/2604.26573v1
+
+Published Time: Thu, 30 Apr 2026 00:48:24 GMT
+
+Number of Pages: 20
+
+Markdown Content:
+# PAINT: Partial-Solution Adaptive Interpolated Training for Self-Distilled Reasoners 
+
+Zhiquan Tan 1∗ Yinrong Hong 2∗
+
+> 1
+
+Tsinghua University 2Beihang University 
+
+## Abstract 
+
+Improving large language model (LLM) reasoning requires supervision that is both aligned with the model’s own test-time states and informative at the token level. Reinforcement learning with verifiable rewards provides on-policy exploration but offers sparse, high-variance credit; supervised fine-tuning and distillation provide dense targets but often train on fixed trajectories or rely on stronger teachers. Recent privileged on-policy self-distillation explores a middle ground by scoring student rollouts with the same model under verified solution context [Zhao et al., 2026]. We revisit this setting through a contextual re-scoring lens: for reasoning, the important choices are not only whether privileged context is available, but how much of it should be revealed and where its distribution should shape the student. We propose PAINT (Partial-solution Adaptive INterpolated Training ), which masks the verified solution according to rollout-reference overlap and applies a small energy-space interpolation on a sparse set of entropy-mismatch token positions. Across competition-level math benchmarks, PAINT consistently improves over a strong prior on-policy self-distillation baseline at all three Qwen3 scales. On Qwen3-8B, it raises macro Avg@12 by 2.1 points over this prior baseline and 2.9 points over GRPO 1.
+
+## 1 Introduction 
+
+Reasoning post-training increasingly determines whether LLMs can solve difficult mathematical and scientific tasks, a capability made visible by chain-of-thought prompting and math-centered evaluation [Wei et al., 2022, Cobbe et al., 2021, Hendrycks et al., 2021]. The central challenge is not just to reward correct final answers, but to provide supervision that is both deployment-aligned and 
+
+informative : training should act on states the model actually visits at inference time, while still giving more guidance than a single sequence-level correctness bit. Current recipes occupy different points in this trade-off. Reinforcement learning with verifiable rewards (RLVR), including GRPO-style methods [Shao et al., 2024, DeepSeek-AI et al., 2025, Yu et al., 2025], optimizes the desired outcome on on-policy samples, but its reward is sparse and often costly to estimate. Supervised fine-tuning (SFT) on curated reasoning traces [Guha et al., 2025, Xiaomi LLM-Core Team, 2026] is cheap and dense, but trains on reference prefixes rather than the model’s own prefixes. Distillation supplies token-level targets, yet standard forms either remain off-policy or depend on an external stronger model [Hinton et al., 2015, Agarwal et al., 2024, Lu and Thinking Machines Lab, 2025]. Prior privileged on-policy self-distillation establishes a strong baseline in this middle ground [Zhao et al., 2026]. Instead of asking a separate teacher to supervise the student, it uses verified solutions as training-time context for another view of the same model, then scores the student’s own rollouts  
+
+> ∗Equal contribution.
+> 1Our implementation can be found in https://github.com/tzq1999/PAINT
+> Preprint.
+> arXiv:2604.26573v1 [cs.LG] 29 Apr 2026
+
+Figure 1: PAINT training pipeline. PAINT samples an on-policy rollout, uses rollout-reference overlap α to form a suffix-masked solution ˜y⋆, re-scores the same prefixes with a fixed privileged view, and applies small energy interpolation only on entropy-mismatch positions. under that privileged view. This gives dense on-policy supervision without introducing a stronger model. However, for reasoning tasks, the recipe leaves two important questions under-specified. A fully revealed solution can make the privileged distribution overly sharp and tied to one trace, while matching that distribution at every generated token can spend substantial loss on stylistic continuation rather than mathematical decisions. Our theoretical lens makes this gap precise. Building on the idea that richer training-time context can be distilled into deployment-time behavior [Snell et al., 2022, Huang et al., 2022, Qi et al., 2025], we view the privileged branch as the same autoregressive model under a context-induced energy landscape over continuations. On a fixed student prefix, adding solution context changes the local next-token energy rather than the visited state itself. This re-scoring view turns the open design choices into two principles. First, context exposure controls a strength-diversity trade-off: more revealed solution context gives sharper corrective guidance, but can collapse the target toward one reference trace. Second, privileged reweighting is local: only some prefixes expose a useful mismatch between the student and the privileged scorer. As summarized in Figure 1, PAINT instantiates these principles with two simple controls. For context exposure, Partial-solution Adaptive IN terpolated Training uses rollout-reference overlap as a proxy for alignment: rollouts with low overlap receive more visible solution context, while already aligned rollouts hide more of the reference to encourage broader reasoning. For local calibration, PAINT applies sparse teacher energy interpolation, ranking positions by a teacher/student entropy-ratio statistic and gently interpolating the privileged target only on selected entropy-mismatch positions before the standard distillation objective. Empirically, PAINT turns the prior on-policy self-distillation framework from a strong baseline into a stronger reasoning recipe. Across Qwen3-8B, 4B, and 1.7B, PAINT consistently improves over the vanilla prior self-distillation baseline, with macro Avg@12 gains between 0.8 and 2.1 points. It also matches or exceeds GRPO across scales while using short single-rollout training rather than grouped long rollouts, yielding substantially better rollout-token efficiency in our setting. Our main contributions are summarized below: • We develop a contextual re-scoring view of privileged on-policy distillation and identify two reasoning-specific bottlenecks: how much solution context to reveal, and which token positions should receive calibrated teacher targets. 2• We propose PAINT, which combines overlap-adaptive solution masking with sparse teacher energy interpolation, directly instantiating the two design principles suggested by the re-scoring view. • We evaluate PAINT on three competition-level math benchmarks and three model scales, showing consistent gains over the prior on-policy self-distillation baseline and SFT, plus GRPO-level or better accuracy with a much smaller rollout budget. 
+
+## 2 Background 
+
+Reasoning post-training has a basic tension between where the trajectory comes from and how informative the supervision is . SFT and off-policy distillation provide dense token-level targets, but train on reference prefixes rather than the model’s own prefixes. RLVR samples on-policy trajectories, but its correctness reward is sparse and sequence-level. On-policy distillation combines on-policy data with dense targets [Agarwal et al., 2024, Lu and Thinking Machines Lab, 2025, Xu et al., 2025], but usually assumes an external teacher. The prior OPSD framework [Zhao et al., 2026] resolves this tension by using the verified solution to construct a privileged training-time view of the same model, thereby combining on-policy rollouts with dense token-level supervision without introducing a separate teacher model. For each training example (x, y ⋆) ∈ S , let z denote a privileged context derived from the verified solution. This framework defines two views: 
+
+qbase (· | x) ≜ pθ (· | x), qaug (· | x, z ) ≜ pϕ(· | x, z ).
+
+The base view is the deployment-time policy; the augmented view sees the same problem plus privileged solution context and is used only during training. In this background section, we take 
+
+z = y⋆ to describe the full-solution version. The concrete method in §3 instead uses the masked trace 
+
+z = ˜ y⋆ and fixes ϕ = θ0.The baseline samples ˆy = (ˆ y1, . . . , ˆy|ˆy|) ∼ qbase (· | x) and evaluates both views on the same sampled prefixes. In the full-solution background form used to define the baseline, define 
+
+pnT (·) ≜ qaug (· | x, y ⋆, ˆy<n ) , pnS (·) ≜ qbase (· | x, ˆy<n ) .
+
+The rollout discrepancy is then 
+
+Droll (ˆ y; x, y ⋆) ≜ 1
+
+|ˆy|
+
+> |ˆy|
+
+X
+
+> n=1
+
+D
+
+
+
+pnT pnS
+
+
+
+, (1) where D may be instantiated as forward KL, reverse KL, or a Jensen-Shannon-type divergence. The full objective is 
+
+JOPSD (θ) = E(x,y ⋆)∼S Eˆy∼qbase (·| x)
+
+h
+
+Droll (ˆ y; x, y ⋆)
+
+i
+
+. (2) The essential property is that supervision is dense and token-level, while the visited states still come from the policy being improved. Our main implementation uses full-vocabulary forward KL with pointwise clipping. Given teacher targets pnT and student distributions pnS on the same sampled prefixes, define 
+
+Dclip fKL (pT , p S ; ˆ y) = 1
+
+|ˆy|
+
+> |ˆy|
+
+X
+
+> n=1
+
+X
+
+> v∈V
+
+min  pnT (v)log pnT (v) − log pnS (v), τ  , (3) where τ is a pointwise clipping threshold. 
+
+## 3 Method 
+
+Our method modifies how a prior on-policy self-distillation scaffold [Zhao et al., 2026] constructs and uses its privileged teacher. We begin with a contextual re-scoring lens that separates the fixed scaffold– student rollouts scored under privileged context–from the design choices left to the practitioner. This lens points to two fragile parts of reasoning training: how much solution context to reveal, and which token positions should receive calibrated teacher targets. The next three subsections develop these choices in order: contextual re-scoring, adaptive partial-solution conditioning, and sparse interpolation. 3Deployment prompt: student view         
+
+> Problem: How many ordered pairs of positive integers (a, b )satisfy
+> 1
+> a+1
+> b=16?Please reason step by step, and put your final answer within \boxed{}.
+
+Privileged scoring prompt: fixed teacher view                  
+
+> Problem: How many ordered pairs of positive integers (a, b )satisfy
+> 1
+> a+1
+> b=16?Here is a part of reference solution to this problem: === Reference Solution Begin === Rewrite as ab = 6 a+ 6 b, hence (a−6)( b−6) = 36 ....(omitted)... === Reference Solution End === After reading the reference solution above, derive the same final answer in your own words. Please reason step by step, and put your final answer within \boxed{}.
+> [student rollout prefix being scored]
+
+Figure 2: Prompt views for privileged re-scoring. The fixed teacher sees a masked reference solution and scores the same student-produced prefixes, yielding token-level targets without generating a separate trajectory. 
+
+3.1 A Theoretical Lens: Contextual Re-Scoring 
+
+The key modeling choice is not where the trajectory comes from, but how a student-produced prefix is scored. Once the deployment policy samples a rollout ˆy, each prefix ˆy<n can be evaluated under two contexts: the ordinary deployment prompt, or a privileged prompt that also contains solution information. The augmented branch is therefore a scorer over the student’s visited states, not a generator of an alternative trajectory. If privileged context reweights preferences on the same generation tree, the main design questions become how much evidence to reveal to that scorer and how strongly its reweighted target should influence each position. To make this re-scoring view precise, we treat the privileged branch as the same autoregressive model under a different context-induced energy landscape over continuations. The following proposition records the standard correspondence between autoregressive likelihoods and Gibbs distributions on the generation tree. 
+
+Proposition 3.1 (Context-induced Gibbs teacher) . Fix a prompt context z, a finite horizon T , and a finite vocabulary. If the frozen autoregressive model is strictly positive, then the trajectory energy 
+
+Ez (τ ) = −
+
+> T
+
+X
+
+> i=1
+
+log pθ0 (τi | z, τ <i )
+
+has a Gibbs distribution equal to the model’s autoregressive distribution over continuations: 
+
+exp( −Ez (τ )) 
+
+P  
+
+> τ′
+
+exp( −Ez (τ ′)) = pθ0 (τ | z).
+
+Conversely, any additive energy Ez (τ ) = PTi=1 cz (si, a i) on the finite generation tree induces the normalized next-token policy 
+
+pE (ai | z, a <i ) = exp( −cz (si, a i) + Vz (si+1 ) − Vz (si)) ,
+
+where si = ( z, a <i ) and Vz is the log-partition soft value over suffix continuations. 
+
+The proof is given in Theorem D.1. Intuitively, extra solution context does not create a different reasoning engine; it tilts the same model toward continuations that are more compatible with the 4reference solution. This suggests two concrete intervention points. First, because richer context can make the teacher target overly sharp, we control how much of the reference solution is visible. Second, because the reweighted target is not equally useful on every generated token, we calibrate it only on a sparse set of positions. These two intervention points motivate adaptive masking and sparse interpolation. Although the abstract objective permits both views to share the current parameters, our main instanti-ation uses a fixed privileged teacher with ϕ = θ0 and updates only the student parameters θ. Under the re-scoring view, fixing the teacher keeps the privileged energy landscape stable and avoids having the target drift toward the student during training. 
+
+3.2 Overlap-Adaptive Partial Solution Conditioning 
+
+Once the privileged teacher is fixed, the next question is how informative it should be. Full-solution conditioning gives a low-entropy target that can over-commit to one trace, whereas too little context makes the teacher too similar to the student. We therefore reveal more when the student is far from the reference structure and hide more when it is already aligned. This design has two parts: how much of the solution to hide, and which part to hide. We first address the amount of masking. In a stylized view, increasing the hidden ratio increases the entropy of the teacher target, which encourages broader generalization, but it also makes the teacher harder for the student to fit, increasing optimization noise. The next theorem formalizes this trade-off and gives the monotonic rule used by PAINT: the preferred hidden ratio decreases as alignment error grows. Let X be the finite set of valid continuations and let ρ ∈ [0 , 1) denote a continuous hidden ratio for a contiguous masked block. Let q0 ∈ ∆( X ) be the low-entropy teacher target with no masking, and let q1 ∈ ∆( X ) be the more diffuse target induced by maximal contiguous masking. We interpolate them by 
+
+qρ(τ ) = (1 − ρ)q0(τ ) + ρq 1(τ ).
+
+For student parameters θ, define the uncentered gradient second moment 
+
+M2(q, θ ) = Eτ ∼q
+
+∥∇ θ log pθ (τ )∥2 ,
+
+and let 
+
+v0 = M2(q0, θ ), ϵ(θ) = M2(q1, θ ) − M2(q0, θ ).
+
+Here ϵ measures the extra optimization noise induced by aggressive masking, while the entropy of qρ
+
+measures how much multi-modality the teacher exposes to the student. By linearity of expectation, the second moment along the interpolation path is 
+
+M2(qρ, θ ) = v0 + ρϵ. 
+
+Theorem 3.2 (Monotonicity of the optimal adaptive mask ratio) . Assume qρ(τ ) > 0 on the relevant support and define the Shannon entropy 
+
+H(ρ) = − X 
+
+> τ∈X
+
+qρ(τ ) log qρ(τ ).
+
+Assume q0̸ = q1. For coefficients β, λ > 0, consider the objective 
+
+L(ρ, ϵ ) = βH (ρ) − λ(v0 + ρϵ ).
+
+Whenever an interior maximizer ρ⋆(ϵ) ∈ (0 , 1) exists, its differentiable branch is a strictly decreasing function of the alignment-error proxy: dρ ⋆
+
+dϵ < 0.
+
+A detailed proof is given in Theorem D.2. The theorem gives the qualitative rule we need: when the student is poorly aligned with the privileged target (large ϵ), the teacher should reveal more and hide less; as alignment improves, the teacher can hide more and encourage broader generalization. To instantiate this principle on each rollout, we need a practical proxy for inverse alignment error. After sampling ˆy ∼ qbase (· | x), the trainer extracts a set of reference anchors A(y⋆), including the boxed answer, formula-like spans, and informative numbers, after normalization of common mathematical notation. It then computes a recall-style overlap score 
+
+α(x, ˆy, y ⋆) = 1
+
+|A (y⋆)|
+
+X
+
+> a∈A (y⋆)
+
+1{a ⊆ Norm(ˆ y)} , α ∈ [0 , 1] . (4) 5If no anchors are found, the implementation sets α = 0 . The exact final-answer verifier is still computed for logging and analysis, but the teacher schedule is driven by this continuous overlap score rather than by a hard correct/incorrect branch. Higher overlap means that the rollout already reproduces more of the reference’s mathematical structure, so it is safe to hide more. We therefore use the affine schedule 
+
+ρ(α) = ρwrong + ( ρcorrect − ρwrong ) α, ρcorrect > ρ wrong . (5) Thus α acts as a practical proxy for inverse alignment error, and ρ(α) is the concrete monotone curriculum suggested by the theorem. The theorem above explains how much privileged information to withhold, but it does not say which part of the solution should be hidden. We restrict attention to contiguous masks because they preserve local coherence. Among them, we prefer suffix masks because early reference tokens usually carry the setup, decomposition, and high-level plan that make later reasoning predictable, whereas later tokens more often execute downstream algebra or state the final answer. Appendix D makes this intuition formal: masking induces a posterior mixture over hidden completions, which smooths the teacher target and Rao–Blackwellizes the forward-KL gradient relative to conditioning on a single revealed completion. For a fixed masking budget k, the preferred mask position is therefore the one that removes the least privileged information relevant to the teacher’s next action. Let 
+
+Mt = y⋆t:t+k−1, Ct = ( y⋆<t , y ⋆t+k:T ),
+
+and quantify this trade-off by 
+
+Γ( t) = E[I(An; Mt | x, ˆy<n , C t)] ,
+
+the expected privileged information about the teacher’s next action that is available only in the hidden block. In typical reasoning traces, early tokens more often carry definitions, reductions, and the high-level plan, whereas later tokens more often execute downstream algebra or state the final answer. Under this causal information asymmetry, suffix masking is optimal. 
+
+Theorem 3.3 (Optimality of suffix masking) . Assume later mask positions leave weakly more informative visible context for predicting the teacher’s next action than earlier mask positions. Then 
+
+Γ( t) is non-increasing in t. Hence the minimum expected information loss is attained at the largest feasible mask position, 
+
+t⋆ = T − k + 1 ,
+
+which masks the suffix of length k.
+
+Appendix D provides the detailed derivation, including entropy smoothing of masked targets, the forward-KL information decomposition, the Rao–Blackwellized variance reduction, the visible-context duality, and the proof of Theorem 3.3. Combining the monotone ratio schedule with this placement result gives the privileged trace used in practice: 
+
+˜y⋆ = Mtail (y⋆; ρ(α)) . (6) In the main runs, Mtail removes a character-level suffix of the reference solution and replaces it with an omission marker. The code also supports prefix, middle, and punctuation-aware suffix masking variants, but the default setting used in the reported experiments is suffix masking. 
+
+3.3 Sparse Teacher Energy Interpolation 
+
+After deciding what the teacher sees, the final question is how literally to trust the resulting token distribution. Even with adaptive masking, some positions contain useful privileged guidance, while others mostly reflect stylistic continuation or residual uncertainty. We therefore do not calibrate the teacher everywhere. Instead, we spend a sparse calibration budget on positions with the largest entropy mismatch, where a small energy-space correction can soften over-specific privileged targets without washing out the signal on every token. Given the masked teacher prompt, define the student and teacher next-token distributions on the same student prefix: 
+
+pnS (·) ≜ qbase (· | x, ˆy<n ), pnT (·) ≜ qaug (· | x, ˜y⋆, ˆy<n ). (7) The trainer therefore applies a conservative interpolation step in token-energy space before computing the distillation loss, but only on positions selected by a sparse budget. Let znS and znT be the raw 6student and teacher logits for prefix ˆy<n , and let pnS = softmax( znS /T ) and pnT = softmax( znT /T )
+
+be the temperature-scaled distributions. Define token energies 
+
+EnS (v) = − log pnS (v), EnT (v) = − log pnT (v).
+
+Let 
+
+HnS = − X
+
+> v∈V
+
+pnS (v) log pnS (v), HnT = − X
+
+> v∈V
+
+pnT (v) log pnT (v), (8) and define the entropy ratio 
+
+Rn = HnT
+
+HnS
+
+. (9) We use Rn only as a rank statistic. Under the local Gaussian energy approximation and a shared entropy–variance equation of state, Theorem D.5 shows that the signed differential-entropy reduction from applying the fixed interpolation strength at position n can be written as 
+
+∆In(kbase ) = 12 log(1 − kbase + kbase Rγn) . (10) This signed gain is strictly order-preserving in Rn for kbase ∈ (0 , 1) and γ > 0. Rather than learning a continuous kn, which can collapse toward replacing the privileged target by the student distribution on large-ratio positions, the implementation fixes kbase and only decides where to intervene. Let J
+
+be the valid generated-token positions and let S = ⌈ftop |J |⌉ . The sparse selector corresponds to the finite L0-budget problem 
+
+max 
+
+> m∈{ 0,1}|J |
+
+X
+
+> n∈J
+
+mn ∆In(kbase )s.t. X
+
+> n∈J
+
+mn = S. 
+
+(11) Since ∆In(kbase ) and Rn induce the same ordering, the global optimum is obtained by choosing the 
+
+S largest entropy ratios, with arbitrary tie-breaking at the cutoff. For each sample, this top-ftop set is denoted by I. Conceptually, only on this sparse set is the teacher energy moved toward the student energy: 
+
+˜EnT (v) = 
+
+(1 − kbase )EnT (v) + kbase EnS (v), n ∈ I ,EnT (v), n / ∈ I . (12) The reported runs use a constant kbase and do not use an entropy-ratio scale term; the entropy ratio only determines which positions receive interpolation. Finally, 
+
+˜pnT (v) = exp( − ˜EnT (v)) 
+
+P 
+
+> u∈V
+
+exp( − ˜EnT (u)) . (13) Equivalently, on selected positions, 
+
+˜pnT (v) ∝  pnT (v)1−kbase  pnS (v)kbase ,
+
+Theorem D.4 gives a broader energy-fusion motivation; the implementation uses the sparse constant-weight version above to avoid washing out the privileged signal across all tokens. Substituting the interpolated teacher targets into Eq. 3 gives the rollout loss used in the main experiments: 
+
+gDroll (ˆ y; x, ˜y⋆) = Dclip fKL 
+
+
+
+{˜pnT }|ˆy|
+
+> n=1
+
+, {pnS }|ˆy|
+
+> n=1
+
+; ˆ y
+
+
+
+. (14) The complete update, including overlap-adaptive masking and sparse teacher energy interpolation, is summarized in Appendix A. 
+
+## 4 Experiments 
+
+Our experiments test whether overlap-adaptive partial-solution conditioning and sparse teacher interpolation improve a strong prior on-policy self-distillation baseline under matched data, backbones, rollout budget, and privileged-teacher setup. We compare against supervised imitation, reward-based RL, and the closest prior self-distillation baseline across model scales and competition-level math benchmarks. 7Table 1: Math reasoning Avg@12 after post-training Qwen3 backbones. Evaluation uses thinking mode, temperature 1.0, top-p 0.95 , and maximum length 38 k. PAINT and OPSD use the same training split, rollout budget, and fixed privileged teacher; PAINT adds only adaptive partial-solution conditioning and sparse teacher interpolation.                                                                 
+
+> Backbone / post-training recipe AIME 2024 AIME 2025 HMMT 2025 Macro avg.
+> Qwen3-8B Instruct
+> No update 75.8 65.6 43.9 61.8 + SFT 72.3 64.2 42.9 59.8 + GRPO 76.4 68.9 46.7 64.0 + OPSD (prior) 77.8 70.8 45.8 64.8 + PAINT (ours) 79.2 72.2 49.4 66.9
+> Qwen3-4B Instruct
+> No update 74.9 66.4 42.2 61.2 + SFT 70.2 62.3 43.4 58.6 + GRPO 75.6 68.1 44.4 62.7 + OPSD (prior) 76.4 68.3 46.1 63.6 + PAINT (ours) 76.9 69.7 46.7 64.4
+> Qwen3-1.7B Instruct
+> No update 51.5 36.7 23.1 37.1 + SFT 48.4 36.3 22.7 35.8 + GRPO 51.1 38.3 23.7 37.7 + OPSD (prior) 57.2 43.9 29.2 43.4 + PAINT (ours) 59.7 44.2 29.7 44.5
+
+4.1 Experimental Setup Models and data. We use the instruct-tuned Qwen3 family [Yang et al., 2025] at three scales: Qwen3-1.7B, Qwen3-4B, and Qwen3-8B. Training data comes from the mathematical reasoning subset of OpenThoughts [Guha et al., 2025]; for each scale, we sample up to 30K problem-solution pairs with verified final answers and reasoning traces. Evaluation covers AIME 2024, AIME 2025, and HMMT 2025. 
+
+Compared post-training recipes. We evaluate four updates from the same base checkpoints. SFT 
+
+directly imitates the reference reasoning traces and represents an off-policy token-level baseline. 
+
+GRPO [Shao et al., 2024] optimizes binary answer rewards with grouped rollouts; its maximum generation length is 16k. OPSD is the closest prior on-policy self-distillation baseline [Zhao et al., 2026]: it scores each student rollout with a privileged full-solution view but does not use PAINT’s adaptive masking or sparse interpolation. PAINT is our method, which keeps the same rollout-and-score structure while changing what the privileged teacher sees and where its distribution is calibrated. 
+
+Training and evaluation protocol. Unless otherwise stated, PAINT uses a fixed privileged teacher anchored at the initial checkpoint while the student policy is updated with LoRA [Hu et al., 2022]. Teacher forward passes disable the trainable adapters. PAINT conditions the teacher on an overlap-adaptive partial reference solution with ρwrong = 0 .30 and ρcorrect = 0 .40 , then interpolates teacher logits toward student logits with kbase = 0 .03 on the top ftop = 0 .03 fraction of generated-token positions ranked by the teacher/student entropy ratio. Additional training details appear in Appendix B. 
+
+4.2 Main Results 
+
+Table 1 shows that PAINT improves over the prior on-policy self-distillation baseline at every model scale: +2.1 points on Qwen3-8B, +0.8 on Qwen3-4B, and +1.1 on Qwen3-1.7B. Since OPSD already beats SFT by turning reference solutions into dense on-policy supervisory distributions, these gains suggest that controlling privileged context and concentrating calibration on entropy-mismatch positions matters beyond the basic re-scoring scaffold. PAINT also matches or exceeds GRPO across all three scales with a smaller sampling budget: one 1024-token rollout per problem and best checkpoints within 100 steps, compared with 8 GRPO rollouts of up to 16k tokens over a longer horizon. In this OpenThoughts setting, many GRPO batches 8have zero within-group reward standard deviation, so the larger rollout-token budget can still yield little learning signal. Finally, SFT degrades on average at all three scales, likely because concise reference traces shorten test-time reasoning. OPSD avoids this by scoring the student’s own prefixes instead of training on reference prefixes. PAINT keeps that deployment-aligned property while reducing over-conditioning on a fully revealed solution and equal weighting of mathematical decisions and low-value stylistic continuations. Appendix C isolates the two PAINT components on Qwen3-1.7B. Moderate adaptive suffix masking outperforms fixed full-solution conditioning and heavier masks, suffix placement beats prefix, middle, and random contiguous masks, and sparse interpolation is strongest when applied to a small top-ftop 
+
+budget rather than every token. These ablations support the intended mechanisms. 
+
+## 5 Related Work 
+
+Reasoning post-training includes RLVR with verifiable rewards [Shao et al., 2024, DeepSeek-AI et al., 2025, Kimi Team, 2025, Yu et al., 2025, Mistral-AI, 2025], process supervision [Lightman et al., 2024, Zhang et al., 2025], and SFT or self-improvement over curated and self-generated traces [Guha et al., 2025, Xiaomi LLM-Core Team, 2026, Zelikman et al., 2022, Gulcehre et al., 2023, Wang et al., 2023, Yuan et al., 2024]. These approaches provide useful signals but differ in whether supervision is on-policy, dense, or externally annotated. RLVR directly optimizes final-answer correctness but can be statistically inefficient when rewards are sparse; process supervision gives finer feedback but requires additional labels or learned reward models; and imitation-style training depends strongly on the quality and length of reference traces. PAINT targets the complementary regime where verified answers are available but step labels and stronger external teachers are not. In this regime, the main question is how to turn a verified solution into useful token-level feedback without moving training off the student’s own trajectories. PAINT is closest to distillation and privileged-context self-training. Classical and sequence-level distillation transfer teacher distributions or generated sequences [Hinton et al., 2015, Kim and Rush, 2016, Sanh et al., 2019], while on-policy distillation supervises student-sampled trajectories [Agarwal et al., 2024, Gu et al., 2024, Xu et al., 2025, Lu and Thinking Machines Lab, 2025]. Context distillation compresses richer-context behavior into a deployment-time model [Snell et al., 2022, Huang et al., 2022, Qi et al., 2025], and privileged on-policy self-distillation applies this idea to verified reasoning solutions [Zhao et al., 2026, Hübotter et al., 2026, Shenfeld et al., 2026]. PAINT keeps the same rollout re-scoring scaffold but replaces full-solution conditioning and uniform token matching with overlap-adaptive suffix masking and sparse energy interpolation. Unlike external-teacher distillation, the privileged scorer is not a stronger model; the benefit comes from changing the information available at training time and deciding where that information should affect the student. This makes the contribution complementary to reward design and data curation: the training examples and verifier stay fixed, while the privileged scoring distribution is made less over-specific and more selectively applied. 
+
+## 6 Conclusion 
+
+Reasoning post-training needs feedback that is both dense and aligned with the model’s own visited states. We argue that privileged on-policy self-distillation works through contextual re-scoring: solution context reweights the same student prefixes, making context exposure and token-level calibration central design choices. PAINT instantiates this view with overlap-adaptive partial-solution conditioning and sparse teacher energy interpolation. Across mathematical reasoning benchmarks, it improves over the vanilla prior baseline and matches or exceeds GRPO with a much smaller rollout budget; on Qwen3-8B, it gains 2.1 points over OPSD and 2.9 over GRPO. Extending this re-scoring principle beyond verified math traces remains an important next step, especially for domains where partial references are noisier and token-level teacher uncertainty is harder to interpret. 9References 
+
+Rishabh Agarwal, Nino Vieillard, Yongchao Zhou, Piotr Stanczyk, Sabela Ramos Garea, Matthieu Geist, and Olivier Bachem. On-policy distillation of language models: Learning from self-generated mistakes. In The Twelfth International Conference on Learning Representations , 2024. URL https://openreview.net/forum?id=3zKtaqxLhW .Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian, Mark Chen, Heewoo Jun, Lukasz Kaiser, Matthias Plappert, Jerry Tworek, Jacob Hilton, Reiichiro Nakano, Christopher Hesse, and John Schulman. Training verifiers to solve math word problems. arXiv preprint arXiv:2110.14168 ,2021. doi: 10.48550/arXiv.2110.14168. URL https://arxiv.org/abs/2110.14168 .DeepSeek-AI, Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Peiyi Wang, Qihao Zhu, Runxin Xu, Ruoyu Zhang, Shirong Ma, Xiao Bi, et al. DeepSeek-R1: Incentivizing reasoning capability in LLMs via reinforcement learning. arXiv preprint arXiv:2501.12948 , 2025. doi: 10.48550/arXiv.2501.12948. URL https://arxiv.org/abs/2501.12948 .Yuxian Gu, Li Dong, Furu Wei, and Minlie Huang. MiniLLM: Knowledge distillation of large language models. In The Twelfth International Conference on Learning Representations , 2024. URL https://openreview.net/forum?id=5h0qf7IBZZ .Etash Guha, Ryan Marten, Sedrick Keh, Negin Raoof, Georgios Smyrnis, Hritik Bansal, Marianna Nezhurina, Jean Mercat, Trung Vu, Zayne Sprague, Ashima Suvarna, Benjamin Feuer, Liangyu Chen, Zaid Khan, Eric Frankel, Sachin Grover, Caroline Choi, Niklas Muennighoff, Shiye Su, Wanjia Zhao, John Yang, Shreyas Pimpalgaonkar, Kartik Sharma, Charlie Cheng-Jie Ji, Yichuan Deng, Sarah Pratt, Vivek Ramanujan, Jon Saad-Falcon, Jeffrey Li, Achal Dave, Alon Albalak, Kushal Arora, Blake Wulfe, Chinmay Hegde, Greg Durrett, Sewoong Oh, Mohit Bansal, Saadia Gabriel, Aditya Grover, Kai-Wei Chang, Vaishaal Shankar, Aaron Gokaslan, Mike A. Merrill, Tatsunori Hashimoto, Yejin Choi, Jenia Jitsev, Reinhard Heckel, Maheswaran Sathiamoorthy, Alexandros G. Dimakis, and Ludwig Schmidt. OpenThoughts: Data recipes for reasoning models, 2025. URL https://arxiv.org/abs/2506.04178 .Caglar Gulcehre, Tom Le Paine, Srivatsan Srinivasan, Ksenia Konyushkova, Lotte Weerts, Abhishek Sharma, Aditya Siddhant, Alex Ahern, Miaosen Wang, Chenjie Gu, Wolfgang Macherey, Arnaud Doucet, Orhan Firat, and Nando de Freitas. Reinforced self-training (ReST) for language modeling. 
+
+arXiv preprint arXiv:2308.08998 , 2023. doi: 10.48550/arXiv.2308.08998. URL https://arxiv. org/abs/2308.08998 .Dan Hendrycks, Collin Burns, Saurav Kadavath, Akul Arora, Steven Basart, Eric Tang, Dawn Song, and Jacob Steinhardt. Measuring mathematical problem solving with the MATH dataset. In 
+
+Proceedings of the Neural Information Processing Systems Track on Datasets and Benchmarks ,volume 1, 2021. URL https://datasets-benchmarks-proceedings.neurips.cc/paper/ 2021/hash/be83ab3ecd0db773eb2dc1b0a17836a1-Abstract-round2.html .Geoffrey Hinton, Oriol Vinyals, and Jeff Dean. Distilling the knowledge in a neural network, 2015. URL https://arxiv.org/abs/1503.02531 .Edward J. Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang, and Weizhu Chen. LoRA: Low-rank adaptation of large language models. In International Conference on Learning Representations , 2022. URL https://openreview.net/forum?id= nZeVKeeFYf9 .Yukun Huang, Yanda Chen, Zhou Yu, and Kathleen McKeown. In-context learning distillation: Trans-ferring few-shot learning ability of pre-trained language models. arXiv preprint arXiv:2212.10670 ,2022. doi: 10.48550/arXiv.2212.10670. URL https://arxiv.org/abs/2212.10670 .Jonas Hübotter, Frederike Lübeck, Lejs Behric, Anton Baumann, Marco Bagatella, Daniel Marta, Ido Hakimi, Idan Shenfeld, Thomas Kleine Buening, Carlos Guestrin, and Andreas Krause. Reinforcement learning via self-distillation. arXiv preprint arXiv:2601.20802 , 2026. doi: 10. 48550/arXiv.2601.20802. URL https://arxiv.org/abs/2601.20802 .10 Yoon Kim and Alexander M. Rush. Sequence-level knowledge distillation. In Proceedings of the 2016 Conference on Empirical Methods in Natural Language Processing , pages 1317–1327, Austin, Texas, 2016. Association for Computational Linguistics. doi: 10.18653/v1/D16-1139. URL https://aclanthology.org/D16-1139/ .Kimi Team. Kimi K2: Open agentic intelligence. arXiv preprint arXiv:2507.20534 , 2025. doi: 10.48550/arXiv.2507.20534. URL https://arxiv.org/abs/2507.20534 .Hunter Lightman, Vineet Kosaraju, Yuri Burda, Harrison Edwards, Bowen Baker, Teddy Lee, Jan Leike, John Schulman, Ilya Sutskever, and Karl Cobbe. Let’s verify step by step. In The Twelfth International Conference on Learning Representations , 2024. URL https://openreview.net/ forum?id=v8L0pN6EOi .Kevin Lu and Thinking Machines Lab. On-policy distillation. Thinking Machines Lab: Connection-ism , 2025. doi: 10.64434/tml.20251026. https://thinkingmachines.ai/blog/on-policy-distillation/. Mistral-AI. Magistral. arXiv preprint arXiv:2506.10910 , 2025. doi: 10.48550/arXiv.2506.10910. URL https://arxiv.org/abs/2506.10910 .Siyuan Qi, Bangcheng Yang, Kailin Jiang, Xiaobo Wang, Jiaqi Li, Yifan Zhong, Yaodong Yang, and Zilong Zheng. In-context editing: Learning knowledge from self-induced distributions. In The Thirteenth International Conference on Learning Representations , 2025. URL https: //openreview.net/forum?id=w6rHCuN3YG .Victor Sanh, Lysandre Debut, Julien Chaumond, and Thomas Wolf. DistilBERT, a distilled version of BERT: smaller, faster, cheaper and lighter. arXiv preprint arXiv:1910.01108 , 2019. doi: 10.48550/arXiv.1910.01108. URL https://arxiv.org/abs/1910.01108 .Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan Zhang, Y. K. Li, Y. Wu, and Daya Guo. DeepSeekMath: Pushing the limits of mathematical reasoning in open language models. arXiv preprint arXiv:2402.03300 , 2024. doi: 10.48550/arXiv.2402.03300. URL https://arxiv.org/abs/2402.03300 .Idan Shenfeld, Mehul Damani, Jonas Hübotter, and Pulkit Agrawal. Self-distillation enables continual learning, 2026. URL https://arxiv.org/abs/2601.19897 .Charlie Snell, Dan Klein, and Ruiqi Zhong. Learning by distilling context. arXiv preprint arXiv:2209.15189 , 2022. doi: 10.48550/arXiv.2209.15189. URL https://arxiv.org/abs/ 2209.15189 .Yizhong Wang, Yeganeh Kordi, Swaroop Mishra, Alisa Liu, Noah A. Smith, Daniel Khashabi, and Hannaneh Hajishirzi. Self-Instruct: Aligning language models with self-generated instructions. In 
+
+Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 13484–13508, Toronto, Canada, 2023. Association for Computational Linguistics. doi: 10.18653/v1/2023.acl-long.754. URL https://aclanthology.org/2023. acl-long.754/ .Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Brian Ichter, Fei Xia, Ed H. Chi, Quoc V. Le, and Denny Zhou. Chain-of-thought prompting elicits reasoning in large language models. In Advances in Neural Information Processing Systems , volume 35, pages 24824– 24837, 2022. URL https://proceedings.neurips.cc/paper_files/paper/2022/hash/ 9d5609613524ecf4f15af0f7b31abca4-Abstract-Conference.html .Xiaomi LLM-Core Team. MiMo-V2-Flash technical report, 2026. URL https://arxiv.org/ abs/2601.02780 .Wenda Xu, Rujun Han, Zifeng Wang, Long T. Le, Dhruv Madeka, Lei Li, William Yang Wang, Rishabh Agarwal, Chen-Yu Lee, and Tomas Pfister. Speculative knowledge distillation: Bridging the teacher-student gap through interleaved sampling. In The Thirteenth International Conference on Learning Representations , 2025. URL https://openreview.net/forum?id=EgJhwYR2tB .An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et al. Qwen3 technical report, 2025. URL https://arxiv. org/abs/2505.09388 .11 Qiying Yu, Zheng Zhang, Ruofei Zhu, Yufeng Yuan, Xiaochen Zuo, Yu Yue, Weinan Dai, Tiantian Fan, Gaohong Liu, Lingjun Liu, Xin Liu, et al. DAPO: An open-source LLM reinforcement learning system at scale. arXiv preprint arXiv:2503.14476 , 2025. doi: 10.48550/arXiv.2503.14476. URL https://arxiv.org/abs/2503.14476 .Weizhe Yuan, Richard Yuanzhe Pang, Kyunghyun Cho, Xian Li, Sainbayar Sukhbaatar, Jing Xu, and Jason E. Weston. Self-rewarding language models. In Proceedings of the 41st International Conference on Machine Learning , volume 235 of Proceedings of Machine Learning Research ,pages 57905–57923. PMLR, 2024. URL https://proceedings.mlr.press/v235/yuan24d. html .Eric Zelikman, Yuhuai Wu, Jesse Mu, and Noah Goodman. STaR: Bootstrapping reasoning with reasoning. In Advances in Neural Information Processing Systems , volume 35, pages 15476– 15488, 2022. URL https://proceedings.neurips.cc/paper_files/paper/2022/hash/ 639a9a172c044fbb64175b5fad42e9a5-Abstract-Conference.html .Zhenru Zhang, Chujie Zheng, Yangzhen Wu, Beichen Zhang, Runji Lin, Bowen Yu, Dayiheng Liu, Jingren Zhou, and Junyang Lin. The lessons of developing process reward models in mathematical reasoning. arXiv preprint arXiv:2501.07301 , 2025. doi: 10.48550/arXiv.2501.07301. URL 
+
+https://arxiv.org/abs/2501.07301 .Siyan Zhao, Zhihui Xie, Mengchen Liu, Jing Huang, Guan Pang, Feiyu Chen, and Aditya Grover. Self-Distilled Reasoner: On-policy self-distillation for large language models. arXiv preprint arXiv:2601.18734 , 2026. doi: 10.48550/arXiv.2601.18734. URL https://arxiv.org/abs/ 2601.18734 .12 Algorithm 1 PAINT: complete adaptive privileged re-scoring recipe used in our main experiments 
+
+Require: Reasoning dataset S = {(xi, y ⋆i )}Ni=1 , initialized model pθ0 , student policy qbase , fixed privileged teacher qaug , anchor extractor A, mask ratios ρcorrect > ρ wrong , sparse interpolation parameters (kbase , f top ), clipping threshold τ 
+
+> 1:
+
+while not converged do  
+
+> 2:
+
+Sample a minibatch B ⊂ S  
+
+> 3:
+
+for all (x, y ⋆) ∈ B do  
+
+> 4:
+
+Sample one student rollout ˆy ∼ qbase (· | x) 
+
+> 5:
+
+Compute anchor-overlap score α ← |{ a ∈ A (y⋆) : a ⊆ Norm(ˆ y)}| /|A (y⋆)| 
+
+> 6:
+
+Set mask ratio ρ ← ρwrong + ( ρcorrect − ρwrong )α 
+
+> 7:
+
+Build masked privileged trace ˜y⋆ ← Mtail (y⋆; ρ) 
+
+> 8:
+
+for n = 1 , . . . , |ˆy| do  
+
+> 9:
+
+pnS ← qbase (· | x, ˆy<n ) and pnT ← qaug (· | x, ˜y⋆, ˆy<n ) 
+
+> 10:
+
+EnS ← − log pnS and EnT ← − log pnT 
+
+> 11:
+
+Compute HnS , HnT , and Rn ← HnT /H nS 
+
+> 12:
+
+Let I be the top ftop fraction of generated-token positions by Rn 
+
+> 13:
+
+Set ˜EnT ← (1 − kbase )EnT + kbase EnS for n ∈ I , else ˜EnT ← EnT 
+
+> 14:
+
+˜pnT (v) ← exp( − ˜EnT (v)) / P 
+
+> u∈V
+
+exp( − ˜EnT (u))  
+
+> 15:
+
+ℓ(x, y ⋆) ← gDroll (ˆ y; x, ˜y⋆) 
+
+> 16:
+
+Update the student parameters underlying qbase using 1
+
+> |B|
+
+P 
+
+> (x,y ⋆)∈B
+
+ℓ(x, y ⋆)
+
+## A Training Algorithm 
+
+Algorithm 1 summarizes the complete PAINT recipe. Each example contributes one on-policy rollout, one overlap-adaptive masked privileged prompt, one pair of student/teacher distributions per prefix, and one clipped forward-KL loss. Unless otherwise stated, all experiments use this fixed-teacher, suffix-masked, sparsely energy-interpolated full-vocabulary objective. For readability, the algorithm writes the interpolation in its equivalent normalized energy form; the implementation performs the same operation by interpolating logits before the final softmax. The trainer also includes optional variants such as EMA teachers, sampled-token objectives, and reason-first teachers, but they are not part of the reported main recipe. 
+
+## B Experimental Details 
+
+Unless otherwise stated, all privileged on-policy distillation runs use the same post-training setting. We train LoRA adapters with learning rate 5 × 10 −6, effective batch size 32 , rank r = 64 , α = 128 ,and target modules q_proj, k_proj, v_proj, o_proj, gate_proj, up_proj, and down_proj. Each update samples one base-policy completion per prompt with sampling temperature 1.1 and maximum completion length 1024 , and scores the same prefixes with the fixed privileged teacher. For PAINT, we apply suffix masking with ρwrong = 0 .30 and ρcorrect = 0 .40 , use sparse teacher-energy interpolation with kbase = 0 .03 and ftop = 0 .03 , and clip the pointwise forward-KL term at τ = 0 .06 . The vanilla prior self-distillation baseline removes these PAINT-specific adaptive masking and sparse interpolation components while keeping the same training budget and teacher anchoring. We train for 100 steps and evaluate checkpoints every 20 steps. Evaluation follows the Qwen3 recommended sampling setup with thinking mode enabled, temperature 1.0, top-p 0.95 , top-k −1, min-p 0.0, no presence penalty, maximum generation length 38 ,912 , and 12 samples per prompt. 
+
+## C Ablation Studies 
+
+All ablations in this section use Qwen3-1.7B and report AIME 2024 Avg@12. The first two sweeps isolate the masking design with sparse interpolation disabled; the final sweep fixes the best masking setting and ablates sparse interpolation. 13 C.1 Mask-Ratio Selection 
+
+The adaptive masking schedule uses two endpoints: ρwrong , applied when the rollout has little overlap with the verified solution, and ρcorrect , applied when the rollout already matches more reference anchors. We report the sweep as (ρcorrect , ρ wrong ), with the actual per-example ratio computed as 
+
+ρ(α) = ρwrong + ( ρcorrect − ρwrong )α. Table 2 evaluates this choice with suffix masking and no sparse interpolation. Table 2: Ablation of the adaptive suffix-mask ratios with suffix masking and sparse interpolation disabled. Rows with equal endpoints correspond to a fixed mask ratio, while unequal endpoints use the overlap-adaptive schedule. 
+
+ρcorrect ρwrong AIME 2024 
+
+0.00 0.00 57.2 0.25 0.25 57.8 0.50 0.50 56.9 0.75 0.75 55.8 0.50 0.25 58.1 0.50 0.30 57.8 0.40 0.30 58.6 
+
+The sweep supports the conservative adaptive schedule used in the main experiments. Revealing the full solution is strong but leaves little context control, while a large fixed hidden ratio can remove too much privileged information. Moderate adaptive masking performs best in this sweep: low-overlap rollouts still receive enough visible solution context for correction, whereas high-overlap rollouts hide slightly more of the suffix to avoid over-committing to a single reference trace. 
+
+C.2 Mask Placement Strategy 
+
+We next fix the adaptive endpoints to the main setting, (ρcorrect , ρ wrong ) = (0 .40 , 0.30) , and ablate where the contiguous block is hidden. Table 3 compares prefix, middle, random contiguous-span, and suffix masking with sparse interpolation disabled. Table 3: Mask-placement ablation with the default adaptive endpoints fixed and sparse interpolation disabled. 
+
+Mask placement AIME 2024 
+
+Prefix mask 56.1 Middle mask 57.8 Random contiguous mask 57.2 Suffix mask 58.6 
+
+Suffix masking is the strongest placement in this sweep. This is consistent with the visible-context argument in Theorem 3.3: early reference tokens often contain setup, decomposition, and high-level plan information, so preserving them gives the privileged scorer a coherent context while still hiding downstream execution details. 
+
+C.3 Sparse Interpolation Strength and Budget 
+
+Finally, we fix suffix masking and the adaptive endpoints to (ρcorrect , ρ wrong ) = (0 .40 , 0.30) , then vary the interpolation strength kbase and the selected-token fraction ftop . Table 4 reports the resulting AIME 2024 Avg@12 scores. The row (kbase , f top ) = (0 , 0) disables interpolation, while ftop = 1 .00 
+
+applies interpolation at every generated-token position. Sparse interpolation improves over the masking-only setting, but applying it everywhere is less effective. The best setting uses a moderate interpolation strength and a small selected-position budget, supporting PAINT’s design choice to calibrate only entropy-mismatch positions rather than all stylistic continuation positions. 14 Table 4: Ablation of sparse energy interpolation with suffix masking and default adaptive endpoints fixed. 
+
+kbase ftop AIME 2024 
+
+0.00 0.00 58.6 0.01 1.00 58.6 0.03 1.00 58.9 0.05 1.00 57.8 0.03 0.01 59.2 0.03 0.03 59.7 
+
+0.03 0.05 58.9 
+
+## D Formal Justification for Adaptive Masking, Privileged Teaching, Energy Fusion, and Suffix Masking 
+
+Proposition D.1 (Autoregressive–Gibbs correspondence) . Fix a condition x, a finite vocabulary V,and a finite horizon T ; variable-length generation can be handled by including an EOS token and padding to the terminal horizon. Let si = ( x, a <i ) be the autoregressive state at depth i.If a strictly positive autoregressive model π assigns 
+
+π(τ | x) = 
+
+> T
+
+Y
+
+> i=1
+
+π(ai | si) for τ = ( a1, . . . , a T ),
+
+then the local costs 
+
+cπ (si, a i) = − log π(ai | si)
+
+define an additive energy Eπ (τ ) = PTi=1 cπ (si, a i) whose Gibbs distribution equals π:
+
+exp( −Eπ (τ )) 
+
+P  
+
+> τ′
+
+exp( −Eπ (τ ′)) = π(τ | x).
+
+Conversely, any additive energy E(τ ) = PTi=1 c(si, a i) defines an autoregressive policy 
+
+πE (ai | si) = exp( −c(si, a i) + V (si+1 ) − V (si)) ,
+
+where 
+
+V (si) = log X
+
+> ai,...,a T
+
+exp 
+
+−
+
+> T
+
+X
+
+> j=i
+
+c(sj , a j )
+
+ , V (sT +1 ) = 0 .
+
+Proof. For the first direction, 
+
+exp( −Eπ (τ )) = 
+
+> T
+
+Y
+
+> i=1
+
+π(ai | si) = π(τ | x).
+
+Since π is normalized over all length-T trajectories, the Gibbs partition function is 
+
+X 
+
+> τ′
+
+exp( −Eπ (τ ′)) = X 
+
+> τ′
+
+π(τ ′ | x) = 1 ,
+
+so the Gibbs distribution is exactly π.For the converse direction, define the state partition function 
+
+Z(si) = X
+
+> ai,...,a T
+
+exp 
+
+−
+
+> T
+
+X
+
+> j=i
+
+c(sj , a j )
+
+ , V (si) = log Z(si).
+
+For a fixed action ai,
+
+Z(si, a i) = X
+
+> ai+1 ,...,a T
+
+exp 
+
+−c(si, a i) −
+
+> T
+
+X
+
+> j=i+1
+
+c(sj , a j )
+
+ = exp( −c(si, a i)) Z(si+1 ).
+
+15 Therefore the conditional probability of choosing ai under the Gibbs distribution is 
+
+πE (ai | si) = Z(si, a i)
+
+Z(si) = exp( −c(si, a i) + V (si+1 ) − V (si)) .
+
+The conditionals sum to one by construction, so they define an autoregressive policy whose trajectory distribution is the Gibbs distribution. 
+
+Theorem D.2 (Monotonicity of the optimal adaptive mask ratio) . Let X be a finite set of valid continuations and let ρ ∈ [0 , 1) denote a continuous hidden ratio for a contiguous masked block. Let 
+
+qρ(τ ) = (1 − ρ)q0(τ ) + ρq 1(τ ), τ ∈ X ,
+
+where q0, q 1 ∈ ∆( X ), q0̸ = q1, and qρ(τ ) > 0 on the relevant support. For student parameters θ,define 
+
+M2(q, θ ) = Eτ ∼q
+
+∥∇ θ log pθ (τ )∥2 , v0 = M2(q0, θ ), ϵ(θ) = M2(q1, θ ) − M2(q0, θ ).
+
+Let 
+
+H(ρ) = − X 
+
+> τ∈X
+
+qρ(τ ) log qρ(τ ),
+
+and consider the objective 
+
+L(ρ, ϵ ) = βH (ρ) − λ(v0 + ρϵ ), β, λ > 0.
+
+Whenever an interior maximizer ρ⋆(ϵ) ∈ (0 , 1) exists, its differentiable branch is a strictly decreasing function of the alignment-error proxy: dρ ⋆
+
+dϵ < 0.
+
+Proof. By linearity of expectation under a convex combination of measures, 
+
+M2(qρ, θ ) = Eτ ∼qρ
+
+∥∇ θ log pθ (τ )∥2
+
+= (1 − ρ)M2(q0, θ ) + ρM 2(q1, θ )= (1 − ρ)v0 + ρ(v0 + ϵ) = v0 + ρϵ. 
+
+Thus the objective can be written as 
+
+L(ρ, ϵ ) = βH (ρ) − λ(v0 + ρϵ ).
+
+Next, because qρ is affine in ρ, its Shannon entropy is strictly concave along this path. Differentiating twice gives 
+
+H′′ (ρ) = − X 
+
+> τ∈X
+
+(q1(τ ) − q0(τ )) 2
+
+qρ(τ ) < 0,
+
+where strict negativity follows because qρ(τ ) > 0 on the relevant support and q0̸ = q1.For an interior maximizer ρ⋆(ϵ), the first-order condition is 
+
+∂L
+
+∂ρ = βH ′(ρ⋆) − λϵ = 0 .
+
+Define 
+
+G(ρ, ϵ ) = βH ′(ρ) − λϵ. 
+
+Since ∂G
+
+∂ρ = βH ′′ (ρ⋆)̸ = 0 ,
+
+the implicit function theorem applies and yields 
+
+dρ ⋆
+
+dϵ = − ∂G/∂ϵ ∂G/∂ρ = − −λβH ′′ (ρ⋆) = λβH ′′ (ρ⋆) .
+
+Because λ > 0, β > 0, and H′′ (ρ⋆) < 0, the ratio is strictly negative: 
+
+dρ ⋆
+
+dϵ < 0.
+
+This proves the claim. 16 Assumption D.3 (Energy-space sensor model) . Fix a rollout position n and a prefix ˆy<n . There is an ideal latent token-energy function En⋆ (v) for the desired next-token target. The student and privileged teacher energies are conditionally independent noisy observations of this latent energy: 
+
+EnS (v) = En⋆ (v) + ϵnS (v), EnT (v) = En⋆ (v) + ϵnT (v),
+
+where ϵnS (v) ∼ N (0 , (σnS )2) and ϵnT (v) ∼ N (0 , (σnT )2).
+
+Proposition D.4 (Precision-weighted geometric calibration) . Under Theorem D.3, assume a flat prior over En⋆ (v) and define EnS (v) = − log pnS (v) and EnT (v) = − log pnT (v) up to token-independent constants. Then the MAP estimate of the latent energy is 
+
+En
+
+> MAP
+
+(v) = k⋆nEnS (v) + (1 − k⋆n)EnT (v), k⋆n = (σnT )2
+
+(σnT )2 + ( σnS )2 .
+
+The normalized distribution induced by this energy is 
+
+pn
+
+> MAP
+
+(v) ∝  pnS (v)k⋆n  pnT (v)1−k⋆n .
+
+Proof. For a fixed token v, the conditional likelihood of the observed energies is 
+
+p(EnS (v), E nT (v) | En⋆ (v)) ∝ exp 
+
+
+
+− (EnS (v) − En⋆ (v)) 2
+
+2( σnS )2 − (EnT (v) − En⋆ (v)) 2
+
+2( σnT )2
+
+
+
+.
+
+With a flat prior, maximizing the posterior is the same as maximizing the log-likelihood 
+
+L(En⋆ (v)) = − (EnS (v) − En⋆ (v)) 2
+
+2( σnS )2 − (EnT (v) − En⋆ (v)) 2
+
+2( σnT )2 + C. 
+
+Setting the derivative to zero gives 
+
+EnS (v) − En⋆ (v)(σnS )2 + EnT (v) − En⋆ (v)(σnT )2 = 0 ,
+
+hence 
+
+En
+
+> MAP
+
+(v) =   
+
+> 1(σnS)2
+
+EnS (v) + 1(σnT )2 EnT (v)  
+
+> 1(σnS)2
+
++ 1(σnT )2
+
+= (σnT )2
+
+(σnT )2 + ( σnS )2 EnS (v) + (σnS )2
+
+(σnT )2 + ( σnS )2 EnT (v).
+
+This proves the precision-weighted energy formula. Finally, substituting EnS (v) = − log pnS (v) + cS
+
+and EnT (v) = − log pnT (v) + cT yields 
+
+exp( −En
+
+> MAP
+
+(v)) ∝  pnS (v)k⋆n  pnT (v)1−k⋆n ,
+
+where the token-independent constants are absorbed into the normalizer. Normalizing over v ∈ V 
+
+gives the stated distribution. 
+
+Proposition D.5 (Entropy-ratio sparse selection) . Fix an interpolation strength k0 ∈ (0 , 1) . At a rollout position n, suppose the teacher and student define independent local Gaussian measures over a scalar energy coordinate, 
+
+πnT (E) ∝ exp 
+
+
+
+− (E − μnT )2
+
+2( σnT )2
+
+
+
+, πnS (E) ∝ exp 
+
+
+
+− (E − μnS )2
+
+2( σnS )2
+
+
+
+,
+
+with precisions τ nT = 1 /(σnT )2 and τ nS = 1 /(σnS )2. Let 
+
+πnk (E) ∝  πnT (E)1−k πnS (E)k
+
+be the geometric interpolation. If HnS , H nT > 0 and the local energy variances obey a shared entropy–variance equation of state 
+
+(σnA)2 = cn
+
+ HnA
+
+γ , A ∈ { S, T }, cn > 0, γ > 0,
+
+then the signed differential-entropy reduction from applying k0 is 
+
+∆In(k0) = h(πnT ) − h(πnk0 ) = 12 log(1 − k0 + k0Rγn) , Rn = HnT
+
+HnS
+
+.
+
+17 Moreover, ∆In(k0) is strictly increasing in Rn; it is positive exactly when the interpolated Gaussian has lower entropy than the teacher Gaussian. Consequently, for any finite valid-position set J and any budget S, the problem 
+
+max 
+
+> m∈{ 0,1}|J |
+
+X
+
+> n∈J
+
+mn ∆In(k0)s.t. X
+
+> n∈J
+
+mn = S
+
+is solved by selecting the S largest entropy ratios Rn, with arbitrary tie-breaking at the cutoff. Proof. Taking logarithms of the geometric interpolation gives 
+
+log πnk (E) = (1 − k) log πnT (E) + k log πnS (E) + C. 
+
+The coefficient of E2 is therefore 
+
+− 12 ((1 − k)τ nT + kτ nS ) .
+
+Since a one-dimensional Gaussian with precision τ has quadratic coefficient −τ / 2, the interpolated precision is 
+
+τ nk = (1 − k)τ nT + kτ nS .
+
+For a one-dimensional Gaussian, h(π) = 12 log(2 πe ) − 12 log τ . Hence 
+
+∆In(k) = h(πnT ) − h(πnk ) = 12 log τ nk
+
+τ nT
+
+= 12 log 
+
+
+
+1 − k + k τ nS
+
+τ nT
+
+
+
+.
+
+The shared entropy–variance law gives 
+
+τ nS
+
+τ nT
+
+= (σnT )2
+
+(σnS )2 = cn(HnT )γ
+
+cn(HnS )γ = Rγn,
+
+which proves the stated information-gain formula. It remains to show that the nonlinear score preserves the ordering. Write x = log Rn and define 
+
+g(x) = 12 log(1 − k0 + k0 exp( γx )) .
+
+Then 
+
+g′(x) = 12
+
+k0γ exp( γx )1 − k0 + k0 exp( γx ) > 0
+
+because k0 ∈ (0 , 1) and γ > 0. Thus ∆In(k0), log Rn, and Rn induce the same ordering. Finally, consider any feasible selector that includes a position a but excludes a position b with 
+
+∆Ib(k0) > ∆Ia(k0). Swapping a out and b in strictly increases the objective while preserving the budget. Therefore no optimum can omit a larger score in favor of a smaller one, so every optimum selects the top S scores; since the scores are order-equivalent to Rn, this is exactly top-S entropy-ratio selection. Ties at the cutoff give equivalent optima. 
+
+Proposition D.6 (Entropy smoothing) . Let y⋆ = ( y⋆ 
+
+> 1
+
+, . . . , y ⋆T ), let Mt = y⋆t:t+k−1, let Ct =(y⋆<t , y ⋆t+k:T ), and let Ξnt = ( x, ˆy<n , C t). For 
+
+qnm,t (a) = Pr( An = a | Ξnt , M t = m), ¯qnt (a) = X
+
+> m
+
+ρt(m | Ξnt )qnm,t (a),
+
+where ρt(m | Ξnt ) = Pr( Mt = m | Ξnt ),
+
+H(¯ qnt ) ≥ Em∼ρt(·| Ξnt )
+
+H(qnm,t ) .
+
+Equality holds if and only if qnm,t is identical for all m with positive posterior probability, up to events of zero probability. 
+
+18 Proof. Let f (z) = −z log z, with the usual convention 0 log 0 = 0 . The function f is concave on 
+
+[0 , 1] and strictly concave on (0 , 1) . Since 
+
+¯qnt (a) = X
+
+> m
+
+ρt(m | Ξnt )qnm,t (a),
+
+Jensen’s inequality gives, for each token a,
+
+f (¯ qnt (a)) ≥ X
+
+> m
+
+ρt(m | Ξnt )f (qnm,t (a)) .
+
+Summing over a ∈ V yields the entropy inequality. The equality condition follows from the strict concavity of f on the positive-probability coordinates: equality can hold only when the token probabilities agree across all posterior-supported hidden blocks. 
+
+Lemma D.7 (Forward-KL decomposition) . Under the setup of Theorem D.6, let pnS (a) = qbase (a |
+
+x, ˆy<n ) be the student distribution, with support containing the support of every qnm,t . Then 
+
+Em∼ρt(·| Ξnt )
+
+DKL (qnm,t ∥ pnS ) = DKL (¯ qnt ∥ pnS ) + I(An; Mt | Ξnt ).
+
+Proof. Expanding the left-hand side, 
+
+X
+
+> m
+
+ρt(m | Ξnt ) X
+
+> a
+
+qnm,t (a) log qnm,t (a)
+
+pnS (a)= X
+
+> m
+
+ρt(m | Ξnt ) X
+
+> a
+
+qnm,t (a) log qnm,t (a)¯qnt (a) + X
+
+> m
+
+ρt(m | Ξnt ) X
+
+> a
+
+qnm,t (a) log ¯qnt (a)
+
+pnS (a) .
+
+The first term is exactly I(An; Mt | Ξnt ) under the joint distribution 
+
+Pr( Mt = m, A n = a | Ξnt ) = ρt(m | Ξnt )qnm,t (a).
+
+For the second term, use P 
+
+> m
+
+ρt(m | Ξnt )qnm,t (a) = ¯ qnt (a) to obtain 
+
+X
+
+> a
+
+¯qnt (a) log ¯qnt (a)
+
+pnS (a) = DKL (¯ qnt ∥ pnS ).
+
+This proves the identity. 
+
+Proposition D.8 (Rao–Blackwellized gradient variance) . Under the setup of Theorem D.6, assume the target distributions are treated as fixed quantities, as in the frozen-teacher implementation. Define 
+
+Gnm,t (θ) = ∇θ DKL (qnm,t ∥ pnS ), ¯Gnt (θ) = ∇θ DKL (¯ qnt ∥ pnS ).
+
+Then 
+
+Em∼ρt(·| Ξnt )
+
+Gnm,t (θ) = ¯Gnt (θ).
+
+Moreover, over the joint randomness of examples, rollout prefixes, positions, and hidden blocks, 
+
+Cov( GnMt,t ) = Cov( ¯Gnt ) + ECov( GnMt,t | Ξnt ) ,
+
+so the covariance difference is positive semidefinite. Proof. Because the target is held fixed when differentiating, 
+
+Gnm,t (θ) = − X
+
+> a
+
+qnm,t (a)∇θ log pnS (a).
+
+Taking the posterior expectation over m gives 
+
+Em[Gnm,t (θ) | Ξnt ] = − X
+
+> a
+
+¯qnt (a)∇θ log pnS (a) = ¯Gnt (θ).
+
+Conditioning on the sampled prefixes and treating rollout sampling as fixed for the supervised distillation update, the covariance identity is the law of total covariance applied to the random vector 
+
+GnMt,t with conditioning variable Ξnt :
+
+Cov( GnMt,t ) = Cov( E[GnMt,t | Ξnt ]) + E[Cov( GnMt,t | Ξnt )] .
+
+Substituting E[GnMt,t | Ξnt ] = ¯Gnt gives the stated result. Conditional covariance matrices are positive semidefinite, so the final term is positive semidefinite. 19 Lemma D.9 (Visible-context duality) . Let Mt = y⋆t:t+k−1 and Ct = ( y⋆<t , y ⋆t+k:T ) for a fixed masking budget k, and define 
+
+Γ( t) = E(x,y ⋆),ˆy,n [I(An; Mt | x, ˆy<n , C t)] ,
+
+where n is sampled uniformly from the rollout positions. Then 
+
+Γ( t) = K − E(x,y ⋆),ˆy,n [I(An; Ct | x, ˆy<n )] ,
+
+where 
+
+K = E(x,y ⋆),ˆy,n [I(An; y⋆ | x, ˆy<n )] 
+
+does not depend on t.Proof. For a fixed t and k, the pair (Ct, M t) is a deterministic partition of the same reference solution 
+
+y⋆. By the chain rule for mutual information, 
+
+I(An; Ct, M t | x, ˆy<n ) = I(An; Ct | x, ˆy<n ) + I(An; Mt | x, ˆy<n , C t).
+
+Since (Ct, M t) and y⋆ carry the same information, 
+
+I(An; Ct, M t | x, ˆy<n ) = I(An; y⋆ | x, ˆy<n ).
+
+Rearranging and taking expectations gives the result. The first term on the right is independent of the mask position because it conditions on the complete reference solution. 
+
+Assumption D.10 (Causal information asymmetry) . For a fixed masking budget k, later mask positions leave a weakly more informative visible context for predicting the teacher’s next action: for every t1 < t 2,
+
+E [I(An; Ct1 | x, ˆy<n )] ≤ E [I(An; Ct2 | x, ˆy<n )] 
+
+holds. 
+
+Theorem D.11 (Optimality of suffix masking) . Under Theorems D.9 and D.10, Γ( t) is non-increasing in t, and the minimum expected information loss is attained at the largest feasible mask position, 
+
+t⋆ = T − k + 1 ,
+
+which masks the suffix of length k.Proof. Let t1 < t 2. By Theorem D.9, 
+
+Γ( t1) − Γ( t2) = E[I(An; Ct2 | x, ˆy<n )] − E[I(An; Ct1 | x, ˆy<n )] .
+
+The assumed causal information asymmetry makes the right-hand side nonnegative, so Γ( t1) ≥ Γ( t2).Therefore Γ( t) is non-increasing in t, and its minimum over t ∈ { 1, . . . , T − k + 1 } is achieved at 
+
+t = T − k + 1 .20

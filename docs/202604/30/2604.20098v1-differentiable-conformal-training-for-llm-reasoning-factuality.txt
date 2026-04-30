@@ -1,0 +1,2093 @@
+Title: Differentiable Conformal Training for LLM Reasoning Factuality
+
+URL Source: https://arxiv.org/pdf/2604.20098v1
+
+Published Time: Thu, 23 Apr 2026 00:21:55 GMT
+
+Number of Pages: 28
+
+Markdown Content:
+# Differentiable Conformal Training for LLM Reasoning Factuality 
+
+Nathan Hittesdorf 1 Marco Salzetta 2 Lu Cheng 1
+
+Abstract 
+
+Large Language Models (LLMs) frequently hal-lucinate, limiting their reliability in critical ap-plications. Conformal Prediction (CP) addresses this by calibrating error rates on held-out data to provide statistically valid confidence guarantees. Recent work extends CP to LLM factuality to fil-ter out risky claims, ensuring that hallucination rates remain below a user-specified level (e.g., 10%). While prior methods treat claims indepen-dently, Coherent Factuality (Rubin-Toles et al., 2025) extends to multi-step reasoning by repre-senting outputs as dependency graphs and jointly validating claims with their logical ancestors. A key limitation is that Coherent Factuality is not differentiable, requiring hand-crafted scorers that at high reliability levels remove nearly 60% of true claims. We introduce Differentiable Coher-ent Factuality (DCF), a fully differentiable relax-ation that enables learning improved scorers while provably recovering the original algorithm’s guar-antees. Experiments on two benchmark reasoning datasets demonstrate DCF achieves up to 141% 
+
+improvement in claim retention while maintaining reliability guarantees, representing a significant step towards reliable conformal LLM systems. 
+
+1. Introduction 
+
+LLMs are increasingly deployed in high-stakes decision-making, making output factuality critical. However, LLMs are prone to hallucinations—confidently generating false information. Extensive work addresses this, including fine-grained atomic evaluation (Min et al., 2023), internal truthfulness detection (Azaria & Mitchell, 2023), and structured reasoning (Wei et al., 2022; Wang et al., 2023). Recent approaches adapt Conformal Prediction (CP) (Vovk 
+
+> 1
+
+Department of Computer Science, University of Illinois at Chicago, Chicago, United States 2Department of Physics, Uni-versity of Illinois at Urbana-Champaign, Urbana, United States. Correspondence to: Nathan Hittesdorf <nhitt2@uic.edu >, Lu Cheng <lucheng@uic.edu >.
+
+Preprint. April 23, 2026. 
+
+et al., 2005; Angelopoulos & Bates, 2023; Zhou et al., 2025)—a distribution-free method for constructing predic-tion sets with guaranteed error rates—to provide statistical factuality guarantees for LLMs (Mohri & Hashimoto, 2024; Cherian et al., 2024). These methods decompose outputs into atomic subclaims and assign each a risk score 
+
+measuring likelihood of incorrectness. CP calibrates a threshold τ on held-out data, retaining only subclaims with scores below τ , guaranteeing that retained outputs are factual with probability at least 1 − α for user-specified error rate α. Coherent Factuality (CF) (Rubin-Toles et al., 2025) extends this to multi-step reasoning via Approximate Deducibility Graphs (ADGs; Figure 6), where nodes are subclaims and edges encode logical dependencies. This captures contexts where claim validity depends on ancestor correctness, such as in mathematical reasoning. A critical limitation of these approaches is the trade-off between reliability and retention: achieving stronger guarantees (smaller α) requires more aggressive filtering. This is fundamental to CP—to guarantee fewer errors, the method must become more conservative. The problem is particularly acute with hand-crafted risk scores. While learned scoring functions can improve retention in standard CP settings (Stutz et al., 2022; Cherian et al., 2024), CF relies on frequency-based self consistency scoring that cannot be optimized end-to-end. At high reliability levels (α < 0.1), these hand-crafted approaches must remove up to 60% of true claims to maintain coverage guarantees, severely limiting practical utility (Figure 2a). To address this limitation, we introduce Differentiable Coherent Factuality (DCF) , a fully differentiable relax-ation of CF that enables gradient-based optimization of risk scores. Prior work has made conformal prediction differentiable for classification (Stutz et al., 2022) and independent claim filtering (Cherian et al., 2024), but these methods relax independent operations. CF’s graph structure introduces tightly coupled discrete operations—threshold filtering, ancestor coherence enforcement, and argmax selection—that require joint relaxations preserving the algo-rithmic ordering (Section 3.1). We develop such relaxations and prove they recover the original CF algorithm in the limit (Theorems 3.1, 3.2), enabling training in a differentiable setting while preserving coverage guarantees at test time. 1
+
+> arXiv:2604.20098v1 [cs.LG] 22 Apr 2026 Differentiable Conformal Training for LLM Reasoning Factuality
+
+Our contributions are: 
+
+(1) We prove theoretically and demonstrate empirically that CF’s discrete operations can be faithfully modeled via dif-ferentiable relaxations (Theorems 3.1, 3.2, Section 4.2). 
+
+(2) We show that the resulting framework enables end-to-end optimization of claim retention while preserving confor-mal coverage guarantees, achieving up to 141% improve-ment on MATH and 61% on FELM compared to frequency-based baselines (Sections 4.3). 
+
+(3) We provide in-depth interpretability analysis demon-strating that DCF learns to combine complementary signals more effectively than any individual feature (Section 4.4). 
+
+2. Preliminaries 
+
+2.1. Conformal Prediction 
+
+Conformal Prediction (CP) (Vovk et al., 2005; Angelopou-los & Bates, 2023) provides distribution-free coverage guarantees under exchangeability. Given inputs x ∈ X 
+
+and ground-truth labels y ∈ Y , a nonconformity score 
+
+νcp : X × Y → R measures how atypical a prediction is relative to the true label. In the classic split CP setting (Angelopoulos & Bates, 2023), we calibrate on a held-out set {(xi, y i)}ni=1 to compute threshold 
+
+ˆτα = Quantile ⌈(1 −α)( n+1) ⌉/n ({νcp (xi, y i)}ni=1 ). At test time, CP retains predictions with νcp (x, y ) ≤ ˆτα,guaranteeing 1 − α ≤ P(yn+1 ∈ C(xn+1 )) ≤ 1 − α + 1 
+
+> n+1
+
+.
+
+Conformal factuality (Mohri & Hashimoto, 2024) adapts CP to provide statistical guarantees on LLM outputs (illus-trated in Figure 7). Given an LLM response, the method: (1) decomposes it into atomic subclaims—self-contained factual statements that can be independently verified, (2) assigns each claim a risk score rv measuring likelihood of incorrectness, and (3) retains only claims with rv ≤ ˆτα.
+
+2.2. Coherent Factuality 
+
+Coherent Factuality (CF) 1 (Rubin-Toles et al., 2025) extend CP to multi-step reasoning. While Mohri & Hashimoto (2024) treats claims independently, CF recognizes that reasoning steps can only be evaluated within the context of preceding claims. For example, in proving √2 is irrational, the claim “ p2 is even” is only valid if the preceding claim “p2 = 2 q2” is retained—CF enforces such dependencies. 
+
+Approximate Deducibility Graphs. CF represents outputs as ADGs G = ( V, E ) where nodes are atomic subclaims and edges encode dependencies (Figure 6). A claim is 
+
+coherently factual if it and all ancestors are correct. 
+
+> 1We use CF to denote both the method and the property; context disambiguates.
+
+Subgraph Generation. Given a risk score function r :
+
+V → R, CF generates candidate subgraphs Uτ for each threshold τ ∈ T by: (1) selecting nodes with rv ≤ τ ,(2) removing nodes lacking ancestors, and (3) forming the induced subgraph. 
+
+Nonconformity Score. The nonconformity score is 
+
+ν(X, Y, UT ) = sup {τ : all Uτ ′ with τ ′ ≤ τ are CF }. The calibrated threshold ˆτα is then obtained via split CP. 
+
+Prediction. At test time, the prediction set is 
+
+(Ufiltered , τ filtered ) = arg max (U,τ ): τ < ˆτα τ .
+
+Scoring Function. CF uses hand-crafted frequency-based scoring: s(v) = (1 − βmix )find (v) + βmix · med {find (v′) : 
+
+v′ ∈ desc (v)}, where find (v) is self-consistency frequency and βmix ∈ [0 , 1] is a mixing parameter. 
+
+2.3. Conformal Training 
+
+Conformal Training (ConfTr) (Stutz et al., 2022) makes CP differentiable for classification by relaxing two operations: set construction (sigmoid-smoothed thresholding) and calibration (differentiable sorting for quantile computation). These relaxations are independent —each sample’s confi-dence set is constructed in isolation. Cherian et al. (2024) extend this to LLM factuality with independent claim filtering. In both cases, at test time the original non-smooth CP is applied, preserving coverage guarantees. 
+
+3. Method 
+
+3.1. Overview and Motivation 
+
+CF’s hand-crafted frequency-based scoring leads to poor retention at strict α levels—removing up to 60% of true claims. Conformal training offers a path forward by simulat-ing the calibration and prediction pipeline during training to optimize scoring functions directly for claim retention. How-ever, existing conformal training (Section 2.3) relaxes two independent operations—per-sample thresholding and quan-tile computation—where no prediction depends on another’s outcome. CF’s graph structure introduces three coupled dis-crete operations: (1) threshold filtering ( 𝟙 {rv ≤ τ }), (2) an-cestor coherence (retaining a node only if all ancestors pass), and (3) argmax selection (a supremum over discrete sets shaped by prior steps). These form a cascade—each step’s output depends on the previous step’s discrete decisions— requiring joint relaxations that preserve this ordering. 
+
+Our approach. We develop DCF: differentiable relaxations that enable gradient flow while preserving CF’s algorithmic structure. Our approach mirrors CF’s calibration and prediction procedure, replacing each discrete operation with a differentiable surrogate—sigmoids for indicators, products for conjunctions, and softmax for argmax. We then prove that these jointly recover the original CF algorithm 2Differentiable Conformal Training for LLM Reasoning Factuality 
+
+in the limit (Theorems 3.1, 3.2), theoretically grounding the use of DCF for optimizing claim retention. 2
+
+Proof challenges. Proving that our relaxation recovers CF is non-trivial: the coupled temperature parameters controlling each relaxation must approach their limits in a specific order, since reversing the order corresponds to executing algorith-mic steps out of sequence (e.g., taking a supremum before applying a sample cutoff). We address this by expressing all limits in terms of a single variable whose rate of approach encodes the correct ordering. An additional challenge arises when the supremum objective combines quantities on incomparable scales ( τ values and violation indicators); we resolve this by restricting sup( λT ) − inf( λT ) ≤ 1 to scale-match these terms. Full proofs appear in Appendix A. ˚a
+
+3.2. Soft Membership 
+
+Calibration and prediction begin with the same two operations: threshold filtering and ancestor coherence (cf. 
+
+Subgraph Generation ). We relax these jointly into soft membership probabilities qv,τ ∈ (0 , 1) representing the de-gree to which node v belongs to the subgraph at threshold τ .
+
+Soft Filtering. CF selects nodes with rv ≤ τ . For an ADG G = ( V, E ) and differentiable scorer πθ : Rd →
+
+R, we compute confidence scores πθ (xv ) and risk values 
+
+rv = C − πθ (xv ), where C is a constant. 3 Following Rubin-Toles et al. (2025), we construct threshold grid T =
+
+{τmin , r v1 , . . . , r vn , τ max } where τmin = min v rv − m and 
+
+τmax = max v rv + m.The hard indicator for whether to retain a claim v 𝟙 {rv ≤ τ }
+
+is non-differentiable. A natural relaxation is the sigmoid—a smooth approximation that outputs values in (0 , 1) inter-pretable as retention probabilities pv,τ :
+
+pv,τ = σ
+
+ τ − rv
+
+Tp
+
+
+
+, σ(x) = 11 + e−x . (1) Temperature Tp controls sharpness: as Tp → 0+, the sigmoid recovers the hard indicator. 
+
+Soft Ancestor Coherence. CF removes nodes lacking ancestors—equivalently, a node is retained only if it and all its ancestors pass filtering. This conjunction is naturally relaxed as a product: Pr( node v) = Q 
+
+> u∈Anc (v)∪{ v}
+
+Pr( u).      
+
+> 2Throughout Sections 3.2–3.4, we present formulas in log-space to match the implementation, where ϵ > 0is added to logarithm arguments for numerical stability.
+> 3Cand margin mare hyperparameters that aid comparison with CF.
+
+We implement this as a weighted geometric mean: 4
+
+log qv,τ =
+
+P 
+
+> u∈Anc (v)∪{ v}
+
+wu log pu,τ 
+
+P 
+
+> u∈Anc (v)∪{ v}
+
+wu
+
+, (2) where ancestors receive weight wu = γ and self receives 
+
+wv = 1. γ > 0 controls ancestor influence: γ < 1
+
+attenuates, γ = 1 weights equally, γ > 1 amplifies. As a geometric mean of probabilities, qv,τ approaches zero whenever any ancestor’s retention probability approaches zero—preserving the conjunction. 
+
+3.3. Differentiable Calibration 
+
+Calibration computes a threshold ˆτα guaranteeing 1 − α
+
+coverage (cf. Nonconformity Score ). For each calibration example, we find the maximum threshold at which the filtered graph contains no false claims—atomic subclaims that are hallucinated or factually incorrect. This defines the nonconformity score ˜τ . Taking a quantile across examples yields ˆτα.With soft membership probabilities qv,τ in hand, we must relax the discrete supremum sup {τ : all Uτ ′ with τ ′ ≤
+
+τ are CF }. This requires two steps: measuring how well each threshold filters false claims, then selecting the largest threshold with acceptable filtering. 
+
+Violation Measurement. We quantify how well threshold 
+
+τ filters false claims via a violation score Vτ ∈ [0 , 1] , where higher values indicate the threshold is too permissive. Let 
+
+V − = {v : yv = 0 } be the set of false claims. The validity score aggregates the probability of correctly filtering false claims: 
+
+log Qτ = 1
+
+|V −|
+
+X 
+
+> v∈V−
+
+log(1 − qv,τ ). (3) We convert validity to a violation measure: 
+
+Vτ = 1 − Q1/τ s 
+
+> τ
+
+, (4) where τs > 0 controls sharpness. As τs → 0 and Tp → 0,this approaches hard violation detection. 
+
+Soft Supremum. The CF nonconformity score is a supre-mum: the largest τ such that all subgraphs up to τ are CF. A supremum is an argmax, which we relax via softmax over a utility balancing threshold magnitude against violations: 
+
+sτ = λ · τ − Vτ , (5) 
+
+> 4Geometric mean prevents chains from being punished for length; a standard product would dilute too aggressively.
+
+3Differentiable Conformal Training for LLM Reasoning Factuality 
+
+where λ > 0 controls the trade-off. 5 The soft supremum is: 
+
+wcal  
+
+> τ
+
+= exp( β · sτ )
+
+P  
+
+> τ′∈T
+
+exp( β · sτ ′ ) , ˜τ = X 
+
+> τ∈T
+
+wcal  
+
+> τ
+
+· τ. (6) As β → ∞ , the softmax concentrates on the maximum-utility threshold, recovering the hard supremum. Intuitively, the soft supremum finds the largest threshold that avoids retaining false claims—exactly the nonconformity score needed for calibration. 
+
+Conformal Quantile. The final calibration step computes 
+
+ˆτα as the ⌈(1 − α)( n + 1) ⌉/n -quantile of the noncon-formity scores {˜τi}ni=1 . In split CP, this is a simple order statistic; to enable gradient flow, we replace it with the differentiable soft quantile operator of Grover et al. (2019), which computes a smooth approximation 
+
+ˆτα = SoftQuantile ({˜τi}, q, ρ ) controlled by a sharpness parameter ρ. As ρ → ∞ , the soft quantile recovers the exact order statistic. This is the same mechanism used by ConfTr (Stutz et al., 2022) for differentiable calibration. 
+
+Theorem 3.1 (Calibration Convergence) . As temperature parameters approach their limits ( Tp → 0+, τs → 0, β →∞), the soft nonconformity score ˜τ converges to the hard nonconformity score ν(UT ) from CF. (Full statement and proof in Appendix A.1.) 
+
+3.4. Differentiable Prediction 
+
+At test time, CF selects the maximum threshold below 
+
+ˆτα and returns the corresponding filtered subgraph (cf. 
+
+Prediction ): (U∗, τ ∗) = arg max τ < ˆτα τ . We relax this constrained argmax while respecting the calibrated bound. We first compute soft membership probabilities qv,τ via Equations (1) – (2) . Then we relax the constrained argmax using softmax combined with a sigmoid gate. 
+
+Gated Soft Argmax. The gate—another sigmoid relax-ation of an indicator—smoothly transitions from 1 (below 
+
+ˆτα) to 0 (above), enforcing the calibration bound: 
+
+w(unnorm)  
+
+> τ
+
+= exp( β · τ ) · σ
+
+ ˆτα − ττz
+
+
+
+, (7) where exp( β · τ ) weights toward larger thresholds and the sigmoid gates out thresholds exceeding ˆτα. Temperature τz
+
+controls gate sharpness: as τz → 0+, the gate recovers the hard constraint τ < ˆτα. After normalization, final retention probabilities qv aggregate across thresholds: 
+
+wτ = w(unnorm) 
+
+> τ
+
+P  
+
+> τ′∈T
+
+w(unnorm)  
+
+> τ′
+
+, qv = X 
+
+> τ∈T
+
+wτ · qv,τ . (8)         
+
+> 5In practice, we min-max normalize both τand Vτto [0 ,1]
+> before computing the utility, so that λtrades off quantities on comparable scales. To make the process differentiable, one may use softmin and softmax.
+
+Theorem 3.2 (Prediction Convergence) . As temperature parameters approach their limits ( Tp → 0+, τz → 0+,
+
+β → ∞ ), the soft retention probabilities qv converge to the hard CF prediction Ufiltered . (Full statement and proof in Appendix A.2.) 
+
+3.5. Training Objective 
+
+Following ConfTr (Stutz et al., 2022), we simulate the full conformal pipeline during training. At each epoch, we split the training data into disjoint calibration and prediction subsets Dcal and Dpred . Differentiable calibration (Section 3.3) is applied to Dcal to obtain ˆτα, and differ-entiable prediction (Section 3.4) generates soft retention probabilities qi,v on Dpred . Because all operations are differentiable, gradients flow from the loss through quantile estimation and calibration back to the scorer parameters θ.Following Cherian et al. (2024), we maximize the number of true claims retained: 
+
+Lretention = − 1
+
+|D pred |
+
+X
+
+> i∈D pred
+
+X
+
+> v∈Vi
+
+yi,v · qi,v , (9) where yi,v ∈ { 0, 1} are ground-truth labels and qi,v are the coherence-adjusted soft retention probabilities from Equation (8) . While the loss function is shared with Cherian et al. (2024), there it optimizes independent claim filtering; here, gradients flow through the full graph-structured pipeline—calibration, ancestor coherence, and gated prediction—enabling the scorer to learn patterns that exploit CF’s dependency structure. This directly targets the limitation identified in Section 1: learning scores that retain more correct claims under conformal guarantees. 
+
+3.6. Summary and Training Procedure 
+
+Table 1 summarizes all transformations from CF to DCF. Theorems 3.1 and 3.2 establish that these relaxations jointly recover the original CF algorithm in the limit, ensuring that optimization of the differentiable surrogate corresponds to optimization of the discrete procedure. With convergence established, we formalize DCF into two differentiable subroutines—calibration (Algorithm 1) and prediction (Algorithm 2)—which compose into the end-to-end training procedure (Algorithm 3). At test time, the learned scorer de-ploys in the original discrete CF algorithm, preserving cov-erage guarantees. Full algorithm details are in Appendix B. 
+
+4. Experiments 
+
+As established in Section 1, hand-crafted scoring functions remove up to 60% of true claims at high reliability lev-els. Our experiments evaluate whether DCF’s learned scor-ing can improve this retention-guarantee trade-off. We fo-cus on α ∈ [0 .01 , 0.10] —corresponding to 90–99% CF 4Differentiable Conformal Training for LLM Reasoning Factuality                                                                    
+
+> Table 1. Summary of transformations from CF (discrete) to DCF (differentiable).
+> Operation CF (Discrete) DCF (Differentiable) Limit
+> Threshold filtering 𝟙 {rv≤τ}σ
+> τ−rv
+> Tp
+> 
+> Tp→0+
+> Ancestor coherence v∈Vtrue ⇒Anc (v)⊆Vtrue qv,τ =GeomMean ({pu,τ }u∈Anc (v)∪{ v})(conjunction) Violation detection Uτis CF or not Vτ= 1 −Q1/τ s
+> ττs→0
+> Nonconf. score sup {τ:Uτis CF }P
+> τwτ·τβ→ ∞
+> Quantile ⌈(1 −α)( n+1) ⌉-th order stat. Soft quantile with strength ρρ→ ∞
+> Prediction arg max τ < ˆτατP
+> τwτ·qv,τ ,w(unnorm)
+> τ∝exp( βτ )·σ
+> ˆτα−ττz
+> 
+> β→ ∞ ,τz→0
+
+guarantees—where the trade-off is most acute and reliabil-ity matters most. Our experiments address three questions: • RQ1 (Validity) : Does DCF faithfully approximate CF to enable valid gradient-based optimization? • RQ2 (Performance) : Does DCF retain more true claims than the SOTA methods while maintaining coverage guar-antees? • RQ3 (Understanding) : Does learning to combine fea-tures provide value beyond any single feature? 
+
+4.1. Experimental Setup 
+
+4.1.1. S CORER ARCHITECTURE 
+
+We implement πθ as logistic regression over claim features to avoid overfitting and enable interpretability analysis. 4.1.2. D ATASETS 
+
+We follow (Rubin-Toles et al., 2025) to use the following two benchmark datasets: (1) MATH (Hendrycks et al., 2021): 202 competition-level mathematics problems. We use GPT-5-mini (OpenAI, 2025) to generate solutions decomposed into atomic subclaims forming ADGs (Figure 6). Two annotators with strong math background performed dual-annotation to verify dependencies and label correctness. Graphs average 7.3 claims and 7.3 edges per problem, with 81.2% fully correct.(2) FELM (Chen et al., 2023): 710 problems across four domains: reasoning (207), math (194), world knowledge (184), and science (125), with subclaim-level decompositions and correctness annotations provided by the dataset authors. We exclude writing, which lacks structured logical dependencies. FELM exhibits simpler reasoning chains (4.0 claims, 2.8 edges per problem) with 62.4% fully correct. 
+
+Features. To provide training signals beyond frequency for the training of our scorer model, we extract 30 claim-level features organized into four categories (Cherian et al. (2024) similarly extract claim features for learned scoring): (1) base scoring (self-consistency frequency), (2) semantic coherence (logical consistency with ancestors, inference gap detection), (3) domain indicators (12 binary flags for mathe-matical topics), and (4) graph metrics (PageRank, between-ness, reachability computed via NetworkX). Semantic fea-tures use the same GPT-5-mini model as frequency scoring, ruling out gains from stronger model access. For FELM, we exclude MATH-specific domain indicators and use two fea-ture configurations: 7 features for α ≤ 0.08 and 20 features for α ≥ 0.09 (selected by correlation with ground-truth la-bels). See Appendix D.1 for complete feature descriptions. 4.1.3. E VALUATION PROTOCOL 
+
+We use 20-fold cross-validation to reduce variance in our estimates. Each fold partitions data into three subsets with distinct roles: (1) Training set (70%): Used to learn the scorer πθ , further split into calibration and prediction subsets for differentiable training (Figure 5 in Appendix C.1) (2) Validation set (15%): For early stopping during training (3) Test set (15%): For final evaluation. At test time, the learned scorer deploys in the original CF algorithm, preserving theoretical guarantees. 4.1.4. B ASELINES 
+
+We compare DCF against state-of-the-art conformal LLM factuality methods, each ablating a key component of DCF: • Coherent Factuality (CF) (Rubin-Toles et al., 2025): Hand-crafted frequency-based scoring with graph struc-ture. Does learning improve over hand-crafted scoring? 
+
+• Independent Factuality (Mohri & Hashimoto, 2024): Frequency-based scoring without graph structure—claims treated independently. Does modeling dependencies help? 
+
+• Boosted Independent (Cherian et al., 2024): Learned scoring with the same features as DCF, but without graph structure. Does learning alone suffice, or is graph struc-ture necessary? 
+
+• XGBoost + Conformal : XGBoost trained independently for optimizing CF accuracy on the same features, then plugged into CF as the scorer. Can a standard classifier replace DCF’s differentiable training? 
+
+5Differentiable Conformal Training for LLM Reasoning Factuality 
+
+4.1.5. M ETRICS 
+
+Theorems 3.1 and 3.2 establish that DCF recovers CF in the limit. To verify this empirically—confirming that soft oper-ations approximate hard operations well enough to train πθ
+
+(RQ1)—we report correlation metrics (Pearson r, MAE) between soft and hard quantities. For evaluating perfor-mance (RQ2, RQ3), we follow standard CP evaluation (An-gelopoulos & Bates, 2023) and LLM factuality evaluation (Rubin-Toles et al., 2025): (1) Coverage : Proportion of test examples where retained claims are CF; target is 1 − α. (2) 
+
+Retention : Mean claims retained per problem (or equiva-lently, proportion of claims retained), measuring informa-tiveness of filtered outputs. 
+
+4.2. RQ1: Validating Surrogate Behavior 
+
+We empirically verify Theorems 3.1 and 3.2 on MATH, focusing on problems with at least one incorrect claim where calibration is non-trivial (error-free problems yield constant thresholds uninformative for validation). We use MATH because (1) we performed manual annotation with direct control over label quality, and (2) its denser graphs (avg. 7.3 claims, 7.3 edges vs. FELM’s 4.0 claims, 2.8 edges) make ancestor constraints more meaningful. 4.2.1. C ALIBRATION VALIDATION 
+
+Training uses finite temperatures (Appendix D.3), so we validate empirically that these settings yield behavior sufficiently close to CF. Figure 1a shows strong correlation between soft and hard nonconformity scores ( r = 0 .921 ,MAE = 0.34 ). Figure 1b demonstrates near-perfect threshold agreement across α ∈ [0 .01 , 0.15] (r = 0 .976 ,MAE = 0.12 , 3% relative error), confirming the soft quantile preserves calibration properties. 62 4 6 8
+
+> Hard
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> 7
+> 8
+> 9
+> Soft
+> r = 0.921
+> MAE = 0.34
+> n = 38
+> y=x
+
+(a) Individual nonconf. scores. 1  
+
+> 3
+> 5
+> 7
+> 9
+> 11
+> 13
+> 15
+> Miscoverage Level (%)
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> 2.5
+> 3.0
+> 3.5
+> 4.0
+> Quantile Threshold
+> r = 0.976
+> MAE = 0.12
+> n = 15
+> Hard
+> Soft
+
+(b) Agg. thresholds across α.
+
+Figure 1. Soft vs. hard calibration validation. 
+
+4.2.2. P REDICTION VALIDATION 
+
+Table 2 shows claim-level agreement across 20-fold CV (14,600 predictions). Agreement ranges from 90.2–100%, 
+
+> 6
+
+Since 18.8% of MATH problems contain errors, thresholds saturate at τmax for α ≳ 0.19 . We evaluate at α ≤ 0.15 , below saturation. 
+
+with perfect agreement at α ≤ 0.03 and minor discrepancies at threshold boundary regions. This validates Theorem 3.2. 
+
+Table 2. Soft-hard prediction agreement across α values. 
+
+α Both Incl. Soft Only Hard Only Both Excl. Agree 0.01–0.03 4791 0 0 9809 100.0% 0.04 4791 0 30 9779 99.8% 0.05 4813 0 902 8885 93.8% 0.06 5428 2 888 8282 93.9% 0.07 5848 4 668 8080 95.4% 0.08 6206 8 1232 7154 91.5% 0.09 6923 12 1416 6249 90.2% 0.10 7455 54 994 6097 92.8% 
+
+Summary. Both calibration ( r > 0.92 ) and prediction (> 90% agreement) validations confirm that DCF with practical hyperparameters faithfully approximates CF, ensuring training gradients reflect the true discrete objective. 
+
+4.3. RQ2: Performance Comparisons 
+
+Having validated DCF as a faithful surrogate (RQ1), we evaluate whether the differentiable framework learns improved scoring functions. We compare DCF against the baselines introduced in Section 4.1, isolating whether improvements stem from learning, from modeling dependencies, or from their combination. 
+
+Main Results. Figure 2 presents retention and coverage across α ∈ [0 .01 , 0.10] on MATH and FELM respec-tively. 7 On MATH, DCF meets the coverage target for 
+
+α ∈ 0.05 , 0.06 , 0.07 , 0.08 , achieving 60–105% retention improvements over CF. At α = 0 .03 (97% reliability), DCF more than doubles retention (+141%, 1.76 vs. 0.73 claims) with coverage within 0.5pp of target. On FELM, DCF meets the coverage target at 9 of 10 α values and achieves higher retention than CF at 6 of those 9, with gains concentrated at lower α (0.01–0.05) and higher α
+
+(0.09–0.10). At mid-range α (0.06–0.08), CF achieves higher retention; however, DCF’s coverage at these levels exceeds the target by 0.9–1.6pp (e.g., 93.64% vs. 92% target at α = 0 .08 ), suggesting room for trading excess coverage for improved retention. Complete numerical results appear in Tables 7 and 8 (Appendix D). 
+
+Baseline Ordering Validates Design. DCF consistently outperforms all baselines, including the three state-of-the-art conformal factuality methods. The ordering (DCF > CF >
+
+Independent > Boosted Independent ≫ XGBoost) confirms that learning improves over hand-crafted scoring (DCF vs. CF), that modeling dependencies adds value even without 
+
+> 7
+
+At α ∈ 0.01 , 0.02 on MATH, 81.2% of problems are fully correct, leaving few calibration examples with errors. This makes quantile estimation unstable, causing the estimator to reject all claims. We report these values but focus analysis on α ≥ 0.03 .
+
+6Differentiable Conformal Training for LLM Reasoning Factuality 
+
+learning (CF vs. Independent), and that learning without graph structure actually hurts—Boosted Independent un-derperforms non-learned Independent while using identical frequency-score. XGBoost trained independently for claim-level accuracy achieves near-zero retention at tight coverage levels, showing that a standard classifier cannot replace DCF’s differentiable conformal training. Together, these re-sults demonstrate that DCF’s gains require both learning and graph structure—neither component alone is sufficient—and that learning must occur through the conformal objective. 
+
+Summary. DCF consistently outperforms SOTA across both datasets and reliability levels by directly optimizing CF’s conformal objective with learned, graph-aware scoring. 
+
+4.4. RQ3: Understanding DCF 
+
+We now ask whether DCF’s gains stem from learning to com-bine features, or simply from accessing more discriminative individual features. CF can use any scalar feature as its risk score—the original method uses frequency, but graph met-rics or positional features could substitute. We test whether any single feature, optimally configured, can match DCF. 4.4.1. S INGLE -F EATURE ABLATION 
+
+Using SHAP analysis (Appendix G), we identify DCF’s most influential features: nx reachability (graph con-nectivity), claim index (position in reasoning chain), and frequency-score . We construct single-feature CF baselines using each as the risk score, with βmix optimized per-α via grid search. Figure 3 shows DCF consistently outperforms single-feature baselines on both datasets. On MATH, DCF outperforms the best single feature ( nx reachability ) by 7–50% across α values. On FELM, DCF outperforms frequency-score at most α values (by up to 64%); at mid-range α
+
+where frequency wins, DCF maintains excess coverage (Section 4.3). Notably, the best single feature differs by dataset—graph connectivity dominates on MATH’s complex reasoning chains, while frequency suffices more on FELM’s simpler structures—yet DCF matches or exceeds both. 4.4.2. C ASE STUDY 
+
+To illustrate how combining features improves retention, consider a MATH problem at α = 0 .06 where all 12 claims are correct. The CF baseline (frequency scoring with optimized βmix ) retains 0/12 claims; DCF retains 9/12. This problem’s solution relies on Vieta’s formulas—a valid but less common technique that the LLM rarely regenerates. As a result, key steps receive frequency = 0 , causing the baseline to reject the entire chain. DCF succeeds by combin-ing complementary signals: when one feature is unreliable, others compensate.                              
+
+> Table 3. DCF feature contributions for claim 8 (frequency=0). Feature Value Weight Contrib.
+> nx reachability 3.00 0.272 +0.815
+> claim index 8.00 0.098 +0.780
+> nx in degree 2.00 0.135 +0.269
+> quadratic equations 1.00 0.229 +0.229
+> nx out degree 1.00 0.176 +0.176
+> problem relevance 1.00 0.144 +0.144
+> coherent to ancestors 1.00 0.110 +0.110
+> nx betweenness 0.22 0.292 +0.064
+> Total 2.66
+
+Table 3 shows how DCF retains Claim 8 despite frequency =0. Graph structure ( nx reachability , claim index )provides strong positive signal, while connectivity and se-mantic features contribute additional evidence. The learned combination accumulates evidence across signals, enabling retention even when key features like frequency are unre-liable. This flexibility is DCF’s core advantage: rather than relying on one potentially unreliable signal, it learns which features to trust and how to weight them. See Appendix F for the full methodology and an additional case study. 
+
+5. Related Work 
+
+Conformal Prediction. Conformal prediction (CP) (Vovk et al., 2005; Shafer & Vovk, 2008; Angelopoulos & Bates, 2023) provides distribution-free coverage guarantees under exchangeability. Extensions include conformalized quantile regression (Romano et al., 2019) and the learn-then-test framework (Angelopoulos et al., 2025), which calibrates predictive algorithms to achieve risk control—inspiring our treatment of conformal calibration as an optimization problem. Most relevant to our work, Stutz et al. (2022) introduced ConfTr (Conformal Training), demonstrating that discrete quantile operations in CP can be relaxed into differentiable surrogates for end-to-end optimization—a key insight we extend to graph-structured reasoning. Angelopoulos et al. (2024) generalized this to conformal risk control with arbitrary monotone loss functions. Gibbs & Candes (2021) proposed adaptive conformal inference for distribution shift, though extending such adaptation to graph-structured dependencies remains open (Zhao et al., 2024). 
+
+LLM Factuality. Recent work has extended conformal methods to LLMs for statistically rigorous uncertainty quantification (Zhou et al., 2025). Kumar et al. (2023) and Quach et al. (2024) were among the first to adapt CP for LLM settings, while Su et al. (2024) introduced sampling-based nonconformity scores for API-only access and Wang et al. (2024) incorporated self-consistency into CP for correctness coverage. These methods operate at the 7Differentiable Conformal Training for LLM Reasoning Factuality 0.02 0.04 0.06 0.08 0.10 
+
+Miscoverage Level ( )
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> Claims Retained (%)
+> Differentiable Conformal Factuality
+> Conformal Factuality
+> Independent Factuality
+> Boosted Independent
+> XGBoost + Conformal
+
+(a) MATH Retention. 0.02 0.04 0.06 0.08 0.10 
+
+Miscoverage Level ( )  
+
+> 0.70
+> 0.75
+> 0.80
+> 0.85
+> 0.90
+> 0.95
+> 1.00
+> Coverage
+> Differentiable Conformal Factuality
+> Conformal Factuality
+> Independent Factuality
+> Boosted Independent
+> XGBoost + Conformal
+> Target (1-)
+
+(b) MATH Coverage. 0.01 0.03 0.05 0.07 0.09 
+
+Miscoverage Level ( ) 
+
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> Claims Retained (%)
+> Differentiable Conformal Factuality
+> Conformal Factuality
+> Independent Factuality
+> Boosted Independent
+> XGBoost + Conformal
+
+(c) FELM Retention. 0.01 0.03 0.05 0.07 0.09 
+
+Miscoverage Level ( )  
+
+> 0.70
+> 0.75
+> 0.80
+> 0.85
+> 0.90
+> 0.95
+> 1.00
+> Coverage
+> Differentiable Conformal Factuality
+> Conformal Factuality
+> Independent Factuality
+> Boosted Independent
+> XGBoost + Conformal
+> Target Coverage (1-)
+
+(d) FELM Coverage. 
+
+Figure 2. DCF vs. baselines on MATH (a–b) and FELM (c–d) across α ∈ [0 .01 , 0.10] .0.01 0.03 0.05 0.07 0.09 
+
+Miscoverage Level ( )
+
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> Average Claims Retained  DCF (Ours)
+> Frequency Score
+> Claim Index
+> NX Reachability
+> Inference Gap Size
+
+(a) MATH Retention. 0.01 0.03 0.05 0.07 0.09 
+
+Miscoverage Level ( )  
+
+> 0.70
+> 0.75
+> 0.80
+> 0.85
+> 0.90
+> 0.95
+> 1.00
+> Coverage
+> DCF (Ours)
+> Frequency Score
+> Claim Index
+> NX Reachability
+> Inference Gap Size
+> Target Coverage (1-)
+
+(b) MATH Coverage. 0.01 0.03 0.05 0.07 0.09 
+
+Miscoverage Level ( )
+
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> 2.5
+> Average Claims Retained  DCF (Ours)
+> Frequency Score
+> Claim Index
+> NX Reachability
+> Inference Gap Size
+
+(c) FELM Retention. 0.01 0.03 0.05 0.07 0.09 
+
+Miscoverage Level ( )  
+
+> 0.70
+> 0.75
+> 0.80
+> 0.85
+> 0.90
+> 0.95
+> 1.00
+> Coverage
+> DCF (Ours)
+> Frequency Score
+> Claim Index
+> NX Reachability
+> Inference Gap Size
+> Target Coverage (1-)
+
+(d) FELM Coverage. 
+
+Figure 3. DCF vs. single-feature CF baselines on MATH (top) and FELM (bottom). Baselines use one feature with optimized βmix .
+
+Problem: The difference of the roots of the quadratic equation x2 + bx + c = 0 is |b − 2c|.If c̸ = 0 , find c in terms of b.
+
+Answer: c = b − 1
+
+Claims (all TRUE): 
+
+0: Let roots be r1, r 2
+
+1: By Vieta, r1 + r2 = −b
+
+2: By Vieta, r1r2 = c
+
+3: (r1 − r2)2 = ( r1 + r2)2 − 4r1r2
+
+4: Using above: (r1 − r2)2 = b2 − 4c
+
+5: Given |r1 − r2| = |b − 2c|
+
+6: Squaring: b2 − 4c = ( b − 2c)2
+
+7: (b − 2c)2 = b2 − 4bc + 4 c2
+
+8: Rearranging: 0 = −4bc + 4 c2 + 4 c ← freq=0 9: 0 = 4 c(c + 1 − b)
+
+10: From above: c = 0 or c = b − 1
+
+11: Since c̸ = 0 , c = b − 1
+
+Prediction set (majority vote): 
+
+Learned: 9/12 claims retained Baseline: 0/12 claims retained Highlighted: Claim 8 (freq=0) 
+
+01 234567 8910 11 
+
+• All TRUE / Retained 
+
+• Not retained 
+
+• Claim 8 
+
+Figure 4. CF vs. DCF ADG Comparison (Correct Claims) 
+
+response or question level; a parallel line of work applies CP to structured, claim-level factuality. Mohri & Hashimoto (2024) pioneered conformal factuality, decomposing LLM outputs into atomic claims and filtering based on calibrated risk thresholds. Their method provides high-probability correctness guarantees but treats claims independently without considering logical dependencies. Rubin-Toles et al. (2025) addressed this with coherent factuality, extending CP to multi-step reasoning through approximate deducibility graphs. While their approach captures reasoning chain structure, it relies on hand-crafted scoring that leads to overly conservative filtering. Cherian et al. (2024) developed enhanced conformal methods with conditional validity and differentiable scoring functions, demonstrating retention improvements but operating on independent claims without exploiting graph structure. Min et al. (2023) introduced FActScore for fine-grained atomic evaluation, directly informing our claim-level analysis. Work on uncertainty detection (Kada-vath et al., 2022; Azaria & Mitchell, 2023) suggests learned scoring functions could leverage model-internal features beyond surface-level frequency statistics. Complementary reasoning approaches (Wei et al., 2022; Wang et al., 2023) improve reliability but lack formal statistical guarantees. Our work synthesizes these directions by making CF differentiable to enable learned scoring functions while preserving conformal guarantees. 
+
+6. Conclusion 
+
+We addressed the challenge of LLM factuality verification: existing conformal methods provide formal guarantees but sacrifice too many true claims to be practically useful. We introduced Differentiable Coherent Factuality (DCF), a framework that enables learning scoring functions for graph-structured conformal prediction while preserving theoretical guarantees. Our contributions span theory, methodology, and empirical validation. Theoretically, we proved that DCF recovers the original CF algorithm in the limit, with 93–100% empirical 8Differentiable Conformal Training for LLM Reasoning Factuality 
+
+agreement validating practical convergence. Methodolog-ically, DCF provides the first differentiable relaxation of graph-structured LLM conformal reasoning, enabling end-to-end optimization through calibration and prediction. Empirically, learned scorers achieve up to 141% retention improvements over frequency-based baselines, while deploying directly in the original CF algorithm at test time. More broadly, DCF bridges the gap between formal guarantees and usability. Statistical guarantees provide little value if outputs are too conservative to be informative; by substantially improving retention, DCF makes conformal factuality practical for real-world deployment. 
+
+Impact Statement 
+
+This work improves factual reliability of LLM outputs through formal statistical guarantees, contributing to safer AI deployment in accuracy-critical domains. We note that conformal guarantees are statistical (holding on average, not per-prediction). Additionally, as noted by Cherian et al. (2024), optimizing for marginal coverage may yield uneven reliability across subgroups or covariates, potentially misrepresenting performance on certain data subsets. Retained claims also still reflect the underlying LLM’s knowledge limitations and biases. 
+
+Limitations 
+
+While DCF achieves strong empirical results, we identify several limitations: 
+
+Quantile Instability at Strict Thresholds. At very low α, DCF rejects all claims to maintain coverage: 
+
+α ≤ 0.02 on MATH and α = 0 .01 on FELM. This reflects a fundamental limitation of conformal prediction with small calibration sets—quantile estimates become unstable when few samples fall below strict thresholds. Larger datasets would enable finer-grained calibration. 
+
+Reduced Gains When Frequency Is Discriminative. 
+
+DCF’s advantage is largest when self-consistency frequency (or any baseline feature) poorly discriminates valid from invalid claims—as occurs with long reasoning chains, uncommon but valid techniques, or semantically incoherent outputs. On FELM, where simpler reasoning (4.0 vs. 7.3 claims per problem) makes frequency more reliable, DCF’s gains are smaller and frequency-based baselines occasionally outperform DCF at mid-range α (Table 8). 
+
+MATH Dataset Scale and Annotation. MATH contains only 202 problems with manually annotated reasoning graphs, limiting robustness of evaluation. Additionally, our operationalization of coherent factuality treats fully hallucinated ADGs as incoherent, which influences graph metrics like nx reachability . While DCF outper-forms nx reachability on MATH as a standalone baseline, the learned combination may not generalize to settings with well-structured but incorrect reasoning, where content-based features may become more critical. 
+
+Scorer Architecture. Our linear scorer provides inter-pretability but limited capacity. Richer architectures—e.g., neural networks with hidden layers—could capture fea-ture interactions that our linear scorer misses, providing enhanced claim retention. 
+
+References 
+
+Angelopoulos, A. N. and Bates, S. Conformal prediction: A gentle introduction. Foundations and Trends® in Machine Learning , 16(4):494–591, 2023. ISSN 1935-8237. doi: 10.1561/2200000101. URL http://dx.doi.org/ 10.1561/2200000101 .Angelopoulos, A. N., Bates, S., Fisch, A., Lei, L., and Schuster, T. Conformal risk control. In The Twelfth International Conference on Learning Representations ,2024. URL https://openreview.net/forum? id=33XGfHLtZg .Angelopoulos, A. N., Bates, S., Cand `es, E. J., Jordan, M. I., and Lei, L. Learn then test: Calibrating pre-dictive algorithms to achieve risk control. The Annals of Applied Statistics , 19(2):1641 – 1662, 2025. doi: 10.1214/24-AOAS1998. URL https://doi.org/ 10.1214/24-AOAS1998 .Azaria, A. and Mitchell, T. The internal state of an LLM knows when it’s lying. In Bouamor, H., Pino, J., and Bali, K. (eds.), Findings of the Association for Compu-tational Linguistics: EMNLP 2023 , pp. 967–976, Singa-pore, December 2023. Association for Computational Linguistics. doi: 10.18653/v1/2023.findings-emnlp. 68. URL https://aclanthology.org/2023. findings-emnlp.68/ .Chen, S., Zhao, Y., Zhang, J., Chern, I.-C., Gao, S., Liu, P., and He, J. FELM: Benchmarking factuality eval-uation of large language models. In Thirty-seventh Conference on Neural Information Processing Systems Datasets and Benchmarks Track , 2023. URL https: //openreview.net/forum?id=jSO7Vgolc6 .Cherian, J. J., Gibbs, I., and Cand `es, E. J. Large language model validity via enhanced conformal prediction meth-ods. In Proceedings of the 38th International Conference on Neural Information Processing Systems , NIPS ’24, Red Hook, NY, USA, 2024. Curran Associates Inc. ISBN 9798331314385. 9Differentiable Conformal Training for LLM Reasoning Factuality 
+
+Gibbs, I. and Candes, E. Adaptive conformal inference under distribution shift. In Ranzato, M., Beygelzimer, A., Dauphin, Y., Liang, P., and Vaughan, J. W. (eds.), 
+
+Advances in Neural Information Processing Systems ,volume 34, pp. 1660–1672. Curran Associates, Inc., 2021. URL https://proceedings.neurips. cc/paper_files/paper/2021/file/ 0d441de75945e5acbc865406fc9a2559-Paper. pdf .Grover, A., Wang, E., Zweig, A., and Ermon, S. Stochastic optimization of sorting networks via continuous relax-ations. In International Conference on Learning Rep-resentations , 2019. URL https://openreview. net/forum?id=H1eSS3CcKX .Hendrycks, D., Burns, C., Kadavath, S., Arora, A., Basart, S., Tang, E., Song, D., and Steinhardt, J. Measuring mathematical problem solving with the MATH dataset. In Vanschoren, J. and Yeung, S. (eds.), Proceedings of the Neural Information Processing Systems Track on Datasets and Benchmarks , volume 1, 2021. URL https: //datasets-benchmarks-proceedings. neurips.cc/paper_ files/paper/2021/file/ be83ab3ecd0db773eb2dc1b0a17836a1-Paper-round2. pdf .Kadavath, S., Conerly, T., Askell, A., Henighan, T., Drain, D., Perez, E., Schiefer, N., Hatfield-Dodds, Z., DasSarma, N., Tran-Johnson, E., Johnston, S., El-Showk, S., Jones, A., Elhage, N., Hume, T., Chen, A., Bai, Y., Bowman, S., Fort, S., Ganguli, D., Hernandez, D., Jacobson, J., Kernion, J., Kravec, S., Lovitt, L., Ndousse, K., Olsson, C., Ringer, S., Amodei, D., Brown, T., Clark, J., Joseph, N., Mann, B., McCandlish, S., Olah, C., and Kaplan, J. Language models (mostly) know what they know, 2022. URL https://arxiv.org/abs/2207.05221 .Kumar, B., Lu, C., Gupta, G., Palepu, A., Bellamy, D., Raskar, R., and Beam, A. Conformal prediction with large language models for multi-choice question answer-ing, 2023. URL https://arxiv.org/abs/2305. 18404 .Min, S., Krishna, K., Lyu, X., Lewis, M., Yih, W.-t., Koh, P., Iyyer, M., Zettlemoyer, L., and Hajishirzi, H. FActScore: Fine-grained atomic evaluation of factual precision in long form text generation. In Bouamor, H., Pino, J., and Bali, K. (eds.), Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing , pp. 12076–12100, Singapore, December 2023. Association for Computational Linguistics. doi: 10.18653/v1/2023. emnlp-main.741. URL https://aclanthology. org/2023.emnlp-main.741/ .Mohri, C. and Hashimoto, T. Language models with confor-mal factuality guarantees. In Proceedings of the 41st In-ternational Conference on Machine Learning , ICML’24. JMLR.org, 2024. OpenAI. GPT-5 Mini. https://openai.com , 2025. Large language model accessed via OpenAI API. Quach, V., Fisch, A., Schuster, T., Yala, A., Sohn, J. H., Jaakkola, T. S., and Barzilay, R. Conformal language modeling, 2024. URL https://arxiv.org/abs/ 2306.10193 .Romano, Y., Patterson, E., and Candes, E. Conformal-ized quantile regression. In Wallach, H., Larochelle, H., Beygelzimer, A., d'Alch ´e-Buc, F., Fox, E., and Garnett, R. (eds.), Advances in Neural Information Processing Systems , volume 32. Curran Associates, Inc., 2019. URL https://proceedings.neurips. cc/paper_files/paper/2019/file/ 5103c3584b063c431bd1268e9b5e76fb-Paper. pdf .Rubin-Toles, M., Gambhir, M., Ramji, K., Roth, A., and Goel, S. Conformal language model reasoning with co-herent factuality. In The Thirteenth International Confer-ence on Learning Representations , 2025. URL https: //openreview.net/forum?id=AJpUZd8Clb .Shafer, G. and Vovk, V. A tutorial on conformal prediction. 
+
+J. Mach. Learn. Res. , 9:371–421, June 2008. ISSN 1532-4435. Stutz, D., Dvijotham, K. D., Cemgil, A. T., and Doucet, A. Learning optimal conformal classifiers. In In-ternational Conference on Learning Representations ,2022. URL https://openreview.net/forum? id=t8O-4LKFVx .Su, J., Luo, J., Wang, H., and Cheng, L. Api is enough: Conformal prediction for large language models with-out logit-access, 2024. URL https://arxiv.org/ abs/2403.01216 .Vovk, V., Gammerman, A., and Shafer, G. Algorithmic learning in a random world . Springer, 2005. Wang, X., Wei, J., Schuurmans, D., Le, Q. V., Chi, E. H., Narang, S., Chowdhery, A., and Zhou, D. Self-consistency improves chain of thought reasoning in lan-guage models. In The Eleventh International Confer-ence on Learning Representations , 2023. URL https: //openreview.net/forum?id=1PL1NIMMrw .Wang, Z., Duan, J., Cheng, L., Zhang, Y., Wang, Q., Shi, X., Xu, K., Shen, H., and Zhu, X. Conu: Conformal uncertainty in large language models with correctness coverage guarantees, 2024. URL https://arxiv. org/abs/2407.00499 .10 Differentiable Conformal Training for LLM Reasoning Factuality 
+
+Wei, J., Wang, X., Schuurmans, D., Bosma, M., Ichter, B., Xia, F., Chi, E. H., Le, Q. V., and Zhou, D. Chain-of-thought prompting elicits reasoning in large language models. In Proceedings of the 36th International Confer-ence on Neural Information Processing Systems , NIPS ’22, Red Hook, NY, USA, 2022. Curran Associates Inc. ISBN 9781713871088. Zhao, T., Kang, J., and Cheng, L. Conformalized link prediction on graph neural networks. In Proceedings of the 30th ACM SIGKDD Conference on Knowledge Discovery and Data Mining , pp. 4490–4499, 2024. Zhou, X., Chen, B., Gui, Y., and Cheng, L. Conformal prediction: A data perspective. ACM Computing Surveys ,2025. 11 Differentiable Conformal Training for LLM Reasoning Factuality 
+
+A. Proofs 
+
+A.1. Statement and Proof of Theorem 3.1 
+
+Fix ADG G = ( V, E ), false claim nodes V − ⊆ V , scorer πθ , threshold grid T , and graph family UT . Let pv,τ =
+
+σ  (τ − rv + pTp)/T p
+
+ with 8 sup( λT ) − inf( λT ) ≤ 1. Then: 
+
+lim  
+
+> β→∞
+
+lim  
+
+> τs→0
+
+lim  
+
+> Tp→0+
+
+˜τ = ν(X, Y, UT ) (10) where ν(X, Y, UT ) is the hard nonconformity score from CF. 9 Setting τs = T sp and β = T ap for s ∈ (0 , 1) , a < 0 yields single-limit convergence. 
+
+Proof. For simplicity of notation set T = Tp. τ = rvj for some vj . Checking limits, note as T → 0+, pv,τ −→ Θ( τ − rv )
+
+pointwise, where Θ( x) is the Heaviside step function with Θ(0) = 1 .
+
+Case 1. rv > τ and vertex v is not coherently factual. Then 
+
+rv > τ ⇒ lim   
+
+> T→0+
+
+pv,τ = 0 . (11) 
+
+Case 2. rv ≤ τ and vertex v is coherently factual. Then 
+
+rv ≤ τ ⇒ lim   
+
+> T→0+
+
+pv,τ = 1 . (12) After taking an ancestral geometric mean, qv,τ = (Π u∈Anc (v)∪{ v} pwu 
+
+> u,τ
+
+)1/(|Anc (v)|+1) is sent to 0 if any of v or v’s ancestors had risk score greater than τ , and is sent to 1 otherwise. Then 
+
+lim   
+
+> T→0+
+
+Qτ =
+
+ 0 for ∃v ∈ V − | ∀ u ∈ Anc (v) ∪ { v}, r u ≤ τ
+
+1 for ∀v ∈ V −, ∃u ∈ Anc (v) ∪ { v} | ru > τ , (13) and τs has no influence. Then violation has that 
+
+lim   
+
+> T→0+
+
+Vτ =
+
+ 1 for Uτ is not Coherently Factual 
+
+0 for Uτ is Coherently Factual . (14) In the limit β → ∞ , wcal  
+
+> τi
+
+= 𝟙 {sτi = sup {sτj | τj ∈ T }} . Because sup( λT ) − inf( λT ) ≤ 1, if any subgraph Uτi is not CF, then Vτi = 1 , so the maximum sτi corresponds to the greatest λτ i such that Vτi = 0 and Uτi is CF. We lastly need the fact that 
+
+∀τ ′ ∈ T | τ ′ ≤ τ, U τ Coherently Factual ⇒ Uτ ′ Coherently Factual , (15) which holds since τ ′ ≤ τ and Qτ = 1 implies Qτ ′ = 1. Therefore 
+
+lim  
+
+> β→∞
+
+lim  
+
+> τs→0+
+
+lim   
+
+> T→0+
+
+˜τ = ν(X, Y, UT ) (16) It remains to show that setting τs = T s and β = T a for s ∈ (0 , 1) , a < 0 yields single-limit convergence. Note that 
+
+β(T ) → ∞ and τs → 0 as T → 0, let smax (T ) = arg max s∈{ sτ }τ ∈T lim T →0+ sτ , and let nmax be the number of sτ with the same limit as smax . Then for τmax corresponding to smax ,
+
+lim   
+
+> T→0+
+
+˜τ = lim  
+
+> T→0+
+
+P  
+
+> τ∈T
+
+exp( βs τ )τ
+
+P  
+
+> τ∈T
+
+exp( βs τ ) = lim  
+
+> T→0+
+
+P  
+
+> τ∈T
+
+exp( βs τ − βs max )τ
+
+P  
+
+> τ∈T
+
+exp( βs τ − βs max ) = τmax nmax 
+
+nmax 
+
+= τmax ,
+
+if smax is well defined, which is seen through convergence of Q1/τ s 
+
+> τ
+
+. Now it remains to show that 
+
+lim   
+
+> T→0+
+
+Q1/τ s 
+
+> τ
+
+=
+
+ 0 for ∃v ∈ V − | ∀ u ∈ Anc (v) ∪ { v}, r u ≤ τ
+
+1 for ∀v ∈ V −, ∃u ∈ Anc (v) ∪ { v} | ru > τ , (17) 
+
+> 8
+
+In practice, we let λ vary as a hyperparameter. The theorem’s condition could be guaranteed by making λ differentiably approximate 
+
+1/(sup( T ) − inf( T )) , then applying a limit to recover the hard nonconformity score. 
+
+> 9
+
+The theorem requires a pTp margin in (1), but in practice a margin of 0 yields similar soft keep probabilities. 
+
+12 Differentiable Conformal Training for LLM Reasoning Factuality 
+
+similar to equation 13 but with an exponent that could prevent convergence to 1. We first show that in the case where 
+
+Qτ → 1, we also have Q1/τ s 
+
+> τ
+
+→ 1. So ∀v ∈ V −, ∃u ∈ Anc (v) ∪ { v} | ru > τ . We can write 
+
+lim   
+
+> T→0+
+
+Q|V −|/τ s 
+
+> τ
+
+= Π v∈V − lim  
+
+> T→0+
+
+(1 − qv,τ )1/τ s .
+
+Set Lv = lim T →0+ (1 − qv,τ )1/τ s . We want Lv → 1 for all v ∈ V −. Notice we can express Lv in the following manner: 
+
+Lv = lim  
+
+> T→0+
+
+(1 − f1(T )f2(T )... )1/τ s , (18) where each fi = pcu 
+
+> u,τ
+
+with appropriate constant cu > 0. At least one fi has lim T →0+ fi(T ) = 0 and others approach 1 or 0. Now 
+
+Lv = exp lim  
+
+> T→0+
+
+ln(1 − f1(T )f2(T )... )/τ s = exp lim  
+
+> T→0+
+
+−11 − f1(T )f2(T )... (f1(T )f2(T )... )( X
+
+> i
+
+fi(T )′/f i(T ))( τ ′
+
+> s
+
+)−1
+
+by L’H ˆopital’s rule. Now −11−f1(T )f2(T )... → − 1, and τ ′ 
+
+> s
+
+= 1 
+
+> s
+
+T s−1 → ∞ so (τ ′
+
+> s
+
+)−1 → 0. The remaining terms are: 
+
+(f1(T )f2(T )... ) X
+
+> i
+
+fi(T )′/f i(T ) = X
+
+> i
+
+f1(T )f2(T )... ˆfi(T )...f n(T )fi(T )′
+
+where the hat indicates omission of that term. Each fi approaches 1 or 0, so we must check fi(T )′ for convergence. Explicitly, for an fi there is some u ∈ { v} ∪ Anc (v) such that 
+
+fi(T ) = pwu/(1+ γ|Anc (v)|) 
+
+> u,τ
+
+= 1(1 + exp(( ru − τ − √T )/T )) c2
+
+= 1(1 + exp( c1/T − 1/√T )) c2
+
+,
+
+with c2 = wu 
+
+> 1+ γ|Anc (v)|
+
+∈ (0 , 1) and c1 = ru − τ . After differentiation and taking the limit, we find 
+
+lim   
+
+> T→0+
+
+fi(T )′ = 0 .
+
+Thus Lv = exp(0) = 1 for each v ∈ V − when ∀v ∈ V −, ∃u ∈ Anc (v) ∪ { v} | ru > τ . Then lim T →0+ Q1/τ s 
+
+> τ
+
+= 1 .The remaining case to prove is when ∃v ∈ V − | ∀ u ∈ Anc (v) ∪ { v}, r u ≤ τ . Here, there exists a v ∈ V − such that each fi
+
+in equation 18 approaches 1, and thus Lv approaches 0 and lim T →0+ Q1/τ s 
+
+> τ
+
+= 0 . This completes the proof of equation 17 and thus that setting τs = T s and β = T a for s ∈ (0 , 1) , a < 0 yields 
+
+lim   
+
+> T→0+
+
+˜τ = ν(X, Y, UT ). (19) 
+
+A.2. Statement and Proof of Theorem 3.2 
+
+Fix graph G = ( V, E ), risk scores {rv }v∈V , and calibrated threshold τα. Suppose {τ ∈ T | τ < τ α}̸ = ∅ and ∀u ∈ V, w u̸ =0. Let 10 w(unnorm)  
+
+> τ
+
+= exp( β · τ ) · σ
+
+ τα−τ −√τz
+
+> τz
+
+
+
+. Then: 
+
+{v ∈ V | lim 
+
+> Tp→0+
+
+lim  
+
+> β→∞
+
+lim  
+
+> τz→0+
+
+qv ∈ [0 .5, 1] } = Ufiltered , (20) where Ufiltered is the CF prediction. 11 Setting τz = T ab p , β = 1 /T ap for a > 0, b > 2 yields single-limit convergence. 
+
+Proof. For simplicity of notation let T = Tp and ˆτα = τα. Since 
+
+lim   
+
+> T→0+
+
+pv,τ =
+
+
+
+1 for rv < τ  
+
+> 12
+
+for rv = τ
+
+0 for rv > τ , (21) 
+
+> 10
+
+This requires a √τz margin in equation 7. In practice, this was left at zero. 
+
+> 11
+
+This theorem uses equation (1) in its original form; extending it to support the margin from Theorem 3.1 is straightforward. 
+
+13 Differentiable Conformal Training for LLM Reasoning Factuality 
+
+we have 
+
+lim   
+
+> T→0+
+
+qv,τ ∈
+
+ {0} if ∃u ∈ Anc (v) ∪ { v} : ru > τ 
+
+[ 12 , 1] if ∀u ∈ Anc (v) ∪ { v}, r u ≤ τ . (22) Note 
+
+lim   
+
+> τz→0+
+
+w(unnorm ) 
+
+> τ
+
+=
+
+ 0 for τ ≥ τα
+
+exp( βτ ) for τ < τ α
+
+. (23) Now as β → ∞ , wτ → 𝟙 {τ = sup {τ ∈ T | τ < τ α}} /n j , where nj = |{ τ ∈ T | τ = sup {τ ∈ T | τ < τ α}}| . Since identical τ give identical coefficients qv,τ for each wτ in equation 8, we find that 
+
+lim  
+
+> β→∞
+
+lim   
+
+> τz→0+
+
+qv = qv,τ : τ = sup {τ ∈ T | τ < τ α} (24) Then {v ∈ V | lim T →0+ lim β→∞ lim τz →0+ qv ∈ [0 .5, 1] } = {v ∈ V | ∀ u ∈ Anc (v) ∪ { v}, r u ≤ sup {τ ∈ T | τ < τ α}} ,which is equivalent to Ufiltered .It remains to show that setting β = 1 /T a and τz = T ab for a > 0, b > 1 yields single-limit convergence. We may write 
+
+qv =
+
+P 
+
+> τ
+
+exp( τ /T a)σ( τα−τ −T ab/ 2  
+
+> Tab
+
+)qv,τ 
+
+P 
+
+> τ
+
+exp( τ /T a)σ( τα−τ −T ab/ 2  
+
+> Tab
+
+) . (25) Let τj = sup {τ ∈ T | τ < τ α} so 
+
+qv =
+
+P 
+
+> τ
+
+exp( τ /T a − τj /T a)σ( τα−τ −T ab/ 2  
+
+> Tab
+
+)qv,τ 
+
+P 
+
+> τ
+
+exp( τ /T a − τj /T a)σ( τα−τ −T ab/ 2  
+
+> Tab
+
+) . (26) Only terms matching τj survive in both sums. Terms with τ < τ j approach 0 via the first exponential, and terms with τ > τ j
+
+also have τ ≥ τα, so 
+
+lim   
+
+> T→0+
+
+exp( τ − τj
+
+T a )σ( τα − τ − T ab/ 2
+
+T ab ) = lim  
+
+> T→0+
+
+1
+
+e(τj −τ )/T a
+
++ exp( (τ −τα)+( τj −τ )T b+T ab/ 2  
+
+> Tab
+
+) = 0 (27) since b > 2 and a > 0. Then 
+
+lim   
+
+> T→0+
+
+qv =
+
+P 
+
+> τ
+
+𝟙 {τ = τj } lim T →0+ qv,τ 
+
+P 
+
+> τ
+
+𝟙 {τ = τj } = lim   
+
+> T→0+
+
+qv,τ j . (28) Since equation 22 holds in this case and τj is identical to the τ of equation 24, we have 
+
+{v ∈ V | lim   
+
+> T→0+
+
+qv ∈ [0 .5, 1] } = Ufiltered (29) 14 Differentiable Conformal Training for LLM Reasoning Factuality 
+
+B. Algorithms 
+
+B.1. Differentiable Calibration Algorithm 1 Differentiable Calibration 
+
+1: Input: Calibration set Dcal = {(Gi, {x(i) 
+
+> v
+
+}, {y(i) 
+
+> v
+
+})}ni=1 , scorer πθ , target miscoverage α, hyperparameters 
+
+C, T p, β, γ, λ, τ s, ρ, ϵ, m ∈ R
+
+2: Output: Calibrated threshold ˆτα
+
+3: for each graph (G, {xv }, {yv }) in Dcal do 
+
+4: Step 1: Scoring and risk. 
+
+5: for v ∈ V do 
+
+6: rv = C − πθ (xv )
+
+7: end for 
+
+8: Step 2: Build τ -grid. 
+
+9: T = {min v rv − m, {rv }v∈V , max v rv + m} (sorted) 
+
+10: Step 3: Soft keep. 
+
+11: for (v, τ ) ∈ V × T do 
+
+12: pv,τ = σ
+
+ τ −rv
+
+> Tp
+
+
+
+13: end for 
+
+14: Step 4: Ancestor coherence. 
+
+15: for (v, τ ) ∈ V × T do 
+
+16: wu =
+
+(
+
+γ if u ∈ Anc (v)1 if u = v for all u ∈ Anc (v) ∪ { v}
+
+17: log qv,τ =   
+
+> P
+> u∈Anc (v)∪{ v}wu·log( pu,τ +ϵ)
+> P
+> u∈Anc (v)∪{ v}wu
+
+18: end for 
+
+19: Step 5: Validity on negatives. 
+
+20: V − = {v ∈ V : yv = 0 }
+
+21: for τ ∈ T do 
+
+22: log Qτ = 1 
+
+> |V−|
+
+P  
+
+> v∈V−
+
+log(1 − exp(log qv,τ ) + ϵ)
+
+23: end for 
+
+24: Step 6: Violation and soft supremum. 
+
+25: for τ ∈ T do 
+
+26: Vτ = 1 − exp(log( Qτ )/τ s)
+
+27: end for 
+
+28: Normalize: ˆτnorm = MinMax (T ), ˆV = MinMax ({Vτ }) {Scale to [0 , 1] }
+
+29: for τ ∈ T do 
+
+30: sτ = ˆ τnorm − λ · ˆVτ
+
+31: wcal  
+
+> τ
+
+= exp( βs τ )P    
+
+> τ′∈T exp( βs τ′)
+
+32: end for 
+
+33: ˜τ = P  
+
+> τ∈T
+
+wcal  
+
+> τ
+
+· τ
+
+34: Store ˜τ
+
+35: end for 
+
+36: Calibration via soft quantile: 
+
+37: q = ⌈(n+1)(1 −α)⌉
+
+> n
+
+38: ˆτα = SoftQuantile ({˜τ1, . . . , ˜τn}, q, ρ )
+
+39: return ˆτα
+
+15 Differentiable Conformal Training for LLM Reasoning Factuality 
+
+B.2. Differentiable Prediction Algorithm 2 Differentiable Prediction 
+
+1: Input: Test set Dtest = {(Gi, {x(i) 
+
+> v
+
+})}Mi=1 , scorer πθ , calibrated threshold ˆτα, hyperparameters C, T p, β, γ, τ z , ϵ, m ∈ R
+
+2: Output: Soft retention probabilities {q(i)}Mi=1 where q(i) ∈ [0 , 1] |Vi|
+
+3: for each graph (G, {xv }) in Dtest do 
+
+4: Step 1: Scoring and risk. 
+
+5: for v ∈ V do 
+
+6: rv = C − πθ (xv )
+
+7: end for 
+
+8: Step 2: Build τ -grid. 
+
+9: T = {min v rv − m, {rv }v∈V , max v rv + m} (sorted) 
+
+10: Step 3: Soft keep. 
+
+11: for (v, τ ) ∈ V × T do 
+
+12: pv,τ = σ
+
+ τ −rv
+
+> Tp
+
+
+
+13: end for 
+
+14: Step 4: Ancestor coherence. 
+
+15: for (v, τ ) ∈ V × T do 
+
+16: wu =
+
+(
+
+γ if u ∈ Anc (v)1 if u = v for all u ∈ Anc (v) ∪ { v}
+
+17: log qv,τ =   
+
+> P
+> u∈Anc (v)∪{ v}wu·log( pu,τ +ϵ)
+> P
+> u∈Anc (v)∪{ v}wu
+
+18: end for 
+
+19: Step 5: Soft gated argmax. 
+
+20: for τ ∈ T do 
+
+21: w(unnorm ) 
+
+> τ
+
+= exp( β · τ ) · σ
+
+ ˆτα−ττz
+
+
+
+22: end for 
+
+23: Normalize: wτ = w(unnorm)    
+
+> τ
+> P
+> τ′∈T w(unnorm )
+> τ′
+
+24: Step 6: Weighted combination. 
+
+25: for v ∈ V do 
+
+26: qv = P  
+
+> τ∈T
+
+wτ · qv,τ 
+
+27: end for 
+
+28: Store q = ( qv )v∈V
+
+29: end for 
+
+30: return {q(1) , . . . , q(M )}
+
+16 Differentiable Conformal Training for LLM Reasoning Factuality 
+
+B.3. Training Procedure Algorithm 3 Training πθ
+
+1: Input: Dataset D = {(Gi, {x(i) 
+
+> v
+
+}, {y(i) 
+
+> v
+
+})}Ni=1 , scorer πθ , miscoverage α, learning rate η, epochs E, hyperparameters 
+
+C, T p, β, γ, λ, τ s, ρ, ϵ, m 
+
+2: Output: Trained scorer πθ
+
+3: Step 1: Data split. 
+
+4: Partition D into train Dtrain and validation Dval sets 
+
+5: Step 2: Initialize. 
+
+6: Initialize scorer parameters θ and Adam optimizer with learning rate η
+
+7: for epoch e = 1 , . . . , E do 
+
+8: Step 3: Training. 
+
+9: Split Dtrain into calibration Dcal and prediction Dpred subsets 
+
+10: Calibrate: ˆτα ← DifferentiableCalibration (Dcal , π θ , α, . . . ) (Algorithm 1) 
+
+11: Predict: {p(i)} ← DifferentiablePrediction (Dpred , π θ , ˆτα, . . . ) (Algorithm 2) 
+
+12: Compute loss: L = − 1
+
+> |D pred |
+
+P
+
+> i∈D pred
+
+P 
+
+> v∈Vi
+
+p(i) 
+
+> v
+
+· y(i)
+
+> v
+
+13: Backpropagate: ∇θ L and update θ ← θ − η · ∇ θ L
+
+14: end for 
+
+15: return Trained scorer πθ
+
+17 Differentiable Conformal Training for LLM Reasoning Factuality Problem: The endpoints of a segment are (1 , 4) 
+
+and (1 , 10) . What is the sum of the coordinates of the midpoint? 
+
+Answer: 8
+
+Claims: 
+
+0: Midpoint formula 1: 1+1 2 = 1 
+
+2: 4+10 2 = 7 
+
+3: Midpoint is (1 , 7) 
+
+4: Sum: 1 + 7 = 8 
+
+0
+
+1 2
+
+3
+
+4
+
+Figure 6. Example ADG for a MATH problem. Nodes represent atomic claims; edges indicate logical dependencies. 
+
+C. Figures 
+
+C.1. Training Flow 
+
+Features xv
+
+Scorer πθ
+
+Risk Computation 
+
+Tau Grid T
+
+Soft Keep 
+
+Ancestor Coherence 
+
+Validity on Negatives 
+
+Violation Mapping 
+
+Soft Supremum 
+
+Soft Quantile 
+
+Tau Grid T
+
+Soft Keep 
+
+Ancestor Coherence 
+
+Soft Argmax 
+
+Retention Probs qv
+
+Retention Loss L
+
+ˆτα
+
+∇θ
+
+Calibration Prediction 
+
+# → Forward pass 99K Gradient flow to θ
+
+Figure 5. Gradient flow through DCF training. 
+
+18 Differentiable Conformal Training for LLM Reasoning Factuality     
+
+> 1. LLM Output
+> “The Eiffel Tower is 330m tall , located in Berlin , and was completed in 1889 .” decompose
+
+−−−−−−→      
+
+> 2. Score Claims
+> v1: Height is 330m r1= 0 .2
+> v2: Located in Berlin r2= 0 .9
+> v3: Completed in 1889 r3= 0 .1
+> filter
+
+−−→
+
+> 3. Threshold
+> v1: Height is 330m
+> v2: Located in Berlin
+> v3: Completed in 1889
+
+ˆτα = 0 .5 (calibrated via CP) 
+
+Figure 7. LLM conformal factuality. An LLM response is decomposed into atomic subclaims, each assigned a risk score. The threshold 
+
+ˆτα is calibrated via CP to guarantee a 1 − α factuality rate. Claims exceeding this threshold are removed (e.g., the hallucinated “Berlin”). 
+
+C.2. Example Approximate Deducibility Graph C.3. Conformal Factuality Pipeline 
+
+D. Experimental Details 
+
+D.1. Feature Descriptions 
+
+Each claim has 31 features organized into four categories: 
+
+Base Scoring (1 feature). frequency-score : Self-consistency frequency across multiple LLM generations. 
+
+Semantic Coherence (8 features). claim index (position in chain), coherent to ancestors 
+
+(logical consistency), inference gap size (missing steps), has missing dependencies ,
+
+has unnecessary dependencies , problem relevance , uses problem data , and additional valida-tion flags. 
+
+Domain Indicators (12 features). Binary flags for mathematical topics: linear equations ,
+
+quadratic equations , polynomial algebra , rational expressions , exponents logarithms ,
+
+inequalities , sequences series , functions , word problems , coordinate geometry ,
+
+abstract algebra , complex numbers .
+
+Graph Metrics (10 features). NetworkX-computed properties: nx in degree , nx out degree , nx pagerank ,
+
+nx betweenness , nx closeness , nx clustering , nx is source , nx is sink , nx reachability ,
+
+nx depth from sources .
+
+FELM Feature Selection. For FELM, we exclude MATH-specific domain indicators and use two feature configurations based on α:
+
+7 features (for α ≤ 0.08 ): frequency-score , coherent to ancestors , inference gap size ,
+
+has missing dependencies , nx pagerank , nx reachability , nx out degree .
+
+20 features (for α ≥ 0.09 ): The 7-feature set plus claim index , has unnecessary dependencies ,
+
+problem relevance , uses problem data , domain science , domain reasoning ,
+
+nx in degree , nx betweenness , nx closeness , nx clustering , nx is source , nx is sink ,
+
+nx depth from sources .
+
+D.2. Training Configuration 
+
+Both MATH and FELM experiments share the following training setup: • Model : LogisticClaimScorer—30 input features for MATH, 7 or 20 for FELM depending on α (see Section D.1) • Optimizer : Adam with learning rate 0.015, no weight-decay regularization • Training : Up to 100 epochs with early stopping (patience = 10) • Evaluation : 20-fold cross-validation with 70/15/15 train/validation/test splits • Hyperparameter selection : Grid search over all α values 
+
+Validation Hyperparameters. The surrogate-fidelity experiments in Section 4.2 use fixed hyperparameters: Tp = 0 .01 ,
+
+β = 1 .0, γ = 1 .0, λ = 1 .0, τs = 0 .001 , τz = 0 .001 , m = 20 .0.19 Differentiable Conformal Training for LLM Reasoning Factuality 
+
+D.3. Optimized Hyperparameters 
+
+Tables 4 and 5 list the per-α hyperparameters selected by grid search for DCF.  
+
+> Table 4. DCF hyperparameters for MATH dataset selected via grid search.
+
+α γ λ τs Tp τz lr 0.03 4.0 1.35 1.0 1.0 0.50 0.015 0.04 5.0 1.30 2.0 0.1 0.10 0.015 0.05 6.0 1.60 2.0 0.1 0.10 0.015 0.06 6.0 1.60 0.4 0.1 0.10 0.015 0.07 1.5 1.70 0.4 0.1 0.10 0.015 0.08 6.0 1.75 1.0 0.1 0.10 0.015 0.09 2.0 1.70 0.4 0.1 0.01 0.015 0.10 5.0 1.90 2.0 0.1 0.50 0.015        
+
+> Table 5. DCF hyperparameters for FELM dataset selected via grid search. All configurations share β= 1 ,τs= 0 .8,τz= 0 .01 , and lr
+> = 0 .015 .
+
+α γ λ Tp
+
+0.01 1.50 1.20 1.0 0.02 1.00 1.50 1.0 0.03 1.25 1.30 1.0 0.04 1.50 1.45 0.5 0.05 1.25 1.45 0.5 0.06 1.00 1.00 1.0 0.07 1.25 0.90 1.0 0.08 1.25 1.50 1.0 0.09 1.00 1.65 1.0 0.10 1.25 1.90 0.5 
+
+D.4. Baseline βmix Optimization 
+
+For fair comparison, we optimized βmix for the frequency-based CF baseline via grid search over {0.0, 0.1, . . . , 1.0}. Table 6 reports the selected values for each dataset. We use these optimized values in all comparisons to ensure DCF is evaluated against the strongest possible baseline.    
+
+> Table 6. Optimized βmix for the CF baseline on each dataset.
+
+α MATH FELM 0.01 0.0 0.8 0.02 0.0 0.6 0.03 0.8 0.5 0.04 0.0 0.2 0.05 0.0 0.4 0.06 0.0 0.3 0.07 0.9 0.4 0.08 0.8 0.1 0.09 0.2 0.1 0.10 0.8 0.0 20 Differentiable Conformal Training for LLM Reasoning Factuality 
+
+Table 7. MATH dataset results: DCF vs. CF baseline across α values. Coverage target is 1−α. Bold coverage indicates DCF meets the target. Retention is the mean number of claims retained per problem; ∆ Ret shows percentage improvement of DCF over CF. 
+
+α Coverage (%) Retention Meets DCF CF DCF CF ∆ (%) Target? 0.03 96.55 97.09 1.76 0.73 +141.1 No ∗
+
+0.04 95.59 95.80 2.22 1.14 +94.7 No ∗
+
+0.05 95.55 94.85 2.31 1.44 +60.4 Yes 0.06 94.14 94.10 3.56 1.74 +104.6 Yes 0.07 93.14 93.00 3.63 2.01 +80.6 Yes 0.08 94.14 91.82 3.69 2.31 +59.7 Yes 0.09 90.64 90.59 5.57 2.75 +102.5 No ∗
+
+0.10 89.64 89.68 5.99 3.33 +79.9 No ∗
+
+> ∗Near-miss: all misses are within 0.5pp of target.
+
+Table 8. FELM dataset results: DCF vs. CF baseline across α values. Coverage target is 1−α. Bold coverage indicates DCF meets the target. Retention is the percentage of claims retained; ∆ Ret shows relative percentage improvement of DCF over CF. 
+
+α Coverage (%) Retention (%) Meets DCF CF DCF CF ∆ (%) Target? 0.01 99.15 99.19 17.9 11.1 +61.3 Yes 0.02 97.75 98.08 35.7 22.4 +59.4 No ∗
+
+0.03 97.32 97.11 36.4 29.5 +23.4 Yes 0.04 96.47 95.89 42.0 36.2 +16.0 Yes 0.05 95.35 95.10 46.3 41.5 +11.6 Yes 0.06 94.92 93.94 48.1 49.2 −2.2 Yes †
+
+0.07 94.21 93.13 49.6 55.0 −9.8 Yes †
+
+0.08 93.64 92.15 52.7 61.3 −14.0 Yes †
+
+0.09 91.39 90.80 69.0 66.4 +3.9 Yes 0.10 90.54 90.08 71.2 68.9 +3.3 Yes      
+
+> ∗DCF misses coverage target at α= 0 .02 (97.75% <98.0%).
+> †DCF meets coverage but CF achieves higher retention.
+
+D.5. Complete Results Tables 
+
+E. Ablation Study Details 
+
+E.1. Single-Feature Baseline Configuration 
+
+For each single-feature baseline, we use CF with βmix optimized per-α via grid search over {0.0, 0.1, . . . , 1.0}. Table 9 shows the selected values. 
+
+Table 9. Optimized βmix values for MATH single-feature baselines. 
+
+α NX Reachability Claim Index Frequency Score 0.03 0.7 0.9 0.0 0.04 0.9 1.0 0.0 0.05 1.0 0.7 1.0 0.06 0.3 1.0 0.4 0.07 1.0 1.0 0.3 0.08 0.2 0.9 0.1 0.09 0.5 1.0 1.0 0.10 0.6 1.0 0.9 
+
+E.2. Complete Numerical Results 
+
+Tables 11 and 12 provide complete retention and coverage results for MATH and FELM respectively. 
+
+Key Observations (MATH). 
+
+21 Differentiable Conformal Training for LLM Reasoning Factuality    
+
+> Table 10. Optimized βmix values for FELM single-feature baselines.
+
+α NX Reachability Claim Index Frequency Score 0.01 0.0 0.5 0.8 0.02 0.0 0.2 0.6 0.03 0.2 0.4 0.5 0.04 0.9 1.0 0.2 0.05 0.7 0.9 0.4 0.06 0.5 1.0 0.3 0.07 0.0 1.0 0.4 0.08 0.3 1.0 0.1 0.09 0.0 0.8 0.1 0.10 0.0 1.0 0.0   
+
+> Table 11. MATH ablation: DCF vs. single-feature baselines with optimized βmix .
+
+DCF (Ours) NX Reachability Claim Index Frequency 
+
+α Cov Ret Cov Ret Cov Ret Cov Ret 0.03 0.97 1.76 0.98 1.60 0.98 0.93 0.98 0.47 0.04 0.96 2.22 0.97 2.04 0.97 1.19 0.97 0.84 0.05 0.96 2.31 0.96 2.16 0.96 1.41 0.97 1.04 0.06 0.94 3.56 0.94 2.87 0.95 1.86 0.95 1.49 0.07 0.93 3.63 0.94 2.69 0.93 2.54 0.94 1.81 0.08 0.94 3.69 0.93 3.26 0.93 2.67 0.93 1.94 0.09 0.91 5.57 0.91 3.72 0.93 3.37 0.93 2.20 0.10 0.90 5.99 0.91 4.18 0.91 3.62 0.92 2.21   
+
+> Table 12. FELM ablation: DCF vs. single-feature baselines with optimized βmix . Retention is mean claims per problem.
+
+DCF (Ours) NX Reachability Claim Index Frequency 
+
+α Cov Ret Cov Ret Cov Ret Cov Ret 0.01 0.99 0.72 0.99 0.17 0.99 0.24 0.99 0.51 0.02 0.98 1.43 0.98 0.31 0.98 0.33 0.98 0.87 0.03 0.97 1.46 0.97 0.50 0.97 0.44 0.97 1.27 0.04 0.96 1.68 0.96 0.58 0.96 0.61 0.96 1.55 0.05 0.95 1.85 0.95 0.73 0.95 0.72 0.95 1.71 0.06 0.95 1.92 0.94 0.84 0.94 0.86 0.94 2.04 
+
+0.07 0.94 1.98 0.93 0.96 0.93 1.05 0.93 2.27 
+
+0.08 0.94 2.11 0.92 1.05 0.92 1.26 0.92 2.56 
+
+0.09 0.91 2.76 0.91 1.22 0.91 1.31 0.91 2.72 0.10 0.91 2.85 0.90 1.29 0.90 1.50 0.90 2.80 • DCF outperforms all single-feature baselines at every α value • Improvement over NX Reachability (best single feature): 7–50% • Largest gains at strict coverage: +50% at α = 0 .09 
+
+• All methods maintain target coverage within acceptable margins 
+
+Key Observations (FELM). 
+
+• DCF outperforms all single-feature baselines at low α (0.01–0.05) and high α (0.09–0.10) • Frequency Score baseline wins at mid-range α (0.06–0.08), reflecting FELM’s simpler graph structure • DCF improvement over best baseline: up to +41% at α = 0 .01 
+
+• Frequency Score is a much stronger single-feature baseline on FELM than on MATH 22 Differentiable Conformal Training for LLM Reasoning Factuality 
+
+F. Case Study Details 
+
+F.1. Methodology 
+
+The case studies in Section 4.4.2 are generated using the following methodology: 
+
+Example Selection. We select two representative examples from the MATH dataset at α = 0 .06 :• Type 1 (Example 186, Claim 8) : A TRUE claim with frequency-score = 0 that the learned model correctly retains • Type 2 (Example 190, Claim 2) : A FALSE claim with frequency-score = 5 that the learned model correctly rejects 
+
+Evaluation Protocol. We use 20-fold cross-validation matching the main experimental setup: 1. For each fold, train the learned logistic claim scorer on the training set 2. Compute calibration quantiles for both learned and baseline methods 3. Generate prediction sets for the test examples using both methods 4. Record which claims are retained in each fold’s prediction set 
+
+Baseline Configuration. The frequency-based CF baseline uses βmix optimized per-α via grid search over 
+
+{0.0, 0.1, . . . , 1.0}. At α = 0 .06 , the optimal value is βmix = 0 .4 (see Table 9). 
+
+Majority Voting. For visualization, we use majority voting across folds: a claim is considered “retained” if it appears in the prediction set in more than 50% of folds ( > 10 out of 20 folds). This provides stable results despite fold-to-fold variation. 
+
+Feature Contributions. Model weights are averaged across the 20 folds to compute stable feature contributions. The contribution of each feature is computed as weight × value , and the total learned score is the sum of all contributions plus bias. 
+
+F.2. Feature Contribution Tables 
+
+Tables 13 and 14 show feature contributions for the case studies. Only features with non-zero values are shown; the remaining features (primarily domain indicators not applicable to the specific problem) have value 0 and contribute nothing to the score.  
+
+> Table 13. Case Study 1 (Example 186, Claim 8): Feature contributions for valid claim with zero frequency.
+
+Feature Value Weight Contribution 
+
+nx reachability 3.00 0.272 +0.815 
+
+claim index 8.00 0.098 +0.780 
+
+nx in degree 2.00 0.135 +0.269 
+
+quadratic equations 1.00 0.229 +0.229 
+
+nx out degree 1.00 0.176 +0.176 
+
+problem relevance 1.00 0.144 +0.144 
+
+coherent to ancestors 1.00 0.110 +0.110 
+
+nx betweenness 0.22 0.292 +0.064 
+
+uses problem data 0.50 0.104 +0.052 
+
+frequency-score 0.00 0.021 +0.000 
+
+Total Learned Score 2.66 Baseline Score (freq-score) 0.00 
+
+Prediction Set Retention Learned: 9/12, Baseline: 0/12 
+
+F.3. Analysis Case 1: Retaining Valid Claims with Zero Frequency. This case study appears in the main text (Section 4.4.2). Graph connectivity features ( nx reachability +0.82, nx in degree +0.27) and claim position ( claim index +0.78) 23 Differentiable Conformal Training for LLM Reasoning Factuality 
+
+Table 14. Case Study 2 (Example 190, Claim 2): Feature contributions for invalid claim with high frequency. 
+
+Feature Value Weight Contribution 
+
+nx is source 1.00 −0.253 −0.253 
+
+word problems 1.00 0.227 +0.227 
+
+claim index 2.00 0.098 +0.195 
+
+nx in degree 1.00 0.135 +0.135 
+
+coherent to ancestors 1.00 0.110 +0.110 
+
+frequency-score 5.00 0.021 +0.107 
+
+nx pagerank 0.13 −0.249 −0.033 
+
+nx closeness 0.22 0.093 +0.021 
+
+Total Learned Score 0.54 Baseline Score (freq-score) 5.00 
+
+Prediction Set Retention Learned: 0/7, Baseline: 7/7 compensate for zero frequency-score, enabling retention of a valid intermediate reasoning step that the baseline would reject entirely. 
+
+Case 2: Rejecting Invalid Claims with High Frequency. Claim 2 (“The integer represented by the input is greater than 0”) is a hallucination with frequency = 5 .0—it appeared consistently across regenerations despite being invalid. The frequency-based baseline retains it (and all 7 claims in this semantically incoherent output). DCF rejects this claim by recognizing its isolated graph position. Despite high frequency-score contributing +0.11, the learned model assigns a large negative contribution to nx is source (−0.25), correctly penalizing this claim that lacks proper ancestors in the reasoning graph. The total learned score (0.54) falls below the threshold, and DCF correctly rejects all 7 claims in this output. This demonstrates the complementary case to Section 4.4.2: high frequency alone does not indicate validity when graph structure signals incoherence.             
+
+> Problem: A rectangular patio has an area of 180 square feet and a perimeter of 54 feet. What is the length of the diagonal (in feet) squared?
+> Answer: 585
+> Claims (all FALSE):
+> 0: Input consists of digits ‘3’, ‘6’, ‘9’ 1: Input represents integer 369 2: Integer from input is >0←freq=5.0 3: Integer 369 is odd 4: Integer 369 is divisible by 3 5: Integer 369 is divisible by 9 6: 369 = 9 ×41
+> “369” never appears in problem
+> Performance: Learned: 6/7 rejected Baseline: 0/7 rejected Highlighted: Claim 2 (freq=5.0)
+> 0
+> 1
+> 2
+> 3
+> 4
+> 6
+> 5
+> •All FALSE
+> •Claim 2
+
+Figure 8. Freq. vs. Learned ADG Comparison (Incorrect Claims) 
+
+G. SHAP Feature Importance Analysis 
+
+G.1. Methodology 
+
+To ensure robust feature importance estimates, we aggregate SHAP values across multiple coverage levels and training splits. We analyze models trained at α ∈ { 0.03 , 0.04 , 0.05 , 0.06 , 0.07 , 0.08 , 0.09 , 0.10 }. For each α, we train 5 independent models using different train/validation splits (80/20), yielding 40 total models (8 α values × 5 splits). 
+
+SHAP Computation. 
+
+• Method: Kernel SHAP (model-agnostic explainer) 24 Differentiable Conformal Training for LLM Reasoning Factuality 
+
+• Background data: 100 samples randomly selected from all claims • Evaluation samples: Maximum 500 claims per model • For LogisticClaimScorer, we extract linear weights w and bias b to create prediction function f (x) = xw + b
+
+Aggregation Procedure. 
+
+1. Collect SHAP values from all 40 models (each contributing up to 500 claim samples) 2. Pool all SHAP values per feature across models ( ∼20,000 values per feature) 3. Compute mean absolute SHAP value: importance i = mean (|SHAP i|)
+
+4. Compute standard deviation to quantify variance across models 5. Rank features by mean importance 
+
+G.2. Results 
+
+Table 15 shows the top 10 features by mean |SHAP | value.  
+
+> Table 15. Top 10 features by SHAP importance aggregated across 40 models.
+
+Rank Feature Mean |SHAP | Std 1 nx reachability 0.602 0.428 2 claim index 0.445 0.303 3 frequency-score 0.180 0.126 4 inference gap size 0.124 0.248 5 nx out degree 0.060 0.081 6 nx in degree 0.038 0.056 7 nx is source 0.034 0.035 8 problem relevance 0.034 0.032 9 uses problem data 0.034 0.041 10 quadratic equations 0.022 0.020 
+
+Key Findings. 
+
+• Graph structure dominates : nx reachability (0.602) contributes 3.3 × more than frequency-score (0.180) • Position matters : claim index (0.445) contributes 2.5 × more than frequency • Coherence features rank highly : inference gap size (0.124) captures missing reasoning steps • Mathematical content has lower impact : Domain indicators individually contribute less, but collectively capture topic-specific patterns Figure 9 shows the complete SHAP beeswarm plot with all 30 features. 
+
+G.3. FELM SHAP Analysis 
+
+For FELM, we perform separate SHAP analyses for the two feature configurations used at different α levels: 7 features for 
+
+α ∈ [0 .01 , 0.08] and 20 features for α ∈ [0 .09 , 0.10] .
+
+7-Feature Models ( α ≤ 0.08 ). The 7-feature configuration uses: frequency-score , coherent to ancestors ,
+
+inference gap size , has missing dependencies , nx pagerank , nx reachability , and 
+
+nx out degree . Figure 10a shows that frequency-score dominates (0.995), with nx reachability 
+
+(0.154) and inference gap size (0.093) as secondary contributors. 
+
+20-Feature Models ( α ≥ 0.09 ). At higher α values, we use the full 20-feature set including additional graph metrics and coherence features. Figure 10b shows that frequency-score remains dominant (0.941), but claim index (0.209) and nx reachability (0.149) gain importance with the expanded feature set. 
+
+MATH vs. FELM Comparison. The key difference between datasets is the relative importance of frequency-score :it ranks 3rd on MATH (0.180) but 1st on FELM (0.941–0.995). This reflects FELM’s simpler reasoning chains (4.0 vs. 25 Differentiable Conformal Training for LLM Reasoning Factuality 2 1 0 1 2
+
+SHAP value (impact on model output) 
+
+nx_depth_from_sources 
+
+abstract_algebra 
+
+has_missing_dependencies 
+
+complex_numbers 
+
+nx_betweenness 
+
+exponents_logarithms 
+
+has_unnecessary_dependencies 
+
+coherent_to_ancestors 
+
+nx_closeness 
+
+linear_equations 
+
+word_problems 
+
+nx_pagerank 
+
+nx_clustering 
+
+sequences_series 
+
+rational_expressions 
+
+polynomial_algebra 
+
+inequalities 
+
+coordinate_geometry 
+
+functions 
+
+nx_is_sink 
+
+quadratic_equations 
+
+uses_problem_data 
+
+problem_relevance 
+
+nx_is_source 
+
+nx_in_degree 
+
+nx_out_degree 
+
+inference_gap_size 
+
+frequency-score 
+
+claim_index 
+
+nx_reachability 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> Feature value
+
+Figure 9. MATH SHAP beeswarm plot across 40 models. Each dot represents one claim; color indicates normalized feature value (blue=low, red=high). Graph structure features dominate over frequency-based scoring. 4 3 2 1 0 1
+
+SHAP value (impact on model output) 
+
+> has_missing_dependencies
+> nx_pagerank
+> coherent_to_ancestors
+> nx_out_degree
+> inference_gap_size
+> nx_reachability
+> frequency-score
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> Feature value
+
+(a) 7-feature models ( α ≤ 0.08 ). 3 2 1 0 1
+
+SHAP value (impact on model output) 
+
+> nx_depth_from_sources
+> nx_betweenness
+> has_unnecessary_dependencies
+> has_missing_dependencies
+> nx_clustering
+> problem_relevance
+> nx_pagerank
+> nx_closeness
+> uses_problem_data
+> nx_is_source
+> domain_science
+> nx_is_sink
+> nx_in_degree
+> coherent_to_ancestors
+> domain_reasoning
+> nx_out_degree
+> inference_gap_size
+> nx_reachability
+> claim_index
+> frequency-score
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0  
+
+> Feature value
+
+(b) 20-feature models ( α ≥ 0.09 ). 
+
+Figure 10. FELM SHAP beeswarm plots. Left: 7-feature configuration used at stricter coverage levels. Right: 20-feature configuration used at relaxed coverage levels. frequency-score dominates in both, reflecting FELM’s simpler reasoning chains where self-consistency is more discriminative. 
+
+26 Differentiable Conformal Training for LLM Reasoning Factuality 
+
+7.3 claims per problem), where self-consistency frequency is more discriminative. On MATH, graph structure features (nx reachability , claim index ) provide stronger signal for navigating complex dependency graphs. 
+
+H. Score Distribution Analysis 
+
+To understand how DCF differentiates true from false claims, we analyze score distributions using pooled z-score normaliza-tion. 
+
+H.1. Methodology 
+
+For each α value, we: 1. Collect scores from all 20 CV folds for both learned and baseline models 2. Apply z-score normalization pooled across both methods for comparability 3. Compute separation as: sep = μtrue − μfalse 
+
+4. Compute Cohen’s d effect size and distribution overlap 
+
+H.2. Results 
+
+Figure 11 shows the 2 ×2 comparison at α = 0 .05 .Table 16 shows separation metrics across all α values.    
+
+> Table 16. Score separation metrics across αvalues. DCF optimizes retention under coverage constraints, not separation directly, explaining the variability.
+
+α Separation Ratio vs. Baseline Cohen’s d Overlap 0.03 0.170 1.21 × 0.298 0.926 0.04 0.040 0.28 × 0.046 0.962 0.05 0.450 3.18 × 0.468 0.939 0.06 0.056 0.40 × 0.057 0.954 0.07 0.535 3.80 × 0.514 0.882 0.08 0.434 3.05 × 0.574 0.927 0.09 −0.184 – −0.192 0.933 0.10 0.111 0.79 × 0.124 0.945 
+
+Interpretation. Separation varies substantially—and can even be negative—because DCF optimizes for coverage-constrained retention, not distributional separation. At α = 0 .09 , DCF achieves +103% higher retention despite negative separation, demonstrating that conformal prediction succeeds through calibrated threshold placement rather than global score discrimination. The quantile-based approach requires only that the threshold correctly partitions claims at the decision boundary, not that true and false claims be globally separated. 27 Differentiable Conformal Training for LLM Reasoning Factuality 3 2 1 0 1 2
+
+Z-Score 
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> Density
+> Hard Baseline
+> Learned
+
+(a) True claims: learned vs baseline 3 2 1 0 1 2
+
+Z-Score  
+
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> 0.8
+> Density
+> Hard Baseline
+> Learned
+
+(b) False claims: learned vs baseline 3 2 1 0 1 2
+
+Z-Score 
+
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> Density
+> FALSE
+> TRUE
+
+(c) Baseline: true vs false separation 3 2 1 0 1 2
+
+Z-Score  
+
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> Density
+> FALSE
+> TRUE
+
+(d) Learned: true vs false separation 
+
+Figure 11. Score distributions at α = 0 .05 . Top row: method comparison for true/false claims. Bottom row: within-method discrimination. The learned model achieves separation 0.450 vs. baseline’s 0.141 (3.2 ×). 
+
+28
