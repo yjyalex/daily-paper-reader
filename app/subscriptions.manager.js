@@ -78,6 +78,10 @@ window.SubscriptionsManager = (function () {
     'NIPS',
     'ICML',
   ];
+  const CONFERENCES_WITH_PENDING_CURRENT_YEAR = new Set([
+    'NIPS',
+    'ICML',
+  ]);
 
   const normalizeText = (v) => String(v || '').trim();
   const normalizeSourceKey = (v) => normalizeText(v).toLowerCase();
@@ -376,7 +380,10 @@ window.SubscriptionsManager = (function () {
   const isConferenceYearSelectable = (conference, year) => {
     const conf = normalizeText(conference).toUpperCase();
     const yearText = normalizeText(year);
-    if (conf === 'ICML' && yearText === String(new Date().getFullYear())) {
+    if (
+      CONFERENCES_WITH_PENDING_CURRENT_YEAR.has(conf)
+      && yearText === String(new Date().getFullYear())
+    ) {
       return false;
     }
     return true;
@@ -419,7 +426,7 @@ window.SubscriptionsManager = (function () {
             type="button"
             data-conference-year="${year}"
             aria-pressed="${active ? 'true' : 'false'}"
-            ${disabled ? 'disabled title="ICML 2026 暂未公开，暂不可选择"' : ''}
+            ${disabled ? `disabled title="${year} 暂未接入，暂不可选择"` : ''}
           >${year}</button>`;
         })
         .join('');
@@ -1248,6 +1255,7 @@ window.SubscriptionsManager = (function () {
       ensureSourceBackendsForProfiles: (config) => ensureSourceBackendsForProfiles(cloneDeep(config || {})),
       buildDefaultSourceBackend: (sourceKey, config) => buildDefaultSourceBackend(sourceKey, cloneDeep(config || {})),
       normalizePaperSources: (values, options) => normalizePaperSources(values, options),
+      isConferenceYearSelectable: (conference, year) => isConferenceYearSelectable(conference, year),
     },
   };
 })();
