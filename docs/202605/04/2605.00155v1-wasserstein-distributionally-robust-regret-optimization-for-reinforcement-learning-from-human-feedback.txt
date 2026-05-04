@@ -1,0 +1,2329 @@
+Title: Wasserstein Distributionally Robust Regret Optimization for Reinforcement Learning from Human Feedback
+
+URL Source: https://arxiv.org/pdf/2605.00155v1
+
+Published Time: Mon, 04 May 2026 00:18:20 GMT
+
+Number of Pages: 48
+
+Markdown Content:
+# Wasserstein Distributionally Robust Regret Optimization for Reinforcement Learning from Human Feedback 
+
+## Yikai Wang ∗,1, Shang Liu ∗,2,3, Jose Blanchet 3
+
+> 1
+
+Department of Statistics and Operations Research, University of North Carolina 
+
+> 2
+
+Imperial Business School, Imperial College London 
+
+> 3
+
+Department of Management Science and Engineering, Stanford University 
+
+Abstract 
+
+Reinforcement learning from human feedback (RLHF) has become a core post-training step for aligning large language models, yet the reward signal used in RLHF is only a learned proxy for true human utility. From an operations research perspective, this creates a decision problem under objective misspecification: the policy is optimized against an estimated reward, while deployment performance is determined by an unobserved objective. The resulting gap leads to reward over-optimization, or Goodharting, where proxy reward continues to improve even after true quality deteriorates. Existing mitigations address this problem through uncertainty penalties, pessimistic rewards, or conservative constraints, but they can be computationally burdensome and overly pessimistic. We propose Wasserstein distributionally robust regret optimization (DRRO) for RLHF. Instead of pessimizing worst-case value as in standard DRO, DRRO pessimizes worst-case regret relative to the best policy under the same plausible reward perturbation. We study the promptwise problem through a simplex allocation model and show that, under an ℓ1
+
+ambiguity set, the inner worst-case regret admits an exact solution and the optimal policy has a water-filling structure. These results lead to a practical policy-gradient algorithm with a simple sampled-bonus interpretation and only minor changes to PPO/GRPO-style RLHF training. The framework also clarifies theoretically why DRRO is less pessimistic than DRO, and our experiments show that DRRO mitigates over-optimization more effectively than existing baselines while standard DRO is systematically over-pessimistic. 
+
+> *
+
+Equal contribution. Corresponding to s.liu21@imperial.ac.uk. 
+
+1
+
+> arXiv:2605.00155v1 [cs.LG] 30 Apr 2026
+
+# 1 Introduction 
+
+Large language models owe much of their practical usefulness not only to scale, but also to post-training . Pretraining creates a strong next-token predictor, but not necessarily a model that is helpful, safe, or responsive to human intent. Modern alignment pipelines therefore add supervised fine-tuning and then preference-based policy optimization, most prominently reinforcement learning from human feedback (RLHF) [Christiano et al., 2017, Ziegler et al., 2019, Stiennon et al., 2020, Ouyang et al., 2022]. For readers outside the core RLHF literature, the basic pipeline is simple: prompts are sampled, the model generates candidate responses, humans express pairwise preferences over those responses, a reward model is fit to those preferences, and the language model is then optimized against the learned reward, often while being kept close to a reference policy. The leverage of this final stage is substantial. In the InstructGPT study, Ouyang et al. [2022] reported that a 1.3B aligned model was preferred by human raters to a 175B model without comparable RLHF, illustrating how much of a modern assistant’s behavior is determined by post-training rather than pretraining alone. That same pipeline also creates the problem studied in this paper. A reward model trained through a Bradley–Terry-style comparison objective [Bradley and Terry, 1952] is only a proxy for true human preference. It may rank responses well near the data distribution on which it was trained and extrapolate poorly once policy optimization begins pushing the model toward new regions of response space. In other words, the reward model is not merely noisy; it is an imperfect objective that is subsequently optimized hard. This is exactly the setting in which Goodhart’s law becomes operational. The empirical signature is now clear. In the controlled study of Gao et al. [2023], the proxy reward continued to improve as the policy moved farther from the initial model, while a stronger gold-standard reward first peaked and then deteriorated. This is not a cosmetic gap. It means that the very signal used for training can certify progress while actual quality is already declining. Hosking et al. [2024] sharpen the same point from another angle by showing that human-feedback scores themselves are not a gold standard and can be distorted by stylistic confounders such as assertiveness. Rafailov et al. [2024] show that analogous over-optimization appears even in direct alignment algorithms, and Karwowski et al. [2024] analyze the broader mechanism through the lens of Goodhart’s law in reinforcement learning. RLHF is a clean and consequential example of decision making under objective misspecification. The decision maker must choose a policy before the realized user preference is known, but the available objective is only an estimate. More importantly, the misspecification is decision-dependent: optimization changes the response distribution, which changes where the reward model is asked to extrapolate. This creates a robust decision problem with endogenous objective uncertainty. In the operations research 2Figure 1: Reward over-optimization in RLHF, adapted from Gao et al. [2023]. As the policy drifts farther from the initial model, the proxy reward can continue to rise even after the stronger evaluator has started to fall. literature, Ben-Tal et al. [2013] study robust solutions under uncertain probabilities, Wiesemann et al. [2014] develop a general framework for distributionally robust convex optimization, and Mohajerin Esfahani and Kuhn [2018] show how Wasserstein ambiguity sets lead to tractable, data-driven DRO. RLHF fits squarely into this line of thinking, but with an unusually transparent behavioral interpretation. Recent mitigation strategies already move in this robust direction. For example, Coste et al. [2024] and Eisenstein et al. [2024] use reward-model ensembles to hedge against reward hacking, Xiong et al. [2024] and Das et al. [2024] refresh the reward signal as the policy drifts, and Zhai et al. [2024], Xu et al. [2025], Yan et al. [2024], and Moskovitz et al. [2024] modify the policy objective through uncertainty penalties, pessimistic rewards, or support constraints. These ideas attack the right failure mode, but they also expose a second tension: robustness can itself become over-pessimistic. Xu et al. [2025] argue that KL-based protection can exclude policies that move far from the data distribution even when those policies perform well, Wolf et al. [2025] find that stability-oriented reinitialization reduces over-optimization but also limits optimization flexibility and yields diminishing gains, and Li et al. [2025] show that several divergence-based bonuses can bias exploration toward high-probability regions of the reference model and thereby reinforce conservative behavior. The challenge, then, is not merely to robustify RLHF, but to robustify it against the right benchmark. The most direct mathematical formalization of robustness would be standard distri-butionally robust optimization (DRO): maximize the worst-case value of a policy over a neighborhood of plausible true rewards around the proxy reward. But worst-case value is 3not the most compelling deployment benchmark. In practice, we do not ask whether a shipped model performs well relative to a fixed baseline of zero under an adversarially perturbed reward. We ask whether it performs close to the best policy that would have been chosen under the same realized true reward . That difference is not semantic. It is exactly where value-based robustness can become too pessimistic. When all candidate policies share the same reward ambiguity, comparing each one to an absolute worst-case baseline can penalize useful improvement more than necessary. This motivates our central idea: robustify regret , not value. We bring distributionally robust regret optimization (DRRO) to RLHF. DRRO compares a deployed policy to the best policy in the same plausible world, thereby asking for robustness without automatically giving up more upside than necessary. The benchmark is especially natural in RLHF because the decision is ex ante: one policy must be committed before the realized user preference is observed. This links RLHF directly to the recent ex-ante DRRO literature, including Agarwal and Zhang [2022], Cho and Yang [2024], Bitar [2024], and Fiechtner and Blanchet [2025]. At the same time, the problem is challenging because regret-robust optimization is usually harder than value-robust optimization, and broad classes of minmax-regret problems are NP-hard even in static settings [Averbakh, 2004, Averbakh and Lebedev, 2005]. Our contribution is to identify tractable structure for RLHF. For a fixed prompt, if one conceptually enumerates the finite set of possible complete responses, then the policy becomes a probability vector on a simplex and the promptwise problem becomes a portfolio-style allocation problem. Under an ℓ1 ambiguity set around the proxy reward, the inner worst-case regret has an exact solution, the adversary concentrates its budget on a single response, and the minimizer admits a water-filling interpretation with leftover mass assigned to the top response. That exact characterization, although derived in a stylized finite model, leads directly to a sampled robust bonus that can be inserted into PPO- or GRPO-style RLHF updates with only minor code changes. 
+
+Contributions. The paper makes five contributions. (a) We formulate RLHF under reward misspecification as an ex-ante DRRO problem and show that Wasserstein ambiguity over reward functions reduces to deterministic ambiguity in their mean reward. (b) For the fixed-prompt simplex model, we characterize the inner adversary exactly and derive a closed-form water-filling solution for the promptwise DRRO policy under ℓ1
+
+ambiguity. (c) We compare DRRO and DRO theoretically. When the proxy reward preserves the ranking of the true reward, we show that DRRO weakly dominates DRO under the 4true reward, and at the prompt-distribution level we derive regret certificates showing that DRRO pays only relative coverage while DRO pays absolute coverage. (d) We translate the exact promptwise theory into a trainable RLHF objective: a hard robust bonus, a softmax relaxation, a self-normalized importance-sampling estimator, and a dynamic KL-based ambiguity budget. (e) Empirically, we show that DRRO delivers the strongest mitigation of over-optimization, while standard DRO is measurably over-pessimistic. The rest of the paper proceeds as follows. Section 1.1 positions our contribution within the RLHF and robust optimization literatures. Section 2 introduces the RLHF notation and ex-ante DRRO formulation. Section 3 solves the fixed-prompt problem and interprets the resulting water-filling geometry. Section 4 develops the RLHF algorithmic surrogates. Section 5 then compares DRO and DRRO from rank-preserving and coverage-based perspectives. Section 6 records the final experimental design and tables. The key promptwise proofs appear in the main text, and the remaining proofs are deferred to the appendix. 
+
+## 1.1 Literature Review 
+
+RLHF and objective misspecification. RLHF emerged from the preference-learning framework of Christiano et al. [2017], who used human comparisons to train reward functions for reinforcement learning agents. Ziegler et al. [2019] and Stiennon et al. [2020] adapted that logic to language modeling and summarization, while Ouyang et al. [2022] turned it into the now-standard LLM pipeline of supervised fine-tuning, reward modeling, and reference-anchored policy optimization, often implemented with KL control. Direct preference methods such as DPO [Rafailov et al., 2023] eliminate the explicit reward-model optimization stage, but they do not eliminate the underlying problem of learning from a finite proxy for human preference. Among recent surveys, Kaufmann et al. [2025] provide a broad map of RLHF across domains, Chaudhari et al. [2024] focus on reward-model misspecification in LLM alignment, and Liu et al. [2026] emphasize preference learning, uncertainty quantification, and statistical inference. 
+
+Over-optimization and mitigation strategies. The empirical evidence is now fairly systematic. Gao et al. [2023] document the canonical proxy-versus-gold divergence in RLHF; Rafailov et al. [2024] show that the same phenomenon persists in direct alignment algorithms; and Hosking et al. [2024] argue that human-feedback scores themselves can be misaligned with true quality because they over-reward stylistic features such as assertiveness. On the mitigation side, one family of papers tries to improve the reward model itself. Coste et al. [2024] and Eisenstein et al. [2024] study reward-model ensembles 5as a hedge against reward hacking; Miao et al. [2024] use an information-theoretic reward-model objective; Yang et al. [2024] regularize hidden states to improve generalization; Liu et al. [2025] target artifact robustness; and Bukharin et al. [2025] generate adversarial hard examples for reward-model training. A related line updates the reward model as the policy moves, including the iterative preference-learning method of Xiong et al. [2024], the active preference-optimization framework of Das et al. [2024], and the off-policy correction of Ackermann et al. [2025]. A second family leaves the reward model largely intact but modifies the policy objective. Zhai et al. [2024] penalize reward uncertainty estimated from LoRA ensembles, Xu et al. [2025] learn a pessimistic reward model, and Yan et al. [2024] optimize a reward-robust policy objective. A third family regularizes the policy toward regions where the reward model is thought to be reliable. Moskovitz et al. [2024] impose explicit constraints in RLHF, Dai et al. [2025] regularize toward behavior-supported regions, Rita et al. [2024] use demonstration-guided reinforcement learning, and Liu et al. [2024] show that SFT loss can play the role of an adversarial regularizer. These methods are important points of comparison for us because they reveal the central tension: protecting against reward misspecification is valuable, but methods built around pessimistic value or hard feasible-region restrictions can also suppress useful policy improvement. Xu et al. [2025] make this concern explicit by arguing that KL-based regularization can exclude high-performing policies with large KL divergence, and Li et al. [2025] show that divergence-based bonuses can reinforce conservative behavior rather than encourage exploration of uncertain but promising regions. 
+
+DRO and DRRO in operations research. Standard DRO protects decisions against ambiguity in probabilities, distributions, and objective coefficients. Ben-Tal et al. [2013] study robust solutions under uncertain probabilities, Wiesemann et al. [2014] provide a general convex-optimization framework, Mohajerin Esfahani and Kuhn [2018] develop data-driven Wasserstein DRO, Blanchet and Murthy [2019] quantify distributional model risk, and Rahimian and Mehrotra [2019] survey the area. The concern that worst-case value may be overly conservative leads naturally to regret-based robustness. Averbakh [2004] and Averbakh and Lebedev [2005] develop classical minmax-regret models and complexity results; Chen and Xie [2021] study regret in the newsvendor problem; and Agarwal and Zhang [2022], Cho and Yang [2024], Bitar [2024], and Fiechtner and Blanchet [2025] develop distributionally robust regret formulations in modern statistical and learning settings. Our paper imports that line of work into RLHF and shows that the regret benchmark becomes especially natural once reward uncertainty, rather than transition uncertainty, is the main source of misspecification. 62 Model Setup and Problem Formulation 
+
+This section turns the informal RLHF story from the introduction into a decision model. We first fix notation for prompts, responses, policies, proxy rewards, and latent true rewards, and then use that notation to formulate RLHF as an ex-ante robust optimization problem under reward misspecification. We begin with the objects that are already present in practical RLHF and make the proxy-versus-true reward gap explicit. Once that gap is written down carefully, the ex-ante DRRO and DRO formulations follow naturally, and the section closes by extracting the promptwise ambiguity set that will drive the analysis later on. 
+
+## 2.1 RLHF Background and Notation 
+
+Let X denote the prompt space and let D be the deployment distribution over prompts. For each prompt x ∈ X , the policy πθ(· | x) induces a distribution over complete responses in Y(x). Conceptually, Y(x) is finite because the vocabulary is finite and generation length is capped during training, although it is astronomically large in practice. The theoretical analysis uses this conceptual finiteness only to expose the underlying simplex structure; the algorithm never enumerates Y(x).The reward model is trained from pairwise human preferences, typically through a Bradley–Terry objective. Given comparisons (x, y +, y −), a standard reward-model fit solves 
+
+max 
+
+> ϕ
+> ∑
+
+log σ(
+
+rϕ(x, y +) − rϕ(x, y −))
+
+,
+
+where σ(t) = 1 /(1 + e−t). After training, we suppress the parameter ϕ and write ˆr(x, y )
+
+for the learned proxy reward. The latent true reward that would be induced by the full human-preference signal is denoted by r⋆(x, y ).A common RLHF objective is 
+
+max  
+
+> θ
+
+Jˆr(πθ) − β Ex∼D 
+
+> [
+
+KL (
+
+πθ(· | x) ∥ π0(· | x))] 
+
+,
+
+where π0 is the reference policy and 
+
+Jr(π) := Ex∼D , y ∼π(·| x)[r(x, y )] .
+
+This display is useful as background because it isolates the reward term that will later be robustified. In the grouped RLHF algorithms developed later, we do not add an explicit KL penalty to the policy objective. The main reason is conceptual: our goal is to correct the reward signal being optimized, not merely to keep optimizing the same imperfect proxy over a smaller neighborhood around the reference model. KL therefore reappears only as a drift statistic for monitoring and for calibrating the dynamic ambiguity budget. 7Discussions on the KL penalty term. The KL term should nevertheless be interpreted carefully, because it remains a common reference point in RLHF. For a suitable multiplier 
+
+β, the penalized formulation is the Lagrangian form of the trust-region problem 
+
+max  
+
+> θ
+
+Jˆr(πθ) subject to Ex∼D 
+
+> [
+
+KL (
+
+πθ(· | x) ∥ π0(· | x))] 
+
+≤ ε, 
+
+so KL control is one way to mitigate over-optimization by shrinking the feasible policy set around the reference model. That safeguard can be useful, but it is not intrinsic to RLHF and it is no longer the only practical recipe. Recent large-scale LLM-RL implementations already train successfully without an explicit KL penalty: Hu et al. [2025] show that vanilla PPO with rule-based rewards can scale reasoning performance without any KL regularization, while Yu et al. [2025] explicitly remove the KL term from GRPO-style long-chain-of-thought training and argue that large divergence from the initial model need not be suppressed when it supports better reasoning. More importantly, KL control is not exactly to the point for the misspecification problem studied here. If the raw proxy reward is imperfect, then maximizing that same proxy over a smaller KL ball is still a constrained optimization against a misspecified objective. In that sense, KL regularization is a last-resort hedge: it limits how much damage the proxy can do by limiting how far the policy may move, but it does not repair the proxy itself. Our viewpoint is that a more direct mitigation is to improve the reward signal being optimized. Once a robust correction is added to the proxy reward, optimizing the corrected surrogate over a given feasible region is more natural than preserving the uncorrected proxy and relying on the feasible-region restriction alone. 
+
+## 2.2 Ex-Ante DRRO for RLHF 
+
+In deployment, a single policy must serve the prompt distribution before the realized true reward is known. This is an ex-ante decision problem. Let P be a distribution over reward functions R : X × Y → R. The ex-ante value of policy π under P is 
+
+V (π, P ) := ER∼P [JR(π)] .
+
+The ex-ante DRRO problem is 
+
+min  
+
+> π∈Π
+
+max  
+
+> P∈U
+> [
+
+max  
+
+> β∈Π
+
+V (β, P ) − V (π, P )
+
+> ]
+
+, (2.1) while the corresponding ex-ante DRO problem is 
+
+max  
+
+> π∈Π
+
+min   
+
+> P∈U
+
+V (π, P ).
+
+8Table 1: Notation used throughout the paper. Notation Meaning 
+
+x ∼ D prompt sampled from the deployment or training distribution 
+
+y ∈ Y (x) complete response to prompt xπθ(y | x) policy over complete responses 
+
+ˆr(x, y ) learned proxy reward, usually rϕ(x, y )
+
+r⋆(x, y ) latent true human-preference reward 
+
+Jr(π) expected return of policy π under reward function r
+
+Π policy class under consideration 
+
+r = ( r1, . . . , r n) promptwise proxy-reward vector after enumerating responses 
+
+s = ( s1, . . . , s n) promptwise plausible true mean reward vector 
+
+t = ( t1, . . . , t n) promptwise true reward vector used in the DRRO-vs-DRO comparison theorem 
+
+δ ambiguity-budget radius 
+
+p, β ∈ P n promptwise policy distributions on n enumerated responses 
+
+Reg( π, s ) regret of π relative to the best policy under reward sμx promptwise coverage distribution induced by reward-model data or behavior support 
+
+C(π; μ, D) integrated absolute coverage coefficient 
+
+Crel (β, π ; μ, D) integrated relative coverage coefficient The benchmark is the key distinction: DRRO compares a chosen policy to the best policy under the same ambiguous world, while DRO compares against a fixed zero baseline. 
+
+Proposition 2.1 (Mean-reward reduction) . For any policy π and any distribution P over reward functions, define the mean reward 
+
+¯r(P )( x, y ) := ER∼P [R(x, y )] .
+
+Then 
+
+V (π, P ) = J¯r(P )(π).
+
+Consequently, (2.1) depends on P only through the induced mean-reward set 
+
+¯U := {¯r(P ) : P ∈ U} ,
+
+and may be rewritten as 
+
+min  
+
+> π∈Π
+
+max  
+
+> s∈¯U
+> [
+
+max  
+
+> β∈Π
+
+Js(β) − Js(π)
+
+> ]
+
+.
+
+Corollary 2.2 (Wasserstein ambiguity implies mean-reward ambiguity) . Let P0 be a nominal distribution over reward functions and let 
+
+U := {P : W(P, P 0) ≤ ρ},
+
+9where W is the 1-Wasserstein distance induced by a norm ∥·∥ on reward functions. Then every P ∈ U satisfies 
+
+∥¯r(P ) − ¯r(P0)∥ ≤ ρ. 
+
+Proposition 2.1 and Corollary 2.2 justify replacing distributional ambiguity over reward functions by deterministic ambiguity over mean rewards. In the rest of the paper we study the promptwise ambiguity set 
+
+Uδ(ˆ r) := {s : ∥s(x, ·) − ˆr(x, ·)∥1 ≤ δ(x) for every x ∈ X } . (2.2) The budget δ(x) may be constant or prompt dependent. We first solve the exact promptwise minimax problem induced by (2.2) and then derive trainable RLHF surrogates. 
+
+# 3 Closed-Form Promptwise Analysis 
+
+We now isolate the core promptwise optimization problem and solve it exactly. This section is where the main theoretical intuition becomes visible: once a single prompt is fixed, RLHF under reward ambiguity reduces to a simplex decision problem with a remarkably explicit adversary and optimizer. Fixing a prompt first reveals where the adversary spends its budget. That inner structure then turns the outer policy problem into a water-filling allocation rule with a clear economic interpretation: protect the responses whose proxy rewards are high but whose current coverage is too low. Later sections will use exactly this geometry to compare DRRO with DRO and to build trainable RLHF surrogates. 
+
+## 3.1 Fixed-Prompt Simplex Model 
+
+Fix a prompt x and enumerate its possible complete responses as y1, . . . , y n. Write 
+
+p = ( p1, . . . , p n) ∈ P n, pi = π(yi | x),
+
+and define the promptwise proxy-reward vector 
+
+r = ( r1, . . . , r n), ri = ˆ r(x, y i).
+
+For a perturbation ∆ ∈ Rn with ∥∆∥1 ≤ δ, let the plausible reward vector be 
+
+s = r + ∆ .
+
+10 The promptwise regret of policy p under s is 
+
+Reg( p, s ) := max 
+
+> β∈P n
+
+⟨β − p, s ⟩ .
+
+The promptwise DRRO problem is therefore 
+
+min 
+
+> p∈P n
+
+max  
+
+> ∥∆∥1≤δ
+
+Reg( p, r + ∆) . (3.1) 
+
+Proposition 3.1 (Inner adversary for a fixed policy) . For every p ∈ P n,
+
+max  
+
+> ∥∆∥1≤δ
+
+Reg( p, r + ∆) = δ + max 
+
+> 1≤i≤n
+
+(ri − δp i) − ⟨ p, r ⟩ . (3.2) 
+
+Moreover, the inner adversary can be chosen to place its entire budget on a single response: 
+
+∆⋆ = δe k, k ∈ arg max 
+
+> 1≤i≤n
+
+{ri − δp i}.
+
+Proposition 3.1 identifies the adversarial target: responses that have both high proxy reward and insufficient policy mass. 
+
+Proof sketch. Swap the inner two maximizations so that, for a fixed benchmark policy 
+
+β, the perturbation problem becomes a linear maximization over the ℓ1 ball. Hölder’s inequality, or equivalently ℓ1–ℓ∞ duality, turns that innermost problem into the conjugate norm δ ∥β − p∥∞. What remains is a convex function of β over the simplex, so the maximizer is attained at a vertex ei. Evaluating the objective at those vertices yields the closed form, and equality in the dual norm bound shows that the adversary can concentrate its entire budget on a single maximizing coordinate. 
+
+Proof. For a fixed policy p,
+
+max  
+
+> ∥∆∥1≤δ
+
+Reg( p, r + ∆) = max  
+
+> ∥∆∥1≤δ
+
+max 
+
+> β∈P n
+
+⟨β − p, r + ∆ ⟩
+
+= max 
+
+> β∈P n
+> {
+
+⟨β − p, r ⟩ + max  
+
+> ∥∆∥1≤δ
+
+⟨β − p, ∆⟩
+
+> }
+
+= max 
+
+> β∈P n
+
+{⟨ β − p, r ⟩ + δ ∥β − p∥∞} ,
+
+where the last step is the ℓ1–ℓ∞ duality relation. The objective is convex in β, so an optimizer can be chosen at a vertex of the simplex, namely β = ei for some i. Evaluating at ei gives 
+
+⟨ei − p, r ⟩ + δ ∥ei − p∥∞ = ri − ⟨ p, r ⟩ + δ(1 − pi)= δ + ri − δp i − ⟨ p, r ⟩ .
+
+11 Maximizing over i yields (3.2) . Equality in the dual norm bound is attained by placing the full ℓ1 budget on any maximizer k ∈ arg max i{ri − δp i}, that is, by choosing ∆⋆ = δe k.This observation is the backbone of the RLHF algorithm developed later. 
+
+## 3.2 Water-Filling Structure of the Promptwise Optimizer 
+
+Assume without loss of generality that the responses are labeled so that 
+
+r1 ≥ r2 ≥ · · · ≥ rn. (3.3) Define the promptwise robust utility 
+
+Fδ(p; r) := ⟨p, r ⟩ − max 
+
+> 1≤i≤n
+
+(ri − δp i), (3.4) which differs from the worst-case regret in (3.2) only by the additive constant δ.Two structural facts already point toward a water-filling solution. First, the robust correction depends on the uncovered rewards ri − δp i, so moving mass toward a response is useful only until that uncovered level has been pushed down to the common threshold. Second, once the rewards are ordered as in (3.3) , there is no reason to hedge a lower-scoring response before the higher-scoring ones have been brought down to the same uncovered level. The optimal policy therefore has to equalize a subset of uncovered rewards and leave any residual mass on the best response. 
+
+Theorem 3.2 (Water-filling with leftover mass) . Assume (3.3) and δ > 0. Let t0 be the unique solution to n∑
+
+> i=1
+
+(ri − t)+ = δ. (3.5) 
+
+Define 
+
+t⋆ := inf 
+
+> 
+
+t ≥ t0 : ∑
+
+> i:ri>t
+
+(r1 − ri) ≤ δ 
+
+> 
+
+.
+
+Then an optimal solution to (3.1) is 
+
+p⋆i = (ri − t⋆)+
+
+δ , i = 2 , . . . , n, p⋆ 
+
+> 1
+
+= 1 − 1
+
+δ
+
+> n∑
+> i=2
+
+(ri − t⋆)+. (3.6) Theorem 3.2 is a genuine water-filling rule, but with an RLHF-specific twist. All non-maximal responses receive precisely the excess of their proxy reward above the optimal threshold t⋆, while the remaining probability mass is assigned to the best response. When 
+
+δ is small, the threshold is high and the policy stays concentrated. As δ grows, new responses enter the hedge. Once δ is large enough that t⋆ = t0 < r n, every response receives positive mass and the policy approaches the uniform distribution. 12 Proof sketch. The derivation has five steps. We start from (3.1) and swap the inner maximization over benchmark responses with the maximization over reward perturbations. Hölder’s inequality then turns the perturbation problem into a conjugate norm, yielding the closed-form inner objective in Proposition 3.1. The remaining maximization is a convex function over the simplex, so it is attained at a vertex; this is what makes the adversary sparse. After introducing the uncovered-reward level t, the outer problem becomes a linear program with constraints t ≥ ri − δp i. For any fixed feasible t, the least mass needed on response i is (ri − t)+/δ , so feasibility begins at the baseline level t0, and any leftover mass is optimally assigned to the best response. That reduces the problem to a one-dimensional piecewise-linear concave maximization over t ≥ t0, whose optimizer is exactly the threshold t⋆.
+
+Proof. By Proposition 3.1, minimizing worst-case regret is equivalent to maximizing 
+
+Fδ(p; r) in (3.4) . Introduce an auxiliary variable t and rewrite the problem as the linear program 
+
+max  
+
+> p∈P n, t ∈R
+
+⟨p, r ⟩ − t subject to t ≥ ri − δp i, i = 1 , . . . , n. (3.7) Fix t. The constraints in (3.7) become 
+
+pi ≥ (ri − t)+
+
+δ , i = 1 , . . . , n. 
+
+Hence a necessary and sufficient feasibility condition for t is 
+
+> n∑
+> i=1
+
+(ri − t)+ ≤ δ. (3.8) Because the left-hand side of (3.8) is continuous and strictly decreasing in t, there is a unique minimal feasible threshold t0 solving (3.5). For a feasible t, maximizing ⟨p, r ⟩ subject to the lower bounds is straightforward because r1 ≥ r2 ≥ · · · ≥ rn. Every coordinate i ≥ 2 should be set at its minimum feasible value and the remaining probability mass should be assigned to coordinate 1. Thus 
+
+pi(t) = (ri − t)+
+
+δ , i = 2 , . . . , n, p1(t) = 1 − 1
+
+δ
+
+> n∑
+> i=2
+
+(ri − t)+. (3.9) Substituting (3.9) into the objective yields 
+
+ψ(t) := ⟨p(t), r ⟩ − t = r1 − t − 1
+
+δ
+
+> n∑
+> i=2
+
+(r1 − ri)( ri − t)+. (3.10) 13 y1 y2 y3 y4            
+
+> t⋆
+> small δ
+> support {y1, y 2}
+> y1y2y3y4
+> t⋆
+> medium δ
+> support {y1, y 2, y 3}
+> y1y2y3y4
+> t⋆
+> large δ
+> support {y1, y 2, y 3, y 4}
+
+Figure 2: A water-filling view of Theorem 3.2. The colored blocks show the hedge assigned to nonmaximal responses above the threshold t⋆; the remaining mass is sent to the best response y1. As the ambiguity budget grows, the threshold drops and additional responses enter the active support. The function ψ is piecewise linear. At points t distinct from all reward values, 
+
+ψ′(t) = −1 + 1
+
+δ
+
+> ∑
+> i:ri>t
+
+(r1 − ri). (3.11) As t increases, the active set {i : ri > t } shrinks, so the derivative (3.11) is nonincreasing. Therefore ψ is concave on [t0, ∞) and an optimizer is obtained at the smallest feasible threshold whose slope is nonpositive, namely 
+
+t⋆ = inf 
+
+> 
+
+t ≥ t0 : ∑
+
+> i:ri>t
+
+(r1 − ri) ≤ δ 
+
+> 
+
+.
+
+The optimal policy is then p(t⋆), which is exactly (3.6). 
+
+## 3.3 Interpreting the Water-Filling Policy 
+
+The water-filling theorem is useful not only because it is explicit, but also because it explains how the robustness budget changes the policy qualitatively. The policy does not flatten all responses equally. It first hedges against nearby competitors, then gradually widens support as the ambiguity budget grows, and it always keeps any residual probability mass on the top-ranked response. Figure 2 makes the mechanics of the optimizer visible. Small ambiguity budgets trust the proxy and therefore keep most probability on the best response, with only the nearest competitor receiving hedge mass. As δ increases, the threshold t⋆ falls and further responses enter the active support one by one. What matters is not their absolute rank alone, but whether their uncovered rewards still sit above the current water level. 
+
+Sanity checks. The limiting regimes line up with the intended interpretation of δ. As 
+
+δ ↓ 0, the cost of hedging dominates and the optimizer converges to the proxy-greedy policy e1. At the other extreme, once δ > ∑ni=1 (ri − rn) every response is active, so 14 t⋆ = t0 = ¯ r − δ/n with ¯r = 1 
+
+> n
+> ∑ni=1
+
+ri, and the water-filling rule simplifies to 
+
+p⋆i = 1
+
+n + ri − ¯rδ , i = 1 , . . . , n. 
+
+Hence p⋆ approaches the uniform distribution as δ → ∞ . DRRO therefore interpolates continuously between proxy-greedy optimization and complete hedging, which is exactly the behavior one would want from an ambiguity budget. 
+
+# 4 Algorithm for RLHF 
+
+The exact promptwise solution from Section 3 tells us what a regret-robust policy should look like once a prompt has been reduced to a finite simplex. RLHF training, however, never gets to move probability mass on that simplex directly. What it actually sees are sampled completions from a language model, and what it actually updates are model parameters. Those two viewpoints are close enough to guide the algorithm, but different enough to create real work. For a fixed prompt, the response space is astronomically large, so the adversarial coordinate from Proposition 3.1 is hidden from us and can only be glimpsed through a small sampled group. And even if the promptwise optimizer were available in closed form, it would still not produce a usable LLM update, because the trainable object is θ, not the full vector π(· | x). The way forward is therefore to rewrite the robust objective as a policy-gradient recipe, understand what bonus the exact theory implies, and then relax that bonus until it can be estimated reliably from grouped rollouts. 
+
+## 4.1 From the Promptwise Simplex to Policy Gradients 
+
+For a complete response y = ( y1, . . . , y |y|), the language model induces the probability 
+
+πθ(y | x) = 
+
+> |y|
+> ∏
+> t=1
+
+πθ(yt | x, y <t ), log πθ(y | x) = 
+
+> |y|
+> ∑
+> t=1
+
+log πθ(yt | x, y <t ).
+
+Thus, even though our theoretical development is expressed in terms of complete responses, the resulting gradients are still compatible with token-level LLM training. For a fixed prompt x, enumerate the candidate complete responses as y1, . . . , y n and let 
+
+pi = πθ(yi | x), ri = ˆ r(x, y i).
+
+The nominal promptwise RLHF target is simply the expected proxy reward 
+
+⟨p, r ⟩ =
+
+> n∑
+> i=1
+
+piri.
+
+15 Differentiating this nominal target with respect to θ gives 
+
+∇θ ⟨πθ(· | x), r ⟩ =
+
+> n∑
+> i=1
+
+ri∇θπθ(yi | x) = 
+
+> n∑
+> i=1
+
+πθ(yi | x)ri∇θ log πθ(yi | x).
+
+Equivalently, 
+
+∇θ ⟨πθ(· | x), r ⟩ = Ey∼πθ (·| x)
+
+> [
+
+ˆr(x, y )∇θ log πθ(y | x)]
+
+.
+
+Hence, if y1, . . . , y K ∼ πθ(· | x) are sampled on policy, then ̂
+
+gnom  
+
+> θ
+
+(x) := 1
+
+K
+
+> K∑
+> k=1
+
+ˆr(x, y k)∇θ log πθ(yk | x)
+
+is an unbiased Monte Carlo estimator of the nominal policy gradient above. When the samples instead come from a frozen rollout policy ¯π = πθold , standard importance sampling yields the detached estimator ̂
+
+gnom  
+
+> θ, ¯π
+
+(x) := 1
+
+K
+
+> K∑
+> k=1
+
+ρθ(x, y k) ˆ r(x, y k)∇θ log πθ(yk | x), yk ∼ ¯π(· | x),
+
+where ρθ(x, y ) = πθ(y | x)/¯π(y | x).Now fix a rollout policy ¯π = πθold and let ˜r¯π(x, y ) be any promptwise reward signal computed from that frozen policy. This setup is deliberately broad: standard RLHF corresponds to ˜r¯π = ˆr, while our DRRO variants will use shaped rewards derived from the robust theory. Define 
+
+> ˜
+
+J¯π(θ) := Ex∼D , y ∼πθ (·| x)[˜r¯π(x, y )] .
+
+Because the reward is detached during the policy update, the score-function identity gives 
+
+∇θ ˜J¯π(θ) = Ex∼D , y ∼πθ (·| x)
+
+> [˜
+
+r¯π(x, y )∇θ log πθ(y | x)]
+
+.
+
+Equivalently, if the responses were generated from ¯π, then 
+
+> ˜
+
+J¯π(θ) = Ex∼D , y ∼¯π(·| x)
+
+> [
+
+ρθ(x, y ) ˜r¯π(x, y )
+
+> ]
+
+, ρθ(x, y ) := πθ(y | x)¯π(y | x) .
+
+This is the starting point for PPO- and GRPO-style clipped surrogates: one samples groups of responses from a frozen rollout policy, computes detached rewards or advantages on those responses, and then performs several stable gradient steps on θ. The algorithms below should therefore be read as policy-gradient procedures with an explicit outer rollout/update loop. 16 4.2 GRPO as the Standard Grouped RLHF Backbone 
+
+Before inserting any robust correction, it helps to recall the grouped RLHF template that practitioners already use. The importance-sampling estimator above is the original recipe: estimate the gradient of the nominal promptwise target ⟨p, r ⟩ from sampled responses and then ascend along that estimate. Following Shao et al. [2024], GRPO stabilizes that recipe by grouping responses promptwise, replacing raw rewards by normalized within-group advantages, and clipping the importance ratio inside the policy update. Concretely, for each prompt x we sample a group of responses 
+
+y1, . . . , y G ∼ ¯π(· | x),
+
+evaluate them with the proxy reward model, 
+
+rk = ˆ r(x, y k), k = 1 , . . . , G, 
+
+and normalize the groupwise rewards into relative advantages 
+
+AGRPO  
+
+> k
+
+:= rk − ¯rsr + εadv 
+
+, ¯r := 1
+
+G
+
+> G∑
+> j=1
+
+rj , s2 
+
+> r
+
+:= 1
+
+G
+
+> G∑
+> j=1
+
+(rj − ¯r)2. (4.1) The completion-level GRPO surrogate is then 
+
+LGRPO (θ; ¯ π) := Ex, y 1: G∼¯π 
+
+> 
+
+1
+
+G
+
+> G∑
+> k=1
+
+min 
+
+> 
+
+ρθ,k AGRPO  
+
+> k
+
+,
+
+clip( ρθ,k , 1 − εclip , 1 + εclip )AGRPO  
+
+> k
+> 
+
+. (4.2) where 
+
+ρθ,k := πθ(yk | x)¯π(yk | x) .
+
+This is the baseline recipe to which our DRRO corrections will be compared. Everything that follows in this section keeps the grouped rollout, importance-ratio, and clipped policy-gradient backbone of (4.2) ; only the reward signal inside the group changes. In particular, we do not add any explicit KL penalty term to the policy objective in the algorithms below. 
+
+## 4.3 A First DRRO Translation: Hard-Max Bonuses 
+
+The cleanest translation of the promptwise DRRO theory is to leave the hard adversary untouched and ask what it changes relative to the nominal target ⟨p, r ⟩. For a fixed prompt, 
+
+Fδ(p; r) = ⟨p, r ⟩ − max  
+
+> i
+
+(ri − δp i),
+
+17 Algorithm 1 Standard GRPO-style RLHF 
+
+Input: initial policy πθ, prompt source D, reward model ˆr, outer iterations M , prompt batch size B, group size G, clip radius εclip , policy-gradient steps S
+
+Output: updated policy πθ 
+
+> 1:
+
+for outer iteration m = 1 , . . . , M do  
+
+> 2:
+
+set rollout policy ¯π ← πθ 
+
+> 3:
+
+sample prompt batch x1, . . . , x B ∼ D  
+
+> 4:
+
+for each prompt xb in the batch do  
+
+> 5:
+
+sample yb, 1, . . . , y b,G ∼ ¯π(· | xb) 
+
+> 6:
+
+compute proxy rewards rb,k = ˆ r(xb, y b,k ) 
+
+> 7:
+
+compute grouped advantages AGRPO  
+
+> b,k
+
+from (4.1)  
+
+> 8:
+
+compute response ratios ρb,k (θ) = πθ(yb,k | xb)/¯π(yb,k | xb) 
+
+> 9:
+
+accumulate the clipped GRPO surrogate (4.2)  
+
+> 10:
+
+end for  
+
+> 11:
+
+update θ using S minibatch policy-gradient steps on (4.2)  
+
+> 12:
+
+end for 
+
+which differs from worst-case regret only by an additive constant. The first term is the original promptwise objective introduced above; the second term is the additional regret-robust correction. Define 
+
+Hδ(p; r) := − max  
+
+> i
+
+(ri − δp i).
+
+If the maximizer is unique, then differentiating only this additional term gives 
+
+∇θHδ(πθ(· | x); r) = 
+
+> n∑
+> i=1
+
+πθ(yi | x)
+
+> [
+
+δ 1{i = i⋆(πθ)}
+
+> ]
+
+∇θ log πθ(yi | x),
+
+where 
+
+i⋆(p) ∈ arg max 
+
+> 1≤i≤n
+
+{ri − δp i}.
+
+Adding this correction to the nominal gradient formula above yields the full hard-DRRO policy gradient. 
+
+Proposition 4.1 (Gradient of the hard promptwise objective) . Fix a prompt x and let 
+
+i⋆(p) ∈ arg max 
+
+> 1≤i≤n
+
+{ri − δp i}
+
+be unique. Then 
+
+∇θFδ(πθ(· | x); r) = 
+
+> n∑
+> i=1
+
+πθ(yi | x)
+
+> [
+
+ri + δ 1{i = i⋆(πθ)}
+
+> ]
+
+∇θ log πθ(yi | x). (4.3) Proposition 4.1 says that the exact hard DRRO gradient is a reward-shaping rule: the threatening response singled out by the adversary receives an additional bonus of size 18 δ. In other words, the original DRRO recipe still tastes like standard policy-gradient RLHF; the only new ingredient is a budget-sized correction on the response that looks most dangerous under the inner regret problem. The obstruction is that the identity of i⋆(πθ) depends on the full response simplex, which is never observed in training. Our first approximation is therefore to replace the exact inner maximizer by the maximizer over the sampled group. For prompt x, let 
+
+¯pk := ¯ π(yk | x), rk := ˆ r(x, y k),
+
+and define the sampled hard winner 
+
+k⋆ ∈ arg max 
+
+> 1≤k≤G
+
+{rk − δ(x)¯ pk}. (4.4) The hard DRRO-shaped rewards are 
+
+> ˜
+
+rhard  
+
+> k
+
+= rk + δ(x)1{k = k⋆}. (4.5) The first term is the usual proxy reward, while the second term is the robust bonus. Its magnitude is set by the ambiguity budget δ(x), and the indicator simply singles out the sampled response that appears most threatening under (4.4) . We then normalize ˜rhard 
+
+> k
+
+within each prompt group and plug the resulting advantages into the same clipped GRPO surrogate (4.2). This first attempt reveals the right form of the correction, but it still does not optimize the right sampled objective. The exact additional term in worst-case regret is determined by the maximizer over the full hidden simplex, whereas (4.4) replaces that quantity by the maximizer over the sampled group. These two coincide only when the sampled group happens to contain the true adversarial coordinate. In a response space as large as that of an LLM, that coincidence cannot be relied upon, so the sampled hard-max bonus can systematically misrepresent the true additional term rather than merely estimate it noisily. 
+
+## 4.4 Soft-Max Relaxation and Sampled Estimation 
+
+The role of the soft-max relaxation is therefore not simply to smooth a winner-take-all bonus. Its real purpose is to replace the hard additional term by one that can still be estimated faithfully when we only observe a small subset of the hidden simplex. Replacing the hard maximum by a log-sum-exp creates exactly that kind of target. For a fixed prompt, define 
+
+Fδ,τ (p; r) := ⟨p, r ⟩ − τ log 
+
+> n∑
+> i=1
+
+exp  
+
+> (
+
+ri − δp i
+
+τ
+
+> )
+
+, τ > 0. (4.6) 19 Algorithm 2 Hard-max DRRO-GRPO (blue lines differ from Algorithm 1) 
+
+Input: initial policy πθ, prompt source D, reward model ˆr, ambiguity budget rule δ(·),outer iterations M , prompt batch size B, group size G, clip radius εclip , policy-gradient steps S
+
+Output: updated policy πθ 
+
+> 1:
+
+for outer iteration m = 1 , . . . , M do  
+
+> 2:
+
+set rollout policy ¯π ← πθ 
+
+> 3:
+
+sample prompt batch x1, . . . , x B ∼ D  
+
+> 4:
+
+for each prompt xb in the batch do  
+
+> 5:
+
+sample yb, 1, . . . , y b,G ∼ ¯π(· | xb) 
+
+> 6:
+
+compute proxy rewards rb,k = ˆ r(xb, y b,k ) 
+
+> 7:
+
+compute rollout probabilities ¯pb,k = ¯ π(yb,k | xb) 
+
+> 8:
+
+set shaped rewards ˜rhard  
+
+> b,k
+
+according to (4.5)  
+
+> 9:
+
+normalize ˜rhard  
+
+> b,k
+
+within the prompt group to form advantages  
+
+> 10:
+
+compute response ratios ρb,k (θ) = πθ(yb,k | xb)/¯π(yb,k | xb) 
+
+> 11:
+
+accumulate the clipped GRPO surrogate (4.2)  
+
+> 12:
+
+end for  
+
+> 13:
+
+update θ using S minibatch policy-gradient steps on (4.2)  
+
+> 14:
+
+end for 
+
+This is the smooth target we will optimize against once the adversary is sampled approxi-mately. 
+
+Proposition 4.2 (Soft-max approximation error) . For every promptwise policy p ∈ P n
+
+and proxy-reward vector r ∈ Rn,
+
+Fδ,τ (p; r) ≤ Fδ(p; r) ≤ Fδ,τ (p; r) + τ log n. (4.7) Thus smaller temperature means a smaller approximation gap. The price is that the induced adversarial distribution becomes more concentrated, so approximating that distri-bution from samples becomes harder. This is the central tradeoff in the soft formulation: low temperature makes the optimization target closer to the exact hard objective, but it also makes the sampled approximation of the extra regret term less forgiving. The smooth objective has an exact gradient that again takes the form of reward shaping. 
+
+Proposition 4.3 (Gradient of the soft DRRO objective) . Fix a prompt x and treat δ(x)
+
+as fixed during the policy-gradient step. Define 
+
+σθ,x (yi) := exp(( ri − δ(x)pi)/τ ) 
+
+> ∑nj=1
+
+exp(( rj − δ(x)pj )/τ ), pi = πθ(yi | x).
+
+Then 
+
+∇θFδ,τ (πθ(· | x); r) = 
+
+> n∑
+> i=1
+
+πθ(yi | x)
+
+> [
+
+ri + δ(x)σθ,x (yi)
+
+> ]
+
+∇θ log πθ(yi | x). (4.8) 20 Equation (4.8) is the smooth analogue of (4.3) . The hard indicator is replaced by a soft adversarial probability mass function σθ,x . That change is exactly what makes the additional term estimable from partial samples: instead of recovering a discontinuous maximizer on the hidden simplex, we only need to approximate expectations under σθ,x .To that end, let q(· | x) be a proposal distribution with support covering the relevant responses and define 
+
+uk := exp(( rk − δ(x)pk)/τ )
+
+q(yk | x) , wk := uk 
+
+> ∑Kj=1
+
+uj
+
+, (4.9) for samples y1, . . . , y K ∼ q(· | x). For any bounded test function h, the corresponding exact soft expectation is 
+
+μh(x) := 
+
+> n∑
+> i=1
+
+σθ,x (yi)h(yi) = Ey∼q(·| x)[u(y)h(y)] 
+
+Ey∼q(·| x)[u(y)] ,
+
+and the SNIS approximation is ̂
+
+μh,K (x) := 
+
+> K∑
+> k=1
+
+wkh(yk). (4.10) Finite-sample bias and concentration results for SNIS are classical; see, for example, Cardoso et al. [2022]. For our grouped RLHF estimator, the following promptwise bound makes the dependence on the sample size K explicit. In the implementation below, one simply takes K = G.
+
+Proposition 4.4 (Finite-sample SNIS error) . Fix a prompt x and a bounded test function 
+
+h. Suppose 0 ≤ u(y) ≤ Ux and |h(y)| ≤ Hx for q(· | x)-almost every y, and write 
+
+νx := Ey∼q(·| x)[u(y)] > 0.
+
+Then for every η ∈ (0 , 1) , if 
+
+K ≥ 2U 2
+
+> x
+
+ν2
+
+> x
+
+log 4
+
+η ,
+
+the estimator (4.10) satisfies 
+
+Pr 
+
+> 
+
+|̂μh,K (x) − μh(x)| ≤ 4UxHx
+
+νx
+
+> √
+
+log(4 /η )2K 
+
+> 
+
+≥ 1 − η. (4.11) The dependence on the temperature is now visible in two places. By Proposition 4.2, lower τ makes the optimization target closer to the hard DRRO objective. But in (4.11) ,the constant Ux grows with the dynamic range of exp (( r − δp )/τ ), so low temperature also increases the variance and decreases the effective sample size of the SNIS weights. 21 Algorithm 3 Soft DRRO-GRPO (blue lines differ from Algorithm 1) 
+
+Input: initial policy πθ, prompt source D, reward model ˆr, ambiguity budget rule δ(·),outer iterations M , prompt batch size B, group size G, temperature τ , clip radius 
+
+εclip , policy-gradient steps S
+
+Output: updated policy πθ 
+
+> 1:
+
+for outer iteration m = 1 , . . . , M do  
+
+> 2:
+
+set rollout policy ¯π ← πθ 
+
+> 3:
+
+sample prompt batch x1, . . . , x B ∼ D  
+
+> 4:
+
+for each prompt xb in the batch do  
+
+> 5:
+
+sample yb, 1, . . . , y b,G ∼ ¯π(· | xb) 
+
+> 6:
+
+compute proxy rewards rb,k = ˆ r(xb, y b,k ) 
+
+> 7:
+
+compute rollout probabilities ¯pb,k = ¯ π(yb,k | xb) 
+
+> 8:
+
+set shaped rewards ˜rsoft  
+
+> b,k
+
+according to (4.9) and (4.13)  
+
+> 9:
+
+normalize ˜rsoft  
+
+> b,k
+
+within the prompt group to form advantages  
+
+> 10:
+
+compute response ratios ρb,k (θ) = πθ(yb,k | xb)/¯π(yb,k | xb) 
+
+> 11:
+
+accumulate the clipped GRPO surrogate (4.2)  
+
+> 12:
+
+end for  
+
+> 13:
+
+update θ using S minibatch policy-gradient steps on (4.2)  
+
+> 14:
+
+end for 
+
+This is precisely why the soft target is more sample friendly than the hard target, but still requires a careful choice of τ .For the rollout choice q = ¯π, the soft reward-shaping gradient implied by (4.8) is approximated by ̂
+
+gθ(x) = 1
+
+G
+
+> G∑
+> k=1
+> [
+
+rk + δ(x)Gw k ¯pk
+
+> ]
+
+∇θ log πθ(yk | x), ¯pk := ¯ π(yk | x), (4.12) where the SNIS weights are computed from (4.9) with q = ¯π. Equivalently, one may define the soft DRRO-shaped rewards 
+
+> ˜
+
+rsoft  
+
+> k
+
+= rk + δ(x)Gw k ¯pk (4.13) and simply plug their group-normalized versions into the same clipped GRPO surrogate (4.2) . Here the first term is again the ordinary proxy reward, while the second term is the robust bonus. The factor Gw k ¯pk is the SNIS approximation to the soft adversarial mass assigned to response yk, so the mature GRPO code path only needs to swap in a reshaped reward. In other words, we are now optimizing a grouped policy-gradient surrogate for the smooth promptwise target 
+
+Jsoft  
+
+> δ,τ
+
+(π) := Ex∼D 
+
+> [
+
+Fδ(x),τ (π(· | x); ˆ r(x, ·)) ]
+
+.
+
+22 4.5 Dynamic Budgets and the Final Implemented Algorithm 
+
+At this point the mechanics are almost complete. The remaining design choice is how much ambiguity to grant the adversary at different stages of training. Keeping δ fixed throughout training is unnecessarily rigid because reward-model error typically grows as the policy drifts away from the reference model. The Donsker–Varadhan variational formula gives a clean way to formalize that idea. 
+
+Proposition 4.5 (Donsker–Varadhan control of reward misspecification) . Fix a prompt 
+
+x and define 
+
+hx(y) := ∣∣∣ˆr(x, y ) − r⋆(x, y )∣∣∣.
+
+Then for every λ > 0,
+
+Ey∼πθ (·| x)[hx(y)] ≤ 1
+
+λ
+
+> [
+
+KL (
+
+πθ(· | x) ∥ π0(· | x))
+
++ log Ey∼π0(·| x)[eλh x(y)]]
+
+. (4.14) The formal inequality still contains the unknown log-moment term under π0, but it explains why KL drift is a sensible observable proxy for reward uncertainty. In the implementation we therefore use 
+
+δθ(x) = δ0 + α KL (
+
+¯π(· | x) ∥ π0(· | x))
+
+, (4.15) where δ0 ≥ 0 is a pilot-calibrated base budget and α > 0 is a scaling coefficient. This KL quantity is used only to calibrate the ambiguity budget; it is not added as an explicit penalty to the policy objective. The calibration is deliberately pragmatic. We first draw a small pilot set of prompts, generate a modest number of responses from the initial policy, and score those responses with both the proxy reward model and a stronger held-out gold reward model. The empirical promptwise ℓ1 discrepancy between the two provides an initial guess for δ0.After that, the remaining hyperparameters—notably α, τ , the group size G, and the clipping radius εclip —are tuned on a standard held-out validation set evaluated by the stronger reward model. The final implementation uses the soft bonus, the dynamic budget, and the unchanged GRPO backbone. Once the promptwise budgets δb have been instantiated from (4.15) ,the only code-level modification inside the GRPO update is still the reward-shaping block. 
+
+## 4.6 Discussion 
+
+Two practical points deserve a final discussion: how much extra computation DRRO introduces on top of GRPO, and why the ℓ1 ambiguity set is the geometry that makes that extra computation tractable. Both points reinforce the same message of this section, namely that the robust correction should be viewed as a light reward-shaping layer rather than as a new RLHF training stack. 23 Algorithm 4 Final DRRO-RLHF implementation (blue lines differ from Algorithm 1) 
+
+Input: initial policy πθ, prompt source D, reward model ˆr, reference policy π0, base budget δ0, scaling coefficient α, outer iterations M , prompt batch size B, group size 
+
+G, temperature τ , clip radius εclip , policy-gradient steps S
+
+Output: updated policy πθ 
+
+> 1:
+
+for outer iteration m = 1 , . . . , M do  
+
+> 2:
+
+set rollout policy ¯π ← πθ 
+
+> 3:
+
+sample prompt batch x1, . . . , x B ∼ D  
+
+> 4:
+
+instantiate promptwise budgets δb = δ0 + α KL(¯ π(· | xb) ∥ π0(· | xb))  
+
+> 5:
+
+for each prompt xb in the batch do  
+
+> 6:
+
+sample yb, 1, . . . , y b,G ∼ ¯π(· | xb) 
+
+> 7:
+
+compute proxy rewards rb,k = ˆ r(xb, y b,k ) 
+
+> 8:
+
+compute rollout probabilities ¯pb,k = ¯ π(yb,k | xb) 
+
+> 9:
+
+set shaped rewards ˜rb,k according to (4.9) and (4.13)  
+
+> 10:
+
+normalize ˜rb,k within the prompt group to form advantages  
+
+> 11:
+
+compute response ratios ρb,k (θ) = πθ(yb,k | xb)/¯π(yb,k | xb) 
+
+> 12:
+
+accumulate the clipped GRPO surrogate (4.2)  
+
+> 13:
+
+end for  
+
+> 14:
+
+update θ using S minibatch policy-gradient steps on (4.2)  
+
+> 15:
+
+end for 
+
+From a computational viewpoint, the additional burden is small. During autoregressive rollout, the model already returns the tokenwise conditional probabilities needed to form each completion probability ¯pk = ¯π(yk | x), so no extra model query is required; one only accumulates the emitted token probabilities along the sampled response. Once the proxy rewards are available, the hard-max variant adds a promptwise argmax over the sampled group and one scalar bonus, while the soft-max variant adds G scalar exponentials, one normalization, and the corresponding reshaped rewards. Relative to sequence generation, reward-model scoring, and the usual minibatch policy-gradient updates, these operations are negligible. This is the operational reason why the DRRO modification fits naturally into mature PPO/GRPO codebases. The choice of the ℓ1 ambiguity set is equally practical. Earlier sections used ℓ1 because it yields a sharp promptwise theory, but in the RLHF algorithm it also has the right locality property: the robust correction can be written in terms of the probability assigned to the threatening sampled response rather than the entire hidden simplex. The next proposition formalizes that distinction by comparing ℓ1 with more general ℓp geometries. 
+
+Proposition 4.6 (Coordinate locality of ℓ1 ambiguity) . Suppose the promptwise ambiguity set is ∥∆∥p ≤ δ and let q be the dual exponent satisfying 1/p + 1 /q = 1 . Then 
+
+max  
+
+> ∥∆∥p≤δ
+
+Reg( p, r + ∆) = max 
+
+> β∈P n
+> {
+
+⟨β − p, r ⟩ + δ ∥β − p∥q
+
+> }
+
+. (4.16) 
+
+An optimizer in (4.16) can be chosen at a vertex β = ei of the simplex. When p = 1 
+
+24 (hence q = ∞), 
+
+∥ei − p∥∞ = 1 − pi,
+
+which depends only on the probability of the sampled response i. For finite q, the penalty 
+
+∥ei − p∥q depends on the full policy vector and therefore couples sampled and unsampled responses. 
+
+The proposition explains the computational side of the choice. There are two further reasons to keep ℓ1. First, it keeps the adversary sparse and the resulting bonus bounded by a budget with a direct operational meaning: total promptwise reward misspecification mass. Second, once the response space is only partially observed through grouped rollouts, any ambiguity set that couples the correction to the entire policy vector becomes nearly impossible to estimate reliably. In this sense, ℓ1 is not merely algebraically convenient; it is the ambiguity geometry that best matches how RLHF is actually trained. 
+
+# 5 Comparing DRO and DRRO 
+
+The promptwise theory already suggests why DRRO should be less pessimistic than DRO: DRRO spreads probability only where doing so reduces plausible regret, while DRO spreads probability to guard absolute value against every perturbation. This section formalizes that difference from two complementary angles. We first study a promptwise ranking regime that mirrors how reward models are trained and evaluated in RLHF. We then give a distribution-level comparison based on integrated coverage, which captures how much reward-model extrapolation each robust objective demands across prompts. 
+
+## 5.1 Rank-Preserving Proxy Rewards 
+
+Pairwise reward-model training in RLHF is explicitly a ranking problem. The classical Bradley–Terry formulation and its descendants treat the goal as assigning larger scores to preferred responses than to rejected ones [Bradley and Terry, 1952, Christiano et al., 2017]. Modern reward-model pipelines for summarization and instruction following adopt exactly this view, training the proxy reward to preserve the preference ordering induced by human comparisons [Stiennon et al., 2020, Ouyang et al., 2022]. On the evaluation side, held-out pairwise accuracy and ranking correlation remain standard diagnostics of reward-model quality [Lambert et al., 2025], even though recent evidence shows that downstream RLHF performance depends on more than accuracy alone [Chen et al., 2024]. This makes the following question natural: if the proxy reward gets the ordering right, which robust objective makes better use of that information? 25 For the fixed-prompt problem, promptwise DRO solves 
+
+max 
+
+> p∈P n
+
+⟨p, r ⟩ − δ ∥p∥∞ .
+
+The next theorem is the manuscript counterpart of the new result from the slides: under a rank-preserving proxy, DRRO is better than DRO in the most literal sense of delivering larger true value. 
+
+Theorem 5.1 (DRRO dominates DRO under rank-preserving truth) . Assume the proxy reward is strictly ordered, 
+
+r1 > r 2 > · · · > r n,
+
+and that the true reward is a rank-preserving transform of the proxy reward, 
+
+ti = ϕ(ri), i = 1 , . . . , n, 
+
+for some increasing function ϕ. Let 
+
+pDRO (δ) ∈ arg max 
+
+> p∈P n
+
+{⟨ p, r ⟩ − δ ∥p∥∞} ,
+
+and 
+
+pDRRO (δ) ∈ arg max 
+
+> p∈P n
+> {
+
+⟨p, r ⟩ − max  
+
+> i
+
+(ri − δp i)
+
+> }
+
+.
+
+Then n∑
+
+> i=1
+
+pDRRO  
+
+> i
+
+(δ) ti ≥
+
+> n∑
+> i=1
+
+pDRO  
+
+> i
+
+(δ) ti.
+
+If ϕ is strictly increasing and the two optimizers differ, then the displayed inequality is strict. 
+
+The proof, given in Section B, shows that the DRRO optimizer majorizes the DRO optimizer. Intuitively, DRO equalizes exposure because it protects worst-case value, whereas DRRO only reallocates mass when that reallocation improves regret relative to plausible competitors. When the proxy ranking is correct, that difference matters: DRRO preserves more concentration on the best-ranked responses and therefore converts ranking accuracy into larger true value. This is the promptwise theoretical version of the empirical statement that DRO is over-pessimistic. 
+
+## 5.2 Coverage as an Alternative View 
+
+The rank-preserving theorem is sharp but local to a fixed prompt. We now complement it with a distribution-level argument that compares DRO and DRRO through the amount of reward-model extrapolation they require across prompts. This gives a second, more global explanation for why DRRO is less pessimistic. 26 Let Π be a policy class. For each prompt x and policy π ∈ Π, let zπ(x) be a linear representation of the policy at prompt x; in the finite-response contextual-bandit case, 
+
+zπ(x) = π(· | x), while in more general sequential settings zπ(x) can be an occupancy measure. For any reward function r,
+
+Jr(π) = Ex∼D 
+
+> [
+
+⟨zπ(x), r (x)⟩ ]
+
+.
+
+For each prompt x, let μx be a coverage distribution, for example the behavior distribution induced by reward-model training data. Define weighted norms 
+
+∥v∥22,μ x := ∑
+
+> y∈Y (x)
+
+μx(y)v(y)2, ∥v∥22,μ −1 
+
+> x
+
+:= ∑
+
+> y∈Y (x)
+
+v(y)2
+
+μx(y).
+
+Assume the reward model comes with the integrated confidence set 
+
+Uε := {
+
+r : Ex∼D 
+
+> [
+
+∥r(x) − ˆr(x)∥22,μ x
+
+> ]
+
+≤ ε2}
+
+.
+
+Definition 5.2 (Integrated coverage coefficients) . For policies π, β ∈ Π, define 
+
+C(π; μ, D) := Ex∼D 
+
+> [
+
+∥zπ(x)∥22,μ −1
+
+> x
+> ]
+
+,Crel (β, π ; μ, D) := Ex∼D 
+
+> [
+
+∥zβ (x) − zπ(x)∥22,μ −1
+
+> x
+> ]
+
+.
+
+Define 
+
+πDRO ∈ arg max 
+
+> π∈Π
+
+min 
+
+> r∈U ε
+
+Jr(π),
+
+and 
+
+πDRRO ∈ arg min 
+
+> π∈Π
+
+max 
+
+> r∈U ε
+> [
+
+max  
+
+> β∈Π
+
+Jr(β) − Jr(π)
+
+> ]
+
+.
+
+Proposition 5.3 (DRO certificate) . For every π ∈ Π,
+
+min 
+
+> r∈U ε
+
+Jr(π) = Jˆr(π) − ε
+
+> √
+
+C(π; μ, D). (5.1) The certificate immediately yields a proposition-level regret guarantee for the DRO solution. 
+
+Proposition 5.4 (DRO regret bound) . Suppose r⋆ ∈ U ε and let π⋆ ∈ arg max π∈Π Jr⋆ (π).Then 
+
+Jr⋆ (π⋆) − Jr⋆ (πDRO ) ≤ 2ε
+
+> √
+
+C(π⋆; μ, D). (5.2) 
+
+Proposition 5.5 (DRRO certificate) . For every π ∈ Π,
+
+max 
+
+> r∈U ε
+> [
+
+max  
+
+> β∈Π
+
+Jr(β) − Jr(π)
+
+> ]
+
+= max 
+
+> β∈Π
+> {
+
+Jˆr(β) − Jˆr(π) + ε
+
+> √
+
+Crel (β, π ; μ, D)
+
+> }
+
+. (5.3) 27 The next proposition gives the corresponding regret guarantee for DRRO. To state it, define the set of policies that can be optimal for some reward in the confidence set, 
+
+Π⋆(Uε) := ⋃
+
+> r∈U ε
+
+arg max 
+
+> π∈Π
+
+Jr(π),
+
+and the localized relative-coverage radius 
+
+Copt (Uε; μ, D) := max  
+
+> β∈Π⋆(Uε)
+
+Crel (β, π ⋆; μ, D).
+
+Proposition 5.6 (DRRO regret bound with localized relative coverage) . Suppose r⋆ ∈ U ε.Then 
+
+Jr⋆ (π⋆) − Jr⋆ (πDRRO ) ≤ 2ε
+
+> √
+
+Copt (Uε; μ, D).
+
+Remark 5.7 (Why DRRO is less pessimistic) . DRO pays for the absolute coverage of the chosen policy through C(π; μ, D). DRRO pays for the relative coverage needed to distinguish the chosen policy from plausible comparators through Crel (β, π ; μ, D). The triangle inequality implies 
+
+> √
+
+Crel (β, π ; μ, D) ≤
+
+> √
+
+C(β; μ, D) + 
+
+> √
+
+C(π; μ, D),
+
+but DRRO optimizes the relative quantity directly rather than this looser upper bound. This is the coverage-based formalization of the statement that DRRO is less pessimistic than DRO. 
+
+# 6 Experiments 
+
+This section reports the empirical study of DRRO for RLHF, including the shared experimental setup, the main benchmark against competing mitigation strategies, the direct DRO-versus-DRRO comparison, and an internal ablation of the DRRO design choices. 
+
+## 6.1 Experimental Design 
+
+All experiments are implemented in a single VERL-based RLHF codebase with Ray workers and vLLM rollout, so that DRRO, DRO, PPO, GRPO, and the auxiliary robust baselines share the same data interface, policy backbone, prompt template, evaluation loop, and logging format. This design is important for fairness: in our repo, PPO is recovered by switching the advantage estimator to GAE, GRPO is the zero-robustness special case of the same training entrypoint, and DRO versus DRRO differ only in the robust bonus construction rather than in unrelated engineering choices. The codebase is 28 publicly available at https://github.com/aia00/DRRO .We use HuggingFaceH4/hh-rlhf only as a prompt distribution. From each example we extract the first human turn, denoted human_turn0 when available, and format prompts with the fixed template 
+
+Human: {prompt}\nAssistant: .
+
+For each run, the full prompt pool is randomly shuffled with seed 42, 512 prompts are held out for validation, and the remainder are used for online RL training. Thus, HH-RLHF is not used here as paired preference supervision for policy optimization; it is only the source of prompts on which the policy is rolled out and evaluated. Unless otherwise stated, all methods use the same model stack: (a) policy model: Qwen/Qwen2.5-0.5B-Instruct ;(b) proxy reward model: OpenAssistant/reward-model-deberta-v3-base ;(c) held-out evaluator: sileod/deberta-v3-large-tasksource-rlhf-reward-model .The policy is trained with LoRA adapters by default, using rank r = 8 , scaling α = 16 ,and dropout 0.05 . Our standard launcher configuration runs 300 policy-update steps with learning rate 10 −5, PPO clipping parameter 0.2, batch size 12 prompts per update, and 16 sampled completions per prompt, giving 192 sampled responses per training iteration. We cap prompts at 512 tokens and generated continuations at 128 new tokens, and we sample with temperature 1.0 and top-p = 0 .95 . Evaluation is performed every 5 updates, checkpoints are saved every 20 updates, and reward-model scoring uses batches of size 16. In the default multi-GPU configuration, three GPUs are allocated in total, with one reserved for reward-model inference and the remaining devices used by the actor, reference, and rollout workers. For DRRO-specific runs, the code supports both fixed and dynamic ambiguity schedules under a unified interface. The fixed-budget default is δ = 2 .5K, where K is the number of sampled responses per prompt, so the default fixed budget is δ = 40 when K = 16 . The soft-assignment surrogate uses temperature τ = 2 .0 by default. Dynamic-budget runs replace the fixed budget by 
+
+δt = α · KL t,
+
+where KL t is a smoothed sequence-level KL statistic computed over a sliding window of length 20, and the default online KL estimator in the code is the k3 variant. Standard DRO is implemented in the same script and reuses the same dynamic-budget interface, changing only the inner robust objective from regret-based to value-based pessimization. The core study in this paper compares five update rules under this shared rollout protocol: 29 (a) standard PPO; (b) standard GRPO; (c) DRO-style robust-value optimization with the same ambiguity schedule; (d) DRRO with the hard sampled bonus from (4.5); (e) DRRO with the soft bonus (4.12) and the dynamic budget (4.15). The five methods differ only in the update rule. Method (a) replaces GRPO with GAE and applies no robust correction. Method (b) keeps the grouped GRPO objective but sets the robustness budget to zero. Method (c) uses the same grouped rollout and ambiguity-budget interface as DRRO, but switches the robust objective to DRO, so the value-pessimistic correction is subtracted from the proxy reward. Method (d) uses DRRO with a fixed positive budget and the hard assignment rule in (4.5), assigning the full +δ correction only to the maximizing sample under the score ri − δp i. Method (e), our main variant, uses the soft surrogate in (4.12) together with the dynamic budget in (4.15) , thereby distributing the correction across sampled responses according to softened promptwise scores. The repository also contains additional mitigation baselines, including reward-ensemble methods, constraint-based RLHF, InfoRM-style proxy modeling, and BSPO-style behavior-supported regularization, all wired to the same prompt split and logging pipeline. These methods are useful for broader benchmarking, but the five methods above form the main controlled DRRO-versus-DRO study because they isolate the effect of robustifying value versus regret. Our primary metric is held-out gold reward under the stronger evaluator. We also record the proxy reward assigned by the training reward model and the sequence-level KL divergence from the frozen reference policy, since the central phenomenon of interest is precisely the divergence between proxy improvement and gold-quality deterioration as KL grows. The training loop writes log.csv files containing raw and step-0-normalized versions of these quantities, and the checkpoint-evaluation scripts produce matched 
+
+eval_log.csv files for the over-optimization curves. 
+
+## 6.2 Main Benchmark: State-of-the-Art Mitigation of Over-Optimization 
+
+The main empirical conclusion is that DRRO provides the strongest mitigation of over-optimization in this setup. It not only reaches the best peak under the held-out evaluator, but also preserves that advantage later in training when proxy-greedy baselines begin to collapse. 30 Figure 3: Main benchmark across RLHF update rules and mitigation baselines. The dashed curve shows the proxy reward used for optimization, while solid curves report held-out gold reward against sequence-level KL from the initial policy. The dominant qualitative pattern is that proxy reward keeps improving even after several methods have already begun to lose gold reward, and that DRRO maintains the strongest gold trajectory over the widest useful KL range. The benchmark baselines fall into three broad families. The first family refines the reward proxy itself so that the policy has a harder signal to exploit. Ensemble-mean averages several proxy reward models to smooth out idiosyncratic reward-model errors [Coste et al., 2024, Eisenstein et al., 2024]. Ensemble-UWO uses the same ensemble but subtracts an uncertainty penalty based on ensemble disagreement, making high-variance responses less attractive [Coste et al., 2024, Eisenstein et al., 2024]. InfoRM retrains the proxy reward with an information-bottleneck objective so that the score depends less on spurious, easily hacked features [Miao et al., 2024]. The second family restricts policy optimization to regions where the reward signal is expected to be more reliable. BSPO estimates behavior support with a ScoreLM-style model and assigns pessimistic value to unsupported actions, thereby discouraging the policy from drifting too far from behavior-supported responses [Dai et al., 2025]. This places BSPO in the same broad class as constrained-RLHF methods that explicitly control the feasible policy region [Moskovitz et al., 2024]. The third family makes the reward used for optimization explicitly pessimistic. In our controlled comparison, standard DRO is the clean representative of this idea: it subtracts a value-robust correction from the proxy reward under the same ambiguity 31 Table 2: Main held-out benchmark across RLHF update rules. The reported metrics are peak held-out gold reward, peak proxy reward, and peak sequence-level KL. The last row is the main DRRO configuration used throughout the paper. Method Peak gold Peak proxy Peak KL PPO 1.20 2.43 18.25 GRPO 1.35 3.06 44.83 Ensemble-Mean 0.94 2.71 32.05 Ensemble-UWO 0.99 2.84 34.51 BSPO 1.21 3.02 42.61 InfoRM 1.14 3.06 44.25 DRO-RLHF 0.54 1.72 16.54 DRRO-RLHF (hard) 1.29 2.87 32.33 DRRO-RLHF (soft + dynamic) 1.59 3.03 35.74 schedule used by DRRO. More broadly, this family includes uncertainty-penalized RLHF, pessimistic reward estimation, and reward-robust objectives [Zhai et al., 2024, Xu et al., 2025, Yan et al., 2024]. Figure 3 exhibits a clear three-stage pattern. In the initial low-KL regime, all methods improve together: both proxy and gold reward rise quickly once the policy moves a small distance away from the initialization. This shared warm-up phase is important because it shows that the methods are not being separated by trivial optimization failure; they all can exploit the easy gains available near the starting policy. The qualitative divergence appears only after the policy enters the genuinely misspecified regime. The second stage is where over-optimization becomes visible. The dashed proxy curve continues to climb almost monotonically, but the solid gold curves begin to separate. PPO is the most aggressive example of this behavior: it chases the proxy rapidly, peaks relatively early under the gold evaluator, and then degrades sharply as KL continues to grow. GRPO delays this failure mode and attains a higher gold peak than PPO, but it still eventually turns downward, indicating that removing the critic alone does not solve the proxy-misspecification problem. In both cases, the gap between the still-rising proxy curve and the falling gold curve is direct visual evidence that the policy is learning to exploit reward-model error rather than improving true held-out quality. The more conservative baselines occupy a different part of the tradeoff. Ensemble-mean and ensemble-UWO are substantially flatter: they avoid the dramatic late-stage collapse seen in PPO, but they also saturate earlier and never reach the best gold region. This suggests that uncertainty-aware aggregation does buy stability, yet it can do so by sacrificing too much useful optimization signal. BSPO and InfoRM move farther upward than the ensemble baselines in the intermediate-KL regime, which indicates that support or proxy-model corrections help recover part of that lost optimization capacity, but their peaks still remain below the best DRRO trajectory in the present setup. 32 Figure 4: Direct comparison between DRO and DRRO on a matched backbone. The figure contrasts reward improvement and policy drift over training and shows that DRRO attains a better reward-versus-conservatism tradeoff, whereas DRO remains more pessimistic throughout the trajectory. DRRO is distinguished by both peak quality and durability. Its gold curve rises into the highest region of the plot, stays strong over a broader KL interval, and declines later and more gently than the proxy-greedy baselines. Empirically, this is exactly the behavior one would want from a regret-robust update rule: the optimizer remains willing to move toward high-value responses, but it is less willing to commit mass to responses whose apparent attractiveness is too dependent on reward-model misspecification. The practical takeaway from the figure is therefore stronger than “DRRO picks a better stopping point.” Rather, DRRO appears to improve the entire useful reward-versus-KL frontier, achieving a better balance between continued optimization and resistance to over-optimization throughout training. 
+
+## 6.3 DRO Is Over-Pessimistic Relative to DRRO 
+
+This comparison is the empirical counterpart of Theorem 5.1 and Remark 5.7. DRO robustifies absolute value and therefore tends to flatten the policy too aggressively. DRRO robustifies regret instead, allowing the optimizer to remain concentrated on responses that remain attractive under every plausible reward realization. 33 Table 3: Direct DRO-versus-DRRO comparison on a matched backbone. The table reports the reward-versus-KL tradeoff of the two robust objectives and highlights the stronger frontier attained by DRRO. Method Peak gold Peak proxy Peak KL Comment DRO-RLHF 0.54 1.72 16.54 over-pessimistic DRRO-RLHF 1.59 3.03 35.74 better frontier 
+
+Figure 5: Internal DRRO ablation comparing fixed versus dynamic ambiguity schedules and hard versus soft assignment. The dynamic budget combined with soft assignment achieves the strongest gold trajectory, while the fixed-budget hard-assignment variant is the weakest throughout most of the useful KL range. 
+
+## 6.4 Ablation Within DRRO 
+
+The main internal ablation compares (a) fixed versus dynamic ambiguity budgets, and (b) hard winner-take-all bonuses versus the soft SNIS bonus. Figure 5 shows that both design choices matter, and that they matter in the expected direction. The fixed-budget hard-assignment variant is consistently the weakest curve: it improves at small KL, but it remains below the other three variants across almost the entire trajectory. Replacing hard assignment by the soft SNIS bonus already helps under a fixed budget, indicating that distributing the correction across plausible responses is more effective than committing the entire bonus to a single sampled winner. 34 The larger gain comes from switching from a fixed budget to the dynamic schedule. Both dynamic variants dominate their fixed-budget counterparts over a broad KL range, which suggests that tying the ambiguity level to the current policy drift is a better match to the onset of over-optimization than using a constant robustness coefficient. Among the four curves, dynamic-plus-soft is the strongest overall: it rises fastest after the initial shared regime, reaches the highest peak gold reward, and remains near the top even after the other variants begin to flatten. Dynamic-plus-hard is the next best variant and is noticeably more stable than either fixed-budget alternative, but it still underperforms dynamic-plus-soft in the high-performing region. The empirical conclusion of this ablation is therefore clear. Dynamic budgeting is the main driver of robustness, while soft assignment provides an additional improvement on top of that schedule. Together they yield the best reward-versus-KL tradeoff within the DRRO family, which is why the dynamic soft-assignment variant is used as our main DRRO configuration in the benchmark comparisons. 
+
+# 7 Conclusion 
+
+RLHF under reward misspecification is naturally a regret-robust decision problem. By importing DRRO into RLHF, we obtain a benchmark that asks the right deployment question: how far is the deployed policy from the best policy under a plausible true reward? For the fixed-prompt simplex model, this question is tractable and leads to an exact water-filling structure, a clean dominance result over DRO under rank-preserving truth, and a practical sampled robust bonus for policy optimization. At the distribution level, DRRO pays for relative coverage rather than absolute coverage, which formalizes why it is less pessimistic than DRO. The long-form empirical section is now structured to document the two central numerical claims of the project: state-of-the-art mitigation of over-optimization and clear evidence that DRO is too conservative in this setting. 
+
+# References 
+
+Johannes Ackermann, Takashi Ishida, and Masashi Sugiyama. Off-policy corrected reward modeling for reinforcement learning from human feedback. arXiv preprint arXiv:2507.15507 , 2025. Alekh Agarwal and Tong Zhang. Minimax regret optimization for robust machine learning under distribution shift. arXiv preprint arXiv:2202.05436 , 2022. Igor Averbakh. Minmax regret linear resource allocation problems. Operations Research Letters , 32(2):174–180, 2004. 35 Igor Averbakh and Vasilij Lebedev. On the complexity of minmax regret linear program-ming. European Journal of Operational Research , 160(1):227–231, 2005. Aharon Ben-Tal, Dick den Hertog, Anja De Waegenaere, Bertrand Melenberg, and Gijs Rennen. Robust solutions of optimization problems affected by uncertain probabilities. 
+
+Management Science , 59(2):341–357, 2013. Eilyan Bitar. Distributionally robust regret minimization. arXiv preprint arXiv:2412.15406 ,2024. Jose Blanchet and Karthyek Murthy. Quantifying distributional model risk via optimal transport. Mathematics of Operations Research , 44(2):565–600, 2019. Ralph A. Bradley and Milton E. Terry. Rank analysis of incomplete block designs: I. the method of paired comparisons. Biometrika , 39(3-4):324–345, 1952. Alexander Bukharin, Haifeng Qian, Shengyang Sun, Adithya Renduchintala, Soumye Singhal, Zhilin Wang, Oleksii Kuchaiev, Olivier Delalleau, and Tuo Zhao. Adversarial training of reward models. arXiv preprint arXiv:2504.06141 , 2025. Gabriel Cardoso, Sergey Samsonov, Achille Thin, Eric Moulines, and Jimmy Olsson. BR-SNIS: Bias reduced self-normalized importance sampling. In Advances in Neural Information Processing Systems , volume 35, 2022. Shreyas Chaudhari, Pranjal Aggarwal, Vishvak Murahari, Tanmay Rajpurohit, Ashwin Kalyan, Karthik Narasimhan, Ameet Deshpande, and Bruno Castro da Silva. Rlhf deciphered: A critical analysis of reinforcement learning from human feedback for LLMs. 
+
+arXiv preprint arXiv:2404.08555 , 2024. Yanjun Chen, Dawei Zhu, Yirong Sun, Xinghao Chen, Wei Zhang, and Xiaoyu Shen. The accuracy paradox in RLHF: When better reward models don’t yield better language models. In Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing , pages 2980–2989, 2024. Zhi Chen and Weijun Xie. Regret in the newsvendor model with demand and yield randomness. Production and Operations Management , 30(11):4176–4197, 2021. Youngchae Cho and Insoon Yang. Wasserstein distributionally robust regret minimization. 
+
+IEEE Control Systems Letters , 8:820–825, 2024. Paul F. Christiano, Jan Leike, Tom B. Brown, Miljan Martic, Shane Legg, and Dario Amodei. Deep reinforcement learning from human preferences. In Advances in Neural Information Processing Systems , 2017. 36 Thomas Coste, Usman Anwar, Robert Kirk, and David Krueger. Reward model ensembles help mitigate overoptimization. In International Conference on Learning Representa-tions , 2024. Juntao Dai, Taiye Chen, Yaodong Yang, Qian Zheng, and Gang Pan. Mitigating reward over-optimization in RLHF via behavior-supported regularization. arXiv preprint arXiv:2503.18130 , 2025. Nirjhar Das, Souradip Chakraborty, Aldo Pacchiano, and Sayak Ray Chowdhury. Active preference optimization for sample efficient RLHF. arXiv preprint arXiv:2402.10500 ,2024. Jacob Eisenstein, Chirag Nagpal, Alekh Agarwal, Ahmad Beirami, Alex D’Amour, DJ Dvi-jotham, Adam Fisch, Katherine Heller, Stephen Pfohl, Deepak Ramachandran, Peter Shaw, and Jonathan Berant. Helping or herding? reward model ensembles mitigate but do not eliminate reward hacking. In Conference on Language Modeling , 2024. Lukas-Benedikt Fiechtner and Jose Blanchet. Wasserstein distributionally robust regret optimization. arXiv preprint arXiv:2504.10796 , 2025. Leo Gao, John Schulman, and Jacob Hilton. Scaling laws for reward model overoptimiza-tion. In Proceedings of the 40th International Conference on Machine Learning , volume 202 of Proceedings of Machine Learning Research , pages 10835–10866, 2023. Tom Hosking, Phil Blunsom, and Max Bartolo. Human feedback is not gold standard. In 
+
+International Conference on Learning Representations , 2024. Jingcheng Hu, Yinmin Zhang, Qi Han, Daxin Jiang, Xiangyu Zhang, and Heung-Yeung Shum. Open-reasoner-zero: An open source approach to scaling up reinforcement learning on the base model. arXiv preprint arXiv:2503.24290 , 2025. Jacek Karwowski, Oliver Hayman, Xingjian Bai, Klaus Kiendlhofer, Charlie Griffin, and Joar Max Viktor Skalse. Goodhart’s law in reinforcement learning. In International Conference on Learning Representations , 2024. Timo Kaufmann, Paul Weng, Viktor Bengs, and Eyke H"ullermeier. A survey of rein-forcement learning from human feedback. Transactions on Machine Learning Research ,2025. Nathan Lambert, Valentina Pyatkin, Jacob Morrison, LJ Miranda, Bill Yuchen Lin, Khyathi Chandu, Nouha Dziri, Sachin Kumar, Tom Zick, Yejin Choi, Noah A. Smith, and Hannaneh Hajishirzi. RewardBench: Evaluating reward models for language modeling. In Findings of the Association for Computational Linguistics: NAACL 2025 ,pages 1755–1797, 2025. 37 Wendi Li, Changdae Oh, and Sharon Li. General exploratory bonus for optimistic exploration in RLHF. arXiv preprint arXiv:2510.03269 , 2025. Pangpang Liu, Chengchun Shi, and Will Wei Sun. Reinforcement learning from human feedback: A statistical perspective. arXiv preprint arXiv:2604.02507 , 2026. Tianqi Liu, Wei Xiong, Jie Ren, Lichang Chen, Junru Wu, Rishabh Joshi, Yang Gao, Jiaming Shen, Zhen Qin, Tianhe Yu, Daniel Sohn, Anastasiia Makarova, Jeremiah Liu, Yuan Liu, Bilal Piot, Abe Ittycheriah, Aviral Kumar, and Mohammad Saleh. RRM: Robust reward model training mitigates reward hacking. In International Conference on Learning Representations , 2025. Zhihan Liu, Miao Lu, Shenao Zhang, Boyi Liu, Hongyi Guo, Yingxiang Yang, Jose Blanchet, and Zhaoran Wang. Provably mitigating overoptimization in RLHF: Your SFT loss is implicitly an adversarial regularizer. In Advances in Neural Information Processing Systems , 2024. Yuchun Miao, Sen Zhang, Liang Ding, Rong Bao, Lefei Zhang, and Dacheng Tao. InfoRM: Mitigating reward hacking in RLHF via information-theoretic reward modeling. In 
+
+Advances in Neural Information Processing Systems , 2024. Peyman Mohajerin Esfahani and Daniel Kuhn. Data-driven distributionally robust optimization using the wasserstein metric: Performance guarantees and tractable reformulations. Mathematical Programming , 171(1-2):115–166, 2018. Ted Moskovitz, Aaditya K. Singh, DJ Strouse, Tuomas Sandholm, Ruslan Salakhutdinov, Anca D. Dragan, and Stephen Marcus McAleer. Confronting reward model overoptimiza-tion with constrained RLHF. In International Conference on Learning Representations ,2024. Long Ouyang, Jeff Wu, Xu Jiang, Diogo Almeida, Carroll Wainwright, Pamela Mishkin, Chong Zhang, Sandhini Agarwal, Katarina Slama, Alex Ray, John Schulman, Jacob Hilton, Fraser Kelton, Luke Miller, Maddie Simens, Amanda Askell, Peter Welinder, Paul Christiano, Jan Leike, and Ryan Lowe. Training language models to follow instructions with human feedback. In Advances in Neural Information Processing Systems , 2022. Rafael Rafailov, Archit Sharma, Eric Mitchell, Stefano Ermon, Christopher D. Manning, and Chelsea Finn. Direct preference optimization: Your language model is secretly a reward model. arXiv preprint arXiv:2305.18290 , 2023. Rafael Rafailov, Yaswanth Chittepu, Ryan Park, Harshit S. Sikchi, Joey Hejna, W. Bradley Knox, Chelsea Finn, and Scott Niekum. Scaling laws for reward model overoptimization 38 in direct alignment algorithms. In Advances in Neural Information Processing Systems ,2024. Hamed Rahimian and Sanjay Mehrotra. Distributionally robust optimization: A review. 
+
+arXiv preprint arXiv:1908.05659 , 2019. Mathieu Rita, Florian Strub, Rahma Chaabouni, Paul Michel, Emmanuel Dupoux, and Olivier Pietquin. Countering reward over-optimization in LLM with demonstration-guided reinforcement learning. In Findings of the Association for Computational Linguistics: ACL 2024 , 2024. Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Yang, Junxiao Xu, Maosong Li, et al. DeepSeekMath: Pushing the limits of mathematical reasoning in open language models. 
+
+arXiv preprint arXiv:2402.03300 , 2024. Nisan Stiennon, Long Ouyang, Jeff Wu, Daniel M. Ziegler, Ryan Lowe, Chelsea Voss, Alec Radford, Dario Amodei, and Paul Christiano. Learning to summarize from human feedback. In Advances in Neural Information Processing Systems , 2020. Wolfram Wiesemann, Daniel Kuhn, and Melvyn Sim. Distributionally robust convex optimization. Operations Research , 62(6):1358–1376, 2014. Lorenz Wolf, Robert Kirk, and Mirco Musolesi. Reward model overoptimisation in iterated RLHF. arXiv preprint arXiv:2505.18126 , 2025. Wei Xiong, Hanze Dong, Chenlu Ye, Ziqi Wang, Han Zhong, Heng Ji, Nan Jiang, and Tong Zhang. Iterative preference learning from human feedback: Bridging theory and practice for RLHF under KL-constraint. In Proceedings of the 41st International Conference on Machine Learning , volume 235 of Proceedings of Machine Learning Research , pages 54715–54754, 2024. Yinglun Xu, Hangoo Kang, Tarun Suresh, Yuxuan Wan, and Gagandeep Singh. Learning a pessimistic reward model in RLHF. arXiv preprint arXiv:2505.20556 , 2025. Yuzi Yan, Xingzhou Lou, Jialian Li, Yiping Zhang, Jian Xie, Chao Yu, Yu Wang, Dong Yan, and Yuan Shen. Reward-robust RLHF in LLMs. arXiv preprint arXiv:2409.15360 ,2024. Rui Yang, Ruomeng Ding, Yong Lin, Huan Zhang, and Tong Zhang. Regularizing hidden states enables learning generalizable reward model for LLMs. In Advances in Neural Information Processing Systems , 2024. Qiying Yu, Zheng Zhang, Ruofei Zhu, Yufeng Yuan, Xiaochen Zuo, Yu Yue, Weinan Dai, Tiantian Fan, Gaohong Liu, Lingjun Liu, Xin Liu, Haibin Lin, Zhiqi Lin, Bole 39 Ma, Guangming Sheng, Yuxuan Tong, Chi Zhang, Mofan Zhang, Wang Zhang, Hang Zhu, Jinhua Zhu, Jiaze Chen, Jiangjie Chen, Chengyi Wang, Hongli Yu, Yuxuan Song, Xiangpeng Wei, Hao Zhou, Jingjing Liu, Wei-Ying Ma, Ya-Qin Zhang, Lin Yan, Mu Qiao, Yonghui Wu, and Mingxuan Wang. DAPO: An open-source LLM reinforcement learning system at scale. arXiv preprint arXiv:2503.14476 , 2025. Yuanzhao Zhai, Han Zhang, Yu Lei, Yue Yu, Kele Xu, Dawei Feng, Bo Ding, and Huaimin Wang. Uncertainty-penalized reinforcement learning from human feedback with diverse reward LoRA ensembles. arXiv preprint arXiv:2401.00243 , 2024. Daniel M. Ziegler, Nisan Stiennon, Jeffrey Wu, Tom B. Brown, Alec Radford, Dario Amodei, Paul Christiano, and Geoffrey Irving. Fine-tuning language models from human preferences. arXiv preprint arXiv:1909.08593 , 2019. 40 A Proofs for the Model Setup Section 
+
+Proof of Proposition 2.1. By Tonelli’s theorem, 
+
+V (π, P ) = ER∼P Ex∼D , y ∼π(·| x)[R(x, y )] = Ex∼D , y ∼π(·| x)ER∼P [R(x, y )] = Ex∼D , y ∼π(·| x)[¯ r(P )( x, y )] = J¯r(P )(π).
+
+The reformulation of (2.1) follows immediately. 
+
+Proof of Corollary 2.2. Fix P ∈ U and let Γ( P, P 0) be the set of couplings of P and P0.For any coupling γ ∈ Γ( P, P 0),
+
+∥¯r(P ) − ¯r(P0)∥ = ∥∥∥Eγ [R − ˜R]∥∥∥
+
+≤ Eγ [∥∥∥R − ˜R∥∥∥],
+
+by Jensen’s inequality. Taking the infimum over γ ∈ Γ( P, P 0) yields 
+
+∥¯r(P ) − ¯r(P0)∥ ≤ W (P, P 0) ≤ ρ. 
+
+# B Proof of the DRRO-Versus-DRO Comparison The-orem 
+
+Lemma B.1 (Explicit DRO optimizer) . For each k ∈ { 1, . . . , n }, define 
+
+u(k) := 
+
+ 1 
+
+> k
+
+, . . . , 1
+
+> k
+
+︸ ︷︷ ︸ 
+
+> kentries
+
+, 0, . . . , 0
+
+ , Ak := 1
+
+k
+
+> k
+
+∑
+
+> i=1
+
+ri.
+
+Then a DRO optimizer can be chosen as u(m) for some 
+
+m ∈ arg max 
+
+> 1≤k≤n
+
+{
+
+Ak − δk
+
+}
+
+.
+
+Proof. Fix m = ∥p∥∞. Maximizing ⟨p, r ⟩ subject to pi ≤ m, ∑ 
+
+> i
+
+pi = 1 , and pi ≥ 0 is done by filling the largest rewards first, so an optimizer has the form 
+
+(m, . . . , m, 1 − (k − 1) m, 0, . . . , 0) 
+
+41 for some k. On each such region the objective ⟨p, r ⟩ − δm is linear in m, so an optimum occurs at an endpoint, which is exactly u(k) for some k. Evaluating the objective at u(k)
+
+gives Ak − δ/k .
+
+Proof of Theorem 5.1. Let pDRRO = pDRRO (δ) and let k be the number of positive entries of pDRRO . By Theorem 3.2, the DRRO optimizer is supported on the top k actions and is nonincreasing: 
+
+pDRRO 1 ≥ pDRRO 2 ≥ · · · ≥ pDRRO  
+
+> k
+
+> 0, pDRRO  
+
+> k+1
+
+= · · · = pDRRO  
+
+> n
+
+= 0 .
+
+Because pDRRO  
+
+> k
+
+> 0, Equation (3.6) implies rk > t ⋆ ≥ t0. Hence 
+
+δ > 
+
+> k∑
+> i=1
+
+(ri − rk) = k(Ak − rk).
+
+More generally, since rj > t 0 for every j ≤ k,
+
+δ > 
+
+> j∑
+> i=1
+
+(ri − rj ) = j(Aj − rj ), j = 2 , . . . , k. (B.1) Now let m be the support size of the DRO optimizer supplied by Lemma B.1. Define 
+
+vj := Aj − δj , j = 1 , . . . , n. 
+
+For each j ≥ 2,
+
+vj − vj−1 = δ − j(Aj − rj )
+
+j(j − 1) .
+
+By (B.1), vj − vj−1 > 0 for all j ≤ k, so 
+
+v1 < v 2 < · · · < v k.
+
+Therefore any maximizer m of vj must satisfy m ≥ k.Since pDRRO is decreasing and supported on the first k coordinates, for every j ≤ k,
+
+> j∑
+> i=1
+
+pDRRO  
+
+> i
+
+≥ jk ≥ jm =
+
+> j∑
+> i=1
+
+u(m) 
+
+> i
+
+. (B.2) The first inequality in (B.2) follows because the average of the first j entries of a decreasing 
+
+k-support probability vector is at least the average of all k supported entries. For j ≥ k,the left-hand side equals 1, while the right-hand side is at most 1. Hence 
+
+> j∑
+> i=1
+
+pDRRO  
+
+> i
+
+≥
+
+> j∑
+> i=1
+
+pDRO  
+
+> i
+
+, j = 1 , . . . , n − 1. (B.3) 42 Because ϕ is increasing and r1 > · · · > r n, the true rewards satisfy 
+
+t1 > t 2 > · · · > t n.
+
+Let di := pDRRO  
+
+> i
+
+− pDRO  
+
+> i
+
+. Then ∑ 
+
+> i
+
+di = 0 and (B.3) states that ∑ji=1 di ≥ 0 for all j < n .Abel summation gives n∑
+
+> i=1
+
+diti =
+
+> n−1
+
+∑
+
+> j=1
+
+
+
+> j
+
+∑
+
+> i=1
+
+di
+
+ (tj − tj+1 ).
+
+Every term on the right-hand side is nonnegative, so 
+
+> n
+
+∑
+
+> i=1
+
+pDRRO  
+
+> i
+
+ti ≥
+
+> n
+
+∑
+
+> i=1
+
+pDRO  
+
+> i
+
+ti.
+
+If ϕ is strictly increasing and the two policies differ, then at least one prefix inequality in (B.3) is strict, and every increment tj − tj+1 is positive, so the final inequality is strict as well. 
+
+# C Proofs for the Algorithm Section 
+
+Proof of Proposition 4.1. Let 
+
+ai(p) := ri − δp i, Fδ(p; r) = ⟨p, r ⟩ − max  
+
+> i
+
+ai(p).
+
+If the maximizer i⋆(p) is unique, then the maximum is differentiable at p and 
+
+∂F δ
+
+∂p i
+
+= ri − ∂a i⋆(p)(p)
+
+∂p i
+
+= ri + δ 1{i = i⋆(p)}.
+
+Applying the chain rule with 
+
+∇θpi = πθ(yi | x)∇θ log πθ(yi | x)
+
+yields (4.3). 
+
+Proof of Proposition 4.2. Write 
+
+ai := ri − δp i, M := max  
+
+> i
+
+ai.
+
+Then 
+
+eM/τ ≤
+
+> n
+
+∑
+
+> i=1
+
+eai/τ ≤ n e M/τ ,
+
+43 so after taking logarithms and multiplying by τ ,
+
+M ≤ τ log 
+
+> n∑
+> i=1
+
+eai/τ ≤ M + τ log n. 
+
+Subtracting this inequality from ⟨p, r ⟩ gives (4.7). 
+
+Proof of Proposition 4.6. Starting from the definition of regret, 
+
+max  
+
+> ∥∆∥p≤δ
+
+Reg( p, r + ∆) = max  
+
+> ∥∆∥p≤δ
+
+max 
+
+> β∈P n
+
+⟨β − p, r + ∆ ⟩
+
+= max 
+
+> β∈P n
+> {
+
+⟨β − p, r ⟩ + max  
+
+> ∥∆∥p≤δ
+
+⟨β − p, ∆⟩
+
+> }
+
+= max 
+
+> β∈P n
+> {
+
+⟨β − p, r ⟩ + δ ∥β − p∥q
+
+> }
+
+,
+
+where the last step uses the dual norm relation. The map β 7 → ⟨ β − p, r ⟩ + δ ∥β − p∥q is convex, so its maximum over the simplex can be attained at an extreme point β = ei.When p = 1 and hence q = ∞,
+
+∥ei − p∥∞ = max {1 − pi, max   
+
+> j̸=i
+
+pj } = 1 − pi,
+
+because ∑ 
+
+> j
+
+pj = 1 implies pj ≤ 1 − pi for every j̸ = i.
+
+Proof of Proposition 4.3. Differentiate (4.6) with respect to the promptwise probabilities 
+
+pi:
+
+∂F δ,τ 
+
+∂p i
+
+= ri − τ 1 
+
+> ∑
+> j
+
+exp(( rj − δp j )/τ ) · exp(( ri − δp i)/τ ) ·
+
+> (
+
+− δτ
+
+> )
+
+= ri + δσ θ,x (yi).
+
+Applying the chain rule and using 
+
+∇θpi = πθ(yi | x)∇θ log πθ(yi | x)
+
+gives (4.8). 
+
+Proof of Proposition 4.4. Let 
+
+A := Eq[u(Y )h(Y )] , B := Eq[u(Y )] = νx,
+
+so that μh(x) = A/B . Define the sample means ̂
+
+AK := 1
+
+K
+
+> K∑
+> k=1
+
+ukh(yk),̂ BK := 1
+
+K
+
+> K∑
+> k=1
+
+uk,
+
+44 for which ̂ μh,K (x) = ̂ AK /̂BK .Fix η ∈ (0 , 1) and set 
+
+tK := 
+
+> √
+
+log(4 /η )2K .
+
+Because |u(y)h(y)| ≤ UxHx and 0 ≤ u(y) ≤ Ux, Hoeffding’s inequality gives 
+
+Pr (
+
+|̂AK − A| > U xHx tK
+
+> )
+
+≤ 2e−2Kt 2 
+
+> K
+
+= η
+
+2 ,
+
+Pr (
+
+|̂BK − B| > U x tK
+
+> )
+
+≤ 2e−2Kt 2 
+
+> K
+
+= η
+
+2 .
+
+Hence, with probability at least 1 − η, both bounds hold simultaneously. Under the sample-size condition in the proposition, 
+
+UxtK ≤ νx
+
+2 ,
+
+so on that same event, ̂
+
+BK ≥ B − UxtK ≥ B
+
+2 > 0.
+
+Moreover, |A| ≤ HxB. Therefore 
+
+|̂μh,K (x) − μh(x)| =
+
+> ∣∣∣∣∣̂
+
+AK̂
+
+BK
+
+− AB
+
+> ∣∣∣∣∣
+
+≤ |̂AK − A||̂BK | + |A|
+
+> ∣∣∣∣∣
+
+1̂
+
+BK
+
+− 1
+
+B
+
+> ∣∣∣∣∣
+
+= |̂AK − A||̂BK | + |A| | ̂BK − B|
+
+B |̂ BK |≤ 2UxHxtK
+
+B + 2HxUxtK
+
+B = 4UxHx
+
+νx
+
+tK .
+
+Substituting the definition of tK proves (4.11). 
+
+Proof of Proposition 4.5. The Donsker–Varadhan variational formula states that for prob-ability measures P ≪ Q and every measurable f ,
+
+EP [f ] ≤ KL( P ∥ Q) + log EQ[ef ].
+
+Apply this with 
+
+P = πθ(· | x), Q = π0(· | x), f (y) = λh x(y),
+
+where λ > 0. Then 
+
+λEy∼πθ (·| x)[hx(y)] ≤ KL (
+
+πθ(· | x) ∥ π0(· | x))
+
++ log Ey∼π0(·| x)[eλh x(y)].
+
+45 Dividing by λ yields (4.14). 
+
+# D Proofs for the Coverage-Based Comparison Results 
+
+Proof of Proposition 5.3. Let e = r − ˆr. Then 
+
+Jr(π) = Jˆr(π) + Ex∼D 
+
+[
+
+⟨zπ(x), e (x)⟩ ]
+
+.
+
+By Cauchy–Schwarz, 
+
+Ex
+
+[
+
+⟨zπ(x), e (x)⟩ ]
+
+≥ − 
+
+√
+
+Ex
+
+[
+
+∥zπ(x)∥22,μ −1
+
+> x
+
+]√
+
+Ex
+
+[
+
+∥e(x)∥22,μ x
+
+]
+
+≥ − ε
+
+√
+
+C(π; μ, D).
+
+Hence 
+
+min 
+
+> r∈U ε
+
+Jr(π) ≥ Jˆr(π) − ε
+
+√
+
+C(π; μ, D).
+
+If C(π; μ, D) = 0 , equality is immediate. Otherwise define 
+
+e⋆(x, y ) := − ε
+
+√
+
+C(π; μ, D)
+
+zπ(x, y )
+
+μx(y) .
+
+Then Ex[∥e⋆(x)∥22,μ x ] = ε2, so r⋆ = ˆ r + e⋆ ∈ U ε, and 
+
+Jr⋆ (π) = Jˆr(π) − ε
+
+√
+
+C(π; μ, D).
+
+This proves (5.1). 
+
+Proof of Proposition 5.4. Because r⋆ ∈ U ε,
+
+Jr⋆ (πDRO ) ≥ min 
+
+> r∈U ε
+
+Jr(πDRO ) ≥ min 
+
+> r∈U ε
+
+Jr(π⋆),
+
+where the last step uses the optimality of πDRO . Applying Proposition 5.3 to π⋆ yields 
+
+Jr⋆ (πDRO ) ≥ Jˆr(π⋆) − ε
+
+√
+
+C(π⋆; μ, D).
+
+On the other hand, because r⋆ ∈ U ε,
+
+Jr⋆ (π⋆) ≤ Jˆr(π⋆) + ε
+
+√
+
+C(π⋆; μ, D).
+
+Subtracting the two inequalities gives (5.2). 46 Proof of Proposition 5.5. For fixed π and β,
+
+Jr(β) − Jr(π) = Jˆr(β) − Jˆr(π) + Ex
+
+[
+
+⟨zβ (x) − zπ(x), r (x) − ˆr(x)⟩ ]
+
+.
+
+Exactly as in the proof of Proposition 5.3, 
+
+max 
+
+> r∈U ε
+
+{Jr(β) − Jr(π)} = Jˆr(β) − Jˆr(π) + ε
+
+√
+
+Crel (β, π ; μ, D).
+
+Taking the maximum over β ∈ Π yields (5.3) . The interchange between the maximization over β and the maximization over r is valid because the objective is simply maximized over the Cartesian product Π × U ε.
+
+Proof of Proposition 5.6. Because r⋆ ∈ U ε and π⋆ is optimal under r⋆,
+
+Jr⋆ (π⋆) − Jr⋆ (πDRRO ) ≤ max 
+
+> r∈U ε
+
+[
+
+max  
+
+> β∈Π
+
+Jr(β) − Jr(πDRRO )
+
+]
+
+≤ max 
+
+> r∈U ε
+
+[
+
+max  
+
+> β∈Π
+
+Jr(β) − Jr(π⋆)
+
+]
+
+. (D.1) The second inequality uses the optimality of πDRRO .Now fix any β ∈ Π. If Crel (β, π ⋆; μ, D) = 0 , then 
+
+Jˆr(β) − Jˆr(π⋆) = Jr⋆ (β) − Jr⋆ (π⋆) ≤ 0.
+
+Otherwise define the aligned perturbation 
+
+eβ (x, y ) := ε
+
+√
+
+Crel (β, π ⋆; μ, D)
+
+zβ (x, y ) − zπ⋆ (x, y )
+
+μx(y) ,
+
+and set rβ = ˆ r + eβ ∈ U ε. Then 
+
+Jˆr(β) − Jˆr(π⋆) + ε
+
+√
+
+Crel (β, π ⋆; μ, D) = Jrβ (β) − Jrβ (π⋆)
+
+≤ max 
+
+˜β∈Π
+
+Jrβ ( ˜β) − Jrβ (π⋆).
+
+Choose ˜β ∈ arg max γ∈Π Jrβ (γ). Then ˜β ∈ Π⋆(Uε) and 
+
+Jˆr(β) − Jˆr(π⋆) + ε
+
+√
+
+Crel (β, π ⋆; μ, D) ≤ Jˆr( ˜β) − Jˆr(π⋆) + ε
+
+√
+
+Crel ( ˜β, π ⋆; μ, D). (D.2) Therefore the maximum in Proposition 5.5 may be restricted to Π⋆(Uε) when π = π⋆.For any β ∈ Π⋆(Uε),
+
+Jˆr(β) − Jˆr(π⋆) = (
+
+Jˆr(β) − Jr⋆ (β))
+
+− (
+
+Jˆr(π⋆) − Jr⋆ (π⋆))
+
++ (
+
+Jr⋆ (β) − Jr⋆ (π⋆))
+
+≤ ε
+
+√
+
+Crel (β, π ⋆; μ, D),
+
+47 because Jr⋆ (β) − Jr⋆ (π⋆) ≤ 0 and the pairwise estimation error is bounded by Cauchy– Schwarz exactly as in the previous propositions. Combining this with (D.1) , Proposi-tion 5.5, and (D.2) gives 
+
+Jr⋆ (π⋆) − Jr⋆ (πDRRO ) ≤ max 
+
+> β∈Π⋆(Uε)
+
+{
+
+Jˆr(β) − Jˆr(π⋆) + ε
+
+√
+
+Crel (β, π ⋆; μ, D)
+
+}
+
+≤ 2ε max 
+
+> β∈Π⋆(Uε)
+
+√
+
+Crel (β, π ⋆; μ, D)= 2 ε
+
+√
+
+Copt (Uε; μ, D).
+
+48

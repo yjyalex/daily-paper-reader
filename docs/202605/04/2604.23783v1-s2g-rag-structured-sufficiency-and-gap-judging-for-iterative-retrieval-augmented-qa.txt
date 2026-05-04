@@ -1,0 +1,574 @@
+Title: S2G-RAG: Structured Sufficiency and Gap Judging for Iterative Retrieval-Augmented QA
+
+URL Source: https://arxiv.org/pdf/2604.23783v1
+
+Published Time: Tue, 28 Apr 2026 01:10:01 GMT
+
+Number of Pages: 17
+
+Markdown Content:
+# S2G-RAG: Structured Sufficiency and Gap Judging for Iterative Retrieval-Augmented QA 
+
+Minghan Li *† , Junjie Zou *, Xinxuan Lv, Chao Zhang, Guodong Zhou 
+
+Soochow University, Suzhou, China 
+
+mhli@suda.edu.cn, jjzou1@stu.suda.edu.cn, xxlv@stu.suda.edu.cn, czhang1@stu.suda.edu.cn, gdzhou@suda.edu.cn 
+
+Abstract 
+
+Retrieval-Augmented Generation (RAG) grounds language models in external evidence, but multi-hop question answering remains difficult because iterative pipelines must control what to retrieve next and when the available evidence is adequate. In practice, systems may answer from incomplete evidence chains, or they may accumulate redundant or distractor-heavy text that interferes with later retrieval and reasoning. We propose 
+
+S2G-RAG (Structured Sufficiency and 
+
+Gap-judging RAG), an iterative framework with an explicit controller, S2G-Judge. At each turn, S2G-Judge predicts whether the current evidence memory supports answering and, if not, outputs structured gap items that describe the missing information. We map these gap items into the next retrieval query, producing stable multi-turn retrieval trajectories. To reduce noise accumulation, we maintain a sentence-level Evidence Context by extracting a compact set of relevant sentences from retrieved documents. Experiments on TriviaQA, HotpotQA, and 2WikiMultiHopQA show that S2G-RAG improves multi-hop QA performance and robustness under multi-turn retrieval. Furthermore, S2G-RAG can be integrated into existing RAG pipelines with a lightweight component, without modifying the search engine or retraining the generator. 
+
+1 Introduction 
+
+Retrieval-augmented generation (RAG) grounds large language models (LLMs) in external evi-dence and has become a standard approach for knowledge-intensive question answering (Lewis et al., 2020; Shuster et al., 2021; Arslan et al., 2024). While single-hop questions can often be answered from one document, multi-hop question answer-ing requires composing evidence across multiple 
+
+> *Equal contribution.
+> †Corresponding author.
+
+documents, where later retrieval depends on inter-mediate findings from earlier rounds (Yang et al., 2018; Tang and Yang, 2024). This motivates itera-tive RAG, which interleaves retrieval and reason-ing over multiple turns. However, iterative RAG faces a retrieval control bottleneck. At each turn, the system must assess whether the accumulated evidence supports answering, and if not, specify what to retrieve next (Yang et al., 2025; Ye et al., 2025). When control is unreliable, systems either answer from incomplete evidence chains or con-tinue retrieving without a clear target, accumulating redundant or distractor-heavy text that interferes with subsequent retrieval and reasoning. A Hotpot-style question such as “In which coun-try was the director of Home Alone born?” illus-trates the challenge. An initial retrieval may iden-tify the bridge entity (Chris Columbus) but still miss the answer-bearing attribute (his country of birth). Answering at this point fails, whereas con-tinuing with generic follow-up queries can repeat-edly retrieve near-duplicate pages and grow noisy contexts. Effective iterative RAG therefore requires an auditable turn-level state that reflects whether the current evidence is adequate and, when it is not, what concrete information gap remains. Recent work improves iterative retrieval via query rewriting, decomposition, intermediate rea-soning traces, and self-reflection or critic sig-nals (Trivedi et al., 2023; Asai et al., 2024; Yang et al., 2025; Dong et al., 2025; Wang et al., 2025; Jiang et al., 2023). Despite progress, three limita-tions remain. First, control is often implicit and en-tangled with free-form generation, which makes de-cisions difficult to audit and brittle under distractors. Second, the representation of the next-hop informa-tion need is under-specified, leading to drift, rep-etition, or over-generalization when intermediate contexts are noisy. Third, robust control benefits from turn-level supervision, but intermediate-state annotation is expensive (Yang et al., 2025), and su-1
+
+> arXiv:2604.23783v1 [cs.IR] 26 Apr 2026
+
+pervision from idealized trajectories can misalign with the intermediate evidence contexts produced by multi-turn pipelines. Meanwhile, iterative re-trieval naturally accumulates long and noisy text, and naive concatenation can further destabilize con-trol (Hwang et al., 2025; Jiang et al., 2025; Liu et al., 2024). We propose S2G-RAG (Structured Sufficiency and Gap-judging RAG), an iterative framework that makes retrieval control explicit and modular. Its lightweight controller, S2G-Judge, takes the question q and the accumulated evidence context 
+
+Ct and outputs a binary sufficiency decision to-gether with structured gap items that describe the missing information for the next hop. S2G-RAG maps the predicted gap items into the next retrieval query, making the next-hop target explicit and diag-nosable. The controller is decoupled from answer generation, so the answer reasoner operates only on the accumulated evidence context. To mitigate noise accumulation, S2G-RAG main-tains a compact sentence-level evidence context. Given newly retrieved documents, an LLM-based Evidence Extractor selects salient sentences and ex-plicitly prioritizes those aligned with the predicted gap items, producing an auditable evidence context for subsequent judging and final answering. We train S2G-Judge with process supervision distilled from multi-turn pipeline execution traces. We run the retrieval and evidence accumulation pro-cedure on training questions and log per-turn snap-shots (q, C t) by rolling out to a fixed maximum budget. A strong teacher then labels each snap-shot under a context-only evidence constraint with sufficiency decisions and gap items, and we distill these signals into a compact judge model (Light-man et al., 2023; Hsieh et al., 2023). Our main contributions are as follows. • Structured sufficiency and gap judging. We formulate iterative RAG control as per-turn structured prediction of evidence sufficiency and explicit information gaps, implemented via a lightweight judge decoupled from an-swer generation. • Distillation from execution traces. We introduce a supervision scheme built from multi-turn execution traces, enabling turn-level learning under realistic intermediate evi-dence contexts. • Gap-aware sentence-level evidence context. 
+
+We maintain a compact, auditable evidence context via pointer-based extraction with ex-plicit gap-aware prioritization to reduce dis-tractor interference. • Empirical validation. Across TriviaQA, Hot-potQA, and 2WikiMultiHopQA, S2G-RAG improves EM/F1 over strong baselines under both sparse and dense retrieval settings. 
+
+2 Related Work 
+
+2.1 Retrieval-Augmented Generation 
+
+Retrieval-augmented generation (RAG) grounds LLM outputs in external corpora by retrieving rel-evant documents and conditioning generation on the retrieved evidence (Lewis et al., 2020; Shuster et al., 2021; Arslan et al., 2024). Most standard RAG systems follow a single-round retrieve-then-generate pattern, which is effective when the re-quired evidence can be covered in one retrieval pass. However, many knowledge-intensive ques-tions require multi-step reasoning over multiple sources, including synthesizing evidence across documents, aligning entities and relations, and re-solving information needs that only become clear after inspecting initial retrieval results. This moti-vates multi-round retrieval-and-reasoning systems that iteratively update an information state before producing the final answer. 
+
+2.2 Multi-Round RAG 
+
+Multi-hop question answering requires integrating multiple evidence pieces and performing multi-step reasoning, and is widely used to evaluate both RAG systems and LLM reasoning capabilities. In this setting, a single retrieval pass is often insufficient because crucial evidence is distributed across docu-ments and later-hop retrieval depends on interme-diate findings from earlier rounds. Recent work therefore proposes iterative RAG frameworks that alternate between retrieval and reasoning over mul-tiple rounds. We organize related work along four themes that recur in iterative retrieval control and evidence man-agement. These themes include intermediate query generation, stopping criteria, supervision for turn-level control, and context management under multi-turn noise and bloat. 
+
+Intermediate query generation. A major line of work improves multi-round retrieval by generating intermediate queries, including explicit planning 2and question decomposition into sub-questions, as well as follow-up query rewriting from partial ev-idence (Ye et al., 2025; Jiang et al., 2023; Dong et al., 2025; Wang et al., 2025). While these ap-proaches can improve later-hop recall and evidence composition, the intermediate information need is often expressed in free-form text. As a result, query generation can drift, repeat, or become unstable under distractors and noisy intermediate contexts, and reliable inference-time behavior may require repeated calls to strong models. 
+
+Stopping criteria. Another line of work stud-ies when it is safe to answer, which is commonly framed as deciding whether the current evidence is sufficient (Yang et al., 2025). Several methods rely on self-reflection or critic-style verification to de-cide whether to continue retrieval (Asai et al., 2024; Yang et al., 2025). These signals can reduce incor-rect answers produced under incomplete evidence, but the control state is often not standardized or eas-ily auditable. Moreover, when retrieval continues, these approaches typically provide limited explicit structure for specifying the remaining information need. 
+
+Supervision for turn-level control. Learning reliable turn-level control benefits from process-level supervision, yet scalable, high-quality la-bels for intermediate decisions and next-step in-formation needs are difficult to obtain (Yang et al., 2025). Prior work explores distilling supervision from stronger teachers or leveraging trajectory-based learning signals for multi-step decision mak-ing (Lightman et al., 2023; Hsieh et al., 2023). A recurring challenge is distribution mismatch, where supervision derived from synthetic trajectories or heuristic signals may not reflect the intermediate evidence states produced by multi-turn pipelines in practice, which often include redundancy and distractors. 
+
+Context management. Iterative retrieval tends to accumulate long and noisy contexts, which weak-ens evidence focus and can destabilize both con-trol and reasoning (Liu et al., 2024). To miti-gate context bloat, prior work compresses retrieved content or performs sentence-level evidence selec-tion (Dhole, 2025; Hwang et al., 2025). These techniques are complementary to retrieval control because they reduce the influence of redundant or distractor-heavy text, but they do not by them-selves specify what to retrieve next or provide an explicit representation of the missing information that drives subsequent retrieval. 
+
+3 Methodology 
+
+This section presents S2G-RAG , an iterative RAG framework for multi-hop QA that makes retrieval control explicit through structured sufficiency and gap judging. We first describe the S2G-RAG infer-ence loop (Section 3.1), then introduce S2G-Judge training via trajectory distillation from execution traces (Section 3.2), and finally detail gap-guided query construction and sentence-level evidence ex-traction (Sections 3.3–3.4). 
+
+3.1 S2G-RAG Inference Framework 
+
+Given a question q and an external corpus D, S2G-RAG maintains an accumulated evidence context 
+
+Ct at turn t. We initialize C0 as empty and run the loop for at most T retrieval turns. Figure 1 illustrates the overall framework. At each turn, S2G-RAG follows a judge-first loop with four com-ponents: S2G-Judge, a retriever, a sentence-level evidence extractor, and an answer reasoner. 
+
+S2G-Judge. At turn t, the judge reads only 
+
+(q, C t) and outputs yt = ( st, G t). The binary vari-able st ∈ { true , false } indicates whether the cur-rent evidence context is sufficient to support an-swering, and Gt is a set of structured gap items 
+
+(Section 3.2.1). When st = true , the system pro-ceeds to answer using (q, C t). This sufficiency sig-nal is primarily used to reduce answers produced under incomplete evidence. 
+
+Retriever. When st = false , the system con-structs a query ˜qt from Gt (Section 3.3) and re-trieves top-k documents Dt = {dt, 1, . . . , d t,k }
+
+from D.
+
+Evidence extractor. A sentence-level extractor 
+
+h selects salient sentences from Dt conditioned on 
+
+(q, G t) and forms a verbatim evidence block Et.We update the evidence context by concatenation 
+
+Ct = Ct−1 ⊕ Et, (1) where ⊕ denotes concatenation. 
+
+Reasoner. The answer reasoner rθ is decoupled from retrieval control. It is invoked only when the system decides to answer or when the loop reaches the maximum budget. In either case, the reasoner produces the final answer conditioned on (q, C t).A pseudocode description of the inference loop is provided in Appendix C. 3Reasoner    
+
+> Question
+> Evidence
+> Context
+> Related
+> documents
+> Final answer
+> S2G -Judge Retriever
+> Evidence
+> extractor
+> Gap items
+> Query
+> construction
+> Evidence sentence
+> ++t
+
+G
+
+## qtCtEtsFigure 1: Overview of the S2G-RAG inference framework. Given a question q and the current evidence context Ct,S2G-Judge first predicts a sufficiency decision st and structured gap items Gt. If st = true , a reasoner generates the final answer from (q, C t); otherwise, Gt guides query construction for retrieval, and a sentence-level evidence extractor selects salient evidence sentences from retrieved documents to form Et, which is appended to update 
+
+Ct = Ct−1 ⊕ Et. The process iterates until the evidence is sufficient or the retrieval budget is reached. 
+
+3.2 S2G-Judge 3.2.1 Output Schema and Constraints 
+
+At each turn t, S2G-Judge predicts a structured output 
+
+yt = ( st, G t), st ∈ { true , false }. (2) If st = true , the judge outputs an empty gap set, so Gt = ∅.Each gap item g ∈ Gt follows a normal-ized schema with four fields. The category 
+
+field takes values in { bridge_entity , attribute ,
+
+relation , evidence_span , other }. The target 
+
+field specifies the entity being queried. The slot 
+
+field indicates a coarse-grained attribute or relation name. The description field provides a short natural-language clarification. We impose a context-only constraint for suffi-ciency judgments. The judge must determine suf-ficiency based strictly on evidence present in Ct,which prevents relying on parametric knowledge when deciding whether the evidence is adequate. 
+
+3.2.2 Training via Trajectory Distillation from Execution Traces 
+
+We train S2G-Judge with process supervision dis-tilled from multi-turn execution traces. We execute the same iterative retrieval and evidence accumu-lation procedure on training questions and log per-turn states (q, C t). During trace collection, we instantiate the control loop with an unfine-tuned judge backbone under the same prompt/interface, and roll out the retrieval process to the maximum budget T . This produces intermediate evidence contexts that reflect multi-turn accumulation, in-cluding redundancy and distractors, which serve as inputs for judge training. A stronger teacher model labels each (q, C t)
+
+under the context-only constraint. We ap-ply lightweight conflict filtering to remove low-confidence supervision. We then perform LoRA-based supervised fine-tuning so that the judge di-rectly predicts the structured output yt conditioned on xt = ( q, C t)
+
+L(ϕ) = − X
+
+> (xt,y t)
+> |yt|
+
+X
+
+> i=1
+
+log pϕ
+
+ yt,i | yt,<i , x t
+
+. (3) Additional training details, including supervi-sion construction and hyperparameters, are pro-vided in Appendix B. 
+
+3.3 Gap-Guided Query Construction 
+
+When st = false , S2G-RAG constructs the next retrieval query ˜qt by mapping predicted gap items to query phrases. For each gap item, we prior-itize concatenating target and slot when both fields are present, and otherwise fall back to the 
+
+description field. We take up to the first K valid phrases in the order produced by the judge and append them to the original question. If no valid phrase can be constructed, we set ˜qt = q.43.4 Sentence-level Evidence Extractor 
+
+LLMs are sensitive to noisy or misleading evi-dence (Shi et al., 2023; Zeng et al., 2025) and can degrade under long inputs (Liu et al., 2024). In iterative retrieval, directly concatenating full docu-ments across turns can rapidly expand Ct and am-plify distractors. We therefore introduce a sentence-level evidence extractor h that converts newly re-trieved documents into a compact evidence block before updating the accumulated evidence context. At turn t, the retriever returns documents Dt =
+
+{dt, 1, . . . , d t,k }. We split each document into sen-tences and form a globally indexed candidate pool 
+
+St, where each candidate is paired with its doc-ument title for provenance. The extractor is an LLM prompted with (q, G t, St) and is constrained to output only indices from St, without rewriting or generating any evidence text. We then deter-ministically map the selected indices back to the original sentences and concatenate them to form the evidence block: 
+
+Et = h(q, G t, D t), Ct = Ct−1 ⊕ Et. (4) The extractor is designed to preserve multi-hop progress under noisy retrieval by selecting answer-bearing sentences, bridge facts, and disambiguat-ing context for entities in q. The predicted gap items Gt provide an explicit signal for prioritizing evidence that addresses the current missing infor-mation need. This sentence-level evidence context limits redundant and distractor-heavy text in top-k
+
+retrieval results, helping keep downstream judging and reasoning focused, while its pointer-based de-sign preserves auditability and reduces the risk of hallucinated evidence. 
+
+4 Experiments 
+
+4.1 Task and Datasets 
+
+We evaluate S2G-RAG on three open-domain QA benchmarks spanning single-hop and multi-hop rea-soning. For single-hop QA, we use TriviaQA (Joshi et al., 2017), where answers are often supported by a single Wikipedia article. For multi-hop QA, we adopt HotpotQA (Yang et al., 2018), which requires composing evidence across multiple doc-uments, and 2WikiMultiHopQA (Ho et al., 2020), which emphasizes entity disambiguation and fine-grained evidence composition. Following standard evaluation protocols, we report Exact Match (EM) and F1, and use the Wikimedia dumps provided by each dataset as the retrieval corpus. 
+
+4.2 Implementation Details 
+
+We instantiate the answer reasoner with Llama-3-8B-Instruct. For simplicity, the Evidence Extractor uses the same backbone as the reasoner. For retrieval control, we fine-tune a lightweight backbone with LoRA to obtain S2G-Judge variants based on Llama-3.2-3B-Instruct. Training super-vision is distilled from multi-turn execution traces labeled by a stronger teacher model (GPT-4o-mini), following Section 3.2.2. Unless otherwise noted, S2G-RAG runs for at most T =4 retrieval turns, re-trieves top-k=6 documents per turn, and applies title-based de-duplication across turns. We report results under both sparse and dense re-trieval settings. For sparse retrieval, we use BM25 implemented in Pyserini. For dense retrieval, we use E5-base-v2 (Wang et al., 2022). All methods share the same retrieval corpus for each dataset and are evaluated on the official development split. Our pipeline can be replicated with 2 ×vGPU-48G or equivalent hardware. LoRA configurations, de-coding settings and additional training details are included in the Appendix B. 
+
+4.3 Baselines 
+
+We compare S2G-RAG against representative base-lines spanning single-round RAG and multi-round retrieval control. NaiveGen (Jin et al., 2025) an-swers without retrieval. Standard RAG (Jin et al., 2025) performs a single retrieval using the origi-nal question and generates an answer conditioned on the retrieved documents. IR-CoT (Trivedi et al., 2023) interleaves retrieval with interme-diate reasoning signals that serve as retrieval cues. FLARE (Jiang et al., 2023) triggers re-trieval based on generation-time uncertainty sig-nals. ReSP (Jiang et al., 2025) iterates retrieve– summarize–plan to manage multi-turn evidence accumulation. Self-RAG (Asai et al., 2024) fine-tunes a generator to emit explicit reflection tokens that govern retrieval behavior. SIM-RAG (Yang et al., 2025) trains a lightweight critic that, at each round, evaluates the reasoner’s provisional answer and accompanying rationale against the currently retrieved context and decides whether to accept the answer or continue searching. RAG-Critic (Dong et al., 2025) introduces an error-aware critic that is trained with a hierarchical error taxonomy and pro-vides fine-grained feedback about potential RAG failures, which is then used to trigger targeted cor-rection workflows in an agentic RAG pipeline. 5Method Reasoner TriviaQA HotpotQA 2Wiki / Retriever EM F1 EM F1 EM F1                                                                       
+
+> Panel A: Sparse retrieval (BM25)
+> NaiveGen Llama3-8B / – 55.7 63.1 20.6 28.4 26.4 33.9 IR-CoT Llama3-8B / BM25 56.9 68.9 28.6 41.5 23.5 32.4 SIM-RAG Llama3-8B / BM25 70.7 75.6 32.7 43.3 34.1 40.2 S2G-RAG (ours) Llama3-8B / BM25 72.0 77.9 43.3 56.5 41.7 48.6
+> Panel B: Dense retrieval (E5)
+> Standard RAG Llama3-8B / E5 58.8 68.3 25.1 35.3 10.6 21.0 Self-RAG Llama3-8B / E5 38.2 53.4 17.1 29.6 12.1 25.1 FLARE Llama3-8B / E5 55.8 63.2 19.7 28.0 25.8 33.9 ReSP ⋆Llama3-8B / E5 –––47.2 –38.3 RAG-Critic Llama3-8B / E5 65.0 75.9 40.0 51.2 27.9 34.0 S2G-RAG (ours) Llama3-8B / E5 71.1 78.0 42.0 53.5 39.0 45.3
+
+Table 1: Main results (EM/F1) on TriviaQA, HotpotQA, and 2WikiMultiHopQA. Panel A reports methods under BM25 and Panel B reports methods under E5. Bold denotes the best score within each panel under the same retriever setting. ReSP ⋆ results are reported from the original paper for reference. 
+
+4.4 Main Results 
+
+Table 1 reports end-to-end EM/F1 on TriviaQA, HotpotQA, and 2WikiMultiHopQA under both sparse (BM25) and dense (E5) retrieval. Across settings, S2G-RAG improves over strong base-lines, supporting the benefit of making retrieval control explicit through structured sufficiency and gap judging. Under a matched BM25 setting with the same answer reasoner, S2G-RAG substantially outper-forms prior multi-round baselines. Relative to SIM-RAG, S2G-RAG improves TriviaQA by +1 .3
+
+EM and +2 .3 F1 (from 70.7/75.6 to 72.0/77.9). On HotpotQA, the gains are larger at +10 .6 EM and +13 .2 F1 (from 32.7/43.3 to 43.3/56.5), con-sistent with the stronger need for accurate multi-hop progress. On 2WikiMultiHopQA, S2G-RAG yields a +7 .6 EM and +8 .4 F1 improvement (from 34.1/40.2 to 41.7/48.6). The larger gains on the multi-hop benchmarks suggest that structured gap prediction and controlled evidence accumulation are especially helpful when later retrieval depends on intermediate evidence. S2G-RAG also transfers across retriever fami-lies. With E5, S2G-RAG attains the best results within the dense-retrieval panel on all three bench-marks, outperforming Standard RAG and learned-control baselines reported in this setting such as RAG-Critic. This suggests that the proposed con-trol interface is not tied to a particular retriever. Finally, the TriviaQA results highlight a com-mon challenge for iterative pipelines. When only a small amount of evidence is needed, additional retrieval can introduce redundant or distracting text that interferes with answer generation. S2G-RAG mitigates this issue by maintaining a compact sentence-level evidence context, so that increased retrieval does not directly translate into uncon-trolled context growth. On multi-hop benchmarks, the improvements are larger because explicit gap specification and controlled evidence accumulation better support multi-step evidence composition. 
+
+4.5 Analysis Experiments 4.5.1 Ablation Study 
+
+Table 2 reports ablations on HotpotQA (dev) under BM25. Starting from the full pipeline, we remove one component at a time while keeping the retriever, retrieval budget, and answer reasoner fixed. Removing S2G-Judge causes the largest drop (−15 .8 EM, −19 .0 F1), confirming the importance of explicit retrieval control for multi-hop QA. With-out the judge, the system loses both the sufficiency check and the structured gap signals that guide the next retrieval step. Replacing the trained judge with its unfine-tuned backbone also hurts performance ( −4.1 EM, −5.7
+
+F1), showing the value of trajectory distillation on intermediate evidence contexts. Notably, even without supervised fine-tuning, this variant still outperforms prior BM25 baselines on HotpotQA, suggesting that the structured control interface is useful even before training. Removing the sentence-level Evidence Extractor yields a further drop ( −3.8 EM, −4.0 F1), high-lighting its role in filtering redundant or distractor-heavy retrieved text and keeping judging and an-swering focused on salient evidence. 6Variant EM F1 Full S2G-RAG 43.3 56.5       
+
+> w/o SFT (Untrained Judge) 39.2 ( −4.1)50.8 ( −5.7)w/o S2G-Judge 27.5 ( −15 .8)37.6 ( −19 .0)w/o Extractor 39.5 ( −3.8)52.5 ( −4.0)
+
+Table 2: Ablation on HotpotQA (dev) under BM25. Starting from the full S2G-RAG pipeline, we remove one component at a time while keeping the retriever, maximum turns T , per-turn top-k, and the answer rea-soner fixed. w/o SFT replaces the LoRA-finetuned S2G-Judge with its unfine-tuned backbone under the same prompt and output schema. w/o S2G-Judge removes the judge module, so the pipeline runs without structured sufficiency or gap predictions. w/o Extractor appends raw retrieved text instead of sentence-level evidence blocks. Parentheses indicate absolute drops from the full system. 
+
+4.5.2 Analysis on Sufficiency Predictions 
+
+To assess the reliability of the judge’s sufficiency signal, we report the confusion matrix of S2G-Judge on HotpotQA (dev) for its binary sufficien-t/insufficient decisions. Figure 2 indicates that S2G-Judge is unlikely to over-claim sufficiency. Condi-tioned on predicting sufficient, the judge is correct under Truth in most cases. In particular, the false-positive rate is 6.44%. This behavior is aligned with the role of the sufficiency signal in S2G-RAG, namely reducing answers produced from evidence contexts that are not yet adequate. Meanwhile, the judge tends to require more explicit support in the accumulated context before it declares sufficient. A portion of examples that satisfy Truth are still predicted as insufficient (31.60%). This pattern sug-gests that the judge is more prone to under-claim sufficiency than to prematurely accept borderline evidence contexts, leaving room for improving cal-ibration so that clearly sufficient contexts are more often recognized as such. 
+
+4.5.3 Efficiency of Evidence Memory Compression 
+
+Figure 3 shows that the sentence-level Evidence Extractor effectively controls context growth over multi-turn retrieval. Compared with raw docu-ment concatenation, the resulting Evidence Con-text remains substantially more compact across all final-turn groups, yielding a compression ratio of roughly 4.5×–6.4×. The advantage becomes more pronounced for examples that require more retrieval turns, where raw context accumulation introduces increasing redundancy and distractors. Insufficient (Pred) Sufficient (Pred)   
+
+> Predicted Label
+> Insufficient (Actual) Sufficient (Actual)
+> True Label
+> 48.27% 6.44%
+> 31.60% 13.70%
+
+Figure 2: Confusion matrix of S2G-Judge’s binary suf-ficiency decisions on HotpotQA (dev) using BM25 re-trieval, with GPT-4o-mini as the reasoner and the evi-dence extractor. Here we use a retrieval-only ground-truth label TRUTH = CORRECT RETRIEVAL , where CORRECT RETRIEVAL is true iff the accumulated re-trieved titles cover all gold supporting document titles for the instance. Values are percentages over the evalu-ated set.             
+
+> Method EM F1 Per-sample Latency (s/q) Standard RAG 25.1 35.3 0.3787 Ours w/o extractor 39.5 52.5 1.9552 S2G-RAG (ours) 43.3 56.5 1.6085
+
+Table 3: Latency evaluation on HotpotQA under BM25 in the same environment as the main results. Standard RAG uses one retrieval round, while the iterative vari-ants use at most T ≤ 4 retrieval turns. 
+
+Table 3 further shows that evidence memory compression improves runtime efficiency in multi-turn retrieval. Although iterative retrieval is slower than single-round RAG, it brings large gains in QA accuracy. More importantly, compared with appending full retrieved text at each turn, the sentence-level extractor reduces per-sample latency from 1.9552 to 1.6085 seconds while also improv-ing EM/F1, corresponding to a 17.7% latency re-duction together with gains of +3.8 EM and +4.0 F1. These results suggest that controlling evidence memory improves not only context compactness but also the efficiency of multi-turn retrieval. 
+
+4.5.4 Comparison with Evidence Compression Baselines 
+
+To study the trade-off between context compact-ness and downstream QA accuracy, we compare our sentence-pointer extractor with LLM summa-rization and ReComp (Xu et al., 2024) under the 7Turn 2 Turn 3 Turn 4 Turn 5 
+
+> Final Turn
+> 0
+> 200
+> 400
+> 600
+> 800
+> 1000
+> 1200
+> 1400
+> 1600
+> Number of Words
+> Evidence Context (words)
+> Concatenated Context (words)
+> Compression
+> 4.0
+> 4.5
+> 5.0
+> 5.5
+> 6.0
+> 6.5
+> 7.0
+> 7.5
+> 8.0
+> Compression Ratio
+> 4.5x
+> 5.3x
+> 4.9x
+> 6.4x
+
+Figure 3: Context compression on HotpotQA (dev), computed on the final row per question ID. Evidence Context accumulates only extractor-selected sentence blocks, while Concatenated Context accumulates raw retrieved documents across turns. We measure context length by whitespace-separated word counts. Bars show mean context length grouped by the final turn; N de-notes the number of questions whose trajectories end at that turn. The line reports the compression ratio (Con-catenated/Evidence). 
+
+Method EM F1 Compression ratio LLM summarization 36.9 48.1 0.3816 ReComp (extractive) 41.4 53.8 0.4948 ReComp (abstractive) 34.9 46.4 0.1917 Ours (sentence pointers) 43.3 56.5 0.3461 
+
+Table 4: Comparison of evidence compression meth-ods on HotpotQA under the same iterative QA pipeline setting. All variants use the same retriever, retrieval bud-get, and answer reasoner, and differ only in the evidence compression module. Compression ratio is measured as compressed-context words divided by raw retrieved-context words. 
+
+same HotpotQA pipeline setting. As shown in Table 4, abstractive compression produces shorter contexts but leads to a clear drop in EM/F1. ReComp improves over generic sum-marization, yet both its extractive and abstractive variants remain below our method. Our extractor achieves the best EM/F1 while still maintaining substantial compression with a compression ratio of 0.3461, indicating a better trade-off between compression and QA accuracy. 
+
+4.5.5 Teacher–Student Gap under Varying Retrieval Budgets 
+
+To study the teacher–student gap under different retrieval budgets, we vary the maximum number of retrieval turns T from 0 to 5 while keeping all other components fixed. Since all variants share the same answer reasoner and evidence extractor, 0 1 2 3 4 5
+
+> Retrieval Rounds
+> 20
+> 25
+> 30
+> 35
+> 40
+> 45
+> 50
+> 55
+> 60
+> F1 Score
+> Teacher (gpt-4o-mini)
+> S2G-RAG
+> Naive Gen
+> S2GRAG (no train)
+
+Figure 4: F1 on HotpotQA (dev) under varying max-imum retrieval budget T . We compare a teacher con-troller (GPT-4o-mini), S2G-RAG with the trained S2G-Judge, an unfine-tuned controller (no train), and Naive-Gen without retrieval. In the teacher setting, GPT-4o-mini replaces only the S2G-Judge/controller; all other components and retriever settings are unchanged. It receives only the question and accumulated evidence context, and the retrieval query is deterministically con-structed by our system from the predicted gap items. All variants use the same answer reasoner and sentence-level evidence extractor with the same maximum sen-tence cap. 
+
+the differences mainly reflect controller quality. Figure 4 shows large gains when increasing T
+
+from small budgets, followed by saturation at larger budgets. Across the full sweep, the trained S2G-Judge closely tracks the teacher controller, suggest-ing that trajectory distillation transfers much of the teacher’s control behavior to a smaller model. The saturation at larger budgets is consistent with multi-hop retrieval. Once the key supporting evidence has been accumulated, additional turns are less likely to contribute new answer-relevant information. The sentence-level extractor further limits context growth by retaining only salient ev-idence, so later retrieval results are increasingly filtered as redundant or weakly related. In contrast, the unfine-tuned controller performs consistently worse and scales less reliably as T in-creases, highlighting the importance of distillation for stable sufficiency and gap prediction. Naive-Gen remains flat across budgets, confirming that the gains come from retrieval and controller behav-ior rather than additional generation alone. 
+
+5 Conclusion 
+
+In this paper, we propose S2G-RAG, which turns two key control decisions into explicit, structured outputs. At each turn, a lightweight S2G-Judge assesses whether the current evidence context is ad-8equate and, when it is not, produces structured gap items that describe what information is still needed. These gap items provide a concrete handle for con-structing the next retrieval query, reducing reliance on free-form query rewriting and making retrieval trajectories easier to inspect. To keep multi-turn contexts reliable under distractor-heavy retrieval, we complement this control interface with sentence-level evidence extraction that retains a compact, provenance-preserving Evidence Context for sub-sequent turns and final answering. Empirically, S2G-RAG improves EM/F1 on TriviaQA, HotpotQA, and 2WikiMultiHopQA un-der both BM25 and E5 retrieval. Our analysis sug-gests the judge reduces answers made under insuf-ficient evidence, while sentence-level extraction limits the influence of redundant or distracting text. We hope these findings motivate further work on structured and auditable control mechanisms for iterative RAG systems. 
+
+Limitations 
+
+We acknowledge several limitations and oppor-tunities for future work. First, recent work has explored learning-based optimization for iterative retrieval and reasoning, including reinforcement learning and actor–critic training that directly op-timize system-level objectives through interaction. In contrast, our work emphasizes an explicit and modular control interface based on structured suf-ficiency and gap prediction learned via trajectory distillation. These directions are complementary. The structured outputs of S2G-Judge could be in-corporated into learning-based optimization as su-pervision, as auxiliary rewards, or as intermediate control variables when improving retrieval policies and evidence selection under practical constraints. Second, our gap-item schema introduces a rep-resentational trade-off. It favors stability and ease of use over expressiveness, and some questions may require richer structure than can be captured by the current fields, such as multi-entity joins, temporal constraints, or compositional relations spanning several intermediate variables. Extending the schema, or inducing more structured interme-diate programs while preserving auditability, is a promising direction for broader coverage on com-plex queries. Finally, sentence-level evidence extraction in-troduces a compactness–recall trade-off. While it limits the influence of redundant or distractor-heavy text and improves auditability, it may omit surrounding context that is useful for disambigua-tion or miss evidence that spans multiple sentences. Moreover, our sufficiency predictions can be con-servative, which in practice reduces the risk of answering from borderline evidence states, while leaving room to improve calibration so that clearly sufficient contexts are more often recognized as such. Future work could improve calibration of suf-ficiency decisions, and adaptive evidence selection strategies that better balance evidence coverage and context focus. 
+
+Acknowledgments 
+
+This work was supported by the National Natural Science Foundation of China (No. 62376178), and the Priority Academic Program Development of Jiangsu Higher Education Institutions. 
+
+References              
+
+> Muhammad Arslan, Hussam Ghanem, Saba Munawar, and Christophe Cruz. 2024. A survey on RAG with LLMs. Procedia Computer Science , 246:3781–3790. Akari Asai, Zeqiu Wu, Yizhong Wang, Avirup Sil, and Hannaneh Hajishirzi. 2024. Self-RAG: Learning to retrieve, generate, and critique through self-reflection. In The Twelfth International Conference on Learning Representations .Kaustubh D Dhole. 2025. To retrieve or not to retrieve? uncertainty detection for dynamic re-trieval augmented generation. arXiv preprint arXiv:2501.09292 .Guanting Dong, Jiajie Jin, Xiaoxi Li, Yutao Zhu, Zhicheng Dou, and Ji-Rong Wen. 2025. RAG-critic: Leveraging automated critic-guided agentic workflow for retrieval augmented generation. In Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) ,pages 3551–3578. Xanh Ho, Anh-Khoa Duong Nguyen, Saku Sugawara, and Akiko Aizawa. 2020. Constructing a multi-hop QA dataset for comprehensive evaluation of reasoning steps. In Proceedings of the 28th Inter-national Conference on Computational Linguistics ,pages 6609–6625. Cheng-Yu Hsieh, Chun-Liang Li, Chih-Kuan Yeh, Hootan Nakhost, Yasuhisa Fujii, Alex Ratner, Ranjay Krishna, Chen-Yu Lee, and Tomas Pfister. 2023. Dis-tilling step-by-step! Outperforming larger language models with less training data and smaller model sizes. In Findings of the Association for Computa-tional Linguistics: ACL 2023 , pages 8003–8017.
+
+9Edward J Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang, Weizhu Chen, and 1 others. 2022. Lora: Low-rank adaptation of large language models. ICLR , 1(2):3. Taeho Hwang, Sukmin Cho, Soyeong Jeong, Hoyun Song, SeungYoon Han, and Jong C Park. 2025. EXIT: Context-aware extractive compression for en-hancing retrieval-augmented generation. In Find-ings of the Association for Computational Linguis-tics: ACL 2025 , pages 4895–4924. Zhengbao Jiang, Frank F Xu, Luyu Gao, Zhiqing Sun, Qian Liu, Jane Dwivedi-Yu, Yiming Yang, Jamie Callan, and Graham Neubig. 2023. Active retrieval augmented generation. In Proceedings of the 2023 Conference on Empirical Methods in Natural Lan-guage Processing , pages 7969–7992. Zhouyu Jiang, Mengshu Sun, Lei Liang, and Zhiqiang Zhang. 2025. Retrieve, summarize, plan: Advanc-ing multi-hop question answering with an iterative approach. In Companion Proceedings of the ACM on Web Conference 2025 , pages 1677–1686. Jiajie Jin, Yutao Zhu, Zhicheng Dou, Guanting Dong, Xinyu Yang, Chenghao Zhang, Tong Zhao, Zhao Yang, and Ji-Rong Wen. 2025. FlashRAG: A mod-ular toolkit for efficient retrieval-augmented gener-ation research. In Companion Proceedings of the ACM on Web Conference 2025 , pages 737–740. Mandar Joshi, Eunsol Choi, Daniel S Weld, and Luke Zettlemoyer. 2017. TriviaQA: A large scale distantly supervised challenge dataset for reading comprehen-sion. In Proceedings of the 55th Annual Meeting of the Association for Computational Linguistics (Vol-ume 1: Long Papers) , pages 1601–1611. Patrick Lewis, Ethan Perez, Aleksandra Piktus, Fabio Petroni, Vladimir Karpukhin, Naman Goyal, Hein-rich Küttler, Mike Lewis, Wen-tau Yih, Tim Rock-täschel, and 1 others. 2020. Retrieval-augmented generation for knowledge-intensive NLP tasks. Ad-vances in Neural Information Processing Systems ,33:9459–9474. Hunter Lightman, Vineet Kosaraju, Yuri Burda, Harri-son Edwards, Bowen Baker, Teddy Lee, Jan Leike, John Schulman, Ilya Sutskever, and Karl Cobbe. 2023. Let’s verify step by step. In The Twelfth Inter-national Conference on Learning Representations .Nelson F Liu, Kevin Lin, John Hewitt, Ashwin Paran-jape, Michele Bevilacqua, Fabio Petroni, and Percy Liang. 2024. Lost in the middle: How language mod-els use long contexts. Transactions of the Association for Computational Linguistics , 12:157–173. Freda Shi, Xinyun Chen, Kanishka Misra, Nathan Scales, David Dohan, Ed H Chi, Nathanael Schärli, and Denny Zhou. 2023. Large language models can be easily distracted by irrelevant context. In Inter-national Conference on Machine Learning , pages 31210–31227. PMLR. Kurt Shuster, Spencer Poff, Moya Chen, Douwe Kiela, and Jason Weston. 2021. Retrieval augmentation reduces hallucination in conversation. In Findings of the Association for Computational Linguistics: EMNLP 2021 , pages 3784–3803. Yixuan Tang and Yi Yang. 2024. Multihop-RAG: Benchmarking retrieval-augmented generation for multi-hop queries. arXiv preprint arXiv:2401.15391 .Harsh Trivedi, Niranjan Balasubramanian, Tushar Khot, and Ashish Sabharwal. 2023. Interleaving retrieval with chain-of-thought reasoning for knowledge-intensive multi-step questions. In Proceedings of the 61st annual meeting of the association for com-putational linguistics (volume 1: long papers) , pages 10014–10037. Keheng Wang, Feiyu Duan, Peiguang Li, Sirui Wang, and Xunliang Cai. 2025. LLMs know what they need: Leveraging a missing information guided framework to empower retrieval-augmented generation. In Pro-ceedings of the 31st International Conference on Computational Linguistics , pages 2379–2400. Liang Wang, Nan Yang, Xiaolong Huang, Binxing Jiao, Linjun Yang, Daxin Jiang, Rangan Majumder, and Furu Wei. 2022. Text embeddings by weakly-supervised contrastive pre-training. arXiv preprint arXiv:2212.03533 .Fangyuan Xu, Weijia Shi, and Eunsol Choi. 2024. RE-COMP: Improving retrieval-augmented LMs with context compression and selective augmentation. In 
+
+The Twelfth International Conference on Learning Representations .Diji Yang, Linda Zeng, Jinmeng Rao, and Yi Zhang. 2025. Knowing you don’t know: Learning when to continue search in multi-round RAG through self-practicing. In Proceedings of the 48th International ACM SIGIR Conference on Research and Develop-ment in Information Retrieval , pages 1305–1315. Zhilin Yang, Peng Qi, Saizheng Zhang, Yoshua Bengio, William Cohen, Ruslan Salakhutdinov, and Christo-pher D Manning. 2018. HotpotQA: A dataset for diverse, explainable multi-hop question answering. In Proceedings of the 2018 conference on empiri-cal methods in natural language processing , pages 2369–2380. Xiaopeng Ye, Chen Xu, Chaoliang Zhang, Zhaocheng Du, Jun Xu, Gang Wang, and Zhenhua Dong. 2025. Q-PRM: Adaptive query rewriting for retrieval-augmented generation via step-level process super-vision. In Findings of the Association for Compu-tational Linguistics: EMNLP 2025 , pages 15113– 15128. Linda Zeng, Rithwik Gupta, Divij Motwani, Yi Zhang, and Diji Yang. 2025. Worse than zero-shot? a fact-checking dataset for evaluating the robustness of RAG against misleading retrievals. In The Thirty-ninth Annual Conference on Neural Information Pro-cessing Systems Datasets and Benchmarks Track .
+
+10 A Additional Results 
+
+This appendix reports supplementary results that are omitted from the main paper for space. Unless otherwise noted, we keep the retrieval corpus and evaluation protocol identical to the main experi-ments, and change only the component stated in each subsection. 
+
+A.1 Strong Reasoner Setting                     
+
+> Retriever TriviaQA HotpotQA 2Wiki EM F1 EM F1 EM F1 BM25 70.7 79.6 51.0 65.4 53.6 61.7 E5 72.0 81.1 51.5 65.3 53.0 61.3
+
+Table 5: S2G-RAG under a stronger reasoner setting. We replace the answer reasoner and the sentence-level evidence extractor with GPT-4o-mini, while keeping the same retrieval. Results are reported under BM25 and E5 on TriviaQA, HotpotQA, and 2WikiMultiHopQA. 
+
+Table 5 isolates the effect of using a stronger closed-source backbone for reasoning and sentence selec-tion. The gains indicate that the proposed control interface remains compatible with stronger down-stream components and does not require changes to the retriever or retraining the judge. We report these results in the appendix because the main compari-son in Table 1 focuses on a matched open-source reasoner setting for fair baseline alignment. 
+
+A.2 Query Construction Variants                          
+
+> Variant EM F1 Correct Retrieval
+> Panel A: Query construction format
+> Free-text gap query 41.5 54.5 50.5 Structured gap query (ours; K=1 )43.3 56.5 52.7
+> ∆(Structured – Free-text) +1.8 +2.0 +2.2
+> Panel B: Number of gap items used in BuildQuery (structured queries)
+> Structured query ( K=1 )43.3 56.5 52.7 Structured query ( K=2 )42.3 55.6 52.4 Structured query ( K=3 )43.0 55.9 52.5
+
+Table 6: Query construction variants on HotpotQA (dev) under BM25. Panel A compares free-text versus struc-tured gap-based query construction. Panel B varies the number of structured gap items K used by BuildQuery 
+
+within the structured setting. Correct Retrieval is re-ported as a percentage (%) on the final row per question ID. All other components are kept identical. 
+
+Table 6 analyzes the impact of query construction in the iterative retrieval loop. In Panel A, we com-pare two ways of forming the next-turn query when the judge indicates missing information. The free-text variant appends a natural-language gap descrip-                    
+
+> Judge backbone TriviaQA HotpotQA 2Wiki EM F1 EM F1 EM F1 Llama-3.2-3B-Instruct 72.0 77.9 43.3 56.5 41.7 48.6 Qwen-3-4B-Instruct 70.4 77.4 44.6 56.0 42.8 50.2
+
+Table 7: Effect of the S2G-Judge backbone on end-to-end QA. We swap two LoRA-finetuned judge backbones while keeping the rest of the pipeline fixed (BM25 re-triever, query construction, evidence extractor, and an-swer reasoner: Llama-3-8B-Instruct). Both judges are trained with the same trajectory-distillation procedure. 
+
+tion to the original question, whereas the structured 
+
+variant constructs a query phrase from the missing-fact fields (e.g., target and slot ), yielding a more consistent lexical form for BM25. The structured variant improves EM and F1 by 1.8 and 2.0 points, and increases final-turn Correct Retrieval by 2.2 points, suggesting that structured fields provide stronger retrieval cues over multiple turns. Panel B varies the number of structured gap items used by BuildQuery . Across K ∈ { 1, 2, 3},performance is stable: EM/F1 varies within 1 point and Correct Retrieval remains in a narrow band (52.4–52.7%). Using a single gap item ( K=1 )yields the best EM/F1, but the differences are mod-est, indicating that the method is not sensitive to the exact value of K within this range. We there-fore default to K=1 as a simple configuration that keeps queries concise while achieving the strongest average accuracy. 
+
+A.3 Effect of Judge Backbone 
+
+We study the sensitivity of S2G-RAG to the con-troller backbone by swapping two LoRA-finetuned S2G-Judge variants, Llama-3.2-3B-Instruct and Qwen-3-4B-Instruct, while holding all other com-ponents fixed (BM25 retriever, query construction, sentence-level evidence extraction, and Llama-3-8B-Instruct as the answer reasoner). As shown in Table 7, both backbones yield sim-ilar end-to-end accuracy across datasets. Qwen-3-4B provides small gains on TriviaQA and Hot-potQA EM with comparable F1, while results on 2WikiMultiHopQA are close. Overall, the struc-tured sufficiency-and-gap interface is compatible with different lightweight controller backbones un-der the same retrieval setting. 
+
+A.4 Robustness to Retrieval Breadth 
+
+We assess robustness to retrieval breadth by varying the number of BM25 documents retrieved per turn 11 2 4 6 8 10 20 
+
+> Number of Retrieved Documents (Top-k)
+> 0
+> 10
+> 20
+> 30
+> 40
+> 50
+> 60
+> 70
+> F1 Score
+> Trend
+> F1 Score
+
+Figure 5: Robustness to per-turn retrieval breadth. We vary BM25 top-k at each retrieval turn ( k ∈{2, 4, 6, 8, 10 , 20 }) while keeping the judge, gap-guided query construction, evidence extractor, maximum turns 
+
+T , and decoding settings fixed. 
+
+(top-k), while holding the rest of the S2G-RAG pipeline constant. Figure 5 shows that EM/F1 re-mains stable across a wide range of k, with only modest fluctuations as retrieval breadth increases. This behavior is largely attributable to sentence-level evidence management. Rather than append-ing full documents, S2G-RAG uses a sentence-level Evidence Extractor to form a compact evi-dence block from the retrieved set before the next round of judging and final answering. As k grows, newly added documents are increasingly redundant or distractor-heavy, so the marginal benefit of wider retrieval tends to diminish. By selecting a bounded set of salient sentences, the extractor limits the amount of irrelevant text that enters the accumu-lated evidence context, which helps keep both gap identification and answer generation stable under larger per-turn retrieval breadth. 
+
+A.5 Effect of Evidence Extraction Cap Ke
+
+The sentence-level Evidence Extractor updates the evidence context by selecting a small set of salient sentences from the newly retrieved documents at each turn. We study how sensitive S2G-RAG is to the extractor cap by varying Ke ∈ { 2, 4, 6, 8, 10 }
+
+on HotpotQA (dev) under BM25, while keeping the judge, query construction, retriever settings, maximum turns, and the answer reasoner fixed. Table 8 shows that performance is stable across a wide range of caps. EM varies within 43.2–43.4 and F1 within 55.8–56.5, with no clear monotonic trend as Ke increases. This suggests that the sys-tem is not tightly tuned to a particular extraction budget. Intuitively, Ke acts as a ceiling rather than a target: the extractor can return fewer sentences              
+
+> Extractor cap KeEM F1 243.2 56.5 443.4 55.8 643.3 56.5 843.4 55.9 10 43.4 56.0
+
+Table 8: Effect of the extractor cap Ke (maximum num-ber of evidence sentences returned per turn) on Hot-potQA (dev) under BM25. The extractor may return fewer than Ke sentences. All other components are kept identical.       
+
+> Type EM F1 Bridge 39.4 54.2 Comparison 58.6 67.6
+
+Table 9: Performance breakdown on HotpotQA by ques-tion type. 
+
+when retrieval results offer limited relevant con-tent. Moreover, HotpotQA instances are typically supported by a small number of key evidence sen-tences, so modest caps are already sufficient to pre-serve the essential two-hop evidence chain while limiting the inclusion of distractor text. 
+
+A.6 Breakdown by HotpotQA Question Type 
+
+We further analyze performance on HotpotQA by question type. Table 9 reports results on the two standard categories, Bridge and Comparison. Our method performs well on both types, indicating that the framework is not restricted to bridge-style rea-soning and also remains effective for comparison-style multi-hop QA. 
+
+B Training Details 
+
+This appendix details the construction of turn-level supervision for S2G-Judge and the LoRA-based supervised fine-tuning procedure. Unless stated otherwise, all unspecified settings use library de-faults. 
+
+B.1 Turn-Level Supervision Construction Execution-trace collection. We construct super-vision from multi-turn pipeline execution traces produced by the same iterative retrieval loop used at inference time (Appendix C). For each train-ing question, we roll out the pipeline to a fixed maximum budget T and record per-turn snapshots 
+
+xt = ( q, C t), where q is the original question and 
+
+Ct is the accumulated evidence context at turn t.12 To assign an initial sufficiency tag for filtering, we use the gold supporting documents. A snapshot is tagged as sufficient if the retrieved titles up to turn t cover all gold supporting document titles for the instance; otherwise it is tagged as insufficient. To keep the recorded evidence contexts represen-tative of the pipeline’s intermediate states, trace col-lection is driven by an unfine-tuned judge backbone that uses the same prompt and output schema as the final S2G-Judge. This yields evidence contexts that naturally include redundancy and distractors from multi-round retrieval and accumulation. 
+
+Teacher labeling. A stronger teacher model, prompted with our instruction template (Ap-pendix E.2), labels each snapshot under a strict context-only evidence constraint. The teacher out-puts a binary sufficiency decision together with structured gap items, based only on the information contained in Ct rather than parametric knowledge. 
+
+B.2 Supervision Filtering 
+
+We apply lightweight filtering to improve the relia-bility of the distilled turn-level supervision, without introducing any gold signals into model inputs or evaluation: • Format checking. We validate that the teacher output follows the required schema and discard examples with malformed or non-conformant outputs. • Conflict-based filtering. For each snapshot, we compute a coarse, retrieval-derived suffi-ciency tag based on whether the retrieved ti-tles cover the gold supporting page titles. We use this tag only as a weak sanity check to re-move obvious conflicts between the snapshot state and the teacher label (e.g., cases where the teacher appears to violate the context-only constraint, or the snapshot/tag alignment is unreliable). Importantly, this gold-derived tag is never provided to the judge or used at infer-ence time; it is used only to discard a small set of low-confidence supervision pairs. 
+
+B.3 Supervision Dataset 
+
+The final supervision file consists of per-turn exam-ples containing the original question q, the accu-mulated evidence context Ct, a binary sufficiency label, and a set of structured gap items.        
+
+> Cleaned supervision statistics
+> Turn distribution
+> t=1 764
+> t=2 739
+> t=3 653
+> t=4 648
+> Sufficiency labels
+> Sufficient 1,396
+> Insufficient 1,408
+> Total snapshots 2,804
+> Table 10: Statistics of the cleaned turn-level supervision set used to train S2G-Judge.
+
+Dataset statistics. Table 10 summarizes the cleaned supervision set. It contains 2,804 snap-shots with a relatively even turn distribution from 
+
+t=1 to t=4 and approximately balanced sufficiency labels. 
+
+Train–validation split. We randomly split the cleaned supervision set into 90% training and 10% 
+
+validation using a fixed random seed 42 , yielding 
+
+2,523 training snapshots and 281 validation snap-shots. 
+
+B.4 LoRA Configuration 
+
+We fine-tune S2G-Judge with LoRA (Hu et al., 2022) for parameter-efficient adaptation. Unless otherwise noted, we insert LoRA adapters into the attention and feed-forward projection layers in each decoder block: • Rank r = 16 
+
+• Scaling α = 32 
+
+• Dropout 0.05 
+
+• Target modules q_proj , k_proj , v_proj ,
+
+o_proj , gate_proj , up_proj , down_proj 
+
+B.5 Supervised Fine-Tuning Setup 
+
+We run supervised fine-tuning with TRL SFT-Trainer on chat-formatted prompts. We use the following hyperparameters: • Epochs 3
+
+• Learning rate 1 × 10 −4
+
+• Gradient accumulation 8
+
+• Max sequence length 2048 
+
+13 • Precision FP16 • Evaluation / checkpointing evaluate every 
+
+200 steps; save every 200 steps; keep the latest 
+
+3 checkpoints After training, we save the LoRA adapter weights and the tokenizer for inference-time loading. 
+
+C Pseudocode for the Evaluation Pipeline 
+
+Algorithm 1 summarizes our evaluation pipeline for S2G-RAG. Given a question q, the system iter-atively maintains an accumulated evidence context 
+
+Ct that stores only sentence-level evidence blocks extracted from newly retrieved documents. At each turn, the judge inspects (q, C t) and outputs a suf-ficiency decision st and structured gap items Gt.When st indicates the current evidence supports answering (or when the maximum budget T is reached), the reasoner produces the final predic-tion using only (q, C t). Otherwise, the predicted gaps are mapped into a retrieval query, documents are retrieved, and the evidence extractor selects a compact set of sentences to append to the evidence context. 
+
+Algorithm 1 Evaluation framework of S2G-RAG.                                                                               
+
+> Require: Dev set S={qi}Ni=1 ;Retriever Retrieve( ·)over corpus D;Judge Judge( q, C t)→(st, G t);Query builder BuildQuery( q, G t)→˜qt;Evidence extractor Extract( q, G t, D t)→Et;Reasoner Reason( q, C t)→ˆa;Max turns T.
+> Ensure: Per-turn execution traces and final predictions. 1: procedure EVALUATE (S)2: for each question q∈ S do
+> 3: C0← ∅ ▷accumulated evidence memory 4: for t= 0 to Tdo
+> 5: (st, G t)←Judge( q, C t)
+> 6: if st=true or t=Tthen
+> 7: ˆa←Reason( q, C t)
+> 8: Record the final trace at turn t+1
+> 9: break
+> 10: else
+> 11: ˜qt←BuildQuery( q, G t)
+> 12: Dt←Retrieve(˜ qt)
+> 13: Et←Extract( q, G t, D t)
+> 14: Ct+1 ←Ct⊕Et
+> 15: Record the trace at turn t+1
+> 16: end if
+> 17: end for
+> 18: end for
+> 19: end procedure
+
+D Case Studies 
+
+To provide qualitative insight, we report represen-tative multi-turn traces from HotpotQA. Table 11 is a success case: the judge first predicts a relation gap about who Fredric Rieders testified against, which surfaces the correct bridge entity (Michael Swango); it then requests a missing evidence span to verify the remaining constraint (the “three con-secutive life terms” and “Florence, Colorado” clue), after which it declares sufficiency and answers cor-rectly. Table 12 is a failure case dominated by retrieval coverage and ambiguity. Although the trajectory identifies plausible villages in Philipstown, it never retrieves the gold supporting title (Valhalla High-lands Historic District) and instead accumulates evi-dence for a competing but locally supported district (Cold Spring Historic District). The judge remains insufficient throughout, but the final prediction is still incorrect due to exhausting the retrieval budget without reaching the correct supporting document. 
+
+E Prompts (Judge / Teacher / Extractor) 
+
+E.1 S2G-Judge Prompts E.2 Teacher Prompt E.3 Sentence-level Evidence Extractor Prompts 
+
+14 Question: Who did Fredric Rieders tesify agains who had killed as many as 60 patients and recieved three consecutive life terms to be served in Florence Colorado? 
+
+Gold answer: Michael Swango . Prediction: Michael Swango (correct). Turn Trace (Gap → Query intent → Evidence → Decision/Output) 1 Predicted gap item Gt. relation; target: Fredric Rieders ; slot: testified_against ; desc: The person Fredric Rieders testified against. 
+
+Query intent. Identify who Rieders testified against; match the clue “killed as many as 60 patients”. 
+
+Evidence. [Fredric Rieders] “Some of his other well-known cases include . . . another case is that of Michael Swango, or “Dr. Death”—a serial killer who killed as many as 60 of his patients . . . ” 
+
+Decision/Output. insufficient ; bridge candidate: Michael Swango .2 Predicted gap item Gt. evidence_span; target: Michael Swango ; slot: sentence_length ; desc: Michael Swango’s sentence length. 
+
+Query intent. Verify “three consecutive life terms” and the Florence, Colorado clue. 
+
+Evidence. [Michael Swango] “He was sentenced in 2000 to three consecutive life terms without the possibility of parole, and is serving that sentence at the ADX Florence supermax prison near Florence, Colorado.” 
+
+Decision/Output. sufficient ; answer: Michael Swango .
+
+Table 11: A successful two-hop case. The judge first surfaces a bridge entity via a relation gap (Turn 1), then verifies the remaining constraint via an evidence-span gap (Turn 2). 
+
+Question: What national historic district is located near a village in the town of Philipstown, New York? 
+
+Gold answer: Valhalla Highlands Historic District . Prediction: Cold Spring Historic District (incorrect). Turn Trace (Gap → Query intent → Evidence → Decision/Output) 1 Predicted gap items Gt. (i) relation; target: Philipstown, New York ; slot: village_name ; desc: The name of the village in Philipstown, New York. (ii) relation; target: village in Philipstown, New York ; slot: 
+
+national_historic_district ; desc: The national historic district located near the village in the town of Philip-stown, New York. 
+
+Query intent. Identify candidate villages in Philipstown; then look for a nearby national historic district. 
+
+Evidence. [Cold Spring, New York] “Cold Spring is a village in the town of Philipstown . . . ”; [Nelsonville, New York] “Nelsonville is a . . . village located in the town of Philipstown . . . ”; plus many off-topic district pages. 
+
+Decision/Output. insufficient .2 Predicted gap item Gt. relation; target: Nelsonville, New York ; slot: national_historic_district ; desc: The national historic district located near Nelsonville, New York. 
+
+Query intent. Search for a national historic district near Nelsonville (as the inferred village). 
+
+Evidence. Only village-location support repeats; no evidence links Nelsonville to the asked district; the gold title does not appear. 
+
+Decision/Output. insufficient .3 Predicted gap items Gt. (i) relation; target: Fish and Fur Club ; slot: location ; desc: The location of the Fish and Fur Club in relation to the village in the town of Philipstown, New York. (ii) evidence_span; target: Nelsonville, New York ; slot: national_historic_district ; desc: A sentence explicitly stating that Nelsonville, New York is a national historic district. 
+
+Query intent. Use nearby landmarks to triangulate the missing district signal. 
+
+Evidence. [Fish and Fur Club] “The original Fish and Fur Club building is at . . . in Nelsonville . . . ”; [J. Y. Dykman Store] “. . . located . . . in the village of Nelsonville . . . across from the Fish and Fur Club . . . ” (useful but off-target). 
+
+Decision/Output. insufficient .4 Predicted gap items Gt. (i) relation; target: Fish and Fur Club ; slot: location ; desc: The location of the Fish and Fur Club in relation to the village in the town of Philipstown, New York. (ii) relation; target: Fish and Fur Club ; slot: 
+
+national_historic_district ; desc: The national historic district associated with the Fish and Fur Club. 
+
+Query intent. Resolve the missing district by following auxiliary entities; fall back to the strongest surfaced village branch. 
+
+Final-turn evidence. [Cold Spring, New York] “Cold Spring is a village in the town of Philipstown in Putnam County, New York, United States.” “The central area of the village is on the National Register of Historic Places as the Cold Spring Historic District . . . ” 
+
+Decision/Output. insufficient ; predicted answer Cold Spring Historic District (incorrect). 
+
+Table 12: Failure case. The trajectory identifies villages in Philipstown but never retrieves the gold supporting title 
+
+Valhalla Highlands Historic District . It instead converges on a locally supported but incorrect district ( Cold Spring Historic District ) surfaced in the final turn. 
+
+15 System prompt for S2G-Judge 
+
+You are a QA/RAG sufficiency judge. Given a QUESTION and a CONTEXT (documents retrieved so far), decide whether the CONTEXT alone contains enough information to reliably answer the QUESTION. If not, list the gap items that describe what information is still missing. Output format (strict): - Output exactly one JSON object and nothing else. - The output must have exactly two keys: "sufficient" and "gap items". Schema: "sufficient": true/false, "gap items": [ "category": "bridge entity | attribute | relation | evidence span | other", "target": "string", "slot": "string", "description": "string" ]Constraint: - If "sufficient" is true, then "gap items" must be an empty list []. 
+
+Table 13: System prompt for S2G-Judge. The judge outputs a binary sufficiency decision and, when insufficient, structured gap items. 
+
+Teacher prompt (Part I: task definition and labeling rules) 
+
+You are a QA/RAG sufficiency judge. You will be given: - a QUESTION - the current-round CONTEXT (what the QA system has retrieved so far) Your tasks: 1. Decide whether the given CONTEXT alone contains enough information to reliably answer the QUESTION. - Answer using the boolean field "sufficient". IMPORTANT: - You MUST base your decision ONLY on the CONTEXT. - Even if you personally know the correct answer from world knowledge or training data, if the CONTEXT does not clearly support a correct answer, you MUST set "sufficient": false. - Only when the CONTEXT itself already provides enough explicit evidence to justify a correct answer, you may set "sufficient": true. 2. If the information is NOT sufficient (i.e., "sufficient": false), list the gap items needed to answer the QUESTION. Use the field gap_items : a list of 1–3 objects, each with: - "category": one of ["bridge entity","attribute","relation","evidence span","other"] - "target": a short string naming the entity or concept this gap is about - "slot": a coarse type of the missing fact (e.g., alias, name, nationality, birth place, location) - "description": a short English phrase describing the missing information Guidelines: - Only mark gap items as missing if they are NOT explicitly stated in the CONTEXT. - Think about the reasoning chain and identify which links are still missing. - Avoid vague statements like "need more information" without specifying what is missing. Surface forms and aliases: - If QUESTION uses one name (A) and CONTEXT introduces an alias (B), create ONE gap item with target A / B and descriptions that mention both forms. - Do NOT create two separate gap items for the same underlying relation just due to surface forms. 3. If the information IS sufficient (i.e., "sufficient": true), set gap_items : []. 
+
+Table 14: Teacher prompt used to label per-turn snapshots for judge training (Part I). 
+
+16 Teacher prompt (Part II: output format and example) 
+
+You MUST respond with a single JSON object and NOTHING else. The JSON MUST have exactly the following shape: "sufficient": true/false, "gap items": [ { "category": "...", "target": "...", "slot": "...", "description": "..." }, ... ]Do NOT add any extra keys. Do NOT add explanations outside the JSON. EXAMPLE (for style ONLY; alias is already present in CONTEXT) QUESTION: "What nationality was A’s wife?" CONTEXT: (... includes "A is better known as B", but does NOT mention wife’s name or nationality) Output: "sufficient": false, "gap items": [ { "category": "relation", "target": "A / B", "slot": "spouse name", "description": "The name of A (B)’s wife." }, { "category": "attribute", "target": "A (B)’s wife", "slot": "nationality", "description": "The nationality of A (B)’s wife." } ]QUESTION <q> CONTEXT (this is the ONLY evidence you may use) <ctx> Now output ONLY the JSON object: 
+
+Table 15: Teacher prompt used to label per-turn snapshots for judge training (Part II). 
+
+System prompt (Evidence Selector) 
+
+You are a sentence-level evidence selector for a multi-hop RAG system. You will receive: 1. an ORIGINAL QUESTION, 2. MISSING FACTS that describe what information is still missing, 3. a numbered list of SENTENCES from retrieved documents. Your task is to select the sentence ids that maximize answerability for the ORIGINAL QUESTION. Selection policy: 1. First prioritize sentences that fill the MISSING FACTS, especially bridge entities, attributes, relations, and evidence spans needed for the next hop. 2. Then prioritize sentences that directly support the final answer to the ORIGINAL QUESTION. 3. Prefer sentences that are self-contained and explicit: - they mention the key entity, relation, attribute, date, number, or answer-bearing fact; - they remain understandable when extracted alone. 4. If a selected sentence depends on nearby context to be understandable or useful, include the minimal additional sentence(s) needed to preserve that context. 5. Do not infer, rewrite, paraphrase, or generate evidence text. Only return ids from the provided list. 6. If no sentence is useful, return an empty list. Output format (strict): Return exactly one JSON object and nothing else: "evidence global ids": [1, 5, 7] Constraints: - "evidence global ids" must be a JSON array of integers. - Select at most K sentences, where K is given in the user message. - Only use ids that appear in the numbered sentence list. - Do not repeat ids. 
+
+Table 16: System prompt for the sentence-level Evidence Extractor. The extractor outputs sentence indices (pointers) rather than rewriting evidence text. 
+
+17

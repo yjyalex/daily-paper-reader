@@ -1,0 +1,2108 @@
+Title: CAPO: Counterfactual Credit Assignment in Sequential Cooperative Teams
+
+URL Source: https://arxiv.org/pdf/2604.17693v1
+
+Published Time: Tue, 21 Apr 2026 01:44:37 GMT
+
+Number of Pages: 24
+
+Markdown Content:
+# CAPO: Counterfactual Credit Assignment in Sequential Cooperative Teams 
+
+Shripad Deshmukh ∗
+
+College of Information and Computer Sciences University of Massachusetts Amherst 
+
+svdeshmukh@cs.umass.edu 
+
+Jayakumar Subramanian 
+
+Adobe Research San Jose, CA 
+
+jasubram@adobe.com 
+
+Raghavendra Addanki 
+
+Adobe Research San Jose, CA 
+
+raddanki@adobe.com 
+
+Nikos Vlassis †
+
+Adobe Research San Jose, CA 
+
+vlassis@adobe.com 
+
+Abstract 
+
+In cooperative teams where agents act in a fixed order and share a single team reward, it is hard to know how much each agent contributed, and harder still when agents are updated one at a time because data collected earlier no longer reflects the new policies. We introduce the Sequential Aristocrat Utility (SeqAU), the unique per-agent learning signal that maximizes the individual learnability of each agent’s action, extending the classical framework of Wolpert and Tumer [2002] to this sequential setting. From SeqAU we derive CAPO (Counterfactual Advan-tage Policy Optimization), a critic-free policy-gradient algorithm. CAPO fits a per-agent reward decomposition from group rewards and computes the per-agent advantage in closed form plus a handful of forward passes through the current policy, requiring no extra environment calls beyond the initial batch. We give ana-lytic bias and variance bounds and validate them on a controlled sequential bandit, where CAPO’s advantage over standard baselines grows with the team size. The framework is general; multi-LLM pipelines are a natural deployment target. 
+
+1 Introduction 
+
+Cooperative multi-agent systems arise in settings ranging from classical multi-agent reinforcement learning [Vlassis, 2007, Zhang et al., 2021] to modern pipelines composed of large language models and tool-using agents [Liu et al., 2025, Zhao et al., 2025, Chen et al., 2026]. A common chal-lenge in these systems is credit assignment: a team of agents receives only one team-level reward, and attributing this shared signal to individual agents is under-determined. Classical approaches handle this through centralized critics, whose input space grows exponentially in the team size [Fo-erster et al., 2018]; through factored value functions, which introduce modeling constraints [Sune-hag et al., 2018, Rashid et al., 2018, Wang et al., 2021, Peng et al., 2021]; or through cumulative importance-sampling corrections, whose variance grows exponentially in the number of agents al-ready updated [Kuba et al., 2022]. The sequential cooperative setting, in which agents act in a fixed order and are updated one at a time within a batch, brings a further difficulty: updating an upstream agent shifts the distribution over downstream agents’ behavior, so rollouts collected under the pre-update policy are off-policy for subsequent updates within the same batch. 
+
+> ∗Work done during a summer internship at Adobe Research, 2025.
+> †Corresponding author. Preprint.
+> arXiv:2604.17693v1 [cs.LG] 20 Apr 2026
+
+Contributions. 
+
+• Sequential Aristocrat Utility (Theorem 1). We extend the opacity-learnability framework of Wolpert and Tumer [2002] from simultaneous to sequential cooperative teams, and identify the unique prefix-dependent baseline that maximizes per-agent learnability; subtracting it from the team reward gives the Sequential Aristocrat Utility (SeqAU). This characterization and the upstream-cancellation identity (Appendix B) it implies are estimator-independent and apply to any sequential cooperative team. • CAPO algorithm. We instantiate SeqAU as CAPO (Counterfactual Advantage Policy Optimiza-tion), a critic-free policy-gradient algorithm with three ingredients: an additive reward decomposi-tion [Guestrin et al., 2002] fit by a least-squares ridge estimator, an upstream-cancellation identity that reduces the direct per-agent effect to a single-agent marginal, and fictitious sampling for the indirect effect (drawing counterfactual continuations from the current joint policy). • Closed-form bias and variance analysis (Theorems 2–4). CAPO’s per-agent advantage bias is linear in the non-additivity residual; its variance adapts to inter-agent coupling ( K-independent in the factored-policy limit, O(K − k) worst case), compared to the inherent Θ( K) of shared-baseline estimators like MA-GRPO [Liu et al., 2025] and O(exp K) of cumulative-IS estimators like HAPPO [Kuba et al., 2022] and HA-GRPO; the policy-gradient MSE has no importance-sampling-ratio inflation. To our knowledge, such a closed-form bias-and-variance analysis of per-agent advantages is not available for decomposed-critic methods in the multi-agent literature. • Empirical validation. On a controlled sequential-bandit testbed, per-agent advantage MSE scales as the theory predicts, CAPO’s end-to-end regret advantage over MA-GRPO, HA-GRPO, and C3 [Chen et al., 2026] grows with team size, and an ablation confirms the indirect-effect correction is necessary precisely when sequential-update non-stationarity is present. We develop the framework in a contextual-bandit setting with sequential execution, where closed-form ground-truth advantages and exact variance calculations allow the theoretical claims to be tested cleanly. Extension to multi-agent language-model pipelines [Liu et al., 2025, Chen et al., 2026, Zhao et al., 2025], where sequential execution is native, is left to follow-up work. 
+
+2 Setup 
+
+We consider a cooperative team of K agents acting in a contextual bandit [Lattimore and Szepesv´ ari, 2020], each agent with action set of size A. A context x ∼ D is drawn, and the agents act in a fixed order 1, 2, . . . , K . Each agent k observes the prefix of upstream actions a<k = ( a1, . . . , a k−1)
+
+and samples its own action ak ∈ A k from πk(· | a<k , x ; θk). We write a = ( a1, . . . , a K ) for the joint action and a>k = ( ak+1 , . . . , a K ) for the suffix. The joint policy factorizes autoregressively, 
+
+π(a | x) = Q 
+
+> k
+
+πk(ak | a<k , x ), and we denote the induced downstream policy given a prefix-plus-focal action a≤k by π>k (· | a≤k) = Q 
+
+> j>k
+
+πj (· | a<j ). The joint action produces a scalar team reward R(a, x ) ∈ [−Rmax , R max ] with conditional mean f (a, x ) = E[R | a, x ], and the team objective is V (θ) = Ea∼πθ [R]. For brevity we suppress x throughout; every expression should be read pointwise in x, and the theoretical results hold pointwise and therefore in expectation over D.
+
+Execution order versus update order. Two orderings recur throughout the paper. The execution order 1, 2, . . . , K is fixed by the environment or task and determines which agents’ actions are visible to which, defining the prefix a<k and suffix a>k for each agent. The update order is the sequence in which agents’ policies are updated within a single outer training iteration. When updates are sequential, by the time it is agent k’s turn to be updated the agents earlier in the update order have already moved from μ to the new policy π, so the data collected under μ is now off-policy for agent k, leading to a non-stationarity issue. 
+
+3 Opacity, Learnability, and the Sequential Aristocrat Utility 
+
+Following Wolpert and Tumer [2002], let the opacity of agent k’s utility Uk at action ak be the variance of Uk over the randomness of all other agents’ actions, given ak and any information I
+
+on which Uk is allowed to depend. Low opacity means that agent k sees its own action’s effect on Uk without confounding from teammates’ choices; high opacity means the signal is drowned 2in teammate noise. A utility is factored with respect to the team reward if the argmax over agent 
+
+k’s actions of Uk coincides with the argmax of the team reward, holding all other agents fixed (Appendix A gives the formal definition). Factoredness ensures that optimizing Uk does not mislead the team; low opacity ensures that optimizing it is statistically tractable. For simultaneously-acting teams, Wolpert and Tumer [2002] showed that the Aristocrat Utility (AU), 
+
+U AU  
+
+> k
+
+(a) = R(a) − Ea′  
+
+> k∼πk
+
+[R(a−k, a ′
+
+> k
+
+)] ,
+
+is factored and has minimum opacity among all factored utilities whose baseline depends on a−k
+
+alone. 
+
+Sequential learnability. In the sequential setting, agent k’s information set naturally extends to include the upstream prefix a<k . We consider prefix-conditional utilities of the form Uk(a) = 
+
+R(a) − bk(a<k ), with baseline bk any function of a<k , and define the suffix-averaged form of any utility U , ¯Uk(ak; a<k ) := Ea>k ∼π>k (·| a≤k )[U (a)] .
+
+For a reference Markov kernel ρ(· | a<k ) ∈ ∆( Ak) and moves a1
+
+> k
+
+, a 2 
+
+> k
+
+∈ A k, the sequential learn-ability of Uk is the signal-to-noise ratio 
+
+Λseq  
+
+> k
+
+(Uk; ρ, a 1
+
+> k
+
+, a 2
+
+> k
+
+) = Ea<k 
+
+ ¯Uk(a1
+
+> k
+
+; a<k ) − ¯Uk(a2
+
+> k
+
+; a<k )q
+
+Ea<k , a k ∼ρ(·| a<k )
+
+Var (a<k ,a >k )|ak [Uk] , (1) whose numerator measures how much the suffix-averaged utility shifts with the focal action, av-eraged over prefixes, and whose denominator measures how much Uk fluctuates under team-mate behavior for a fixed focal action; both expectations and the inner variance are pointwise in a<k . The reference kernel is a degree of freedom; the natural choice, used throughout, is 
+
+ρ(· | a<k ) = πk(· | a<k ).
+
+Theorem 1 (Sequential Aristocrat Utility) . Within the class of sequential difference utilities 
+
+{R − D(a<k ) : D : Q 
+
+> j<k
+
+Aj → R}, all of which are factored with respect to R, the sequen-tial learnability Λseq  
+
+> k
+
+is maximized for every prefix a<k and every pair (a1
+
+> k
+
+, a 2
+
+> k
+
+), uniquely, by the baseline 
+
+D∗(a<k ) = Ea′      
+
+> k∼ρ(·| a<k ), a ′
+> >k ∼π>k (·| a<k ,a ′
+> k)
+
+R(a′
+
+> k
+
+, a <k , a ′
+
+> >k
+
+). (2) 
+
+The resulting Sequential Aristocrat Utility is gSeqAU  
+
+> k
+
+(a) = R(a) − D∗(a<k ). Factoredness of the search class, uniqueness, and the full proof are in Appendix A. 
+
+Counterfactual advantage. Setting ρ(· | a<k ) = πk(· | a<k ) in (2) gives the SeqAU-induced counterfactual advantage 
+
+ASeqAU  
+
+> k
+
+(a≤k) = Eπ [R | a≤k] − Eπ [R | a<k ], (3) the quantity that COMA [Foerster et al., 2018] estimates via a learned centralized critic in the simultaneous-action setting. The main contribution of this section is Theorem 1, which establishes that the baseline subtracted in (3), Eπ [R | a<k ], is not merely a natural choice in the sequen-tial setting but the unique learnability-maximizing one among prefix-conditional baselines, with no structural assumption on the team reward. Section 4 turns (3) into a tractable estimator via an ad-ditive decomposition of R and an upstream-cancellation identity, recovering a direct/indirect form that collapses to Wolpert-Tumer’s Aristocrat Utility in the factored-policy limit. 
+
+4 CAPO: Counterfactual Advantage Policy Optimization 
+
+4.1 The estimation problem and three failure modes 
+
+Within an outer iteration, write π(0) = μ for the rollout-collection joint policy and, for k ≥ 1,
+
+π(k) for the joint policy after agent k has been updated; the joint policy at the moment of agent 
+
+k’s update is therefore π(k−1) , which we call the current joint policy for that update. The SeqAU target (3) requires two conditional expectations of the team reward under π(k−1) , neither directly available. Under sequential updates, π(k−1) differs from μ by exactly the upstream agents that have already moved, so the μ-rollouts in the batch are not a direct match for either expectation. Estimating the SeqAU advantage therefore requires a structured reward-attribution estimator; three lines of prior work attempt this, and each fails in a specific way that motivates one ingredient of CAPO. 3Centralized critic (COMA, DOP). COMA [Foerster et al., 2018] learns Eπ [R | a] as a central-ized Q-critic on the joint action and marginalizes the focal action at O(|A| K ) cost; DOP [Wang et al., 2021] reduces this via an additively factored critic. Both target simultaneous execution and do not address sequential-update drift. 
+
+Cumulative importance sampling (HA-GRPO). HA-GRPO [Kuba et al., 2022] reweights the shared trajectory advantage by the cumulative prefix Q 
+
+> j<k
+
+π(j) 
+
+> j
+
+/μ j , whose variance grows expo-nentially in the number of agents already updated. 
+
+Replay-based counterfactual (C3). C3 [Chen et al., 2026] replays the downstream pipeline at al-ternative focal actions under actual environment dynamics, paying one reward evaluation per replay. It assumes nothing about the reward structure but cannot scale when reward evaluation is expensive. The three CAPO moves answer these in turn: an additive reward decomposition that makes per-agent attribution closed-form (Section 4.2), an upstream-cancellation identity that simplifies the SeqAU target to two cheap pieces (Section 4.3), and fictitious sampling that estimates the indirect effect under the current joint policy π(k−1) without importance weights or replay (Section 4.4). 
+
+4.2 Additive reward model for closed-form per-agent attribution 
+
+The first failure mode (centralized-critic blowup) suggests trading generality for tractability. Follow-ing a long line of work on additive or factored team-reward decompositions in cooperative multi-agent RL [Guestrin et al., 2002, Kok and Vlassis, 2006, Sunehag et al., 2018, Wang et al., 2021], we model the expected team reward as 
+
+f (a) = E[R | a] = 
+
+> K
+
+X
+
+> k=1
+
+φk(ak). (4) This structure allows per-agent attribution to be recovered in closed form from a single linear regres-sion rather than a learned critic. (Section 5 bounds the advantage bias incurred when the assumption is violated.) We estimate the per-agent components by regressing the team reward onto agent-action indicator features. Each joint action is encoded as ψ(a) ∈ { 0, 1}d with d = KA , the concatenation of per-agent one-hot vectors. Stacking the N rollouts of a batch into a feature matrix Ψ ∈ RN ×d
+
+with reward vector r ∈ RN , the ridge-regression estimator 
+
+ˆφ =  λI + Ψ ⊤Ψ−1Ψ⊤r (5) returns per-agent components whose concatenation ˆφ = ( ˆ φ1, . . . , ˆφK ) ∈ Rd identifies the best additive approximation to f under μ. The solve is O(d3), requires no gradient steps, and reuses the same N rollouts the policy-gradient update would consume anyway. (At λ = 0 , this reduces to the slate pseudoinverse [Swaminathan et al., 2017], which targets the same additive linear structure for slate off-policy evaluation; we add the ridge regularizer to supply coverage where some per-agent actions are rare under μ.) Per-coordinate variance of ˆφ is bounded independently of K (Theorem 3), which is what makes per-agent attribution cheap for arbitrarily large teams. 
+
+4.3 Upstream cancellation: focal advantage reduces to direct + indirect 
+
+Plugging the additive approximation ˆf (a) = P 
+
+> k
+
+ˆφk(ak) into the SeqAU advantage (3) produces a sum over all K agents in both conditional expectations Eπ(k−1) [ ˆf | a≤k] and Eπ(k−1) [ ˆf | a<k ].Under the autoregressive factorization of π(k−1) , contributions from agents upstream of k depend only on the prefix a<k and appear identically in both terms; they cancel exactly in the difference and need not be estimated. What remains is a clean two-piece advantage: 
+
+ˆALS  
+
+> k
+
+(a≤k) = ˆφk(ak) − Ea′   
+
+> k∼πk(·| a<k )
+
+[ ˆ φk(a′
+
+> k
+
+)] 
+
+| {z } 
+
+> Dk:direct effect (closed form)
+
++ X
+
+> j>k
+
+ Eπ>k |a≤k [ ˆ φj ] − Eπ>k |a<k [ ˆ φj ]| {z } 
+
+> Ik:indirect effect
+
+. (6) 
+
+Direct effect. Dk depends only on ˆφk and the current marginal πk(· | a<k ) and is closed-form. In the factored-policy limit where Ik vanishes, Dk alone is the per-agent advantage that DOP [Wang et al., 2021] obtains in the simultaneous-execution setting via critic-side cancellation, attained here reward-side. 4Indirect effect. Ik captures how agent k’s action shifts the conditional distribution over down-stream agents’ actions, and through them the reward contributions ˆφj for j > k . This term is the new content of the sequential setting; estimating it is the subject of Section 4.4. The full algebraic derivation of (6) is in Appendix B. 
+
+4.4 Fictitious sampling for the indirect effect 
+
+The indirect-effect expectations in (6) require conditional distributions over downstream actions under π(k−1) , which the μ-rollouts cannot supply. CAPO addresses this by drawing fictitious con-tinuations from π(k−1) conditioned on each rollout’s μ-realized prefix, rather than reweighting the 
+
+μ-rollouts (the HA-GRPO approach, with exponential IS-variance cost) or re-executing the down-stream pipeline in the real environment (the C3 approach, with one reward evaluation per replay). For each rollout n, we generate two sample sets: 
+
+˜a(n,ℓ ) 
+
+> >k
+
+∼ π(k−1) 
+
+> >k
+
+ · a(n)
+
+> ≤k
+
+, ℓ = 1 , . . . , L, (7) 
+
+ ˜a(n,ℓ ) 
+
+> k
+
+, ˜a′(n,ℓ )
+
+> >k
+
+ ∼ π(k−1) 
+
+> k
+
+ · a(n)
+
+> <k
+
+ · π(k−1) 
+
+> >k
+
+ · a(n) 
+
+> <k
+
+, ˜a(n,ℓ )
+
+> k
+
+, ℓ = 1 , . . . , L, (8) and form the per-rollout Monte Carlo estimate of the SeqAU advantage: 
+
+ˆA(n) 
+
+> k
+
+= 1
+
+L
+
+> L
+
+X
+
+> ℓ=1
+
+h ˆf  a(n) 
+
+> ≤k
+
+, ˜a(n,ℓ )
+
+> >k
+
+ − ˆf  a(n) 
+
+> <k
+
+, ˜a(n,ℓ ) 
+
+> k
+
+, ˜a′(n,ℓ )
+
+> >k
+
+i
+
+. (9) The first term holds the prefix-plus-focal-action at its realized value and averages over down-stream completions drawn from π(k−1)  
+
+> >k
+
+(· | a(n) 
+
+> ≤k
+
+); the second integrates the focal action out under 
+
+π(k−1)  
+
+> k
+
+(· | a(n) 
+
+> <k
+
+) and then draws downstream completions from π(k−1)  
+
+> >k
+
+(· | a(n) 
+
+> <k
+
+, ˜a(n,ℓ ) 
+
+> k
+
+). Their dif-ference is exactly Dk + Ik from (6), with the direct effect computed in closed form and the indirect effect estimated by the fictitious draws. The draws require only policy forward passes, not reward evaluations or environment interactions; evaluating ˆf is a table lookup of dimension K.The fictitious estimator avoids both pathologies. It does not reweight, so no IS variance accumulates with k; the effective sample size is L for every agent, independent of position within the team. It does not replay, so no reward evaluations are spent beyond the initial batch. The cost asymmetry against C3 is structural in regimes where reward evaluation dominates (external verifiers, code executors, graders, human raters); the cost asymmetry against HA-GRPO is statistical, with no exponential-in-
+
+k variance entering the gradient (Theorem 4). We note that the prefixes a(n) 
+
+> <k
+
+and a(n) 
+
+> ≤k
+
+in (9) are those realized under the rollout-collection policy 
+
+μ; only the downstream continuation (and the counterfactual focal action in (8)) are drawn from 
+
+π(k−1) . The outer average over n therefore integrates the advantage against the μ-prefix distribution rather than the π(k−1)  
+
+> <k
+
+-prefix distribution. Under sequential updates this introduces a prefix-drift bias already captured by Theorem 2 through the per-agent total-variation drift ¯δ = max j ∥πj − μj ∥1; we accept it in exchange for avoiding a cumulative importance-sampling prefix. 
+
+4.5 Algorithm and per-iteration cost 
+
+Algorithm 1 collects the three CAPO moves into a single outer iteration. CAPO performs (i) one ridge solve on the batch (Section 4.2, O(d3)), (ii) 2N KL fictitious continuations across all agents and rollouts (Section 4.4, policy inference only), and (iii) K · M inner PPO updates on the per-agent advantages (Section 4.3). The real-rollout count matches the GRPO baseline (both methods collect 
+
+N trajectories per iteration); the additional cost is the ridge solve and the policy-only fictitious draws, neither of which scales with the cost of the reward signal. 5Algorithm 1 CAPO: Counterfactual Advantage Policy Optimization (one outer iteration). 
+
+Require: Current joint policy π(t−1) , ridge parameter λ, group size N , fictitious-sample count L,inner PPO step count M , learning rate η. 
+
+> 1:
+
+μ ← π(t−1) ▷ rollout-collection policy for this iteration  
+
+> 2:
+
+Sample N joint trajectories {(a(n), R (n))}Nn=1 from μ. 
+
+> 3:
+
+Build feature matrix Ψ ∈ RN ×d with Ψn, (k,a (n)  
+
+> k)
+
+= 1 . 
+
+> 4:
+
+ˆφ ← (λI + Ψ ⊤Ψ) −1Ψ⊤r ▷ ridge solve (5); O(d3) 
+
+> 5:
+
+π(0) ← μ ▷ initial within-batch joint policy  
+
+> 6:
+
+for k = 1 , . . . , K do ▷ update agents in execution order  
+
+> 7:
+
+for n = 1 , . . . , N do  
+
+> 8:
+
+Draw L suffix samples {˜a(n,ℓ ) 
+
+> >k
+
+}Lℓ=1 from π(k−1)  
+
+> >k
+
+(· | a(n) 
+
+> ≤k
+
+) ▷ eq. (7)  
+
+> 9:
+
+Draw L focal-plus-suffix samples {(˜ a(n,ℓ ) 
+
+> k
+
+, ˜a′(n,ℓ ) 
+
+> >k
+
+)}Lℓ=1 from π(k−1)  
+
+> k
+
+(· | a(n) 
+
+> <k
+
+), then 
+
+π(k−1)  
+
+> >k
+
+(· | a(n) 
+
+> <k
+
+, ˜a(n,ℓ ) 
+
+> k
+
+) ▷ eq. (8)  
+
+> 10:
+
+Compute ˆA(n) 
+
+> k
+
+from ˆφ and the two sample sets ▷ eq. (9)  
+
+> 11:
+
+end for  
+
+> 12:
+
+Run M PPO-clipped steps [Schulman et al., 2017] on θk with advantages { ˆA(n) 
+
+> k
+
+} to obtain 
+
+π(k) 
+
+> k
+
+. 
+
+> 13:
+
+π(k) ← (π(1) 1 , . . . , π (k) 
+
+> k
+
+, μ k+1 , . . . , μ K ) 
+
+> 14:
+
+end for  
+
+> 15:
+
+return π(T ) ← π(K).
+
+5 Theoretical Properties 
+
+We characterize the statistical properties of the CAPO advantage estimator (6). Let ε(a) = ˆf (a) −
+
+f (a) denote the residual of the additive approximation, so that ∥ε∥∞ measures the worst-case non-additivity. Let Gμ = Eμ[ψ(a)ψ(a)⊤] ∈ Rd×d be the population Gram matrix of the indicator features with smallest eigenvalue κμ = λmin (Gμ). We assume κμ > 0, that is, every per-agent action has positive probability under the marginal of μ; the ridge regularizer λ > 0 supplies the coverage otherwise. All rewards are bounded, |R(a)| ≤ Rmax . Proofs are given in Appendix C. 
+
+Advantage bias under non-additive rewards. Theorem 2 (Advantage bias) . Let ∆k = ˆALS  
+
+> k
+
+− ASeqAU  
+
+> k
+
+denote the CAPO advantage bias, where 
+
+ˆALS  
+
+> k
+
+is computed from ˆφ fit on μ-rollouts. For any joint action (a<k , a k),
+
+|∆k(a≤k)| ≤ Eπ≥k |a<k [δεk(a−k)] + ∥ε∥∞ · max  
+
+> ak,a ′
+> k
+
+π>k (· | a<k , a k) − π>k (· | a<k , a ′
+
+> k
+
+) 1,
+
+where δεk(a−k) = max ak ,a ′ 
+
+> k
+
+|ε(a<k , a k, a >k )−ε(a<k , a ′
+
+> k
+
+, a >k )|. If both target and logging policies factor across agents, π(a) = Q 
+
+> k
+
+πk(ak) and μ(a) = Q 
+
+> k
+
+μk(ak), the bound specializes to 
+
+|∆k(ak)| ≤ 2( K − 1) ¯δ ∥ε∥∞, ¯δ = max  
+
+> j
+
+∥πj − μj ∥1,
+
+the maximum per-agent total-variation drift between target and logging policies. 
+
+Bias has two channels. The first vanishes when the additive residual is insensitive to the focal action; the second vanishes when the joint policy is factored and downstream agents do not see the focal action. In a GRPO loop with μ(t) = π(t−1) and inner-PPO drift ¯δ = O(M η ), the per-batch bias under factored policies is O(KM η ∥ε∥∞), small whenever the inner step size is moderate or the reward is close to additive. The λint -sweep of Section 6.2 tests this bound directly. 
+
+Advantage variance under additive rewards. Theorem 3 (Ridge-attribution variance) . Suppose f is additive, and condition on exact evaluation of the indirect-effect expectations in (6) (i.e., the L → ∞ limit of the fictitious-sampling estimator). 
+
+6Replacing the sample Gram matrix Ψ⊤Ψ by its population version N G μ,3 the variance of the direct-effect component Dk of the CAPO advantage at any agent k and any focal action ak satisfies 
+
+Var  Dk(a≤k) ≤ 2 R2max 
+
+λ + N κ μ
+
+,
+
+independent of K, the feature dimension d, and the interaction structure of f . The full advantage 
+
+ˆALS  
+
+> k
+
+= Dk + Ik adds at most 2( K − k) to the ℓ2-coefficient norm of the underlying linear functional of ˆφ, giving a worst-case bound of (2+2( K−k)) R2max  
+
+> λ+N κ μ
+
+. In the factored-policy limit, Ik ≡ 0 and the 
+
+K-independent direct-effect bound applies to the full advantage exactly. 
+
+Remark 1. At finite L, the full CAPO advantage carries an additional O(1 /L ) Monte Carlo vari-ance from the indirect-effect estimator, whose dependence on K inherits the scaling of ˆf (in the worst case O(K), when ˆf is a sum of K bounded per-agent contributions). 
+
+Two comparisons are immediate. The shared-baseline advantage ˆAMA  
+
+> k
+
+= R − ¯R used by MA-GRPO [Liu et al., 2025] has variance O(Kσ 2
+
+> φ
+
+/N ) when the per-agent reward contributions are inde-pendent; this scaling is inherent, not worst-case, because the team reward itself has K-way variance. The importance-sampled prefix advantage used by HAPPO [Kuba et al., 2022] and HA-GRPO has variance O(Q 
+
+> j<k
+
+Eμ[Y 2 
+
+> j
+
+] · R2max /N ), exponential in the number of agents already updated when-ever the per-agent importance ratios have second moment greater than one. CAPO’s variance, by contrast, adapts to the coupling structure: K-independent in the factored-policy limit and at most 
+
+O(K − k) in the worst case, matching the shared-baseline K-scaling only when downstream agents are maximally sensitive to upstream actions and collapsing to K-independent whenever they are not (Section 6.1 confirms this empirically). 
+
+Gradient mean-squared error. Theorem 4 (Gradient MSE) . Let g∗ 
+
+> k
+
+= Eπ(k−1) [Aksk] be the true policy gradient under the joint policy at the moment of agent k’s update, with sk = ∇θk log πk(ak | a<k ), and let 
+
+Bk be a uniform bound on |∆k| from Theorem 2. Consider the idealized on-policy estimator 
+
+ˆgk = L−1 P 
+
+> ℓ
+
+ˆALS ,(ℓ) 
+
+> k
+
+s(ℓ) 
+
+> k
+
+formed from L rollouts drawn from π(k−1) (the practical CAPO gra-dient averages per-rollout advantages over μ-rollouts with fictitious continuations, eq. (9) ; its exact finite-sample analysis is left to future work). This estimator satisfies 
+
+E∥ˆgk − g∗
+
+> k
+
+∥2 ≤ 2
+
+L Var π(k−1) (Aksk) + 2 B2 
+
+> k
+
+Eπ(k−1) [∥sk∥2].
+
+The first term is the standard on-policy REINFORCE variance without importance-sampling-ratio inflation, because the fictitious rollouts are drawn directly from π(k−1) rather than reweighted from 
+
+μ. The second term is the bias contribution, bounded by Theorem 2. Sequential-update HA-GRPO pays for the same drift via a cumulative IS prefix whose variance is exponential in k; CAPO pays via additive-residual bias that is linear in ∥ε∥∞ and zero when the reward is strictly additive. 
+
+6 Experiments 
+
+We validate the theoretical claims of Sections 3–5 on a controlled sequential cooperative-bandit testbed admitting closed-form ground-truth advantages. The setup allows us to measure advantage-estimation quality directly as well as end-to-end optimization performance. We report four ex-periments: per-agent advantage MSE as a function of team size (Section 6.1); robustness of the advantage estimator to violations of the additivity assumption (Section 6.2); end-to-end policy opti-mization under sequential-update non-stationarity (Section 6.3); and an ablation testing whether the indirect-effect correction is doing work (Section 6.4). 
+
+Common setup. Agents have action sets of size A = 4 ; team rewards are f (a) = P 
+
+> k
+
+φk(ak) + 
+
+λint 
+
+P 
+
+> k<ℓ
+
+gkℓ (ak, a ℓ) with φk and gkℓ drawn per seed with matched variance so that λint = 1       
+
+> 3The sample-Gram fluctuations around N G μcontribute an O(1 /√N)correction that does not affect the K-scaling statement.
+
+72 4 8 16 
+
+> K (number of agents)
+> 10 0
+> 10 1
+> Mean advantage MSE
+> Advantage estimation quality vs K
+> CAPO
+> C3
+> MA-GRPO
+> HA-GRPO
+
+Figure 1: Per-agent advantage MSE (log scale) as a function of the number of agents K, aver-aged over agents and 30 seeds. Absolute values rise with K because the team-reward scale itself grows with K; the relevant readings are the ra-tios between methods at each K.0.0 0.2 0.4 0.6 0.8 1.0    
+
+> Interaction strength int
+> 10 1
+> 10 0
+> Mean advantage MSE
+> Advantage estimation quality vs interaction strength ( K= 4)
+> CAPO
+> C3
+> MA-GRPO
+> HA-GRPO
+
+Figure 2: Per-agent advantage MSE as a func-tion of interaction strength λint at K = 4 , aver-aged over agents and 30 seeds. makes the pairwise variance equal to the additive variance. Advantage ground truth is computed by exact marginalization. Policies condition only on the immediately preceding action, πk(· | ak−1),and a non-stationarity parameter ρ ≥ 0 concentrates the initial conditional distributions toward their upstream condition (Appendix E); ρ = 0 gives near-uniform initial policies and larger ρ gives increasingly concentrated ones. We compare CAPO against three baselines defined in Section 2: MA-GRPO, HA-GRPO, and C3. The MSE experiments in Sections 6.1–6.2 use the closed-form ridge estimator of (5) and test Theorem 3’s bounds directly. The optimization experiments in Sec-tions 6.3–6.4 use a related fictitious-sampling estimator of ˆφ that shares the same population target as the ridge solve; finite-sample analysis of this practical variant is left to future work. 
+
+6.1 Per-agent advantage estimation quality 
+
+We measure the mean-squared error between estimated and ground-truth per-agent advantages, as a function of the team size K with λint = 0 (additive reward) and N = 16 rollouts per batch. Figure 1 reports the advantage MSE averaged over agents and 30 seeds. CAPO’s MSE is roughly flat in K,consistent with the direct-effect bound of Theorem 3; in this testbed the indirect-effect contribution to the MSE is small relative to the ridge-attribution variance, so the K-independent direct-effect scaling carries over to the full advantage empirically. The shared-baseline MA-GRPO grows linearly in K, consistent with the O(K) scaling of shared advantages; HA-GRPO grows faster than linear because the prefix importance ratio amplifies noise at downstream agents; C3 tracks CAPO’s shape but with a consistent offset attributable to prefix-filtering variance. The per-agent breakdown at 
+
+K = 16 (Appendix D) shows that CAPO’s MSE is essentially flat across agent positions, while HA-GRPO grows with agent index as the IS prefix accumulates. At K = 16 , CAPO’s average MSE is roughly 2× smaller than C3’s, 30 × smaller than MA-GRPO’s, and 46 × smaller than HA-GRPO’s. For the shared-baseline methods (MA-GRPO, HA-GRPO), which emit a single trajectory advantage shared across agents, the per-agent estimate is the shared scalar evaluated at each rollout’s prefix and focal action; the MSE is computed against the same per-agent ground truth as for CAPO and C3. 
+
+6.2 Robustness to non-additive rewards 
+
+Theorem 2 bounds the CAPO advantage bias linearly in the additive residual ∥ε∥∞. We probe this prediction by sweeping λint ∈ { 0, 0.25 , 0.5, 0.75 , 1.0} at K = 4 , with all other parameters fixed. Figure 2 reports the MSE. CAPO’s MSE grows monotonically with λint , from 0.03 at λint = 0 
+
+to 0.92 at λint = 1 , consistent with the predicted linear-in-∥ε∥∞ scaling. C3 is nearly flat across the sweep, reflecting that it does not assume additivity. The shared-baseline methods scale roughly linearly with λint , tracking the growth of the reward magnitude. CAPO remains the best of the four methods across the full range, including at λint = 1 where half of the reward variance is from pairwise interactions. 8Table 1: Mean normalized regret AUC per (K, method ), averaged over λint ∈{0, 0.25 , 0.5, 0.75 , 1.0} and ρ ∈ {0, 1, 2}, 300 seeds per cell. Lower is better; bold marks the best method in each row (within standard error).                                                                 
+
+> KCAPO MA-GRPO HA-GRPO C3 20.125 ±0.002 0.116 ±0.002 0.119 ±0.002 0.244 ±0.002
+> 40.115 ±0.001 0.116 ±0.001 0.142 ±0.002 0.255 ±0.001
+> 60.107 ±0.001 0.119 ±0.001 0.179 ±0.002 0.263 ±0.001
+> 80.103 ±0.001 0.119 ±0.001 0.218 ±0.002 0.267 ±0.001
+> 10 0.102 ±0.001 0.125 ±0.001 0.253 ±0.001 0.273 ±0.001
+
+6.3 End-to-end policy optimization 
+
+We now evaluate end-to-end policy optimization. The sweep covers K ∈ { 2, 4, 6, 8, 10 }, λint ∈{0, 0.25 , 0.5, 0.75 , 1.0}, and initial-policy concentration ρ ∈ { 0, 1, 2}, with all four methods con-suming the same total real-environment-interaction budget (per-iteration counts therefore differ be-tween methods; C3 runs 25 iterations across all K to absorb its per-iteration replay cost, while CAPO, MA-GRPO, and HA-GRPO run 25( K + 2) iterations). 300 seeds per cell. Per-(K, λ int , ρ )
+
+AUC and regret trajectories are in Appendix F. Table 1 summarizes mean regret AUC per (K, method ), averaged over λint and ρ (lower is better). Three patterns emerge, all matching the theory of Section 5. 
+
+At K = 2 , MA-GRPO suffices. With only two agents and one upstream-update per batch, the shared trajectory advantage is a perfectly adequate learning signal; MA-GRPO has the lowest AUC and HA-GRPO’s IS prefix (a single-term correction here) is competitive. CAPO’s per-agent coun-terfactual machinery is not wrong, but the extra Monte Carlo variance costs a bit without a propor-tionate gain. When the team is small, simpler is better. 
+
+CAPO crosses over around K = 4 and pulls ahead with K. For K ≥ 6, CAPO has the lowest AUC across all cells, with the gap over MA-GRPO widening from ≈ 0.01 at K = 4 to ≈ 0.02 
+
+at K = 10 . This matches the Θ( K) inherent variance of the shared-baseline advantage (the team reward itself has K-way variance, and no amount of centering escapes it), while CAPO’s variance adapts to the coupling structure and does not grow as starkly. 
+
+HA-GRPO degrades rapidly with K. The cumulative IS prefix’s variance is exponential in the number of agents already updated; by K = 10 , HA-GRPO approaches C3 in AUC, despite starting comparable to MA-GRPO at K = 2 . C3 itself consistently trails all other methods: under matched real-env budget, its O(K2) per-iteration replay cost forces only 25 iterations, leaving little room for the policy to improve. 
+
+6.4 Ablation: is the indirect effect doing work? 
+
+Section 4 decomposes the CAPO advantage into a closed-form direct effect and a fictitious-sample indirect effect. The indirect effect is the non-trivial piece and requires the fictitious-sampling ma-chinery. To test whether it is doing work, we compare CAPO against CAPO-Direct , an ablation that retains the closed-form direct-effect exp-update but drops the indirect effect. CAPO-Direct is not a straw-man construction: in the simultaneous-execution limit where the joint policy factorizes, the indirect effect vanishes identically and SeqAU reduces to Wolpert-Tumer’s AU applied pointwise at each prefix. CAPO-Direct computes exactly this per-prefix AU, which is also the single-agent target that DOP [Wang et al., 2021] obtains in the simultaneous-execution setting via critic-side cancella-tion. Figure 3 sweeps ρ ∈ { 0, 5, 10 , 20 } across K ∈ { 2, 4, 8} and λint ∈ { 0, 0.25 , 0.5, 0.75 , 1.0}
+
+(regret trajectories per λint in Appendix G). At ρ = 0 the downstream coupling vanishes and CAPO-Direct matches or slightly outperforms CAPO, consistent with the factored-policy limit of Theorem 1: the indirect-effect Monte Carlo adds variance without signal when there is no signal to capture. As ρ grows the indirect effect becomes the dominant part of the per-agent advantage; CAPO pulls ahead cleanly by ρ = 10 and the gap widens further at ρ = 20 , across all K and all 
+
+λint . The indirect-effect correction is dead weight when non-stationarity is absent and becomes the load-bearing component of CAPO when it is present. 90 5 10 15 20                                                                  
+
+> 0.3
+> 0.4
+> 0.5
+> K = 2
+> AUC regret
+> = 0.0
+> CAPO (T=25)
+> CAPO-Direct (T=25)
+> 0510 15 20
+> = 0.25
+> 0510 15 20
+> = 0.5
+> 0510 15 20
+> = 0.75
+> 0510 15 20
+> = 1.0
+> 0510 15 20
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> K = 4
+> AUC regret
+> 0510 15 20 0510 15 20 0510 15 20 0510 15 20
+> 0510 15 20
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> 0.8
+> K = 8
+> AUC regret
+> 0510 15 20 0510 15 20 0510 15 20 0510 15 20
+> CAPO vs CAPO-Direct AUC vs (Case B: fict is free, Mfict =64, SEEDS=300)
+
+Figure 3: CAPO (orange) versus the direct-effect-only ablation CAPO-Direct (green): AUC regret as a function of the non-stationarity parameter ρ, across team sizes K ∈ { 2, 4, 8} (rows) and interaction strengths λint ∈ { 0, 0.25 , 0.5, 0.75 , 1.0} (columns). Each point averages over 300 seeds; error bars are standard errors. CAPO-Direct is at least as good at ρ = 0 ; CAPO pulls ahead cleanly by ρ = 10 
+
+and widens further at ρ = 20 .
+
+7 Related Work 
+
+Cooperative MARL credit assignment. The opacity-learnability framing that motivates SeqAU originates with Wolpert and Tumer [2002]. COMA [Foerster et al., 2018] operationalized the AU counterfactual through a centralized critic at O(|A| K ) marginalization cost. Closer in spirit, Dr.Reinforce [Castellini et al., 2025] combines policy gradients with aristocrat-utility difference re-wards computed from the environment reward, but targets simultaneous-execution Dec-POMDPs and has no analog for the indirect effect that arises only under sequential execution. In the factored-policy limit, CAPO’s direct effect reduces to Dr.Reinforce’s aristocrat utility under additive re-wards. Additive or factored team-reward decomposition in cooperative multi-agent RL dates back to Guestrin et al. [2002] and Kok and Vlassis [2006]; the decomposed-critic family moves this prin-ciple from the reward to the value function, with DOP [Wang et al., 2021] assuming an additively factored Q and VDN [Sunehag et al., 2018], QMIX [Rashid et al., 2018], FACMAC [Peng et al., 2021], and DAE [Li et al., 2022] using related value-side factorizations. All assume simultaneous 
+
+decentralized execution in Dec-POMDPs, with no mechanism for one agent’s action to enter an-other agent’s input, so the indirect effect that characterizes the sequential setting is identically zero by construction. CAPO inherits this additive-reward decomposition principle but applies it to the reward rather than the value function, identifying per-agent components by closed-form regression rather than by gradient-based critic learning. 
+
+Sequential cooperative credit assignment. The sequential prior work is comparatively sparse. HAPPO [Kuba et al., 2022] performs sequential per-agent updates with a cumulative importance-sampling prefix, paying the exponential-in-k variance cost analyzed in Section 5; HA-GRPO is its critic-free GRPO variant. SeCA [Zang et al., 2023] imposes a virtual agent ordering and learns a counterfactual centralized Q-critic conditional on the prefix of preceding agents’ actions, but the ordering is virtual (execution remains simultaneous and downstream agents do not actually condi-tion on upstream actions), and the centralized Q enumerates discrete actions, intractable for LLM token sequences. Seq-MADAC [Lu et al., 2025] uses a HAPPO-style sequential decomposition for hyperparameter configuration without a counterfactual baseline. Most relevant conceptually is Tri-antafyllou et al. [2025], who formalize the decomposition of the total counterfactual effect of an agent’s action in sequential multi-agent MDPs into an agent-specific effect (propagating through subsequent agents’ actions, analogous to CAPO’s indirect effect) and a state-specific effect (prop-agating through state transitions). Their estimator is a Shapley-value post-hoc attribution; CAPO 10 turns the same direct-versus-indirect decomposition into a tractable policy-gradient estimator un-der the additive-reward assumption. Our work uses learnability maximization baseline which is in contrast with the optimal variance-reduction baseline [Kuba et al., 2021] for multi-agent settings. 
+
+Critic-free policy gradients for multi-agent LLMs. A recent line adapts GRPO [DeepSeek-AI, 2025]’s critic-free within-group baseline to multi-agent LLM pipelines, with two families. Shared-baseline methods (MA-GRPO [Liu et al., 2025], AT-GRPO [Zhao et al., 2025], M-GRPO [Hong et al., 2025]) assign every agent the same trajectory or hierarchy-level advantage; HA-GRPO adds HAPPO’s cumulative importance-sampling prefix to correct sequential-update drift. Counterfactual methods estimate per-agent credit by intervening on upstream actions and observing downstream outputs. The two closest concurrent comparisons are C3 [Chen et al., 2026], which replays the downstream pipeline at alternative focal actions and reads actual environment rewards via a leave-one-out baseline (capturing the fixed-prefix counterfactual, but freezing downstream continuations to the rollout-collection distribution rather than the current joint policy, and paying one full re-ward evaluation per replay), and CCPO [Li et al., 2026b], which estimates counterfactual credit via topology-specific shortcuts (for example, “removing” the reasoner in a reasoner–solver pipeline by resampling the solver from the empty prompt); these shortcuts are tightly tied to the pipeline struc-ture and do not extend to general sequential chains. Shapley-style alternatives such as SHARP [Li et al., 2026a] and Lazy Agents [Zhang et al., 2025] use multi-step causal attribution at correspond-ingly higher per-step cost; single-agent hindsight-credit work [Tan et al., 2026] is in the same wave but a different setting. CAPO’s distinguishing combination against this line is critic-free, reward-side (closed-form ridge regression rather than learned Q or environment replay), uses current-policy fictitious continuations (rather than frozen-prefix replay), and is generic across sequential chains (no topology assumption beyond fixed execution order). 
+
+8 Conclusion 
+
+We have presented CAPO, a critic-free per-agent policy gradient for cooperative multi-agent teams under sequential execution. On the theoretical side, we extended the opacity-learnability frame-work of Wolpert and Tumer [2002] to the sequential setting and identified the unique learnability-maximizing prefix-conditional baseline, which subtracted from the team reward gives the Sequen-tial Aristocrat Utility (SeqAU). On the algorithmic side, CAPO estimates the SeqAU advantage in closed form through an additive reward decomposition, an upstream-cancellation identity, and fic-titious sampling for the indirect effect. The resulting estimator admits analytic bias and variance bounds, which we validate on a controlled sequential-bandit testbed. Several directions remain open. The additivity assumption is exact when rewards separate across agents and gracefully lossy otherwise; heavily interaction-dependent rewards are a regime where a richer estimator may be preferable. Extension beyond one-step bandits to full sequential MDPs, and end-to-end evaluation on multi-LLM pipelines, are natural follow-ups. 
+
+References 
+
+Jacopo Castellini, Sam Devlin, Frans A Oliehoek, and Rahul Savani. Difference rewards policy gradients. Neural Computing and Applications , 37(19):13163–13186, 2025. Yanjun Chen, Yirong Sun, Hanlin Wang, Xinming Zhang, Xiaoyu Shen, Wenjie Li, and Wei Zhang. Contextual counterfactual credit assignment for multi-agent reinforcement learning in LLM col-laboration, 2026. DeepSeek-AI. DeepSeek-R1: Incentivizing reasoning capability in LLMs via reinforcement learn-ing, 2025. Jakob N. Foerster, Gregory Farquhar, Triantafyllos Afouras, Nantas Nardelli, and Shimon Whiteson. Counterfactual multi-agent policy gradients. In Proceedings of the AAAI Conference on Artificial Intelligence , pages 2974–2982, 2018. doi: 10.1609/aaai.v32i1.11794. Carlos Guestrin, Michail G. Lagoudakis, and Ronald Parr. Coordinated reinforcement learning. In Proceedings of the Nineteenth International Conference on Machine Learning (ICML) , pages 227–234. Morgan Kaufmann, 2002. 11 Haoyang Hong, Jiajun Yin, Yuan Wang, Jingnan Liu, Zhe Chen, Ailing Yu, Ji Li, Zhiling Ye, Han-song Xiao, Yefei Chen, Hualei Zhou, Yun Yue, Minghui Yang, Chunxiao Guo, Junwei Liu, Peng Wei, and Jinjie Gu. Multi-agent deep research: Training multi-agent systems with M-GRPO, 2025. Jelle R. Kok and Nikos Vlassis. Collaborative multiagent reinforcement learning by payoff propa-gation. Journal of Machine Learning Research , 7(65):1789–1828, 2006. URL http://jmlr. org/papers/v7/kok06a.html .Jakub Grudzien Kuba, Muning Wen, Linghui Meng, Shangding Gu, Haifeng Zhang, David Henry Mguni, Jun Wang, and Yaodong Yang. Settling the variance of multi-agent policy gradients. In 
+
+Advances in Neural Information Processing Systems 34 (NeurIPS 2021) , pages 13458–13470, 2021. Jakub Grudzien Kuba, Ruiqing Chen, Muning Wen, Ying Wen, Fanglei Sun, Jun Wang, and Yaodong Yang. Trust region policy optimisation in multi-agent reinforcement learning. In International Conference on Learning Representations (ICLR) , 2022. URL https://openreview.net/ forum?id=EcGGFkNTxdJ .Tor Lattimore and Csaba Szepesv´ ari. Bandit algorithms . Cambridge University Press, 2020. Yanming Li, Xuelin Zhang, WenJie Lu, Ziye Tang, Maodong Wu, Haotian Luo, Tongtong Wu, Zijie Peng, Hongze Mi, Yibo Feng, Naiqiang Tan, Chao Huang, Hong Chen, and Li Shen. Who deserves the reward? SHARP: Shapley credit-based optimization for multi-agent system, 2026a. Yueheng Li, Guangming Xie, and Zongqing Lu. Difference advantage estimation for multi-agent policy gradients. In Proceedings of the 39th International Conference on Machine Learning (ICML) , volume 162 of Proceedings of Machine Learning Research , pages 13066–13085, 2022. URL https://proceedings.mlr.press/v162/li22w.html .Zhongyi Li, Wan Tian, Yikun Ban, Jinju Chen, Huiming Zhang, Yang Liu, and Fuzhen Zhuang. Counterfactual credit policy optimization for multi-agent collaboration. arXiv preprint arXiv:2603.21563 , 2026b. Shuo Liu, Tianle Chen, Zeyu Liang, Xueguang Lyu, and Christopher Amato. LLM collaboration with multi-agent reinforcement learning, 2025. Chen Lu, Ke Xue, Lei Yuan, Yao Wang, Yaoyuan Wang, Sheng Fu, and Chao Qian. Sequential multi-agent dynamic algorithm configuration. In Advances in Neural Information Processing Systems 38 (NeurIPS 2025) , 2025. Bei Peng, Tabish Rashid, Christian Schroeder de Witt, Pierre-Alexandre Kamienny, Philip H. S. Torr, Wendelin B¨ ohmer, and Shimon Whiteson. FACMAC: Factored multi-agent centralised pol-icy gradients. In Advances in Neural Information Processing Systems 34 (NeurIPS 2021) , pages 12208–12221, 2021. Tabish Rashid, Mikayel Samvelyan, Christian Schr¨ oder de Witt, Gregory Farquhar, Jakob N. Foer-ster, and Shimon Whiteson. QMIX: Monotonic value function factorisation for deep multi-agent reinforcement learning. In Proceedings of the 35th International Conference on Machine Learn-ing (ICML) , volume 80 of Proceedings of Machine Learning Research , pages 4292–4301, 2018. URL http://proceedings.mlr.press/v80/rashid18a.html .John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. Proximal policy optimization algorithms, 2017. Peter Sunehag, Guy Lever, Audrunas Gruslys, Wojciech Marian Czarnecki, Vin´ ıcius Flores Zam-baldi, Max Jaderberg, Marc Lanctot, Nicolas Sonnerat, Joel Z. Leibo, Karl Tuyls, and Thore Graepel. Value-decomposition networks for cooperative multi-agent learning based on team re-ward. In Proceedings of the 17th International Conference on Autonomous Agents and Multiagent Systems (AAMAS) , pages 2085–2087, 2018. Adith Swaminathan, Akshay Krishnamurthy, Alekh Agarwal, Miroslav Dud´ ık, John Langford, Damien Jose, and Imed Zitouni. Off-policy evaluation for slate recommendation. In Advances in Neural Information Processing Systems 30 (NIPS 2017) , pages 3632–3642, 2017. 12 Hui-Ze Tan, Xiao-Wen Yang, Hao Chen, Jie-Jing Shao, Yi Wen, Yuteng Shen, Weihong Luo, Xiku Du, Lan-Zhe Guo, and Yu-Feng Li. Hindsight credit assignment for long-horizon LLM agents, 2026. Stelios Triantafyllou, Aleksa Sukovic, Yasaman Zolfimoselo, and Goran Radanovic. Counterfactual effect decomposition in multi-agent sequential decision making. In Proceedings of the 42nd International Conference on Machine Learning (ICML) , volume 267 of Proceedings of Machine Learning Research , pages 60072–60098, 2025. Nikos Vlassis. A Concise Introduction to Multiagent Systems and Distributed Artificial Intelligence .Morgan and Claypool Publishers, 1st edition, 2007. ISBN 1598295268. Yihan Wang, Beining Han, Tonghan Wang, Heng Dong, and Chongjie Zhang. DOP: Off-policy multi-agent decomposed policy gradients. In International Conference on Learning Representa-tions (ICLR) , 2021. URL https://openreview.net/forum?id=6FqKiVAdI3Y .David H. Wolpert and Kagan Tumer. Optimal payoff functions for members of collectives. Advances in Complex Systems , 4(2–3):265–279, 2002. Yifan Zang, Jinmin He, Kai Li, Haobo Fu, Qiang Fu, and Junliang Xing. Sequential cooperative multi-agent reinforcement learning. In Proceedings of the 22nd International Conference on Autonomous Agents and Multiagent Systems (AAMAS) , pages 485–493, 2023. Kaiqing Zhang, Zhuoran Yang, and Tamer Bas ¸ar. Multi-agent reinforcement learning: A selective overview of theories and algorithms. In Kyriakos G. Vamvoudakis, Yan Wan, Frank L. Lewis, and Derya Cansever, editors, Handbook of Reinforcement Learning and Control , volume 325 of Studies in Systems, Decision and Control , pages 321–384. Springer, 2021. doi: 10.1007/ 978-3-030-60990-0 12. Zhiwei Zhang, Xiaomin Li, Yudi Lin, Hui Liu, Ramraj Chandradevan, Linlin Wu, Minhua Lin, Fali Wang, Xianfeng Tang, Qi He, and Suhang Wang. Unlocking the power of multi-agent LLM for reasoning: From lazy agents to deliberation, 2025. Yujie Zhao, Lanxiang Hu, Yang Wang, Minmin Hou, Hao Zhang, Ke Ding, and Jishen Zhao. Stronger-MAS: Multi-agent reinforcement learning for collaborative LLMs, 2025. 13 A Sequential learnability: factoredness and optimality 
+
+This appendix gives the formal treatment deferred from Section 3. Appendix A.1 defines factored-ness; Appendix A.2 shows that sequential difference utilities form a factored class; Appendix A.3 proves Theorem 1. 
+
+A.1 Factoredness Definition 5 (Factoredness) . A per-agent utility gk is factored with respect to the team reward R if, for all a1
+
+> k
+
+, a 2 
+
+> k
+
+∈ A k and all prefixes a<k ,
+
+sgn ¯gk(a1
+
+> k
+
+; a<k ) − ¯gk(a2
+
+> k
+
+; a<k ) = sgn  ¯Rk(a1
+
+> k
+
+; a<k ) − ¯Rk(a2
+
+> k
+
+; a<k ),
+
+where ¯Uk(ak; a<k ) = Ea>k ∼π>k (·| a≤k )[U (a)] denotes the suffix-averaged form of any utility U .
+
+Factoredness aligns per-agent utility with team reward: every move that improves the suffix-averaged gk at agent k also improves the suffix-averaged team reward, and conversely. A utility satisfying factoredness is therefore a valid target for agent k to optimize in place of R.
+
+A.2 Sequential difference utilities are factored Proposition 6. For any function D : Q 
+
+> j<k
+
+Aj → R, the utility gk(a) = R(a) − D(a<k ) satisfies the factoredness condition of Definition 5. Proof. The suffix-averaged form is ¯gk(ak; a<k ) = ¯Rk(ak; a<k ) − D(a<k ). Since D(a<k ) does not depend on ak, it cancels in the difference ¯gk(a1
+
+> k
+
+; a<k )−¯gk(a2
+
+> k
+
+; a<k ) = ¯Rk(a1
+
+> k
+
+; a<k )− ¯Rk(a2
+
+> k
+
+; a<k ),and the signs coincide. Proposition 6 justifies restricting the SeqAU search to sequential difference utilities: every such utility is a valid optimization target, so the question Theorem 1 answers is which baseline D within this class maximizes learnability. 
+
+A.3 Proof of Theorem 1 
+
+We substitute the utility gk(a) = R(a) − D(a<k ) into the sequential learnability expression (1) and minimize the denominator while showing the numerator is independent of D.
+
+Numerator. For any ak,
+
+¯gk(ak; a<k ) = Ea>k ∼π>k (·| a≤k )
+
+R(a) − D(a<k ) = ¯Rk(ak; a<k ) − D(a<k ).
+
+Since D(a<k ) does not depend on ak, it cancels in the difference ¯gk(a1
+
+> k
+
+; a<k ) − ¯gk(a2
+
+> k
+
+; a<k ) = ¯Rk(a1
+
+> k
+
+; a<k ) − ¯Rk(a2
+
+> k
+
+; a<k ), and the numerator of (1) is independent of D.
+
+Denominator. By the law of total variance, conditioning on a<k ,
+
+Var (a<k ,a >k )|ak [gk] = Var a<k 
+
+¯gk(ak; a<k ) + Ea<k 
+
+Var π>k |a≤k [gk].
+
+The inner variance in the second term is taken over a>k for fixed a≤k. Since D(a<k ) is constant un-der this conditioning, the second term equals Ea<k [Var π>k |a≤k [R]] and does not depend on D. Max-imizing learnability therefore reduces to minimizing the first term, Var a<k [ ¯Rk(ak; a<k ) − D(a<k )] ,which is invariant to adding an ak-independent constant to D.Taking the joint expectation Ea<k , a k ∼ρ(·| a<k ) in the denominator of the learnability expression and applying Var[ Y ] = E[Y 2] − (E[Y ]) 2, the minimization reduces to the quadratic loss 
+
+min  
+
+> D
+
+Ea<k Eak ∼ρ(·| a<k )
+
+( ¯Rk(ak; a<k ) − D(a<k )) 2.
+
+Pointwise in a<k , the minimizer of this loss is the conditional expectation of ¯Rk(ak; a<k ) under 
+
+ρ(· | a<k ),
+
+D∗(a<k ) = Eak ∼ρ(·| a<k )
+
+ ¯Rk(ak; a<k ) = Ea′      
+
+> k∼ρ(·| a<k ), a ′
+> >k ∼π>k (·| a<k ,a ′
+> k)
+
+R(a′
+
+> k
+
+, a <k , a ′
+
+> >k
+
+),
+
+which is independent of the choice of (a1
+
+> k
+
+, a 2
+
+> k
+
+) and therefore maximizes Λseq  
+
+> k
+
+at every prefix and every move pair simultaneously. This completes the proof. 14 B Derivation of the upstream-cancellation identity 
+
+We derive the direct/indirect decomposition of the CAPO advantage stated in Eq. (6). Substitute the additive model ˆf (a) = PKj=1 ˆφj (aj ) into the SeqAU counterfactual advantage ALS  
+
+> k
+
+(a≤k) = 
+
+QLS  
+
+> k
+
+(a≤k) − V LS  
+
+> k
+
+(a<k ) of (3). Expanding Qk under additivity and splitting the sum over j into upstream ( j < k ), focal ( j = k), and downstream ( j > k ): 
+
+QLS  
+
+> k
+
+(a≤k) = Eπ(k−1) 
+
+hPKj=1 ˆφj (aj ) a≤k
+
+i
+
+= X
+
+> j<k
+
+ˆφj (aj )
+
+| {z }
+
+> upstream
+
++ ˆ φk(ak) + X
+
+> j>k
+
+Eπ(k−1) 
+
+ ˆφj (aj ) | a≤k
+
+, (10) where the upstream terms exit the expectation because each ˆφj with j < k is a function of aj alone (under additivity) and therefore a deterministic function of the prefix a<k that Qk already conditions on. Similarly expanding Vk:
+
+V LS  
+
+> k
+
+(a<k ) = Eπ(k−1) 
+
+hPKj=1 ˆφj (aj ) a<k 
+
+i
+
+= X
+
+> j<k
+
+ˆφj (aj )
+
+| {z }
+
+> same upstream
+
++ Eπ(k−1) 
+
+ ˆφk(ak) | a<k 
+
+ + X
+
+> j>k
+
+Eπ(k−1) 
+
+ ˆφj (aj ) | a<k 
+
+. (11) The upstream sum P 
+
+> j<k
+
+ˆφj (aj ) is identical in Eqs. (10) and (11): both conditional expectations are taken under the same joint policy π(k−1) and both condition on the same prefix a<k ; the upstream terms depend only on a<k and are therefore deterministic constants under both conditionings. Sub-tracting (11) from (10), the upstream contributions cancel identically, yielding 
+
+ALS  
+
+> k
+
+(a≤k) = ˆφk(ak) − Eπ(k−1) [ ˆ φk(ak) | a<k ]
+
+| {z }
+
+> Dk
+
++ X
+
+> j>k
+
+
+
+Eπ(k−1) [ ˆ φj (aj ) | a≤k] − Eπ(k−1) [ ˆ φj (aj ) | a<k ]
+
+| {z }
+
+> Ik
+
+.
+
+The conditional expectation in Dk is taken over ak alone (since ˆφk depends only on ak), and under the autoregressive factorization of π(k−1) this is the marginal expectation Ea′   
+
+> k∼πk(·| a<k )
+
+[ ˆ φk(a′
+
+> k
+
+)] ,giving the form of Eq. (6). 
+
+C Proofs of the theoretical properties (Section 5) 
+
+This appendix collects the proofs of Theorems 2, 3, and 4. 
+
+C.1 Proof of Theorem 2 (general bias bound) 
+
+Let ˆQk(a≤k) = Eπ(k−1) [ ˆf | a≤k] and ˆVk(a<k ) = Eπ(k−1) [ ˆf | a<k ], and let Qk, V k denote the corresponding quantities for the true conditional mean f . By definition, ˆALS  
+
+> k
+
+= ˆQk − ˆVk and 
+
+Ak = Qk − Vk, so 
+
+∆k(a≤k) =   ˆQk(a≤k) − Qk(a≤k) −   ˆVk(a<k ) − Vk(a<k ).
+
+Using linearity of expectation and ˆf − f = ε,
+
+ˆQk(a≤k) − Qk(a≤k) = Eπ>k |a≤k
+
+ε(a), ˆVk(a<k ) − Vk(a<k ) = Eπ≥k |a<k 
+
+ε(a).
+
+Expanding the Vk-residual by conditioning on ak,
+
+Eπ≥k |a<k [ε] = Eak ∼πk
+
+Eπ>k |a≤k [ε],
+
+15 so 
+
+∆k(a≤k) = Eπ>k |a≤k [ε] − Ea′      
+
+> k∼πk, a ′
+> >k ∼π>k (·| a<k ,a ′
+> k)
+
+[ε].
+
+Write this as a difference of conditional expectations of a single random quantity, ε(a), under two different distributions over (ak, a >k ): one fixes ak at its observed value and averages a>k under 
+
+π>k (· | a≤k); the other averages ak under πk(· | a<k ) and, conditional on ak, a>k under π>k (· | 
+
+a<k , a k). Decomposing by the tower property, 
+
+∆k(a≤k) = Ea′ 
+
+> k∼πk
+
+h
+
+Eπ>k |a≤k [ε(a<k , a k, a >k )] − Eπ>k |a<k ,a ′ 
+
+> k
+
+[ε(a<k , a ′
+
+> k
+
+, a ′
+
+> >k
+
+)] 
+
+i
+
+.
+
+Adding and subtracting Eπ>k |a<k ,a ′ 
+
+> k
+
+[ε(a<k , a k, a >k )] inside the bracket splits the integrand into two channels. The first channel, 
+
+Eπ>k |a≤k [ε(a<k , a k, a >k )] − Eπ>k |a<k ,a ′ 
+
+> k
+
+[ε(a<k , a k, a >k )] ,
+
+captures how the downstream-conditioning distribution changes with the focal action; it is bounded by ∥ε∥∞ · ∥ π>k (· | a<k , a k) − π>k (· | a<k , a ′
+
+> k
+
+)∥1. The second channel, 
+
+Eπ>k |a<k ,a ′ 
+
+> k
+
+[ε(a<k , a k, a >k ) − ε(a<k , a ′
+
+> k
+
+, a >k )] ,
+
+captures the sensitivity of the residual to the focal action; it is bounded in absolute value by 
+
+δεk(a−k) = max ak ,a ′ 
+
+> k
+
+|ε(a<k , a k, a >k ) − ε(a<k , a ′
+
+> k
+
+, a >k )|. Taking absolute values and the πk ex-pectation, 
+
+|∆k(a≤k)| ≤ Eπ≥k |a<k [δεk(a−k)] + ∥ε∥∞ · max  
+
+> ak,a ′
+> k
+
+∥π>k (· | a<k , a k) − π>k (· | a<k , a ′
+
+> k
+
+)∥1,
+
+which is the statement of Theorem 2. 
+
+C.2 Specialization under factored policies 
+
+Under a factored joint policy π(a) = Q 
+
+> k
+
+πk(ak), the downstream conditional distribution is inde-pendent of the focal action: π>k (· | a<k , a k) = π>k (· | a<k ) = Q 
+
+> j>k
+
+πj (·). Hence the second channel of the bound in Theorem 2 vanishes identically. From the first channel, using the factored structure, 
+
+Eπ≥k |a<k [δεk(a−k)] = Eaj ∼πj , j ̸ =k
+
+δεk(a−k).
+
+The residual ε(a) = ˆf (a) − f (a) is computed from ˆφ fit on μ-rollouts, and the advantage we want is under π-rollouts. When μj̸ = πj , the ridge-fit ˆf differs between the two measures only through the Gram matrix; under factored rollouts the mismatch propagates as 
+
+Eπ−k [ε(a<k , a k, a >k )] − Eμ−k [ε(a<k , a k, a >k )] ≤ ∥ ε∥∞ · X 
+
+> j̸=k
+
+∥πj − μj ∥1.
+
+This is the standard bound for changing measures under a bounded integrand. Substituting and applying the triangle inequality, 
+
+|∆k(ak)| ≤ 2∥ε∥∞ · X 
+
+> j̸=k
+
+∥πj − μj ∥1 ≤ 2( K − 1) ¯δ∥ε∥∞,
+
+using ¯δ = max j ∥πj −μj ∥1, which is the specialization claimed in the second half of Theorem 2. 
+
+C.3 Proof of Theorem 3 (advantage variance) 
+
+Under the additive reward f (a) = P 
+
+> k
+
+φ∗
+
+> k
+
+(ak), the ridge-regression solution can be written as 
+
+ˆφ = ( λI + Ψ ⊤Ψ) −1Ψ⊤r. 
+
+We work at the population level, replacing the sample Gram matrix Ψ⊤Ψ by N G μ; the fluctua-tions of Ψ⊤Ψ around N G μ contribute an O(1 /√N ) correction that does not affect the K-scaling statement. At the population level, write r = Ψ φ∗ + η where η ∈ RN has i.i.d. entries with E[ηi | Ψ] = 0 and 
+
+Var( ηi) ≤ R2max (the additive assumption makes Ψφ∗ the exact conditional mean). Then 
+
+ˆφ − φ∗ = ( λI + N G μ)−1 Ψ⊤η − λφ ∗,
+
+16 and the ridge bias term vanishes in the full-coverage regime relative to the variance. For the variance contribution, 
+
+Cov( ˆ φ) ⪯ (λI + N G μ)−1 E[Ψ ⊤ηη ⊤Ψ] ( λI + N G μ)−1 ⪯ R2max 
+
+λ + N κ μ
+
+I, 
+
+where we used E[Ψ ⊤ηη ⊤Ψ] ⪯ R2max · Ψ⊤Ψ (by the variance bound on η) and (λI + N G μ)−1 ⪯
+
+(λ + N κ μ)−1I.The direct-effect component Dk(a≤k) = ˆ φk(ak)−Eπk (·| a<k )[ ˆ φk] is a linear functional w⊤ 
+
+> D
+
+ˆφ whose coefficient vector wD has one indicator entry of weight 1 for ˆφk(ak) and a probability vector of ℓ2
+
+norm at most 1 on the marginal expectation, so ∥wD ∥22 ≤ 2. Hence 
+
+Var  Dk(a≤k) = w⊤ 
+
+> D
+
+Cov( ˆ φ)wD ≤ ∥ wD ∥22 · R2max 
+
+λ + N κ μ
+
+≤ 2R2max 
+
+λ + N κ μ
+
+,
+
+independent of K. For the full advantage ˆALS  
+
+> k
+
+= Dk + Ik under exact indirect-effect evaluation, the indirect effect adds further coordinates to the linear functional. For each j > k , the coefficient on ˆφj (aj ) is Pπ>k (aj | a≤k) − Pπ>k (aj | a<k ), whose squared sum over aj is bounded by ∥P (· | 
+
+a≤k) − P (· | a<k )∥1 · ∥ P (· | a≤k) − P (· | a<k )∥∞ ≤ 2. Summing over j > k contributes at most 
+
+2( K −k) to ∥w∥22, giving the worst-case bound Var( ˆALS  
+
+> k
+
+) ≤ (2+2( K −k)) R2max /(λ+N κ μ). In the factored-policy limit, the indirect-effect coefficients all vanish and the K-independent direct-effect bound applies to the full advantage. 
+
+C.4 Proof of Theorem 4 (gradient MSE) 
+
+Let g∗ 
+
+> k
+
+= Eπ(k−1) [Ak sk] be the true gradient and ˆgk = 1
+
+> L
+
+P 
+
+> ℓ
+
+ˆALS ,(ℓ) 
+
+> k
+
+s(ℓ) 
+
+> k
+
+the CAPO estimator. Decompose 
+
+ˆgk − g∗ 
+
+> k
+
+= 1
+
+L
+
+X
+
+> ℓ
+
+(Aksk)(ℓ) − g∗
+
+> k
+
+| {z }
+
+> Evar
+
++ 1
+
+L
+
+X
+
+> ℓ
+
+∆(ℓ) 
+
+> k
+
+s(ℓ)
+
+> k
+
+| {z }
+
+> Ebias
+
+.
+
+The first term is the standard REINFORCE estimation error of a bounded random variable and has 
+
+E∥Evar ∥2 ≤ 1
+
+L Var π(k−1) (Aksk).
+
+The second term is a sum of L i.i.d. bounded quantities; its second moment is 
+
+E∥Ebias ∥2 ≤ Eπ(k−1) [∆ 2
+
+> k
+
+∥sk∥2] ≤ B2 
+
+> k
+
+· Eπ(k−1) [∥sk∥2],
+
+using |∆k| ≤ Bk. Applying (a + b)2 ≤ 2a2 + 2 b2 to ˆgk − g∗ 
+
+> k
+
+= Evar + Ebias ,
+
+E∥ˆgk − g∗
+
+> k
+
+∥2 ≤ 2
+
+L Var π(k−1) (Aksk) + 2 B2 
+
+> k
+
+· Eπ(k−1) [∥sk∥2],
+
+which is the bound of Theorem 4. Crucially, the fictitious rollouts are drawn from π(k−1) directly rather than reweighted from μ, so no cumulative importance-sampling prefix enters either term. 
+
+D Per-agent advantage MSE at K = 16 
+
+Figure 4 breaks the K = 16 result of Section 6.1 down by agent index. CAPO’s MSE is essen-tially flat across agents, consistent with the K- and position-independence of Theorem 3. HA-GRPO grows with agent index as the cumulative importance-sampling prefix accumulates noise at downstream agents. MA-GRPO is flat at a high level (shared-baseline variance does not depend on position). C3 is comparable to CAPO on average but with markedly higher variance across agent positions due to prefix-filtering effective-sample-size loss. 17 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15  
+
+> Agent index
+> 10 1
+> 10 0
+> 10 1
+> Advantage MSE
+> Per-agent advantage estimation quality (K=16)
+> CAPO
+> C3
+> MA-GRPO
+> HA-GRPO
+
+Figure 4: Per-agent advantage MSE at K = 16 , broken down by agent index. 
+
+E Non-stationarity parametrization in the optimization experiment 
+
+The non-stationarity parameter ρ used in Section 6.3 controls how strongly each agent’s conditional policy depends on its upstream action, which in turn determines the severity of the distribution shift over downstream behavior when an upstream agent’s policy is updated. Concretely, the initial joint policy is drawn as follows. For each agent k ≥ 1 and each upstream-action value c ∈ A k−1, we first sample a base conditional distribution πbase  
+
+> k
+
+(· | c) ∼ Dirichlet( 1) over Ak, and then concentrate it toward the diagonal by the exponential tilt 
+
+πk(a | c) ∝ πbase  
+
+> k
+
+(a | c) · exp  ρ · 1[a = c]. (12) At ρ = 0 the tilt is trivial and πk(· | c) = πbase  
+
+> k
+
+(· | c), which is approximately uniform. As ρ
+
+grows, mass concentrates on the action a = c, so agent k’s behavior becomes increasingly dictated by agent k − 1’s action. This does not change what optima the team reward admits— φk and gkℓ are drawn independently of ρ—but it determines how much the distribution over downstream behavior shifts when an upstream agent’s policy is updated during training. Agent 0, which has no upstream conditioning variable, is drawn uniformly from the simplex regardless of ρ. Across the three values 
+
+ρ ∈ { 0, 1, 2} that we sweep in Section 6.3, and the four values ρ ∈ { 0, 5, 10 , 20 } swept in the direct-effect ablation of Section 6.4, the diagonal mass of the initial conditional policies increases from near 1/|A| (near-uniform) to near 1 (near-deterministic), spanning the range from mild to severe sequential-update non-stationarity. 
+
+F Per-cell AUC and regret trajectories for the optimization experiment 
+
+Figure 5 shows the full per-cell AUC breakdown corresponding to Table 1 in Section 6.3: normalized regret AUC as a function of λint for each (K, ρ ) combination. Figure 6 shows the raw per-iteration regret trajectories for the same sweep. Both views are consistent with the summary table: MA-GRPO is competitive with CAPO at small K, CAPO pulls ahead for K ≥ 6, and HA-GRPO degrades rapidly with K.
+
+G Regret trajectories for the direct-effect ablation 
+
+Figures 7–11 show regret as a function of cumulative real environment calls for CAPO versus CAPO-Direct, one figure per value of the interaction strength λint ∈ { 0, 0.25 , 0.5, 0.75 , 1.0}. Each figure is a K × ρ grid with rows K ∈ { 2, 4, 8} and columns ρ ∈ { 0, 5, 10 , 20 }; curves average over 300 seeds with shaded standard errors. The qualitative picture matches the AUC summary of Figure 3: CAPO-Direct is at least as good at ρ = 0 , and CAPO pulls ahead cleanly as ρ grows. 
+
+H Hyperparameters and experimental protocol 
+
+Table 2 collects the hyperparameter values used in each experiment. Across all experiments, agents have action sets of size A = 4 , the policy-gradient step size is η = 0 .3, team rewards have ob-servation noise σ = 0 .5, and per-agent ground-truth advantages are computed by exact marginal-ization. The CAPO implementation differs by experiment as noted: the MSE diagnostics of Sec-tions 6.1–6.2 use the closed-form ridge solver of (5), so the experiments test Theorem 3 directly; 18 the optimization experiments of Sections 6.3–6.4 use per-agent fictitious-sample averaging (CAPO-Direct’s ˆφ component is the closed-form ridge solver). The optimization comparisons match real-environment interactions across methods: each method’s outer-iteration count Tm is set so that 
+
+Tm × (per-iteration real-env cost ) is constant across methods, anchored to Tc3 = 25 for the CAPO-vs-baselines comparison (Section 6.3) and to CAPO-Direct with Tanchor = 25 for the ablation (Section 6.4). C3’s O(K2) per-iteration replay cost therefore reduces its effective T relative to MA-GRPO, HA-GRPO, and CAPO. The paper-faithful CAPO evaluates ˆf (a table lookup of the ridge-fit 
+
+ˆφ) on fictitious continuations; these cost only policy forward passes and no real-environment evalu-ations. Table 2: Hyperparameters per experiment.                                                          
+
+> Sec. 6.1–6.2 Sec. 6.3 Sec. 6.4 CAPO estimator ridge fict.-sample fict.-sample Ridge λ10 −310 −110 −1
+> Fict. samples L—64 64 Rollouts Nper iter 16 32 32 Seeds 30 300 300 Team sizes K{2,4,8,16 }{2,4,6,8,10 }{2,4,8}
+> λint values 0 (§6.1) / 0–1 (§6.2) 0–1 0–1
+> ρvalues N/A {0,1,2}{0,5,10 ,20 }
+> HA-GRPO IS clip 55—C3 replay count Mc3 22—Iteration budget single pass real-env-matched real-env-matched
+
+19 0.0 0.2 0.4 0.6 0.8 1.0 
+
+0.05 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+0.30 
+
+0.35 
+
+> K = 10
+> AUC
+
+= 0.0 
+
+> CAPO (T=300)
+> C3 (T=25)
+> MA-GRPO (T=300)
+> HA-GRPO (T=300)
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+= 1 
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+= 2 
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+0.05 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+0.30 
+
+> K = 8
+> AUC
+
+0.0 0.2 0.4 0.6 0.8 1.0 0.0 0.2 0.4 0.6 0.8 1.0 
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+0.30 
+
+> K = 6
+> AUC
+
+0.0 0.2 0.4 0.6 0.8 1.0 0.0 0.2 0.4 0.6 0.8 1.0 
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+> K = 4
+> AUC
+
+0.0 0.2 0.4 0.6 0.8 1.0 0.0 0.2 0.4 0.6 0.8 1.0 
+
+0.0 0.2 0.4 0.6 0.8 1.0 
+
+0.10 
+
+0.15 
+
+0.20 
+
+0.25 
+
+> K = 2
+> AUC
+
+0.0 0.2 0.4 0.6 0.8 1.0 0.0 0.2 0.4 0.6 0.8 1.0 
+
+Case B: fict is free Mfict =64, Mc3=2, SEEDS=300 Figure 5: Per-cell normalized regret AUC as a function of interaction strength λint , across team sizes 
+
+K ∈ { 2, 4, 6, 8, 10 } (rows) and non-stationarity levels ρ ∈ { 0, 1, 2} (columns). Each curve averages over 300 seeds; bars show standard errors. 20 0 50 100 150 200 250 300 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> K = 10
+> regret
+
+= 0.0 
+
+> CAPO (T=300)
+> C3 (T=25)
+> MA-GRPO (T=300)
+> HA-GRPO (T=300)
+
+0 50 100 150 200 250 300 
+
+= 1 
+
+0 50 100 150 200 250 300 
+
+= 2 
+
+0 50 100 150 200 250 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> K = 8
+> regret
+
+0 50 100 150 200 250 0 50 100 150 200 250 
+
+0 50 100 150 200 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> K = 6
+> regret
+
+0 50 100 150 200 0 50 100 150 200 
+
+0 25 50 75 100 125 150 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> K = 4
+> regret
+
+0 25 50 75 100 125 150 0 25 50 75 100 125 150 
+
+0 20 40 60 80 100 
+
+policy iteration 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> K = 2
+> regret
+
+0 20 40 60 80 100 
+
+policy iteration 
+
+0 20 40 60 80 100 
+
+policy iteration 
+
+Case B: fict is free regret vs policy iterations Mfict =64, Mc3=2, SEEDS=300 Figure 6: Normalized regret as a function of policy iteration, across team sizes K ∈ { 2, 4, 6, 8, 10 }
+
+(rows) and non-stationarity levels ρ ∈ { 0, 1, 2} (columns). Each curve averages over 300 seeds and the five values of λint ; shaded regions show standard errors. CAPO, MA-GRPO, and HA-GRPO run for T = 25( K + 2) iterations; C3 runs for T = 25 iterations. 21 10 2 10 3
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> K = 2
+> regret
+
+= 0.0 
+
+> CAPO
+> CAPO-Direct
+
+10 2 10 3
+
+= 5 
+
+10 2 10 3
+
+= 10 
+
+10 2 10 3
+
+= 20 
+
+10 3
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> K = 4
+> regret
+
+10 3 10 3 10 3
+
+10 3
+
+cum. real-env calls 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> K = 8
+> regret
+
+10 3
+
+cum. real-env calls 
+
+10 3
+
+cum. real-env calls 
+
+10 3
+
+cum. real-env calls 
+
+Regret vs real-env calls = 0.0 (Case B, Mfict =64, SEEDS=300) Figure 7: Regret versus cumulative real-environment calls for CAPO (orange) and CAPO-Direct (green) at λint = 0 (purely additive reward). 10 2 10 3
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> K = 2
+> regret
+
+= 0.0 
+
+> CAPO
+> CAPO-Direct
+
+10 2 10 3
+
+= 5 
+
+10 2 10 3
+
+= 10 
+
+10 2 10 3
+
+= 20 
+
+10 3
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> K = 4
+> regret
+
+10 3 10 3 10 3
+
+10 3
+
+cum. real-env calls 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> K = 8
+> regret
+
+10 3
+
+cum. real-env calls 
+
+10 3
+
+cum. real-env calls 
+
+10 3
+
+cum. real-env calls 
+
+Regret vs real-env calls = 0.25 (Case B, Mfict =64, SEEDS=300) 
+
+Figure 8: Regret versus cumulative real-environment calls for CAPO (orange) and CAPO-Direct (green) at λint = 0 .25 .22 10 2 10 3
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> K = 2
+> regret
+
+= 0.0 
+
+> CAPO
+> CAPO-Direct
+
+10 2 10 3
+
+= 5 
+
+10 2 10 3
+
+= 10 
+
+10 2 10 3
+
+= 20 
+
+10 3
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> K = 4
+> regret
+
+10 3 10 3 10 3
+
+10 3
+
+cum. real-env calls 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> K = 8
+> regret
+
+10 3
+
+cum. real-env calls 
+
+10 3
+
+cum. real-env calls 
+
+10 3
+
+cum. real-env calls 
+
+Regret vs real-env calls = 0.5 (Case B, Mfict =64, SEEDS=300) Figure 9: Regret versus cumulative real-environment calls for CAPO (orange) and CAPO-Direct (green) at λint = 0 .5.10 2 10 3
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> K = 2
+> regret
+
+= 0.0 
+
+> CAPO
+> CAPO-Direct
+
+10 2 10 3
+
+= 5 
+
+10 2 10 3
+
+= 10 
+
+10 2 10 3
+
+= 20 
+
+10 3
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> K = 4
+> regret
+
+10 3 10 3 10 3
+
+10 3
+
+cum. real-env calls 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> K = 8
+> regret
+
+10 3
+
+cum. real-env calls 
+
+10 3
+
+cum. real-env calls 
+
+10 3
+
+cum. real-env calls 
+
+Regret vs real-env calls = 0.75 (Case B, Mfict =64, SEEDS=300) 
+
+Figure 10: Regret versus cumulative real-environment calls for CAPO (orange) and CAPO-Direct (green) at λint = 0 .75 .23 10 2 10 3
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> K = 2
+> regret
+
+= 0.0 
+
+> CAPO
+> CAPO-Direct
+
+10 2 10 3
+
+= 5 
+
+10 2 10 3
+
+= 10 
+
+10 2 10 3
+
+= 20 
+
+10 3
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> K = 4
+> regret
+
+10 3 10 3 10 3
+
+10 3
+
+cum. real-env calls 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> K = 8
+> regret
+
+10 3
+
+cum. real-env calls 
+
+10 3
+
+cum. real-env calls 
+
+10 3
+
+cum. real-env calls 
+
+Regret vs real-env calls = 1.0 (Case B, Mfict =64, SEEDS=300) Figure 11: Regret versus cumulative real-environment calls for CAPO (orange) and CAPO-Direct (green) at λint = 1 .0 (aggregate pairwise-interaction variance matched to additive variance). 24
