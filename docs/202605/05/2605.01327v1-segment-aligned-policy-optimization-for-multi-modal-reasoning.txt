@@ -1,0 +1,483 @@
+Title: Segment-Aligned Policy Optimization for Multi-Modal Reasoning
+
+URL Source: https://arxiv.org/pdf/2605.01327v1
+
+Published Time: Tue, 05 May 2026 00:46:23 GMT
+
+Number of Pages: 12
+
+Markdown Content:
+# Segment-Aligned Policy Optimization for Multi-Modal Reasoning 
+
+Lei Gao 1 * Zhuoming Li 2 * Mengxi Jia 3 * Jiakang Yuan 1 Hongbo Sun 3 Hao Sun 3 Xuelong Li 3
+
+# Abstract 
+
+Existing reinforcement learning approaches for Large Language Models typically perform policy optimization at the granularity of individual to-kens or entire response sequences. However, such formulations often misalign with the natural step-wise structure of reasoning processes, leading to suboptimal credit assignment and unstable train-ing in multi-modal reasoning tasks. To bridge this gap, we propose Segment-Aligned Policy Opti-mization (SAPO), a novel reinforcement learn-ing paradigm that treats coherent reasoning steps, rather than tokens or full sequences as fundamen-tal units of policy update. SAPO introduces a step-wise Markov decision process abstraction over reasoning segments, accompanied by segment-level value estimation, advantage computation, and importance sampling mechanisms that are semantically aligned with reasoning boundaries. Experiments on representative reasoning bench-marks demonstrate that SAPO consistently outper-forms token-level and sequence-level policy opti-mization methods, achieving significant accuracy improvements while exhibiting better training sta-bility and value estimation consistency. Our work underscores the importance of aligning reinforce-ment learning updates with the intrinsic structure of reasoning, paving the way for more efficient and semantically grounded policy optimization in complex reasoning tasks. Codes and models will be released to ensure full reproducibility. 
+
+# 1. Introduction 
+
+Large Language Models (LLMs) have recently exhibited im-pressive gains in complex reasoning when prompted to pro-duce Chain-of-Thought (CoT) traces, which allows LLMs to address complex tasks by generating a series of interme-diate reasoning steps. Despite this progress, the effective      
+
+> *Equal contribution 1Fudan University 2Southeast University
+> 3TeleAI. Correspondence to: Hao Sun <sun.010@163.com >,Xuelong Li <xuelong li@ieee.org >.
+> Preprint. May 5, 2026.
+
+optimization of long-form reasoning behaviors remains chal-lenging. Empirically, a model’s incorrect final predictions frequently originate from logical deviations in one or a few individual reasoning steps. However, contemporary rein-forcement learning (RL) training paradigms lack explicit modeling of reasoning step boundaries and their relative importance. Credit assignment is instead performed at the token or sequence level, which fails to reflect the step-wise structure of reasoning. For example, as shown in Fig. 1(a), classical RL methods (e.g., PPO (Schulman et al., 2017)) compute token-level advantages using generalized advantage estimation (GAE) for policy updates. In long-CoT reasoning scenarios, sparse terminal rewards must be propagated across a large number of tokens, resulting in high-variance advantage estimates. Furthermore, multiple tokens belonging to the same reason-ing step are treated independently and assigned inconsistent learning signals, resulting in gradient updates that fail to reflect the true contribution at the step level. Some tokens within an incorrect reasoning step may be assigned high advantage values, and vice versa. In addition, methods like PPO rely heavily on accurate value estimation for interme-diate states. However, the value model is often required to make predictions on intermediate tokens where reasoning is still incomplete and semantic information remains insuffi-cient. This leads to systematic bias in value estimation and further amplifies training noise. Conversely, group-based sampling methods, such as GRPO (Guo et al., 2025a), leverage relative advantages com-puted after reward evaluation by comparing samples within each group, eliminating the need for an explicit value model. These methods assign credit uniformly at the sequence level, which has been shown to reduce gradient variance. However, such uniform sequence-level credit assignment prevents the model from distinguishing the contributions of intermediate reasoning steps. For example, when a model reasons cor-rectly in most intermediate steps but produces an incorrect final answer due to a computation or formatting error in the last step, the entire reasoning trajectory is still uniformly penalized, causing many otherwise correct and valuable reasoning steps to be suppressed. As a result, existing methods lie at two extremes: overly fine-grained token-level modeling (e.g., PPO) and overly coarse 1 
+
+> arXiv:2605.01327v1 [cs.AI] 2 May 2026 Segment-Aligned Policy Optimization for Multi-Modal Reasoning
+> Figure 1. Comparison of credit assignment granularity in reinforcement learning for long-CoT. (a) Token-level methods such as PPO assign advantages independently to individual tokens, leading to noisy and inconsistent learning signals within the same reasoning step. (b) Sequence-level methods such as GRPO assign uniform credit across the entire trajectory, failing to distinguish the contributions of individual reasoning steps.
+
+sequence-level modeling (e.g., GRPO), both of which fail to align with the step-wise structure of reasoning. Several recent works (Guo et al., 2025b; Kazemnejad et al., 2025; Liu et al., 2025) have attempted to mitigate these limi-tations by introducing segment -aware heuristics or modified credit assignment schemes. However, these approaches remain fundamentally grounded in token- or sequence-level optimization, as the policy update (Guo et al., 2025b; Kazemnejad et al., 2025), value estimation (Liu et al., 2025) are still defined over individual tokens or entire sequences, rather than over coherent reasoning steps. As a result, the un-derlying mismatch between the RL optimization paradigm and the step-wise structure of reasoning persists. To address this limitation, we propose SAPO , a novel pol-icy optimization framework that treats reasoning steps as the primary units of optimization in the Markov Decision Process (MDP (Ouyang et al., 2022)). Specifically, we refor-mulate the optimization objective under a step-wise MDP perspective, where each action corresponds to generating a coherent reasoning segment. Under this formulation, we define a value function at the level of reasoning steps to capture intermediate progress, addressing the mismatch be-tween token-level value estimation and step-wise reasoning. We then compute advantages over reasoning steps, aligning learning signals with complete reasoning steps instead of in-dividual tokens. Moreover, an importance sampling scheme consistent with this step-wise formulation is introduced to normalize update scales across steps, preventing overly ag-gressive updates on long reasoning trajectories and thereby maintaining stable policy updates. To complement the proposed SAPO, we design an adaptive segmentation mechanism that can identify logical bound-aries based on high-entropy tokens during generation. Intu-itively, high-entropy tokens reflect the moments of uncer-tainty, at which the model faces multiple competing contin-uations. By dynamically partitioning the trajectory around these decision points, the adaptive segmentation mechanism can capture step boundaries even when the model does not follow predefined formatting, providing a robust interface between token generation and step-level learning. Building on the core idea of a step-wise MDP and segment-aligned reinforcement learning, we make the following con-tributions: (i) We propose Segment-Aligned Policy Opti-mization (SAPO) , a novel reinforcement learning paradigm that introduces a step-wise Markov decision process abstrac-tion over reasoning segments, accompanied by segment-level value estimation, advantage computation, and impor-tance sampling mechanisms. (ii) We introduce an entropy-based adaptive segmentation mechanism that dynami-cally identifies reasoning-step boundaries via high-entropy tokens, and provide empirical evidence supporting its ef-fectiveness compared to existing segmentation strategies. (iii) Experiments on representative reasoning benchmarks demonstrate that SAPO achieves more stable optimiza-tion and higher reasoning accuracy than token-level PPO, sequence-level GRPO, and prior segment-level methods. 
+
+# 2. Related Work 
+
+Reinforcement Learning with Verifiable Rewards in LLMs. Reinforcement learning is widely used in LLM post-training to align with human preferences and enhance their reasoning capabilities. Proximal Policy Optimiza-tion (PPO, (Schulman et al., 2017)) is widely applied in RL finetuning of LLMs. Direct Preference Optimization (DPO,(Rafailov et al., 2023)) reformulates preference align-ment as a binary cross-entropy objective, removing the need for explicit reward modeling, critics, and on-policy sam-pling during finetuning. RLOO (Ahmadian et al., 2024) and 2Segment-Aligned Policy Optimization for Multi-Modal Reasoning 
+
+GRPO (Guo et al., 2025a) eliminate PPO’s value network, using the average reward across multiple sampled responses as a policy-gradient baseline; GRPO further estimates ad-vantages by comparing each sample to its group mean re-ward. Advanced refinements such as GSPO (Zheng et al., 2025), which replaces token-level importance weighting with sequence-likelihood ratios and performs sequence-level clipping in GRPO to reduce variance and stabilize optimiza-tion for large MoE models or long responses. Single-stream Policy Optimization (SPO (Xu & Ding, 2025)) advocates a return to the single-stream framework, replacing on-the-fly group baselines with a persistent, KL-adaptive Bayesian value tracker and performing global advantage normaliza-tion across the training batch. 
+
+Value Estimation Refinement in Reinforcement Learn-ing. Value estimation is fundamental to reinforcement learning (RL) for large language models (LLMs), as it pro-vides the basis for credit assignment through the advantage function. In the context of Long Chain-of-Thought (Long-CoT), value estimation faces unique challenges such as initialization bias and reward signal decay. VC-PPO (Yuan et al., 2025) introduces Value-Pretraining to align the critic with the initial policy and Decoupled-GAE to ensure reward signals propagate across long sequences without loss, re-solving the collapse issue of PPO in long-sequence tasks. VAPO (Yue et al., 2025) proposes Length-adaptive GAE, which dynamically adjusts the GAE decay parameter based on response length to prevent bootstrapping errors from dominating long-sequence estimates. Some research has ad-dressed these inaccuracies by incorporating higher-fidelity value signals. By leveraging the deterministic nature of language environments to reset and sample auxiliary roll-outs from intermediate states, VinePPO (Kazemnejad et al., 2025) achieves precise credit assignment with unbiased Monte Carlo (MC) estimation instead of relying on a sep-arate critic model. Similarly, Direct Value Optimization (Zhang et al., 2025) shifts from relative preference labels to absolute stepwise value signals by employing a mean squared error (MSE) loss to align the policy model directly with target values derived from Monte Carlo Tree Search (MCTS) or outcome value models. Together, these methods illustrate a transition from learned, potentially biased critics toward more reliable, calibrated, or sampling-based value estimation frameworks for complex reasoning. 
+
+# 3. Preliminaries 
+
+To facilitate a clear and precise formulation of our segment-level optimization algorithm, in this section, we first intro-duce the fundamental concepts, notation, and optimization objectives of reinforcement learning (RL). Then, Proximal Policy Optimization (PPO) and its key components will be introduced. 
+
+Token-Level MDP for Language Generation. Autore-gressive language generation is typically modeled as a Markov Decision Process (MDP), defined by M =(S, A, P, r, γ ), where the decision process unfolds at the token level. Specifically, given an input prompt x, a re-sponse is generated sequentially as a sequence of tokens 
+
+y = ( y1, . . . , y T ). At time step t, the state st ∈ S consists of the prompt together with all previously generated tokens. The action at ∈ A corresponds to selecting the next token from a fixed vocabulary according to a policy πθ (at | st),where θ is the model parameters. P is a state transition function, denoting the probability of transitioning from state 
+
+st to state st+1 after taking action at. This transition is deterministic because the environment is known and the next state is uniquely determined by appending the selected token to the current context, i.e., P (st+1 | st, a t) = 1 . The reward function r(st, a t) provides a scalar feedback signal for the generation process. 
+
+Learning Objective in Policy Optimization. The objec-tive of reinforcement learning is to learn a policy πθ that maximizes the expected cumulative reward over trajectories sampled from the policy: 
+
+JP P O (θ) = Eτ ∼πθ
+
+" TX
+
+> t=0
+
+γtrt
+
+#
+
+. (1) where T is the total number of decision steps, and rt is the token-level reward calculated by the reward function. In RLVR (Anonymous, 2026), rewards are verifiable and sparse, with rt = 0 for t < T and a terminal reward deter-mined by the verifier. 
+
+Proximal Policy Optimization. PPO updates the policy by optimizing a clipped surrogate objective that constrains the magnitude of policy updates between successive itera-tions. Let πθ denote the current policy and πold the policy used to collect trajectories. The importance sampling ratio is defined as: 
+
+rt(θ) = πθ (at | st)
+
+πθold (at | st) . (2) The PPO objective is given by: 
+
+L(θ) = Et
+
+h
+
+min 
+
+
+
+rt(θ)At, clip  rt(θ), 1 − ϵ, 1 + ϵAt
+
+i 
+
+.
+
+(3) where At denotes an advantage estimate and ϵ > 0 is a clip-ping threshold that limits the change in action probabilities. 
+
+At is computed using Generalized Advantage Estimation (GAE): 
+
+At = 
+
+> T−t−1
+
+X
+
+> l=0
+
+(γλ )l δt+l. (4) where δt = rt + γV (st+1 ) − V (st) is the temporal-difference error at time step t, and V (st) represents the state value, estimated by the value function V (s).3Segment-Aligned Policy Optimization for Multi-Modal Reasoning  
+
+> Figure 2. Overview of Segment-Aligned Policy Optimization (SAPO). The response is partitioned into coherent reasoning steps using entropy-aware boundaries. SAPO performs policy optimization and value learning over these reasoning steps, ensuring that tokens within the same step are updated with consistent learning signals.
+
+# 4. Method 
+
+To address the mismatch between existing policy optimiza-tion formulations and the step-wise structure of reasoning, we propose Segment-Aligned Policy Optimization (SAPO), treating reasoning steps, rather than individual tokens or en-tire sequences, as the fundamental units of policy optimiza-tion, which allows reasoning to be modeled as a step-wise Markov decision process. We illustrate SAPO in Fig. 2 and present a pseudo-code implementation in Algorithm. 1. 
+
+4.1. Segment-Aligned Policy Optimization 
+
+To align policy optimization with the step-wise structure of reasoning, the learning signal should ideally be assigned at the granularity of reasoning steps, rather than being frag-mented at the token level or uniformly applied at the se-quence level. Accordingly, we introduce a segment-level temporal abstraction by partitioning the response y into M
+
+coherent segments: 
+
+y = z1 ∥ z2 ∥ · · · ∥ zM
+
+, z m =  ybm , . . . , y em
+
+. (5) where 1 = b1 ≤ e1 < b 2 ≤ · · · < e M = T , and ∥
+
+denotes concatenation. We treat each segment zm as a high-level semantic unit for policy optimization, and define the segment-level “state” as the segment boundary prefix 
+
+sm := ( x, y ≤em−1 ) with e0 := 0 .4.1.1. S TEP -WISE MDP F ORMULATION 
+
+We model the reasoning process as a step-wise Markov decision process (MDP), where each state corresponds to a coherent reasoning segment and transitions occur only at segment boundaries. Formally, a reasoning episode starts from an initial state 
+
+s1 = {x},
+
+where x denotes the input prompt. At step m, the state is defined as 
+
+sm = {x, z <m },
+
+where z<m = [ z1, . . . , z m−1] is the sequence of previously generated reasoning segments. The policy πθ selects an action am, corresponding to generating the next reasoning step zm, according to πθ (am | sm).State transitions are deterministic: the next state sm+1 is fully determined by appending the generated segment ym
+
+to the history. The episode terminates when a special end condition is reached (e.g., generation of the final answer). Following the RLVR setting, rewards are provided only at the end of the episode based on the correctness of the final answer, and no intermediate rewards are assigned to individ-ual segments. Credit assignment to intermediate reasoning steps is therefore handled implicitly through segment-level value estimation and advantage computation, rather than explicit step-wise rewards. This step-wise MDP abstraction serves as a structured interface between token-level gen-eration and step-level policy optimization, enabling credit assignment to align with the semantic structure of reasoning. 4.1.2. S TEP -WISE VALUE ESTIMATION AND 
+
+ADVANTAGE COMPUTATION 
+
+Under this formulation, we learn a value function V (sm)
+
+that predicts the expected outcome reward from the segment state sm. Let rm be the segment-level reward at boundary 
+
+em. For outcome-only tasks, rm = 0 for m < M and 
+
+rM = r(x, y ). We define temporal-difference (TD) errors over segment states as: 
+
+δm = rm + γV (sm+1 ) − V (sm), m = 1 , . . . , M. (6) Advantage estimates and return targets are obtained by ac-cumulating TD errors across segments: 
+
+ˆAm = 
+
+> M−m
+
+X
+
+> ℓ=0
+
+(γλ )ℓ δm+ℓ, ˆRm = ˆAm + V (sm). (7) We assign the step-wise advantage ˆAm uniformly to all to-kens within segment zm, i.e., ˆAt := ˆAm for all t ∈ [bm, e m],4Segment-Aligned Policy Optimization for Multi-Modal Reasoning 
+
+ensuring that tokens belonging to the same reasoning step receive consistent learning signals. 4.1.3. I MPORTANCE SAMPLING OVER STEPS 
+
+To ensure stable and well-calibrated policy updates under the step-wise formulation, we introduce an off-policy correc-tion defined over reasoning steps. Specifically, for samples generated by an old policy πθold , we define the importance ratio for segment zm as a geometric mean of token-level likelihood ratios: 
+
+sm(θ) : = πθ (zm | sm)
+
+πθold (zm | sm)
+
+! 1
+
+> |zm |
+
+= exp 1
+
+|zm|
+
+> em
+
+X
+
+> t=bm
+
+log πθ (yt|x, y <t )
+
+πθold (yt|x, y <t )
+
+!
+
+.
+
+(8) 4.1.4. L EARNING OBJECTIVES .SAPO optimizes a clipped surrogate objective defined over reasoning steps. The policy objective can be defined as: 
+
+J(θ) = Ex∼D , y ∼πθold (·| x)
+
+"
+
+1
+
+T
+
+> T
+
+X
+
+> t=1
+
+min 
+
+
+
+sm(t)(θ) ˆAm(t),
+
+clip( sm(t)(θ), 1 − ϵ, 1 + ϵ) ˆAm(t)
+
+#
+
+.
+
+(9) where m(t) denotes the index of the segment that token t
+
+belongs to. In parallel, we learn a value function V (sm) and update it only at segment boundaries to match the segment-level temporal abstraction. Given the returns ˆRm (Eq. (7) ), the value objective is defined as: 
+
+LV (ϕ) = Ex∼D , y ∼πθold (·| x)
+
+"
+
+1
+
+M
+
+> M
+
+X
+
+> m=1
+
+ Vϕ(sm) − ˆRm
+
+2
+
+#
+
+.
+
+(10) 
+
+4.2. Entropy-based Adaptive Segmentation Mechanism 
+
+To operationalize reasoning steps without external annota-tions, inspired by prior work (Wang et al., 2025), we use token entropy 
+
+Ht = − X
+
+> v
+
+πθ (v | x, y <t ) log πθ (v | x, y <t ) (11) as an uncertainty signal. Given the entropy sequence 
+
+{Ht}Tt=1 , we identify segment boundaries by selecting to-ken indices whose entropy ranks in the top-k% among all tokens in the sequence, and always include T as the final boundary to terminate the last segment. To justify entropy-based segmentation, we analyze the re-lationship between token entropy and value discontinuities 
+
+∆Vt = |Vt − Vt+1 |. In standard reinforcement learning, the state-value V π (s) denotes the expected discounted re-turn under policy π starting from state s (Sutton et al., 2018). PPO and other actor–critic methods learn a para-metric critic function V (s) to approximate this expecta-tion. High-entropy tokens correspond to states where multi-ple continuations compete, reflecting elevated uncertainty over future outcomes. When these alternatives imply sub-stantially different future returns, transitioning across such points can induce a larger change in the critic’s value esti-mate, resulting in higher expected value discontinuities. We formalize high-entropy tokens A as the top-q quantile of token entropy and define branching points D as tokens with large value discontinuities. Their association is quantified by the enrichment ratio Lift = P (D | A)
+
+P (D) , (12) with uncertainty estimated via sample-level bootstrap to obtain 95% confidence intervals. As shown in Fig. 3, Lift increases monotonically with the entropy quantile threshold q and exceeds 1 in the high-entropy tail, indicating that decision points are significantly enriched in regions of elevated uncertainty. Moreover, stage-averaged Lift– q curves exhibit a clear upward shift from early to late training (we froze the policy model to guarantee accurate value estimation), with the regime where Lift > 1
+
+progressively extending toward lower entropy thresholds. Taken together, these results demonstrate that entropy-based segmentation yields adaptive reasoning segments that con-sistently align with decision points and semantic transitions, providing a principled interface between token-level genera-tion and step-wise optimization. 
+
+4.3. Gradient Analysis 
+
+We derive the gradient of the SAPO objective as follows (clipping is omitted for brevity): 
+
+∇θ J(θ) = Ex∼D , y ∼πθold (·| x)
+
+"
+
+1
+
+T
+
+> T
+
+X
+
+> t=1
+
+sm(t)(θ) ˆAm(t)
+
+· 1
+
+|zm(t)|
+
+> em(t)
+
+X
+
+> i=bm(t)
+
+∇θ log πθ (yi | x, y <i )
+
+#
+
+.
+
+(13) From Eq. (13) , SAPO preserves the token-level policy gradi-ent structure of PPO, while replacing token-level importance ratios with segment-level ratios shared across tokens within the same reasoning step. As a result, all tokens in a segment are scaled by an identical importance weight and advan-tage, which enforces consistent credit assignment within 5Segment-Aligned Policy Optimization for Multi-Modal Reasoning             
+
+> Figure 3. Stage -averaged Lift– qcurves across training. Lift increases with the entropy threshold and shifts upward from early to late training stages, with the Lift >1region expanding toward lower q. Shaded areas denote 95% bootstrap confidence intervals over steps. Moreover, the smoothed mean Lift exhibits a positive monotonic trend over training (Spearman ρ= 0 .15 ; bootstrap 95% CI for the linear slope excludes zero). This indicates that decision points become increasingly concentrated in high -entropy regions as training proceeds.
+
+each reasoning step. Moreover, the averaged log-likelihood ratio introduces an implicit normalization with respect to segment length, preventing the importance ratio and its gra-dient from growing with the number of tokens. Compared to token-level PPO, this design reduces within-step gradient variance while remaining more fine-grained than sequence-level methods such as GRPO. 
+
+# 5. Experiment 
+
+5.1. Experimental Setups 
+
+We conduct experiments on both multi-modal reasoning benchmarks and text-only reasoning benchmarks. For multi-modal reasoning, we use Qwen2.5-VL-Instruct (Bai et al., 2025) as the base model. Models at both scales (3B and 7B) are trained using only the Geo3K (Lu et al., 2021) training split and evaluated on Geo3K (test), LogicVista (Xiao et al., 2024), MathVerse (Zhang et al., 2024), WeMath (Qiao et al., 2025), MathVista (Lu et al., 2023), and DynaMath (Zou et al., 2024). We compare SAPO against several represen-tative reinforcement learning baselines, including GRPO, PPO, and its variant Value-Calibrated PPO (VC-PPO). For text-only reasoning, we evaluate our method on two representative mathematical reasoning models, RhoMath-1.1B (Lin et al., 2024) and DeepSeekMath-7B (Shao et al., 2024), to assess its effectiveness. The training data con-sists of the training splits of MATH (Hendrycks et al., 2021) and GSM8K (Cobbe et al., 2021), and evaluation is performed on their corresponding test sets (GSM8K-Test and MATH500). We compare against several representa-tive baselines, including sequence-level methods RLOO and GRPO, token-level method PPO, RL-free methods RestEM (Singh et al., 2023) and DPO+ (Pal et al., 2024), segment-level method VinePPO and SPO. For the entropy-based adaptive segmentation mechanism, we set k to 30. All methods share the same outcome reward functions and optimization hyperparameters to ensure a fair and controlled comparison, with detailed training configurations and hy-perparameters provided in the Appendix. C. 
+
+5.2. Main Results Results on Multi-modal Reasoning Tab. 1 shows the main experimental results on six representative multi-modal reasoning benchmarks. Across both model scales (3B and 7B), SAPO consistently outperforms GRPO, PPO, and VC-PPO, indicating that the proposed segment-aligned opti-mization is effective across different model capacities rather than being specific to a particular scale. Specifically, SAPO achieves substantially stronger performance on the Geo3K test set for both model sizes (e.g., +24.46% for 3B and +10.15% for 7B compared to PPO), reflecting more effec-tive utilization of learning signals enabled by the proposed optimization formulation. Moreover, the performance gains become more pronounced on challenging benchmarks such as WeMath, which require long-horizon, multi-step reason-ing: SAPO improves accuracy from 29.43% to 36.19% on the 3B model and from 41.05% to 42.86% on the 7B model compared to GRPO. This pattern suggests that aligning pol-icy optimization with step-wise reasoning is particularly beneficial for harder problems that require long-horizon, multi-step reasoning. 
+
+Results on Text-only Reasoning Fig. 4 presents the re-sults on GSM8K and MATH500, evaluating text-only math-ematical reasoning under different RL optimization methods. SAPO consistently achieves the best performance across both benchmarks, improving over prior approaches such as GRPO and PPO under both 3B and 7B settings. On GSM8K, SAPO yields steady gains over token-level or sequence-level baselines (e.g., +5.3% over PPO and +9.4% over GRPO on DeepSeekMath-7B), and further outperforms prior segment -level methods such as VinePPO (+4.1%) and SPO (+6.0%). More notably, on the more challenging MATH500 benchmark, SAPO still shows marked improve-ments over both token-level and sequence-level methods (e.g., +7.5% over PPO and +7.8% over GRPO on RhoMath-1.1B), while consistently surpassing VinePPO (+2.6%) and SPO (+4.8%). The consistent improvements over VinePPO and SPO suggest that SAPO’s gains stem from its overall op-timization formulation, leading to more stable and effective training dynamics. 
+
+5.3. Ablation Studies 
+
+In this subsection, we present ablation studies that examine the contributions of the key design components in SAPO, 6Segment-Aligned Policy Optimization for Multi-Modal Reasoning  
+
+> Table 1. Performance comparison of Qwen2.5-VL models trained with different reinforcement learning strategies on six multi-modal reasoning benchmarks.
+
+Benchmark Geo3K LogicVista MathVerse WeMath MathVista DynaMath Avg. 
+
+3B Models 
+
+Qwen2.5-VL-3B 27.29 34.45 24.75 21.81 61.60 10.97 30.15 +GRPO 40.60 40.72 36.67 29.43 63.00 17.37 37.97 +PPO 21.80 39.15 26.52 25.90 63.80 9.98 31.19 +VC-PPO 34.94 37.81 32.36 32.67 62.90 10.78 35.24 
+
++SAPO 46.26 39.60 37.56 36.19 65.40 16.37 40.23 7B Models 
+
+Qwen2.5-VL-7B 42.60 39.15 30.58 32.67 69.30 13.37 37.94 +GRPO 51.58 45.86 44.80 41.05 69.70 22.75 45.96 +PPO 42.60 42.73 39.72 41.52 69.80 17.96 42.39 +VC-PPO 48.75 45.41 41.37 40.48 68.40 20.76 44.20 
+
++SAPO 52.75 47.30 45.81 42.86 70.70 21.96 46.90 (a) GSM8K  (b) MATH500  
+
+> Figure 4. Comparison of text-only reasoning performance on GSM8K and MATH500 for RhoMath 1.1B and DeepSeekMath 7B under different reinforcement learning strategies. Baseline results are from (Guo et al., 2025b; Kazemnejad et al., 2025).
+
+including importance sampling over reasoning segments, different segmentation strategies, and the hyperparameter k
+
+used in entropy-based segmentation.           
+
+> Table 2. Ablation study on the effect of step-wise IS.
+> Method Geo3K LogicVista MathVerse SAPO (naive-IS) 47.92 44.07 43.91 SAPO (sw-IS) 52.75 47.30 45.81
+
+Ablation on Importance Sampling over Reasoning Steps. 
+
+Tab. 2 reports the ablation results for importance sampling over reasoning steps. Replacing token-level importance sampling with segment-based importance sampling yields consistent performance gains across all evaluated bench-marks, indicating that importance sampling is a critical component of SAPO. In particular, SAPO improves accu-racy by +4.83% on Geo3K, +3.23% on LogicVista, and +1.90% on MathVerse compared to its variant with token-level importance sampling (naive-IS). These gains suggest that performing importance sampling at the granularity of reasoning steps leads to better-calibrated policy updates, reducing biased or overly aggressive updates caused by dis-tribution shifts between the behavior policy and the updated policy. The consistent improvements across benchmarks of varying difficulty further demonstrate that importance sampling aligned with reasoning steps is essential for stable and effective policy optimization in SAPO.                 
+
+> Table 3. Ablation study on Segmentation Strategy.
+> Strategy Geo3K LogicVista MathVerse Newline-based 41.60 46.09 42.13 Step-based 41.60 48.10 42.77 Prob-based 44.43 44.97 41.62 Entropy-based 52.75 47.30 45.81
+
+Ablation on Segmentation Strategy. Tab. 3 compares different segmentation strategies within SAPO. We con-sider three representative approaches: (1) Newline-based segmentation, which splits the generated response accord-ing to newline characters (Kazemnejad et al., 2025; Zhang et al., 2025); (2) Step-based segmentation, which explic-itly instructs the model to output intermediate reasoning in a predefined step-by-step format (e.g., “Step 1”, “Step 2”, etc.) and treats each prompted step as a segment (Luo et al., 2023); (3) Probability-based segmentation, which defines segments by accumulating a fixed number of low 7Segment-Aligned Policy Optimization for Multi-Modal Reasoning 
+
+probability tokens (Guo et al., 2025b). and (4) the pro-posed entropy-based adaptive segmentation. Among these strategies, entropy-based segmentation achieves the best overall performance. These results demonstrate that adap-tively identifying segment boundaries based on model uncer-tainty leads to more effective utilization of learning signals, highlighting the importance of flexible and model-aware segmentation strategies in policy optimization.   
+
+> Figure 5. Effect of the top-k%ratio in entropy-based segmentation on Geo3K test accuracy.
+
+Sensitivity to Hyperparameter k in Entropy-based Seg-mentation. Fig. 5 investigates the impact of the top-k ratio used in the entropy-based segmentation mechanism. We observe that the performance consistently improves as top-k increases from 10 to 30, and then gradually degrades when further increasing top-k beyond this range. This trend aligns with recent findings that only a minority of high-entropy tokens act as critical forks in the reasoning trajectory, while the majority of low-entropy tokens mainly follow already de-termined paths and contribute limited learning signal (Wang et al., 2025). When top-k is too small (e.g., 10), the segmen-tation mechanism fails to cover all decision-critical tokens, resulting in insufficient exploration and under-optimized reasoning steps. However, a large top-k introduces an in-creasing number of low-entropy tokens into the segmen-tation process, which obscures genuinely decision-critical boundaries and reduces the effectiveness of step-wise pol-icy optimization. This observation further suggests that entropy-based segmentation is most effective when it selec-tively targets decision-critical tokens rather than uniformly increasing segmentation density, echoing the finding that high-entropy minority tokens dominate learning dynamics in RL-based reasoning models. 
+
+5.4. Analysis on Value Model Training Progress. 
+
+Fig. 6 illustrates the training dynamics of the value model un-der SAPO and the VC-PPO baseline. Both methods exhibit a rapid decrease in value loss during the early training stage, indicating that the value function quickly learns a coarse estimate of returns. However, as training proceeds, the value loss under SAPO consistently converges to a lower level and remains more stable, whereas VC-PPO shows higher residual loss and noticeable fluctuations throughout training. This suggests that SAPO provides a more coherent and less noisy learning signal for value estimation. We attribute this behavior to SAPO’s segment-aligned optimization, which restricts value updates to semantically meaningful reasoning steps rather than individual tokens, thereby reducing vari-ance introduced by token-level noise. In contrast, VC-PPO relies on token-level value supervision, causing the value model to fit many intermediate tokens that lack clear seman-tic meaning, which leads to less stable convergence. Overall, these results indicate that aligning value learning with rea-soning steps improves both the stability and accuracy of value estimation. 1 20 40 60 80 100 120 140 160 180 200  
+
+> Training Steps
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> 0.8
+> Value loss
+> Value Model Training Progress
+> SAPO
+> VC-PPO
+> Figure 6. Comparison of value model training progress between SAPO and VC-PPO on Geo3K.
+
+# 6. Conclusion 
+
+In this work, we analyzed the limitations of existing rein-forcement learning approaches for reasoning in MLLMs and identified a fundamental mismatch between their optimiza-tion granularity and the step-wise structure of reasoning. To address this issue, we proposed Segment-Aligned Policy Optimization (SAPO), which aligns value estimation, advan-tage computation, and policy updates with reasoning steps under a step-wise MDP abstraction. By further introducing an entropy-based adaptive segmentation mechanism, SAPO identifies reasoning step boundaries based on model uncer-tainty during generation. Extensive experiments demon-strate that SAPO achieves more stable optimization and con-sistently improves reasoning performance over token-level, sequence-level baselines, and prior segment-level methods. We hope that this work can contribute to policy optimiza-tion in reinforcement learning and inspire future research on structured reasoning. 8Segment-Aligned Policy Optimization for Multi-Modal Reasoning 
+
+# Impact Statement 
+
+This paper presents methodological contributions aimed at improving policy optimization in reinforcement learning, particularly for structured reasoning tasks. The proposed approach focuses on aligning optimization objectives with the inherent structure of model reasoning, with the goal of enhancing training stability and effectiveness. The tech-niques introduced in this work are general and algorithmic in nature, and are intended to support the development of more reliable learning systems. We do not anticipate any im-mediate negative societal impacts arising from this research, nor do we identify specific broader societal consequences that require separate discussion. 
+
+# References 
+
+Ahmadian, A., Cremer, C., Gall ´e, M., Fadaee, M., Kreutzer, J., Pietquin, O., ¨Ust ¨un, A., and Hooker, S. Back to basics: Revisiting reinforce-style optimization for learning from human feedback in llms. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pp. 12248–12267, 2024. Anonymous. Controllable exploration in hybrid-policy RLVR for multi-modal reasoning. In The Fourteenth International Conference on Learning Representations ,2026. URL https://openreview.net/forum? id=5wxyCidRsK .Bai, S., Chen, K., Liu, X., Wang, J., Ge, W., Song, S., Dang, K., Wang, P., Wang, S., Tang, J., et al. Qwen2. 5-vl technical report. arXiv preprint arXiv:2502.13923 , 2025. Cobbe, K., Kosaraju, V., Bavarian, M., Chen, M., Jun, H., Kaiser, L., Plappert, M., Tworek, J., Hilton, J., Nakano, R., et al. Training verifiers to solve math word problems. 
+
+arXiv preprint arXiv:2110.14168 , 2021. Guo, D., Yang, D., Zhang, H., Song, J., Wang, P., Zhu, Q., Xu, R., Zhang, R., Ma, S., Bi, X., et al. Deepseek-r1 incentivizes reasoning in llms through reinforcement learning. Nature , 645(8081):633–638, 2025a. Guo, Y., Xu, L., Liu, J., Ye, D., and Qiu, S. Segment policy optimization: Effective segment-level credit as-signment in rl for large language models. arXiv preprint arXiv:2505.23564 , 2025b. Hendrycks, D., Burns, C., Kadavath, S., Arora, A., Basart, S., Tang, E., Song, D., and Steinhardt, J. Measuring math-ematical problem solving with the math dataset. arXiv preprint arXiv:2103.03874 , 2021. Kazemnejad, A., Aghajohari, M., Portelance, E., Sordoni, A., Reddy, S., Courville, A., and Roux, N. L. VinePPO: Refining credit assignment in RL training of LLMs. In Forty-second International Conference on Machine Learning , 2025. URL https://openreview.net/ forum?id=Myx2kJFzAn .Lightman, H., Kosaraju, V., Burda, Y., Edwards, H., Baker, B., Lee, T., Leike, J., Schulman, J., Sutskever, I., and Cobbe, K. Let’s verify step by step. In The Twelfth International Conference on Learning Representations ,2023. Lin, Z., Gou, Z., Gong, Y., Liu, X., Shen, Y., Xu, R., Lin, C., Yang, Y., Jiao, J., Duan, N., and Chen, W. Rho-1: Not all tokens are what you need, 2024. Liu, J., Liu, H., Zhang, S., and Chen, K. Rectifying llm thought from lens of optimization. arXiv preprint arXiv:2512.01925 , 2025. Lu, P., Gong, R., Jiang, S., Qiu, L., Huang, S., Liang, X., and Zhu, S.-C. Inter-gps: Interpretable geometry problem solving with formal language and symbolic reasoning. 
+
+arXiv preprint arXiv:2105.04165 , 2021. Lu, P., Bansal, H., Xia, T., Liu, J., Li, C., Hajishirzi, H., Cheng, H., Chang, K.-W., Galley, M., and Gao, J. Mathvista: Evaluating mathematical reasoning of foundation models in visual contexts. arXiv preprint arXiv:2310.02255 , 2023. Luo, H., Sun, Q., Xu, C., Zhao, P., Lou, J., Tao, C., Geng, X., Lin, Q., Chen, S., and Zhang, D. Wizard-math: Empowering mathematical reasoning for large lan-guage models via reinforced evol-instruct. arXiv preprint arXiv:2308.09583 , 2023. Ouyang, L., Wu, J., Jiang, X., Almeida, D., Wainwright, C., Mishkin, P., Zhang, C., Agarwal, S., Slama, K., Ray, A., et al. Training language models to follow instructions with human feedback. Advances in neural information processing systems , 35:27730–27744, 2022. Pal, A., Karkhanis, D., Dooley, S., Roberts, M., Naidu, S., and White, C. Smaug: Fixing failure modes of pref-erence optimisation with dpo-positive. arXiv preprint arXiv:2402.13228 , 2024. Qiao, R., Tan, Q., Dong, G., MinhuiWu, M., Sun, C., Song, X., Wang, J., Gongque, Z., Lei, S., Zhang, Y., et al. We-math: Does your large multimodal model achieve human-like mathematical reasoning? In Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pp. 20023–20070, 2025. Rafailov, R., Sharma, A., Mitchell, E., Manning, C. D., Ermon, S., and Finn, C. Direct preference optimiza-tion: Your language model is secretly a reward model. 9Segment-Aligned Policy Optimization for Multi-Modal Reasoning 
+
+Advances in neural information processing systems , 36: 53728–53741, 2023. Schulman, J., Wolski, F., Dhariwal, P., Radford, A., and Klimov, O. Proximal policy optimization algorithms. 
+
+arXiv preprint arXiv:1707.06347 , 2017. Shao, Z., Wang, P., Zhu, Q., Xu, R., Song, J., Bi, X., Zhang, H., Zhang, M., Li, Y., Wu, Y., et al. Deepseekmath: Push-ing the limits of mathematical reasoning in open language models. arXiv preprint arXiv:2402.03300 , 2024. Sheng, G., Zhang, C., Ye, Z., Wu, X., Zhang, W., Zhang, R., Peng, Y., Lin, H., and Wu, C. Hybridflow: A flexi-ble and efficient rlhf framework. arXiv preprint arXiv: 2409.19256 , 2024. Singh, A., Co-Reyes, J. D., Agarwal, R., Anand, A., Patil, P., Garcia, X., Liu, P. J., Harrison, J., Lee, J., Xu, K., et al. Beyond human data: Scaling self-training for problem-solving with language models. arXiv preprint arXiv:2312.06585 , 2023. Sutton, R. S., Barto, A. G., et al. Reinforcement learning: An introduction 2nd ed. MIT press Cambridge , 1(2):25, 2018. Wang, S., Yu, L., Gao, C., Zheng, C., Liu, S., Lu, R., Dang, K., Chen, X.-H., Yang, J., Zhang, Z., Liu, Y., Yang, A., Zhao, A., Yue, Y., Song, S., Yu, B., Huang, G., and Lin, J. Beyond the 80/20 rule: High-entropy minority tokens drive effective reinforcement learning for LLM reason-ing. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. URL https: //openreview.net/forum?id=yfcpdY4gMP .Xiao, Y., Sun, E., Liu, T., and Wang, W. Logicvista: Multi-modal llm logical reasoning benchmark in visual contexts. 
+
+arXiv preprint arXiv:2407.04973 , 2024. Xu, Z. and Ding, Z. Single-stream policy optimization, 2025. URL https://arxiv.org/abs/2509.13232 .Yuan, Y., Yue, Y., Zhu, R., Fan, T., and Yan, L. What’s behind ppo’s collapse in long-cot? value optimization holds the secret, 2025. URL https://arxiv.org/ abs/2503.01491 .Yue, Y., Yuan, Y., Yu, Q., Zuo, X., Zhu, R., Xu, W., Chen, J., Wang, C., Fan, T., Du, Z., Wei, X., Yu, X., Liu, G., Liu, J., Liu, L., Lin, H., Lin, Z., Ma, B., Zhang, C., Zhang, M., Zhang, W., Zhu, H., Zhang, R., Liu, X., Wang, M., Wu, Y., and Yan, L. Vapo: Efficient and reliable reinforce-ment learning for advanced reasoning tasks, 2025. URL 
+
+https://arxiv.org/abs/2504.05118 .Zhang, H., Cui, H., Bao, G., Yang, L., Wang, J., and Zhang, Y. Direct value optimization: Improving chain-of-thought reasoning in LLMs with refined values. In Christodoulopoulos, C., Chakraborty, T., Rose, C., and Peng, V. (eds.), Proceedings of the 2025 Conference on Empirical Methods in Natural Language Process-ing , pp. 13203–13216, Suzhou, China, November 2025. Association for Computational Linguistics. ISBN 979-8-89176-332-6. doi: 10.18653/v1/2025.emnlp-main. 668. URL https://aclanthology.org/2025. emnlp-main.668/ .Zhang, R., Jiang, D., Zhang, Y., Lin, H., Guo, Z., Qiu, P., Zhou, A., Lu, P., Chang, K.-W., Qiao, Y., et al. Math-verse: Does your multi-modal llm truly see the diagrams in visual math problems? In European Conference on Computer Vision , pp. 169–186. Springer, 2024. Zheng, C., Liu, S., Li, M., Chen, X.-H., Yu, B., Gao, C., Dang, K., Liu, Y., Men, R., Yang, A., et al. Group sequence policy optimization. arXiv preprint arXiv:2507.18071 , 2025. Zou, C., Guo, X., Yang, R., Zhang, J., Hu, B., and Zhang, H. Dynamath: A dynamic visual benchmark for evaluating mathematical reasoning robustness of vision language models. arXiv preprint arXiv:2411.00836 , 2024. 10 Segment-Aligned Policy Optimization for Multi-Modal Reasoning 
+
+# A. Benchmark Settings. 
+
+Multi-modal Benchmarks LogicVista emphasizes logical and compositional reasoning in visually grounded settings. The full test set contains approximately 450 samples. MathVerse is designed to assess general mathematical reasoning across multiple modalities and input settings. In this work, we use the MathVerse MINI Test split under the Vision Only setting, which contains around 700 samples. WeMath targets fine-grained mathematical reasoning with strict answer verification. We evaluate on the Test Mini split, which includes around 1,740 samples, and report Score (Strict) as the primary metric. MathVista is a large-scale visual mathematical reasoning benchmark that integrates natural images with algebraic, geometric, and logical reasoning. In this work, we use the MathVista MINI test split, containing around 1,000 samples. DynaMath is a large-scale benchmark constructed to evaluate robustness and generalization in mathematical reasoning. It consists of 501 original questions, each expanded into 10 distinct variants, yielding approximately 5,000 test samples in total. 
+
+Text-only Benchmarks MATH consists of challenging problems drawn from high-school mathematics competitions, covering a broad range of topics such as algebra, geometry, number theory, and probability. For our experiments, we adopt the OpenAI split (Lightman et al., 2023), which includes 12,500 training problems and 500 test problems. The final answer is explicitly marked using the \boxed {} notation. GSM8K is a collection of high-quality grade-school mathematics problems that require basic arithmetic and elementary algebraic reasoning. Although simpler than the MATH, GSM8K remains a widely adopted benchmark for evaluating the mathematical reasoning capabilities of large language models. The dataset consists of 7,473 training problems and 1,319 test problems. The final answer is typically an integer explicitly marked in the solution (e.g., by the delimiter “####”), enabling reliable automatic correctness checking. 
+
+# B. Additional Training Progress Analysis. 
+
+Analysis on Entropy. Figure 7 left part illustrates the evolution of entropy during training for PPO and SAPO. PPO suffers from a much faster entropy collapse, with entropy quickly approaching near-zero values in early training stages. In contrast, SAPO maintains higher entropy throughout training, suggesting a more stable exploration behavior induced by the policy optimization at the level of reasoning steps. 
+
+Analysis on Response Length. Figure 7 right part illustrates the evolution of response length during training for PPO and SAPO. PPO exhibits a rapid collapse in response length during early training stages, quickly converging to very short outputs. In contrast, SAPO maintains longer responses throughout training, indicating that policy optimization at the level of reasoning steps encourages sustained multi-step generation. 1 20 40 60 80 100 120 140 160 180 202            
+
+> Training Steps
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Entropy
+> Entropy in Model Training Progress
+> PPO
+> SAPO
+> 120 40 60 80 100 120 140 160 180 202
+> Training Steps
+> 50
+> 100
+> 150
+> 200
+> 250
+> 300
+> 350
+> Response length
+> Response length in Model Training Progress
+> PPO
+> SAPO
+> Figure 7. Comparison of entropy (left) and response length (right) in training progress between SAPO and PPO.
+
+# C. Hyperparameters and Compute Resources. 
+
+Our code is based on VeRL (Sheng et al., 2024). We run all experiments on a single node equipped with 8 NVIDIA A100 GPUs (80GB). Detailed hyperparameter configurations are summarized in the Tab. 4. 11 Segment-Aligned Policy Optimization for Multi-Modal Reasoning 
+
+Table 4. Hyperparameters for different training methods on Geo3K. 
+
+(a) SAPO Hyperparameter Value Total training steps 200 Train batch size 512 Mini batch size 128 Max prompt length 1024 Max response length 2048 Lambda 0.99 Gamma 1.0 Actor LR 1e-6 Critic LR 2e-6 KL penalty in reward K1 KL coef 0.001 Eval. temperature 0.6 Eval. top-p 0.95 
+
+(b) GRPO Hyperparameter Value Total training steps 200 Train batch size 512 Mini batch size 128 Max prompt length 1024 Max response length 2048 Actor LR 1e-6 KL loss type K3 KL coef 0.01 Rollout 8Eval. temperature 0.6 Eval. top-p 0.95 
+
+(c) VC-PPO Hyperparameter Value Total training steps 200 Train batch size 512 Mini batch size 128 Max prompt length 1024 Max response length 2048 Lambda (Actor) 0.99 Lambda (Critic) 1.0 Gamma 1.0 Actor LR 1e-6 Critic LR 2e-6 KL penalty in reward K1 KL coef in reward 0.001 Eval. temperature 0.6 Eval. top-p 0.95 
+
+(d) PPO Hyperparameter Value Total training steps 200 Train batch size 512 Mini batch size 128 Max prompt length 1024 Max response length 2048 Lambda 0.95 Gamma 1.0 Actor LR 1e-6 Critic LR 2e-6 KL penalty in reward K1 KL coef 0.001 Eval. temperature 0.6 Eval. top-p 0.95 
+
+Algorithm 1 Segment-Aligned Policy Optimization (SAPO) 
+
+Input: dataset D, initial policy πθ , value function Vϕ, number of epochs E, number of mini-batches B, clip parameter ϵ,discount factor γ, decay parameter λ, segmentation hyperparameter k
+
+Output: optimized policy πθ , optimized value function Vϕ
+
+for e = 1 to E do 
+
+Sample a batch of queries x ∼ D 
+
+Generate responses y ∼ πθold (· | x) and record token entropies {Ht}
+
+Select segmentation boundaries using a top-k% entropy criterion and include T as the final boundary Partition each response into a variable number of segments {zi,m }Ni
+
+> m=1
+
+Construct segment states si,m = ( xi, y i, ≤em−1 )
+
+Compute rewards {ri,m } at segment boundaries Compute TD errors {δi,m }, advantages { ˆAi,m }, and returns { ˆRi,m } over segments Split the batch of trajectories (each with its segments) into B mini-batches 
+
+for b = 1 to B do 
+
+Sample a mini-batch of trajectories {(xi, y i, {si,m , z i,m , ˆAi,m , ˆRi,m }Ni
+
+> m=1
+
+)}
+
+Compute probability ratios ri,m (θ) for all segments in the mini-batch Compute the clipped policy objective by aggregating over segments and assigning ˆAi,m to tokens within zi,m 
+
+Update policy parameters θ by maximizing the clipped objective Compute the value loss at segment boundaries Update value parameters ϕ by minimizing the value loss 
+
+end for end for return πθ , Vϕ
+
+12

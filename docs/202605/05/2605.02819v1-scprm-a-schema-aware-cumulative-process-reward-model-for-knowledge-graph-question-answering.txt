@@ -1,0 +1,587 @@
+Title: SCPRM: A Schema-aware Cumulative Process Reward Model for Knowledge Graph Question Answering
+
+URL Source: https://arxiv.org/pdf/2605.02819v1
+
+Published Time: Tue, 05 May 2026 02:19:19 GMT
+
+Number of Pages: 13
+
+Markdown Content:
+# SCPRM: A Schema-aware Cumulative Process Reward Model for Knowledge Graph Question Answering 
+
+Jiujiu Chen 
+
+HKUST (GZ) 
+
+Yazheng Liu 
+
+HKUST (GZ) 
+
+Sihong Xie 
+
+HKUST (GZ) 
+
+Hui Xiong 
+
+HKUST (GZ) 
+
+Abstract 
+
+Large language models excel at complex reasoning, yet evaluating their intermedi-ate steps remains challenging. Although process reward models provide step-wise supervision, they often suffer from a risk compensation effect, where incorrect steps are offset by later correct ones, assigning high rewards to flawed reasoning paths. This issue is further exacerbated in knowledge graph (KG) reasoning, as there may exist multiple paths between the start and end entities in the KGs, and a risky step can make the reasoning path flawed. Those limitations are problematic in risk-sensitive tasks such as medical and legal KG reasoning. To address the issues, we propose a Schema-aware Cumulative Process Reward Model (SCPRM) that evaluates reasoning paths by conditioning on the reasoning prefix , and incorporat-ing schema distance between current reasoning step and the implicit target parsed from the query, which provides cumulative and future rewards to guide the path explorations. We further integrate SCPRM into Monte Carlo Tree Search (MCTS) as SCPRM-MCTS to conduct multi-hop reasoning on KGs for question answer-ing (QA) tasks. Across medical and legal KGQA and CWQ, SCPRM-MCTS improves the performance of Hits@k by an average of 1.18% over strong baselines, demonstrating more accurate and risk-sensitive reasoning evaluation. 
+
+1 Introduction 
+
+As Large Language Models (LLMs) evolve, they have transitioned from simple question answering to complex multi-step reasoning, largely driven by the emergence of Chain-of-Thought (CoT) prompting [ 38 ]. However, the inherently linear structure of CoT makes LLMs vulnerable to error propagation, as a single mistake can derail the entire reasoning trajectory and lead to an incorrect final answer [ 33 ]. While outcome-based reward models can verify final answers [ 10 , 25 ], they cannot distinguish whether the model arrived at the correct answer through logic or hallucination [ 42 , 16 , 40 ]. To mitigate this, researchers have shifted towards Process Reward Models (PRMs) that evaluate intermediate steps combined with search algorithm, e.g., Tree-of-Thoughts [41]. Currently, existing PRMs have shown strong performance in mathematical reasoning and code generation tasks [ 45 , 17 ], but those tasks are typically tolerant of minor intermediate risky steps, as later correct steps can recover the final answer. Consequently, vanilla PRMs usually aggregate rewards additively across the trajectory, making them relatively insensitive to localized biases or risky decisions. This assumption breaks down in Knowledge Graph Question Answering (KGQA). The complex KG topology allows for multiple reasoning paths between the start entity and the answer, but the logically valid paths are strictly limited. This is particularly severe in risk-sensitive applications such as medical or legal KGQA (illustrated in Figure 1). For example, a path traversing entities related to symptoms involve logically irrelevant or incorrect information to the query, but still coincidentally reach the correct final answer. Vanilla PRMs assign such paths with high rewards by averaging risk and correctness, allowing risky steps to be offset by later rewards. In risk-sensitive 
+
+> Preprint.
+> arXiv:2605.02819v1 [cs.AI] 4 May 2026
+
+Query & Answer 
+
+Query: Which miRNA inhibits the core causative gene of 
+
+Alzheimer’s Disease? Answer: miR -29a  
+
+> z
+> caused by
+> expressed with
+> has
+> promoted by
+> regulated by
+> modeled in expresses in
+> regulated by
+> associates
+
+BACE1 
+
+TNF 
+
+MYC 
+
+Neuroinflammation 
+
+SH -SY5Y 
+
+miR -132      
+
+> associates
+> Disease Gene Cell Symptom miRNA
+> t = 0
+> t = 1 t = 2
+> t = 3
+
+Alzheimer 
+
+miR -29a 
+
+> downregulated by
+
+APOE 
+
+> t = 1
+> t = 1
+> t = 1
+> t = 1
+> t = 2
+
+Knowledge Graph 
+
+> Correct
+> Path
+
+Reward Model  
+
+> z
+> Explored Paths
+> 𝜋 !𝜋 "
+> #
+> 𝜋 $
+> #𝜋 %
+> #
+
+CRM 
+
+PQM 
+
+PRM 
+
+SCPRM                                         
+
+> Query Schema: disease → gene → miRNA
+> 𝜋 !Schema: disease → gene → miRNA
+> 𝜋 "
+> #Schema: disease → miRNA
+> 𝜋 $
+> #Schema: disease → Cell → gene → miRNA
+> 𝑟
+> 𝜋 %
+> #𝜋 "
+> #𝜋 $
+> #
+> 𝜋 !
+> 𝑟 (%≈𝑟 (&
+> '≈𝑟 ((
+> '≈𝑟 ()
+> '
+> 𝑟
+> 𝜋 %
+> #𝜋 "
+> #𝜋 $
+> #
+> 𝜋 !
+> 𝑟 (&
+> '<𝑟 (%<𝑟 ((
+> '≈𝑟 ()
+> '
+> 𝑟 𝑟 ()
+> '<𝑟 ((
+> '<𝑟 (%<𝑟 (&
+> '
+> 𝜋 %
+> #𝜋 "
+> #𝜋 $
+> #
+> 𝜋 !
+> 𝑟
+> 𝜋 *
+> #Schema: disease → Symptom → gene → miRNA
+> 𝑟 ((
+> '<𝑟 ()
+> '<𝑟 (&
+> '<𝑟 (%
+
+Figure 1: Comparison of reward models for reasoning based on medical KGQA. Red rewards indicate the wrong ranks of traversed paths on the KG. reasoning tasks, such compensation is unacceptable. Once a high-risk step occurs, the remaining trajectory should be substantially penalized, even if it reaches a technically correct endpoint [46]. Beyond risk sensitivity, KGQA requires adherence to implicit constraints expressed in the query [ 4 ,18 ]. While conditional reward models [ 46 ] can prevent additive reward compensation, they introduce a severe length bias. Multiplying step-wise probabilities ranging from 0 to 1 monotonically decreases the total reward, so the conditional reward models naturally tie the total reward to trajectory length, disproportionately penalizing longer reasoning path. This length sensitivity severely weakens logical exploration in KGQA, where multi-hop paths are necessary for complex queries. To address these challenges, we propose the Schema-aware Cumulative Process Reward Model (SCPRM), designed specifically for risk-sensitive multi-hop reasoning in KGQA. Inspired by the 
+
+A∗ search algorithm [ 12 ], SCPRM decouples reasoning evaluation into two dimensions: cumulative reward and future reward. Unlike prior A∗-style methods that rely on arbitrary heuristics or hand-crafted rule-based evaluators, SCPRM is a parameterized model with base LLM and heads for reward outputs, which is different from the design of next-token prediction. The cumulative reward utilizes step-wise conditional probabilities to capture risk propagation, ensuring that a highly risky step mathematically results in a lower reward since the step. Simultaneously, the future reward is computed by a schema-aware estimator, which extracts reasoning logic from the query to measure the schema distance between the current step and the target, and ensures logically consistence in multi-hop paths without length bias. We evaluate SCPRM by integrating it with MCTS on KGQA tasks, and the contributions are summarized as follows: • Non-Compensatory PRM Architecture: We introduce SCPRM, which leverages conditional probabilities to model cumulative path rewards reversed by the past cost in A∗ algorithm. This en-sures risky steps impose persistent and multiplicative penalties, effectively vetoing risky trajectories that vanilla PRMs would artificially rescue. • Schema-Aware Future Estimation: We propose a learnable future reward module that utilize logical schema parsed from the query. By computing schema distance between the query constraints and current reasoning, SCPRM learns the query logic by overcoming the inherent length bias of conditional reward models. • Strong Performance on Risk-Sensitive KGQA: Extensive experiments on medical and legal KGQA and Complex WebQuestions (CWQ) datasets demonstrate SCPRM with different small base LLMs (e.g., Llama3.1-8B) achieves average 1.18 % improvement in Hits@k compared to closed-source powerful LLMs like GPT-4o-mini. 22 Related Work 
+
+Reward models are learned evaluators to score candidate outputs according to human or task preferences [ 27 ], and play an important role in alignment and reasoning optimization. Early reward functions were largely heuristic or rule-based, relying on manually designed criteria such as formatting constraints or keyword matching, which limited their applicability to open-ended generation [ 11 , 14 ]. Subsequent work introduced Outcome Reward Models (ORMs) that only supervise the final answer of the reasoning trajectory [ 6]. Later studies also connected outcome supervision to value estimation for decoding, demonstrating that final-answer rewards can guide search toward more promising reasoning trajectories [ 43 ]. However, ORMs cannot localize intermediate reasoning errors due to the sparse feedback. To address this limitation, recent work has shifted toward Process Reward Models (PRMs), which assign rewards to intermediate reasoning steps rather than only final outputs. Process supervision was shown to reduce reasoning errors and outperform outcome-only supervision on challenging math benchmarks [ 34 , 20 ]. Subsequent methods improved scalability by replacing expensive human step annotations with automatically generated supervision, e.g., Monte Carlo rollouts or ranking-based Q-value formulations that model dependencies across steps [ 36 , 47 , 19 ]. Beyond mathematics, PRMs have been extended to code generation using execution feedback as stepwise supervision [ 26 , 2, 17 ], and medical and legal reasoning [ 35 , 44 , 15 , 5]. However, in risk-sensitive domains such as medicine and law, existing PRMs often suffer from risk compensation, where high rewards on some steps can offset critical errors. This limitation motivates the need for new process reward models that explicitly account for stepwise risk and logical safety. 
+
+Knowledge graph question answering (KGQA) aims to answer natural language questions by retrieving and reasoning over structured knowledge graphs, often requiring multi-hop inference across multiple entities and relations. Early KGQA methods mainly relied on embedding-based approaches that learned vector representations of entities and relations, enabling efficient link prediction and simple relational reasoning, but offering limited support for complex multi-hop decision processes [ 3,30 ]. Later work reformulated KGQA as a sequential search problem using reinforcement learning (RL), where agents learn to navigate the graph hop by hop toward answer entities. DeepPath [ 39 ] and MINERVA [ 9] improved multi-hop reasoning by learning path-selection policies, while subsequent work introduced reward shaping [ 21 ] and adversarial training [ 7 ] to alleviate sparse rewards and spurious paths. Recently, the integration of LLMs with KGs has catalyzed a paradigm shift, combining parametric semantic understanding with structured and verifiable knowledge [ 23 ]. Initial zero-shot approaches augmented LLM prompts with retrieved KG triplets [ 1 ] or dense subgraphs [ 24 ], though their efficacy was often bottlenecked by heuristic retrieval limitations. To achieve deeper integration, frameworks such as ToG [ 29 ], RoG [ 22 ], and PoG [ 32 ] introduced iterative exploration and path-guided reasoning, utilizing graph structures to enforce structural faithfulness. To bridge the semantic gap between complex queries and rigid graphs, recent methods leverage LLMs to dynamically align query semantics [ 18 ] or guide sophisticated search algorithms like Monte Carlo Tree Search [ 37 ] to balance exploration and exploitation. However, guaranteeing reasoning faithfulness and process-level quality without hallucination remains a critical, open challenge in multi-hop scenarios. 
+
+3 Preliminary 
+
+3.1 A∗ Algorithm 
+
+The classical A∗ algorithm [ 12 ] is a cornerstone of heuristic search, designed to efficiently identify optimal trajectory by minimizing the cost function f (n) = g(n) + h(n), where n denotes the current state, g(n) is the past cost and h(n) estimates the future cost. We instead reverse the cost perspective and formulate A∗ as a reward-maximization problem. Our reward function is defined as F (n) = G(n) + H(n), where G(n) denotes cumulative past rewards and H(n) indicates future rewards. This change is more than a reparameterization: it explicitly encourages high-reward intermediate steps and aligns naturally with reward-based learning. This reward-driven variant provides a simple and effective bridge between heuristic search and modern learning systems, particularly in settings where reasoning progress is better modeled by incremental gains than by minimizing cost. The implementations of G(n) and H(n) will be demonstrated in details in Section 4. 33.2 Problem Formulation 
+
+Given a knowledge graph G, the reasoning progress starts from the anchor entity e0 parsed from the query q, and traverses G to obtain an optimal reasoning trajectory π(T ) =
+
+{(e0, r 0, e 1), ..., (eT −1, r T −1, e T )}, where (ei−1, r i−1, e i) denotes the entity triplets retrieved from 
+
+G, and T denotes the trajectory steps. The goal is to traverse G to obtain the answer eT for q in the cor-rect reasoning trajectory. We model the multi-step reasoning on G as a finite-horizon Markov Decision Process (MDP) M = ( S, A, P, F, γ ). S is the state space, A denotes the action space, P represents the state transition probability, F is the reward function defined in 3.1, and γ ∈ (0 , 1) is the discount factor. A state sk is determined by its last state and action P(sk|sk−1, a k−1). Given the state sk−1,the actions ak−1 = A(sk−1) consists of all possible triplets that start with the entity ek−1. The corre-sponding reasoning trajectory in state sk is represented as π(k) = {(e0, r 0, e 1), ..., (ek−1, r k−1, e k)}.The trajectory probability is computed as: 
+
+P(π) = 
+
+> T
+
+Y
+
+> k=1
+
+P(L(sk) = safe |sk−1, a k−1) · P (target |sT ). (1) The trajectory probability equivalently defines as the A∗-style reward computation: F (sT ) = log P(π), which admits a decomposition: F (sk) = G(sk) + H(sk), where G(sk) =
+
+Pkt=1 log P(L(sk) = safe |sk−1, a k−1) and L(·) is the label indicates whether the state is safe or not. H(sk) = log P(target |sk), and the "target" denotes the reasoning target. 
+
+3.3 Monte Carlo Tree Search 
+
+Monte Carlo Tree Search is a heuristic search algorithm for decision-making processes, widely adopted in domains requiring lookahead search with large state spaces. Formally, MCTS builds a search tree T where each node in step k represents a state sk and each edge represents an action 
+
+ak. Each node stores a visit count N (sk, a k) and its mean value V (sk, a k) when given an action 
+
+ak. MCTS process iterates through selection, expansion, evaluation and backpropagation phases. In the selection phase, the algorithm traverses the tree by selecting an action that maximize the upper confidence bound (UCB) metric at each step: 
+
+ak = arg max 
+
+> ai
+
+"
+
+V (si, a i) + c ·
+
+s
+
+ln N (si)
+
+N (si, a i)
+
+#
+
+, (2) where c ∈ R is the exploration constant, which balances the exploitation guided by the value function 
+
+V (si, a i) and exploration 
+
+q ln N (si)  
+
+> N(si,a i)
+
+terms. N (si) is the visit count of state si. In our research, we leverage the A∗-style reward function as the value function of MCTS to evaluate each action ai based on current state si, and select the corresponding triplet to expand the reasoning trajectory. The state node value represents the reasoning trajectory that starts from the anchor entity to current entity, and will backpropagate to the the initial state. The final answers can be obtained from the reasoning trajectories with highest rewards. 
+
+4 Methodology 
+
+4.1 Cumulative Past Reward Modeling 
+
+Given a query q and a state sk of reasoning trajectory π, we model the step-wise safety probability as: 
+
+pk = σ(φ(zprompt || q|| π(k) )) , P(L(sk) = safe |sk−1, a k−1) = 1 − pk (3) where the safety probability pk ∈ (0 , 1) , φ is the risk head, and σ(·) is the sigmoid function. Hidden representation zprompt || q|| π(k) = Φ( prompt || q|| π(k)) ∈ R1×d represents the last token of the last layer output of the base LLM, which contains the information of reasoning trajectory from the anchor entity to the current entity. The prompt forces the model to focus on the potential risks in each reasoning trajectory. d denotes the dimension of hidden representation, Φ is the parameters of the base LLM, and || represents the textual concatenation. 4Training Data 𝑝 , 𝑞 , 𝜋 !, 𝜋 ", 𝑙 ∈ 𝒟                                  
+
+> Query 𝒒 :What miRNA targets a gene that acts as a biomarker for Carcinoma, Breast?
+> Positive path 𝝅 !:Carcinoma, Breast (disease) →is_biomarkered_by →MORC4
+> (gene) →targeted_by →hsa -mir -193b (miRNA)
+> Negative path 𝝅 ":Carcinoma, Breast (disease) →is_receptored_by →MCF7 (cell
+> line) →upregulates →hsa -mir -21 (miRNA)
+> First erro neous step 𝒍 :1
+
+Schema -aware Cumulative Process Reward Model (SCPRM) Training     
+
+> Prompt :You are a schema -aware conditional process reward model to evaluate step...
+
+prompt 
+
+𝑧 #$%&#' ||)||*
+
+𝑞 𝜋 
+
+𝑧 ) 𝑧 *
+
+Base Model 𝚽  
+
+> Schema Head 𝝍
+
+𝑟 #+,' 𝑟 -.'.$/ 
+
+𝑟    
+
+> Risk Head 𝝋
+> ⊕
+> (1) Reward Module
+> ⊖
+> ⊕
+
+𝑚 ) 𝑚 *
+
+𝑧 0# 𝑧 0$
+
+Embedding LM 𝚿 
+
+𝑅 -.'.$/ 
+
+> Similarity Function
+
+ℒ-.'.$/    
+
+> (2) Future Reward Loss
+
+𝑝 , 𝑞 , 𝜋 !, 𝜋 ", 𝑙   
+
+> (3) Pairwise Loss
+
+SCPRM -MCTS on KGQA Reasoning 
+
+𝑒 1
+
+𝑠 2,2
+
+𝑠 4,4
+
+𝑠 4,5 𝑠 5,6
+
+𝑠 5,4
+
+𝑠 5,5
+
+𝑠 5,2
+
+𝑠 2,4
+
+𝑠 2,5
+
+𝑠 4,2                                         
+
+> 𝑟 !,!=−0.8𝑟 #,!=−0.4𝑟 ,,.=−0.1
+> 𝑟 ,,/=−0.7
+> 𝑟 !,$=−0.6𝑟 #,$=−0.9
+> 𝑟 ,,2=−1.8
+> 𝑟 ,,,=−0.2
+> 𝑟 !,#=−0.7𝑟 #,#=−0.5
+> Top -3Answer s:
+> Ground Truth:
+> 𝑒 ,,.,𝑒 ,,,
+> Input Output LLM Task
+> Head Frozen Loss Data
+> Flow
+> Gradient
+> Flow
+> Update Update
+> Reward Module
+> −log 𝜎 𝑟 %!
+> &−𝑟 %"
+> &+∆
+
+ℒ#+7$             
+
+> 𝑟 ;'𝑟 ;(𝑟 ;(
+> <
+> 𝑟 ;'
+> <
+> ||
+> ℒ)*+,
+> |%!|,|%"|ℒ)*+,
+> .
+> ans 𝑠 ,,.=𝑒 ,,.
+> ans 𝑠 ,,,=𝑒 ,,,
+> ans 𝑠 ,,/=𝑒 ,,/
+> ⊕
+
+Figure 2: The full pipeline of SCPRM training and working with MCTS for reasoning on KGQA. For a given reasoning trajectory, the cumulative past reward at each state is conditioned on its prefix context. Therefore, we model the past reward by aggregating the step-wise safety probabilities along the trajectory. However, direct multiplicative accumulation leads to vanishing reward magnitudes, which can impede optimization. To mitigate the issue, we apply the logarithmic operation on the accumulation of probabilities. Consequently, the cumulative past reward is transformed to the logarithmic summation of conditional probabilities: 
+
+G(sk) = rpast (π(k)) = log 
+
+kY
+
+t=1 
+
+(1 − pt) = 
+
+kX
+
+t=1 
+
+log(1 − pt). (4) This formulation naturally induces an additive structure over the trajectory-level reward. Specifically, the cumulative past reward satisfies G(sk+1 ) = G(sk) + c(sk, s k+1 ), and c(sk, s k+1 ) = log(1 −
+
+pk+1 ). This additive decomposability enables step-wise accumulation of rewards and naturally supports search-based inference algorithms. Besides, it facilitates fine-grained credit assignment by attributing the overall trajectory quality to individual reasoning steps. 
+
+4.2 Schema-aware Future Reward Modeling 
+
+Estimating future rewards of reasoning over KG is inherently challenging in the absence of explicit targets, and existing approaches predominantly rely on semantic similarity of query and reasoning path. We propose to approximate future rewards by leveraging observed reasoning trajectories and quantifying the alignment gap between the extracted query schema and the induced reasoning schema. The schema-aware future success probability is defined as: 
+
+wk = σ(ψ(zq − z(k)
+
+π )) , (5) where ψ is the schema head, zq = Φ( q) ∈ R1×d, and z(k)
+
+π = Φ( π(k)) ∈ R1×d. The "target" is implicit in q, and zq represents the implicit target embedding. The future reward is the logarithmic probability H(sk) = rfuture (π(k)) = log wk.Reasoning for KGQA needs ground the knowledge provided by the KG to avoid suspicious paths. In entity exploration, we can identify each entity with its type and relational directions, which consist of the reasoning schema m(T )
+
+π = ( type (e0) → type (e1) → ... → type (eT )) . For the query q, its query schema mq = ( type (e0) → constraint 1 → ... → constraint K can be extracted by few-shot prompting any powerful LLMs with human review, and constraint 1...K are some keywords in the initial query. For the sample in Figure 2, a simple query schema can be parsed as (type(Carcinoma, Breast)=disease → gene → miRNA). By comparing the reasoning schema with the query schema, we can figure out remaining information has not been fetched in the reasoning path, which consists of the "ground truth" future reward R(k)
+
+future = exp[ −|| Ψ∗(mq ) − Ψ∗(m(k)
+
+π )|| 22],. Ψ∗ denotes the parameters of the frozen embedding model that has similar architecture of Φ. We utilize R(k)
+
+future as the 5optimization goal for future reward computed by schema head. Therefore, the future reward loss is the mean squared error between the predicted future success probability wk and R(|π|)
+
+> future
+
+:
+
+Lfuture = X
+
+> π∈D
+
+(w(k) 
+
+> π
+
+− R(|π|)
+
+> future
+
+)2. (6) 
+
+4.3 Reward Module Training 
+
+Once we obtain the cumulative past reward and future reward, we combine them as the full reward: 
+
+r(π(k)) = 
+
+> k
+
+X
+
+> t=1
+
+log(1 − pt) + log wk ⇐⇒ F (sk) = log[ 
+
+> k
+
+Y
+
+> t=1
+
+(1 − pt) · wk]. (7) In KGQA tasks, a query can have several valid reasoning paths leading to the correct answer, and there may also be multiple correct answer. The semantics of different feasible paths can vary, and optimizing each path’s reward independently can impede the reward model’s generalization ability. In fact, the relative ranks of path rewards are more crucial than those absolute rewards. We adopt a pairwise optimization strategy for path rewards. Concretely, reasoning paths with correct answers that do not contain risky or erroneous steps are filtered as positive samples, whereas those that include erroneous steps are designated as negative samples. For pairs of positive and negative paths, we compute the difference between their rewards: 
+
+L(|π+|,|π−|) 
+
+> pair
+
+= − X
+
+> (π+,π −)∈D
+
+log[ σ(rπ+ − (rπ− + ∆))] , (8) where ∆ is the hyperparameter to increase the reward difference between the positive and negative paths. The pairwise ranking consistency is sufficient for the optimal path recovery. Although ranking full path rewards is important, we also need discriminate the first risky or erroneous step l in the negative path to prune the low valuable paths in advance. Therefore, we also maximize the reward difference between positive and negative paths at step l:. 
+
+L(l) 
+
+> pair
+
+= − X
+
+> (π+,π −)∈D
+
+log[ σ(r(l) 
+
+> π+
+
+− (r(l) 
+
+> π−
+
++ ∆))] . (9) The pairwise loss is integrated as Lpair = L(|π+|,|π−|) 
+
+> pair
+
++L(l)
+
+> pair
+
+, which ensures that SCPRM can not only penalize the paths containing risky steps without compensatory path rewards, but also discriminate erroneous steps by lower corresponding step-wise rewards. The total loss of training schema-aware cumulative process reward model is the summation of pairwise and future losses, with a hyperparameter λ to control their loss contributions. 
+
+L = Lpair + λ · L future . (10) 
+
+4.4 MCTS-guided KG Reasoning 
+
+Once SCPRM is trained, we apply it as the value function of MCTS to guide the path search on KGs. We start MCTS from the anchor entity e0 of each query, and expand it into reasoning trajectory by concatenating with relations and neighboring entities. Each path is stepwise evaluated by SCPRM, and the reward is stored in the last tree node along the reasoning path and backpropagates through the path to the start entity. To avoid repeated exploration on the same path, we add an extra memory module to store the explored paths. Once reaching the search budget, we choose the paths of top-k
+
+highest rewards, and the last entity of each path is considered as the predicted answer. 
+
+5 Experiments 
+
+In this section, we aim to answer the following research questions: RQ1 : Can SCPRM evaluate and rank trajectories more precise on risk-sensitive reasoning tasks than existing PRMs? RQ2 :6Can SCPRM-MCTS achieve better performance on risk-sensitive KG reasoning tasks than existing methods? RQ3 : Can SCPRM-MCTS achieve comparable performance on commonsense KG reasoning tasks? 
+
+5.1 Experimental Settings Datasets To analyze the performance of SCPRM designed for risk-sensitive KGQA tasks, we construct medical and legal KG and QA datasets, respectively. The medical queries involve unseen relevance between micro RNAs (miRNAs) and diseases, and the legal queries focus on crimes, legal provisions, and penalties under Chinese criminal law. The medical KG is constructed based on the data sources from HMDDv3.2 [ 13 ] and mirTarbase [ 8 ], which include miRNAs, genes, diseases and PMIDs 1 of relevant medical paper. We fetch the titles and abstracts of those paper via PMIDs, and extract key statements as the reference via GPT-4o-mini 2. The legal KG is constructed based on CrimeKgAssitant 3 and CAIL 2025 4, and legal concepts are considered as an entity types. We leverage GPT-4o-mini to generate queries via designed templates on the above KGs. Table 1: Statistics of KGQA datasets.             
+
+> Dataset Train Valid Test Medical KGQA 2676 673 669 Legal KGQA 8659 1562 2164 CWQ 27639 3519 3531
+
+We also conduct experiments on CWQ dataset [ 31 ], which contains multi-hop queries based on Freebase [ 2 ]. The statistics of datasets are demonstrated in Table 1, where train and validation parts are utilized for training reward models, and test part is used for evaluating the reward models on KG-based reasoning. 
+
+Evaluation Metrics We use pairwise accuracy as the evaluation metric for RQ1, and Hits@k for RQ2 and RQ3. Hit@k is computed in an answer-level manner, where a query is counted as correct if at least one ground truth answer appears in the top-k predictions. Due to multiple answers to a query in medical and legal KGQA, we set k = 3 for medical and legal evaluations. Besides, we set k = 1 
+
+for CWQ dataset by following the settings of previous approaches [29]. 
+
+Baselines We compare our method with two categories of baselines. (1) Trainable reward models adapted for KG reasoning, including vanilla PRM [ 44 ], PQM [ 19 ] and CRM [ 46 ]. (2) Prompting-based KG reasoning methods, which mainly prompt LLMs to prune and evaluate paths, including ToG [29] and ReKG-MCTS [28]. 
+
+Implementations We implement the baseline methods using their public codes, and select LLMs across different scales, including Qwen2.5-1.5B, Qwen3-4B and Llama3.1-8B. For the prompt-tuning methods, we also incorporate the GPT-4o-mini API in the experiments. The SCPRM framework comprises a trainable base LLM with reward heads, and we adopt the Low-Rank Adaptation (LoRA) strategy for parameter-efficient fine-tuning of the base LLM. The whole framework is implemented using PyTorch 2.9.1 on a workstation, which is equipped with AMD EPYC CPUs and four NVIDIA RTX A6000 GPUs, each with 48G memories. The operating system is Ubuntu 22.04 with CUDA 12.2. We use AdamW optimizer with a cosine scheduler for the learning rate, which is set 2e − 4
+
+initially. The max number of input tokens is set 512, and the hyperparamter ∆ in Eq (10) is initially set to 0.3. For the reward model comparison, we conduct 5 folds splits on train and valid subsets. 
+
+5.2 Pairwise Ranking Reward Comparison 
+
+In this subsection, we address RQ1 by evaluating the discriminative ranking capability of reward models. Due to the prohibitively high cost of acquiring absolute reward annotations for complex reasoning paths, we proxy this evaluation through a pairwise ranking formulation, where the correct prediction is defined as the reward model providing a higher reward to the positive path. For each query, we construct a pair of positive and negative paths via KG traversal. For medical and legal queries, positive paths are strictly grounded in logical supportive evidence, whereas negative paths do not follow the query logic. For each query in CWQ datasets, we leverage GPT-4o-mini to translate its SPARQL query statement into a positive path, and randomly replace entity or relation in the KG to 
+
+> 1PMID stands for PubMed Identifier. It is a unique numerical identifier to each record indexed in the PubMed database, which is the largest publicly accessible database of biomedical and life-science literature.
+> 2https://openai.com/index/GPT-4o-mini-advancing-cost-efficient-intelligence/
+> 3https://github.com/liuhuanyong/CrimeKgAssitant/blob/master/data/kg_crime.json
+> 4http://cail.cipsc.org.cn
+
+7Table 2: Pairwise ranking accuracy (%) with standard deviations of different reward models. 
+
+Methods base LLM Medical KGQA Legal KGQA CWQ PQM Qwen2.5-1.5B 72.89 ± 4.79 ( ↓ 16.87) 64.27 ± 3.82 ( ↓ 19.22) 66.38 ± 1.74 ( ↓ 6.65) CRM 85.32 ± 1.25 ( ↓ 4.44) 80.19 ± 1.06 ( ↓ 3.30) 70.75 ± 1.36 ( ↓ 2.28) PRM 87.71 ± 1.48 ( ↓ 2.05) 82.82 ± 0.65 ( ↓ 0.67) 71.24 ± 0.96 ( ↓ 1.79) SCPRM 89.76 ± 1.34 83.49 ± 1.20 73.03 ± 1.05 PQM Qwen3-4B 78.22 ± 3.98 ( ↓ 14.69) 66.75 ± 2.86 ( ↓ 19.68) 70.37 ± 2.45 ( ↓ 8.26) CRM 87.98 ± 1.37 ( ↓ 4.93) 83.54 ± 0.97 ( ↓ 2.89) 74.39 ± 1.54 ( ↓ 4.24) PRM 89.37 ± 0.87 ( ↓ 3.54) 84.62 ± 1.12 ( ↓ 1.81) 76.58 ± 1.27 ( ↓ 2.05) SCPRM 92.91 ± 1.17 86.43 ± 1.04 78.63 ± 1.38 PQM Llama3.1-8B 81.36 ± 3.46 ( ↓ 13.98) 70.29 ± 3.26 ( ↓ 17.82) 72.98 ± 2.33 ( ↓ 8.89) CRM 91.54 ± 0.94 ( ↓ 3.80) 87.03 ± 1.58 ( ↓ 1.08) 79.56 ± 1.26 ( ↓ 2.31) PRM 91.83 ± 1.91 ( ↓ 3.51) 86.70 ± 2.06 ( ↓ 1.41) 80.24 ± 1.84 ( ↓ 1.63) SCPRM 95.34 ± 1.61 88.11 ± 1.47 81.87 ± 1.51 Qwen2.51.5B Qwen34B Llama3.18B        
+
+> Medical KGQA
+> 0%
+> 20%
+> 40%
+> 60%
+> 80%
+> 100%
+> Hits@3
+> Qwen2.51.5B Qwen34B Llama3.18B
+> Legal KGQA
+> 0%
+> 20%
+> 40%
+> 60%
+> 80%
+> 100%
+> Hits@3
+> Qwen2.51.5B Qwen34B Llama3.18B
+> CWQ
+> 0%
+> 20%
+> 40%
+> 60%
+> 80%
+> 100%
+> Hits@1
+> PQMMCTS CRMMCTS PRMMCTS LCPRMMCTS
+
+Figure 3: Hits@k performance (%) of different reward models across datasets. generate negative paths. As shown in Table 2, SCPRM consistently outperforms baselines across three datasets, which demonstrates its enhanced sensitivity to risky reasoning steps, particularly in the medical KGQA. 
+
+5.3 KG-based Inference Reward Comparison 
+
+Table 3: Hits@k performance (%) of different methods across datasets. * indicates GPT-4o-mini, and ** denotes Llama3.1-8B. 
+
+Methods Medical Legal CWQ Hits@3 Hits@3 Hits@1 ToG* 83.06 80.69 70.87 ReKG-MCTS* 82.47 81.26 72.78 SCPRM-MCTS** 85.02 82.32 73.29 
+
+To address RQ2 and RQ3 , we evaluate SCPRM on KG reasoning guided by MCTS, comparing against two distinct categories of recent KGQA methods. The first category consists of trainable reward model baselines with MCTS, where trainable baselines are integrated with same base LLMs, and the second category are training-free prompting methods based on LLM APIs. The empirical results reveal several key insights. Firstly, within the trainable reward model paradigm, SCPRM-MCTS strictly outperforms all baseline reward models (PQM, CRM and PRM) across all three datasets shown in Figure 3. Secondly, despite relying on a 8B base LLM, our framework outperforms the GPT-4o-mini powered baselines (ToG and ReKG-MCTS) on the those datasets demonstrated in Table 3. 
+
+5.4 Ablation Study 
+
+To investigate the individual contributions of each component in SCPRM, we conduct an ablation study with two variants based on Llama3.1-8B, which are w/o CR (without cumulative reward) and 80.1 0.2 0.3 0.4 0.5             
+
+> Noisy Ratio
+> 60.0%
+> 70.0%
+> 80.0%
+> 90.0%
+> Accuracy
+> Medical KGQA
+> 60.0%
+> 70.0%
+> 80.0%
+> 90.0%
+> Hits@3
+> 0.1 0.2 0.3 0.4 0.5
+> Noisy Ratio
+> 60.0%
+> 70.0%
+> 80.0%
+> 90.0%
+> Accuracy
+> Legal KGQA
+> 60.0%
+> 70.0%
+> 80.0%
+> 90.0%
+> Hits@3
+> 0.1 0.2 0.3 0.4 0.5
+> Noisy Ratio
+> 60.0%
+> 70.0%
+> 80.0%
+> 90.0%
+> Accuracy
+> CWQ
+> 60.0%
+> 70.0%
+> 80.0%
+> 90.0%
+> Hits@1
+> Qwen2.51.5B (Accuracy) Qwen34B (Accuracy) Llama3.18B (Accuracy)
+> Qwen2.51.5B (Hits) Qwen34B (Hits) Llama3.18B (Hits)
+
+Figure 4: Performance (%) of different noisy ratios of SCPRM across datasets. w/o FR (without future reward). As Table 4 shows, removing CR causes severe degradation, with pairwise path ranking accuracy dropping by 9.85% to 11.82%, and Hits@k falling by 9.46% to 12.15% across datasets. Without CR, the model ignores the accumulated risk along the reasoning chain, leading to compounding errors. Notably, analyzing the metric differences reveals the distinct roles of the two components. While removing CR generally inflicts the most damage on step-level Accuracy, removing FR exhibits a remarkably acute impact on end-to-end Hits@k performance. For instance, in Legal KGQA, w/o FR causes a dramatic 12.30% drop in Hits@3, even underperforming the w/o CR variant. This divergence indicates that CR is essential for establishing a reliable foundation by penalizing historical errors, whereas FR acts as a critical lookahead mechanism that refines path utility for final selection. Therefore, they provide orthogonal and synergistic reward signals together. Table 4: Performance (%) of ablation study across datasets. 
+
+Methods Medical KGQA Legal KGQA CWQ Accuracy Hits@3 Accuracy Hits@3 Accuracy Hits@1 SCPRM 95.34 ± 1.61 85.02 ± 1.89 88.11 ± 1.47 82.32 ± 2.24 81.87 ± 1.51 73.29 ± 3.27 w/o CR 84.17 ± 2.78 72.87 ± 2.33 78.26 ± 3.48 72.56 ± 3.36 70.05 ± 3.97 61.87 ± 2.96 w/o FR 89.73 ± 1.26 78.25 ± 3.09 80.34 ± 1.44 69.72 ± 2.49 71.26 ± 1.27 62.46 ± 3.54 
+
+5.5 Robustness Analysis 
+
+In practice, errors in parsing query schema and constructing reasoning schema for a given trajectory are practically unavoidable, inevitably introducing noise during the reward model training phase. For instance, an entity might possess multiple semantic types within a KG like Freebase, or a constructed reasoning schema may inadvertently violate valid path directions. To systematically investigate the resilience of SCPRM against such schema noise, we artificially inject varying proportions of noisy schema (ranging from 0.1 to 0.5) during the training phase and evaluate its impact on KG reasoning path reward estimation with MCTS. As illustrated in Figure 4, we observe a consistent and intuitive trend across three datasets: while both pairwise path ranking accuracy and KG reasoning hits experience a gradual decline as the noise ratio increases, the degradation remains remarkably graceful. Notably, even under severe noise conditions (e.g., a 0.5 noise ratio), the models retain a robust level of performance without catastrophic failure. Furthermore, the empirical results indicate that larger base models (e.g., Llama3.1-8B) not only yield superior absolute performance but also exhibit enhanced robustness against noise compared to their smaller counterparts (e.g., Qwen2.5-1.5B). Overall, these findings substantiate the inherent robustness of SCPRM, demonstrating its capacity to effectively distill reliable reward signals even from highly noisy trajectories. 96 Conclusion 
+
+In this work, we introduce an A∗-style reward function that models both cumulative past rewards and future rewards for KG reasoning. By aggregating step-wise safety signals, the cumulative past reward formulates the existing trajectory quality. Meanwhile, the future reward estimate the future success, whose optimization align the reasoning guided by the implicit targets with the query and reasoning schema difference. The two components yield a principled and effective reward signal and improve reasoning performance. 
+
+References 
+
+[1] J. Baek, A. F. Aji, and A. Saffari. Knowledge-augmented language model prompting for zero-shot knowledge graph question answering. In Proceedings of the 1st Workshop on Natural Language Reasoning and Structured Explanations (NLRSE) , pages 78–106, 2023. [2] K. D. Bollacker, C. Evans, P. K. Paritosh, T. Sturge, and J. Taylor. Freebase: a collaboratively created graph database for structuring human knowledge. In Proceedings of the ACM SIGMOD International Conference on Management of Data, SIGMOD 2008, Vancouver, BC, Canada, June 10-12, 2008 , pages 1247–1250. ACM, 2008. [3] A. Bordes, N. Usunier, A. García-Durán, J. Weston, and O. Yakhnenko. Translating embeddings for modeling multi-relational data. In Advances in Neural Information Processing Systems 26: 27th Annual Conference on Neural Information Processing Systems 2013. Proceedings of a meeting held December 5-8, 2013, Lake Tahoe, Nevada, United States , pages 2787–2795, 2013. [4] C. Bu, G. Chang, Z. Chen, C. Dang, Z. Wu, Y. He, and X. Wu. Query-driven multimodal graphrag: Dynamic local knowledge graph construction for online reasoning. In Findings of the Association for Computational Linguistics, ACL 2025, Vienna, Austria, July 27 - August 1, 2025 , Findings of ACL, pages 21360–21380. Association for Computational Linguistics, 2025. [5] H. Cai, S. Zhao, L. Zhang, X. Shen, Q. Xu, W. Shen, Z. Wen, and T. Ban. Unilaw-r1: A large language model for legal reasoning with reinforcement learning and iterative inference. In 
+
+Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing ,pages 18128–18142, 2025. [6] K. Cobbe, V. Kosaraju, M. Bavarian, M. Chen, H. Jun, L. Kaiser, M. Plappert, J. Tworek, J. Hilton, R. Nakano, C. Hesse, and J. Schulman. Training verifiers to solve math word problems. CoRR , abs/2110.14168, 2021. [7] H. Cui, T. Peng, R. Han, J. Han, and L. Liu. Path-based multi-hop reasoning over knowledge graph for answering questions via adversarial reinforcement learning. Knowl. Based Syst. ,276:110760, 2023. [8] S. Cui, S. Yu, H.-Y. Huang, Y.-C.-D. Lin, Y. Huang, B. Zhang, J. Xiao, H. Zuo, J. Wang, and Z. Li. mirtarbase 2025: updates to the collection of experimentally validated microrna–target interactions. Nucleic Acids Res. , 53(D1):D147–D156, 2025. [9] R. Das, S. Dhuliawala, M. Zaheer, L. Vilnis, I. Durugkar, A. Krishnamurthy, A. Smola, and A. McCallum. Go for a walk and arrive at the answer: Reasoning over paths in knowledge bases using reinforcement learning. In 6th International Conference on Learning Representations, ICLR 2018, Vancouver, BC, Canada, April 30 - May 3, 2018, Conference Track Proceedings ,2018. [10] DeepSeek-AI. Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement learning. CoRR , abs/2501.12948, 2025. [11] A. Gunjal, A. Wang, E. Lau, V. Nath, B. Liu, and S. Hendryx. Rubrics as rewards: Reinforcement learning beyond verifiable domains. CoRR , abs/2507.17746, 2025. [12] P. E. Hart, N. J. Nilsson, and B. Raphael. A formal basis for the heuristic determination of minimum cost paths. IEEE transactions on Systems Science and Cybernetics , 4(2):100–107, 1968. 10 [13] Z. Huang, J. Shi, Y. Gao, C. Cui, S. Zhang, J. Li, Y. Zhou, and Q. Cui. HMDD v3.0: a database for experimentally supported human microrna-disease associations. Nucleic Acids Res. , 47(Database-Issue):D1013–D1017, 2019. [14] Z. Huang, Y. Zhuang, G. Lu, Z. Qin, H. Xu, T. Zhao, R. Peng, J. Hu, Z. Shen, X. Hu, X. Gu, P. Tu, J. Liu, W. Chen, Y. Fu, Z. Fan, Y. Gu, Y. Wang, Z. Yang, J. Li, and J. Zhao. Reinforcement learning with rubric anchors. CoRR , abs/2508.12790, 2025. [15] S. Jiang, Y. Liao, Z. Chen, Y. Zhang, Y. Wang, and Y. Wang. Meds3: Towards medical slow thinking with self-evolved soft dual-sided process supervision. In Proceedings of the AAAI Conference on Artificial Intelligence , volume 40, pages 31319–31327, 2026. [16] J. Li, P. Cao, Y. Chen, J. Xu, H. Li, X. Jiang, K. Liu, and J. Zhao. Towards better chain-of-thought: A reflection on effectiveness and faithfulness. In Findings of the Association for Computational Linguistics, ACL 2025, Vienna, Austria, July 27 - August 1, 2025 , Findings of ACL, pages 10747–10765. Association for Computational Linguistics, 2025. [17] Q. Li, X. Dai, X. Li, W. Zhang, Y. Wang, R. Tang, and Y. Yu. Codeprm: Execution feedback-enhanced process reward model for code generation. In Findings of the Association for Computational Linguistics, ACL 2025, Vienna, Austria, July 27 - August 1, 2025 , pages 8169– 8182. Association for Computational Linguistics, 2025. [18] S. Li, Z. Liu, Z. Gui, H. Chen, and W. Zhang. Enrich-on-graph: Query-graph alignment for complex reasoning with LLM enriching. In Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing, EMNLP 2025, Suzhou, China, November 4-9, 2025 ,pages 7672–7692. Association for Computational Linguistics, 2025. [19] W. Li and Y. Li. Process reward model with q-value rankings. In The Thirteenth International Conference on Learning Representations, ICLR 2025, Singapore, April 24-28, 2025 , 2025. [20] H. Lightman, V. Kosaraju, Y. Burda, H. Edwards, B. Baker, T. Lee, J. Leike, J. Schulman, I. Sutskever, and K. Cobbe. Let’s verify step by step. In The Twelfth International Conference on Learning Representations, ICLR 2024, Vienna, Austria, May 7-11, 2024 , 2024. [21] X. V. Lin, R. Socher, and C. Xiong. Multi-hop knowledge graph reasoning with reward shaping. In Proceedings of the 2018 Conference on Empirical Methods in Natural Language Processing, Brussels, Belgium, October 31 - November 4, 2018 , pages 3243–3253. Association for Computational Linguistics, 2018. [22] L. Luo, Y. Li, G. Haffari, and S. Pan. Reasoning on graphs: Faithful and interpretable large lan-guage model reasoning. In The Twelfth International Conference on Learning Representations, ICLR 2024, Vienna, Austria, May 7-11, 2024 , 2024. [23] C. Ma, Y. Chen, T. Wu, A. Khan, and H. Wang. Large language models meet knowledge graphs for question answering: Synthesis and opportunities. In Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing, EMNLP 2025, Suzhou, China, November 4-9, 2025 , pages 24578–24597. Association for Computational Linguistics, 2025. [24] C. Mavromatis and G. Karypis. GNN-RAG: graph neural retrieval for efficient large language model reasoning on knowledge graphs. In Findings of the Association for Computational Linguistics, ACL 2025, Vienna, Austria, July 27 - August 1, 2025 , Findings of ACL, pages 16682–16699. Association for Computational Linguistics, 2025. [25] T. Mu, A. Helyar, J. Heidecke, J. Achiam, A. Vallone, I. Kivlichan, M. Lin, A. Beutel, J. Schul-man, and L. Weng. Rule based rewards for language model safety. In Advances in Neural Information Processing Systems 38: Annual Conference on Neural Information Processing Systems 2024, NeurIPS 2024, Vancouver, BC, Canada, December 10 - 15, 2024 , 2024. [26] A. Ni, S. Iyer, D. Radev, V. Stoyanov, W. Yih, S. I. Wang, and X. V. Lin. LEVER: learning to verify language-to-code generation with execution. In International Conference on Machine Learning, ICML 2023, 23-29 July 2023, Honolulu, Hawaii, USA , volume 202 of Proceedings of Machine Learning Research , pages 26106–26128, 2023. 11 [27] L. Ouyang, J. Wu, X. Jiang, D. Almeida, C. L. Wainwright, P. Mishkin, C. Zhang, S. Agarwal, K. Slama, A. Ray, J. Schulman, J. Hilton, F. Kelton, L. Miller, M. Simens, A. Askell, P. Welinder, P. F. Christiano, J. Leike, and R. Lowe. Training language models to follow instructions with human feedback. In Advances in Neural Information Processing Systems 35: Annual Conference on Neural Information Processing Systems 2022, NeurIPS 2022, New Orleans, LA, USA, November 28 - December 9, 2022 , 2022. [28] X. Song, S. Zhang, and T. Yu. Rekg-mcts: Reinforcing LLM reasoning on knowledge graphs via training-free monte carlo tree search. In Findings of the Association for Computational Linguistics, ACL 2025, Vienna, Austria, July 27 - August 1, 2025 , pages 9288–9306. Association for Computational Linguistics, 2025. [29] J. Sun, C. Xu, L. Tang, S. Wang, C. Lin, Y. Gong, L. Ni, H.-Y. Shum, and J. Guo. Think-on-graph: Deep and responsible reasoning of large language model on knowledge graph. In The Twelfth International Conference on Learning Representations , 2024. [30] Z. Sun, Z. Deng, J. Nie, and J. Tang. Rotate: Knowledge graph embedding by relational rotation in complex space. In 7th International Conference on Learning Representations, ICLR 2019, New Orleans, LA, USA, May 6-9, 2019 , 2019. [31] A. Talmor and J. Berant. The web as a knowledge-base for answering complex questions. In 
+
+Proceedings of the 2018 Conference of the North American Chapter of the Association for Computational Linguistics: Human Language Technologies, NAACL-HLT 2018, New Orleans, Louisiana, USA, June 1-6, 2018, Volume 1 (Long Papers) , pages 641–651. Association for Computational Linguistics, 2018. [32] X. Tan, X. Wang, Q. Liu, X. Xu, X. Yuan, and W. Zhang. Paths-over-graph: Knowledge graph empowered large language model reasoning. In Proceedings of the ACM on Web Conference 2025, WWW 2025, Sydney, NSW, Australia, 28 April 2025- 2 May 2025 , pages 3505–3522. ACM, 2025. [33] M. Turpin, J. Michael, E. Perez, and S. R. Bowman. Language models don’t always say what they think: Unfaithful explanations in chain-of-thought prompting. In Advances in Neural Information Processing Systems 36: Annual Conference on Neural Information Processing Systems 2023, NeurIPS 2023, New Orleans, LA, USA, December 10 - 16, 2023 , 2023. [34] J. Uesato, N. Kushman, R. Kumar, H. F. Song, N. Y. Siegel, L. Wang, A. Creswell, G. Irving, and I. Higgins. Solving math word problems with process- and outcome-based feedback. CoRR ,abs/2211.14275, 2022. [35] H. Wang, C. Gao, Q. Xu, B. Liu, G. Hussein, H. R. Korsapati, M. E. Labban, K. Iheasirim, M. Hassan, and G. Anil. Process-supervised reward models for verifying clinical note generation: A scalable approach guided by domain expertise. In Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing , pages 19138–19158, 2025. [36] P. Wang, L. Li, Z. Shao, R. Xu, D. Dai, Y. Li, D. Chen, Y. Wu, and Z. Sui. Math-shepherd: Verify and reinforce llms step-by-step without human annotations. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), ACL 2024, Bangkok, Thailand, August 11-16, 2024 , pages 9426–9439, 2024. [37] Y. Wang, S. Fan, M. Wang, S. Gao, C. Wang, and N. Yin. Damr: Efficient and adaptive context-aware knowledge graph question answering with llm-guided mcts. CoRR , abs/2508.00719, 2025. [38] J. Wei, X. Wang, D. Schuurmans, M. Bosma, B. Ichter, F. Xia, E. H. Chi, Q. V. Le, and D. Zhou. Chain-of-thought prompting elicits reasoning in large language models. In Advances in Neural Information Processing Systems 35: Annual Conference on Neural Information Processing Systems 2022, NeurIPS 2022, New Orleans, LA, USA, November 28 - December 9, 2022 , 2022. [39] W. Xiong, T. Hoang, and W. Y. Wang. Deeppath: A reinforcement learning method for knowledge graph reasoning. In Proceedings of the 2017 Conference on Empirical Methods in Natural Language Processing, EMNLP 2017, Copenhagen, Denmark, September 9-11, 2017 ,pages 564–573. Association for Computational Linguistics, 2017. 12 [40] J. Xu, H. Fei, H. Zhou, X. Quan, Q. Huang, S. Wu, W. Y. Wang, M.-L. Lee, and W. Hsu. Logicreward: Incentivizing llm reasoning via step-wise logical supervision. The International Conference on Learning Representations , 2026. [41] S. Yao, D. Yu, J. Zhao, I. Shafran, T. Griffiths, Y. Cao, and K. Narasimhan. Tree of thoughts: Deliberate problem solving with large language models. In Advances in Neural Information Processing Systems 36: Annual Conference on Neural Information Processing Systems 2023, NeurIPS 2023, New Orleans, LA, USA, December 10 - 16, 2023 , 2023. [42] E. Yee, A. Li, C. Tang, Y. H. Jung, R. Paturi, and L. Bergen. Dissociation of faithful and unfaithful reasoning in llms. CoRR , abs/2405.15092, 2024. [43] F. Yu, A. Gao, and B. Wang. Ovm, outcome-supervised value models for planning in mathe-matical reasoning. In Findings of the Association for Computational Linguistics: NAACL 2024, Mexico City, Mexico, June 16-21, 2024 , pages 858–875, 2024. [44] J. Yun, J. Sohn, J. Park, H. Kim, X. Tang, Y. Shao, Y. Koo, M. Ko, Q. Chen, M. Gerstein, M. Moor, and J. Kang. Med-prm: Medical reasoning models with stepwise, guideline-verified process rewards. In Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing , pages 16565–16582, 2025. [45] D. Zhang, S. Zhoubian, Z. Hu, Y. Yue, Y. Dong, and J. Tang. Rest-mcts*: LLM self-training via process reward guided tree search. In Advances in Neural Information Processing Systems 38: Annual Conference on Neural Information Processing Systems 2024, NeurIPS 2024, Vancouver, BC, Canada, December 10 - 15, 2024 , 2024. [46] Z. Zhang, Z. Shan, K. Song, Y. Li, and K. Ren. Linking process to outcome: Conditional reward modeling for LLM reasoning. CoRR , abs/2509.26578, 2025. [47] C. Zheng, J. Zhu, Z. Ou, Y. Chen, K. Zhang, R. Shan, Z. Zheng, M. Yang, J. Lin, Y. Yu, and W. Zhang. A survey of process reward models: From outcome signals to process supervisions for large language models. CoRR , abs/2510.08049, 2025. 13
