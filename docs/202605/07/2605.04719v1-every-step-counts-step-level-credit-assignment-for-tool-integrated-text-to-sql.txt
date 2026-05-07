@@ -1,0 +1,973 @@
+Title: Every Step Counts: Step-Level Credit Assignment for Tool-Integrated Text-to-SQL
+
+URL Source: https://arxiv.org/pdf/2605.04719v1
+
+Published Time: Thu, 07 May 2026 00:46:36 GMT
+
+Number of Pages: 19
+
+Markdown Content:
+# Every Step Counts: Step-Level Credit Assignment for Tool-Integrated Text-to-SQL 
+
+Yaxun Dai 1* , Baolin Sun 2† , Junying Wang 3, Pengfei Wang 2, Yingqi Gao 2,Xuemei Dong 2, Mengdie Chu 2, Xiang Qi 2† , Pingfu Chao 1† 1Institute of Computer Science and Technology, Soochow University, China, 
+
+> 2
+
+Ant Digital Technologies, Ant Group, 
+
+> 3
+
+School of Management, University of Science and Technology of China {daiyaxun.dyx,xuanfeng.sbl,qixiang.qx}@antgroup.com, pfchao@suda.edu.cn 
+
+Abstract 
+
+Tool-integrated Text-to-SQL parsing has emerged as a promising paradigm, framing SQL generation as a sequential decision-making process interleaved with tool execu-tion. However, existing reinforcement learning approaches mainly rely on coarse-grained out-come supervision, resulting in a fundamental credit assignment problem: models receive the same reward for any trajectory that yields the correct answer, even when intermediate steps are redundant, inefficient, or erroneous. Con-sequently, models are encouraged to explore suboptimal reasoning spaces, limiting both ef-ficiency and generalization. To address this problem, we propose FineStep , a novel frame-work for step-level credit assignment in tool-augmented Text-to-SQL. First, we introduce a reward design with independent process re-wards to alleviate the signal sparsity of out-come supervision. Next, we present a step-level credit assignment mechanism to precisely quantify the value of each reasoning step. Fi-nally, we develop a policy optimization method based on step-level advantages for efficient up-dates. Extensive experiments on BIRD bench-marks show that FineStep achieves state-of-the-art performance and reduces redundant tool in-teractions, with a 3.25% average EX gain over GRPO at the 4B scale. 
+
+1 Introduction 
+
+The Text-to-SQL task, which aims to translate natu-ral language questions into executable SQL queries, serves as a critical bridge connecting non-expert users with structured data (Liu et al., 2024a; Zhang et al., 2024). With the rapid advancement of Large Language Models (LLMs), the research paradigm in this field is undergoing a profound shift from single-step semantic parsing to Tool-augmented Agentic Reasoning (Singh et al., 2025; Mai et al., 2025; Wang et al., 2025). Under this paradigm, the model no longer generates the final query in Wrong Repeat       
+
+> Useless
+> Correct
+> Outcome Reward Advantage （GRPO ）Step1 Step2 Step3 Step4
+> Advantages of each trajectory
+> Step sharing advantages
+> Wrong, repetitive, useless steps have high advantages (promoted ); correct steps have low advantages (suppressed )
+
+Figure 1: The credit assignment problem in standard GRPO (Shao et al., 2024). τ denotes a reasoning trajec-tory whose final step outputs the answer. Colors mark wrong, repetitive, useless, and correct steps, identified via tool calls in tool-integrated reasoning. 
+
+a single pass but iteratively approaches the solu-tion through multi-turn interactions with an SQL executor: generating SQLs, observing execution feedback, and refining logic in a loop until the cor-rect answer is derived (Dai et al., 2025). To optimize decision-making strategies within this complex search space, Agentic Reinforcement Learning (Agentic RL) (Zhang et al., 2026) has be-come the dominant paradigm for enhancing multi-step reasoning capabilities (Shang et al., 2025; Dong et al., 2025). However, existing methods (e.g., GRPO (Shao et al., 2024)) update policies relying solely on rewards derived from the final execution result (Dai et al., 2025; Xu et al., 2025). This mechanism faces a severe Credit Assignment Problem in long-horizon reasoning tasks, which refers to the difficulty of quantifying the contribu-tion of intermediate steps (Feng et al., 2025; Li et al., 2025c; Xue et al., 2025). Due to sparse feed-back, this mechanism rewards the trajectory as a whole, consequently failing to distinguish between effective reasoning steps and irrelevant redundant operations (Ji et al., 2025; Lai et al., 2025; Xia et al., 2025). As illustrated in Figure 1, a trajec-tory filled with redundant or even erroneous steps receives high rewards solely because the final an-
+
+> arXiv:2605.04719v1 [cs.CL] 6 May 2026
+
+swer is correct. This misleading signal induces the model to learn inefficient “blind trial-and-error” strategies rather than genuine logical reasoning, thereby severely compromising robustness (Chen et al., 2025; Xia et al., 2025). To break the “trajectory-level” black box and explicitly quantify intermediate step utility, we pro-pose FineStep , a fine-grained credit assignment framework tailored for tool-augmented Text-to-SQL. First, alongside outcome supervision, we introduce independent process rewards to evalu-ate step validity and information gain. Second, we design a multi-dimensional step-level credit as-signment strategy to transform raw rewards into discriminative advantages across three dimensions: (1) employing outcome reward discounting to ad-dress temporal heterogeneity and reinforce the causal links of recent actions; (2) process reward smoothing to capture logical dependencies and af-firm the instrumental value of “preparatory steps” with low immediate returns; (3) group-based step-level normalization to eliminate baseline discrepan-cies, identifying “correct steps in failed trajectories” and “redundancies in successful ones.” Finally, we extend GRPO to the step level and incorporate a masking mechanism for external feedback, ensur-ing the model focuses strictly on optimizing its internal reasoning logic. In summary, the main contributions of this paper are as follows: • We propose FineStep , a framework that aug-ments coarse-grained outcome supervision with independent process rewards to explicitly eval-uate intermediate reasoning utility, overcoming the limitations of sparse feedback. • We design a multi-dimensional step-level credit assignment mechanism that addresses the attri-bution challenge in long-horizon reasoning by reconstructing advantage estimation across tem-poral, logical, and group-relative dimensions. • Extensive experiments across benchmarks (e.g., BIRD) show that FineStep surpasses SOTA exe-cution accuracy while reducing reasoning steps and tool invocation errors, achieving a 3.25% average EX gain over GRPO at the 4B scale. 
+
+2 Related Work 
+
+2.1 LLM Reasoning in Text-to-SQL 
+
+With the advancement of LLMs, the research fo-cus in Text-to-SQL has shifted from traditional semantic parsing to complex reasoning genera-tion (Liu et al., 2024a,b). Early efforts primar-ily utilized Prompt Engineering (e.g., CoT (Wei et al., 2022), DIN-SQL (Pourreza and Rafiei, 2023), Alpha-SQL (Li et al., 2025a), CHASE-SQL (Pour-reza et al., 2024)) to guide reasoning via pre-orchestrated static workflows. However, these methods lack the capability to autonomously op-timize strategies. To address this, Reinforcement Learning was introduced. Representative works such as Reasoning-SQL (Pourreza et al., 2025), SQL-R1 (Ma et al., 2025), and Arctic-Text2SQL-R1 (Yao et al., 2025) treat the model as a single-step decision-maker, fine-tuning it using final execution accuracy. However, this single-turn paradigm lacks self-correction capabilities, limiting its effective-ness on complex queries (Dai et al., 2025; Yang et al., 2025). Consequently, the field has shifted to-wards Tool-integrated Agentic Reasoning. Frame-works like ReEx-SQL (Dai et al., 2025), MTIR-SQL (Xu et al., 2025), SKYRL-SQL (Liu et al., 2025), and MARS-SQL (Yang et al., 2025) for-mulate SQL generation as an interactive process, enabling iterative refinement through a “Model-Tool-Feedback” loop. Despite this shift, existing optimization methods still predominantly rely on coarse-grained outcome supervision (Shao et al., 2024; Yu et al., 2025): as long as the final SQL is correct, the entire trajectory—including potential redundant or erroneous steps—receives positive reinforcement. This failure to distinguish interme-diate step quality leads to the erroneous reinforce-ment of invalid parsing or redundant invocations, highlighting a critical limitation in credit assign-ment for multi-turn Text-to-SQL. 
+
+2.2 Credit Assignment in LLM Reasoning 
+
+To mitigate feedback sparsity, Process Supervision has garnered widespread attention (Setlur et al., 2024; Zhang et al., 2025a). For instance, research in mathematical reasoning (Wang et al., 2024; Lightman et al., 2024; Guo et al., 2025) has vali-dated the superiority of step-based dense rewards, while works in the web agent domain (Feng et al., 2025; Chen et al., 2025; Fan et al., 2026) have ex-plored step-level credit assignment via time-decay mechanisms. However, integrating process super-vision into Agentic RL remains a nascent direc-tion (Zhang et al., 2026). Existing methods typ-ically rely on expensive human annotation (e.g., PRMs (Zhang et al., 2025b)) or employ simple heuristic decay (Feng et al., 2025), failing to cap-Response Format: 
+
+> <reasoning> Reasoning process here. </reasoning> <tool_call> {"name": "sql_executor", "arguments": {"sql": "YOUR_SQL"}} </tool_call> <result> Execution result from the engine. </result> <reasoning> Further reasoning. </reasoning> <answer> (Final verified SQL) </answer>
+> Figure 2: Response format for FineStep.
+
+ture the unique logical dependencies in Text-to-SQL, such as the instrumental value of exploratory queries for subsequent generation (Zhang et al., 2024). Notably, existing PRM-based approaches such as PRIME (Cui et al., 2025) and Reward-SQL (Zhang et al., 2025a) are not directly aligned with our setting. Reward-SQL focuses on in-ternal step-wise Text-to-SQL reasoning, whereas FineStep targets tool-integrated multi-turn Text-to-SQL , where each step comprises reasoning, an SQL tool call, and executor feedback. Consequently, ex-isting PRMs cannot be directly transferred to tool-integrated reasoning (TIR) setting. Constructing a PRM-based TIR baseline would require building tool-interaction-level PRM data, performing addi-tional SFT/PRM training, and deploying the PRM during RL or inference—introducing extra supervi-sion, computation, and experimental variables. 
+
+3 Methodology 
+
+To address the Credit Assignment Problem in tool-augmented Text-to-SQL, we propose FineStep , a novel framework for step-level credit assignment in Figure 3. First, we introduce the Reward Design, incorporating independent process rewards to miti-gate signal sparsity caused by outcome supervision. Next, we detail the core Step-level Credit Assign-ment Mechanism, aimed at precisely quantifying the true value of each reasoning step. Finally, we present the policy optimization based on step-level advantages to achieve efficient parameter updates. 
+
+3.1 Problem Definition 
+
+We formulate the tool-augmented Text-to-SQL task as a sequential decision-making process interacting with an SQL executor. Given a natural language question x and a database schema S, the initial state is denoted as sinit = {x, S} . As illustrated in Fig-ure 2, the model adheres to a “Think-Act-Observe” paradigm. Here, we explicitly define a single rea-soning step t as a complete interaction cycle: the model’s thought ot, action at, and the execution feedback et. Finally, the model autonomously gen-erates the final answer y. The resulting trajectory 
+
+τ of length T + 1 is: 
+
+τ = {sinit , o 0, a 0, e 0, . . . , o T −1, a T −1, e T −1, o T , y }
+
+(1) 
+
+3.2 Reward Design 
+
+To achieve precise credit assignment, we construct a multi-granular reward function comprising an out-come reward ( Rout ) and a process reward ( rproc  
+
+> t
+
+). The former evaluates the final correctness to pro-vide global guidance, while the latter quantifies step-wise information gain, effectively mitigating the signal sparsity in outcome supervision. 
+
+3.2.1 Outcome Reward Design 
+
+The outcome reward evaluates the global consis-tency of the reasoning trajectory and the correct-ness of the final answer, defined as the sum of format and execution rewards: 
+
+Rout = Rfmt (τ ) + Rexec (y) (2) Specifically, we define Rfmt ∈ { 0, 1} to enforce the structural paradigm in Figure 2 (e.g., <think> 
+
+and <answer> tokens), and Rexec ∈ { 0, 2} to eval-uates whether the execution result of the final SQL 
+
+y exactly matches the ground truth, adopting the higher weighting strategy from ReEx-SQL (Dai et al., 2025). 
+
+3.2.2 Process Reward Design 
+
+To mitigate the signal sparsity inherent in outcome supervision, we formulate the fine-grained process reward rproc  
+
+> t
+
+as a combination of hard constraints on validity and soft rewards for information gain. 
+
+Hard Constraints Reward Invalid steps (e.g., erroneous tool calls) not only provide zero informa-tion gain but also impair the reasoning process by introducing noise and unnecessarily lengthening the chain of thought. To mitigate this, we design a rule-based hard constraint Ihard to assign the mini-mal reward to non-compliant steps: 
+
+Ihard (at) = 
+
+(
+
+0, if at is invalid or repetitive 
+
+1, otherwise (3) Specifically, any step that fails syntax checks or duplicates history is deemed invalid and strictly penalized with a zero score. Normalization           
+
+> Wrong Useless Repeat
+> answer
+> Repeat
+> answer
+> Repeat
+> vs. GRPO
+> vs.
+> vs.
+> Outcome Reward ：
+> (a) Trajectory Visualization and Step-Level Advantage Computation via FineStep Credit Assignment.
+> Thinking Tool Call Tool Feedback
+> Step
+> Process reward Single-step advantage
+> Comparison of with GRPO: promoted ( ); suppressed ( )
+> Legend explanation
+> Individual step include: Process Reward ：
+> (b) Reward Design
+> Recall-based soft reward Hard constraints reward
+> Format reward Execution reward
+> (c) Credit Assignment
+> Discounting: Time-decayed value estimate
+> Smoothing: Stable-process value estimate
+> and
+> Integration of advantages:
+> Step-level
+
+Figure 3: Overview of FineStep, illustrating its step-level credit assignment and reward design. (a) Trajectory visualization and step-level advantage computation, showing how FineStep promotes or suppresses specific reasoning steps compared to GRPO; (b) reward design with process and outcome rewards; and (c) credit assignment integrating discounted outcome and smoothed process advantages. More details are provided in Section 3. 
+
+Recall-based Soft Reward To quantify the infor-mation gain of intermediate steps, we introduce an execution-based soft reward rsoft . We posit that the multi-step reasoning process parallels SQL query execution, which proceeds from broad filtering to specific refinement. Consequently, intermediate ex-ecution results E(at) naturally serve as supersets of the ground truth E(y). Therefore, we employ cell-level recall to define rsoft :
+
+rsoft (at) = |E(at) ∩ E(y)||E(y)| + ϵ (4) where E(·) denotes the flattened set of cell values. 
+
+Comprehensive Process Reward The final pro-cess reward rproc  
+
+> t
+
+combines the hard constraint and soft reward. Crucially, the soft reward is activated only if the hard constraint is met: 
+
+rproc  
+
+> t
+
+= Ihard (at) · (1 + rsoft (at)) (5) 
+
+3.3 Step-level Credit Assignment 
+
+Despite the rich signals from multi-granular re-wards, direct optimization still faces challenges: (1) How to attribute credit to individual steps for the outcome reward? (2) How to incentivize indis-pensable "exploration actions" that yield low imme-diate returns? (3) How to distinguish high-quality steps from redundant operations, overcoming the limitations of trajectory-level normalization? To address these, we propose a framework compris-ing Outcome Reward Discounting, Process Reward Smoothing, and Step-level Advantage Estimation. 
+
+3.3.1 Outcome Reward Discounting 
+
+In multi-step reasoning, actions exhibit tempo-ral heterogeneity: early steps lay the foundation, whereas late steps directly determine the outcome. Consequently, uniformly distributing the final re-ward Rout results in ambiguous credit assignment. To differentiate these contributions, we introduce a discount factor γ to propagate the reward backward, yielding a time-decayed value estimate V out  
+
+> t
+
+:
+
+V out  
+
+> t
+
+= γT −t · Rout , t ∈ [0 , T ], γ ∈ (0 , 1) (6) This decay enforces temporal proximity, prioritiz-ing recent causal actions while sustaining incen-tives for early decisions, to ensure more discrimi-native credit assignment. 
+
+3.3.2 Process Reward Smoothing 
+
+Rule-based process rewards may suffer from low re-call, causing critical exploration actions to be over-looked. This can mislead the model into evading these essential steps and falling into local optima. To capture the underlying logical dependencies, we propose an reverse smoothing mechanism that backtracks future potential to the current step. The smoothed process value V proc  
+
+> t
+
+is defined as: 
+
+V proc  
+
+> t
+
+=
+
+(
+
+rproc  
+
+> t
+
+, if t = T − 1(1 − β) · rproc  
+
+> t
+
++ β · V proc  
+
+> t+1
+
+, if t ∈ [0 , T − 1) 
+
+(7) 
+
+where β ∈ [0 , 1] is the smoothing coefficient. By integrating subsequent value, this mechanism affirms the instrumental value of exploration, en-couraging the model to prioritize global planning over myopic optimization. 
+
+3.3.3 Step-level Advantage Estimation 
+
+Given the global signal V out and the local signal 
+
+V proc , the key challenge is to combine them into a unified advantage metric with discriminative step-level credit assignment. To address this, we per-form group-level normalization over all valid steps across the sampled trajectories. Specifically, for a group of G sampled trajectories where trajec-tory i has Ti valid steps, we construct value sets 
+
+Vout = {V out  
+
+> i,t
+
+| i = 1 , . . . , G, t = 0 , . . . , T i} and 
+
+Vproc = {V proc  
+
+> i,t
+
+| i = 1 , . . . , G, t = 0 , . . . , T i}
+
+collecting values from all valid steps regardless of their position. The standardized advantages are then computed using the mean and standard devia-tion over these sets:                
+
+> ˆAout
+> i,t =Vout
+> i,t −Mean (Vout )
+> Std (Vout ) + ϵ,ˆAproc
+> i,t =Vproc
+> i,t −Mean (Vproc )
+> Std (Vproc ) + ϵ.
+> (8)
+
+The final step-level advantage is computed as                
+
+> Ai,t =
+> (ˆAout
+> i,t ,t=Tλ·ˆAout
+> i,t + (1 −λ)·ˆAproc
+> i,t ,otherwise .(9)
+
+The advantage Ai,t is broadcast to all tokens ( rt,
+
+at, and et) of step t in trajectory i. Since the final step t = T generates the answer, only the outcome signal is used. This design removes baseline dis-crepancies and enables precise reinforcement of correct intermediate reasoning steps, even in trajec-tories that ultimately fail. 
+
+3.4 Policy Optimization 
+
+Following the GRPO (Shao et al., 2024) paradigm, we optimize the policy πθ by maximizing a sur-rogate objective over the sampled group. Unlike trajectory-level GRPO, we use the step-level advan-tage Ai,t for finer credit assignment. The objective is defined as:                   
+
+> J(θ) = Ex∼D ,{yi}Gi=1 ∼πθold (·| x;E)
+> "
+> 1
+> G
+> GX
+> i=1
+> 1
+> TiTiX
+> t=1
+> (min ( ri,t (θ)·Ai,t , clip )−βDKL )
+> #
+> ,clip =clip (ri,t (θ),1−ϵ, 1 + ϵ)Ai,t (10)
+
+where ri,t (θ) = πθ (ai,t |si,t )  
+
+> πθold (ai,t |si,t )
+
+is the probability ratio, and β is the KL penalty coefficient. Crucially, we mask environment feedback tokens during back-propagation, ensuring the optimization targets only the model’s generative logic (thoughts and actions) rather than tool outputs. 
+
+4 Experiments 
+
+Datasets and Metrics We evaluate our method on two widely used text-to-SQL benchmarks: BIRD (Li et al., 2023) and Spider (Yu et al., 2018). For BIRD, we report execution accuracy (EX) and valid efficiency score (VES), where VES mea-sures the execution efficiency of predicted SQL queries relative to the ground truth. For Spider, we use execution accuracy (EX) and test-suite ac-curacy (TS) (Zhong et al., 2020), which verifies whether predicted SQL queries produce correct re-sults across multiple database test cases. We also evaluate three Spider robustness variants: Spider-Syn (Gan et al., 2021a), Spider-Realistic (Deng et al., 2021), and Spider-DK (Gan et al., 2021b). More details are provided in Appendix A.1. 
+
+Baselines We compare our method with four RL algorithms: GRPO (Shao et al., 2024), DAPO (Yu et al., 2025), GSPO (Zheng et al., 2025), and GIGPO (Feng et al., 2025). Among them, GIGPO clusters intermediate reasoning trajectories to nor-malize process-level advantages, while the others compute advantages solely from outcome rewards. 
+
+Implementation Details We evaluate three mod-els: Qwen3-4B-Instruction, Qwen3-8B, and Qwen3-30B-A3B, representing an instruction model, a base model, and an MoE model, re-spectively. All RL algorithms are implemented in the Verl (Sheng et al., 2024) framework with a batch size of 128, 5 epochs, and a group size of 8. Database execution tools are implemented us-ing SQLite (SQLite, n.d.) and FastAPI (Tiangolo, 2024). Unless otherwise specified, all results are obtained by sampling 8 responses with tempera-ture T = 1 and selecting the final prediction via self-consistency. For FineStep, the smoothing co-efficient β and advantage weight λ are both set to 0.5, discount factor γ is set to 0.98. More imple-mentation details are provided in Appendix A.3. 
+
+4.1 Overall Performance Cross-Model Adaptability Table 1 reports the performance of different RL algorithms on the BIRD and Spider benchmarks across three model configurations (4B, 8B, and 30B-A3B). FineStep consistently achieves the best average performance across all model architectures. Compared with GRPO, FineStep improves the average score by +3.25%, +2.00%, and +1.60% on the 4B, 8B, and 30B-A3B models, respectively. These re-Method BIRD Dev Spider Dev Spider Test Spider-Realistic Spider-Syn Spider-DK Avg. 
+
+EX VES EX TS EX EX TS EX TS EX 
+
+Model Size: 4B 
+
+No-Train 65.58 67.97 85.6 75.4 85.2 82.5 66.3 76.1 65.0 73.6 74.34 GRPO 66.23 70.65 88.5 81.4 85.0 83.7 75.2 78.9 71.2 80.7 78.15 DAPO 67.67 69.93 89.7 84.1 89.3 87.2 78.5 80.0 72.5 79.6 79.85 GSPO 68.06 69.99 89.5 83.9 89.2 86.0 78.1 80.1 72.1 78.9 79.59 GIGPO 67.99 70.20 89.6 83.4 89.1 87.6 80.5 80.2 71.7 80.4 80.07 FineStep (Our) 68.51 ↑2.28 71.65 ↑1.00 90.3 ↑1.8 84.3 ↑2.9 89.9 ↑4.9 88.6 ↑4.9 80.9 ↑5.7 83.1 ↑4.2 75.2 ↑4.0 81.5 ↑0.8 81.40 ↑3.25 
+
+Model Size: 8B 
+
+No-Train 62.71 66.76 84.4 72.1 85.0 80.9 65.4 75.4 62.0 75.0 72.97 GRPO 66.56 68.13 87.2 79.1 88.7 83.7 75.8 79.2 70.0 78.7 77.71 DAPO 65.97 68.36 88.6 81.2 88.5 85.4 76.0 79.5 71.1 79.4 78.40 GSPO 66.62 69.40 88.4 81.5 89.5 84.8 77.0 79.6 70.3 80.2 78.73 GIGPO 66.88 68.27 88.6 81.2 89.4 85.6 77.0 80.4 71.7 79.1 78.82 FineStep (Our) 68.06 ↑1.50 70.90 ↑2.77 88.9 ↑1.7 82.4 ↑3.3 89.9 ↑1.2 86.0 ↑2.3 77.9 ↑2.1 81.4 ↑2.2 71.6 ↑1.6 80.0 ↑1.3 79.71 ↑2.00 
+
+Model Size: 30B-A3B 
+
+No-Train 67.08 69.63 82.4 69.2 82.1 82.5 64.6 75.4 61.2 75.3 72.94 GRPO 68.32 70.77 88.0 78.6 88.9 83.3 73.6 79.6 70.4 78.7 78.02 FineStep (Our) 69.23 ↑0.91 73.30 ↑2.53 87.6 ↓0.4 81.2 ↑2.6 89.5 ↑0.6 84.1 ↑0.8 76.0 ↑2.4 80.8 ↑1.2 72.6 ↑2.2 81.9 ↑3.2 79.62 ↑1.60 
+
+Table 1: Overall performance of different algorithms. Subscripts indicate improvements over GRPO. The best results are highlighted in bold , and the second-best in gray bold . The same notation is used in Tables 3 and 4. 
+
+sults demonstrate that FineStep adapts well to dif-ferent model scales and architectures, including instruction-tuned, base, and MoE models. 
+
+Comparison with Baselines FineStep consis-tently outperforms existing RL methods (GRPO, DAPO, GSPO, and GIGPO) on most evaluation metrics. By introducing step-level credit assign-ment, FineStep provides denser supervision for long-chain SQL reasoning. This design mitigates cases where correct final execution masks flawed intermediate reasoning, leading to reliable result. 
+
+4.2 Process Reward Behavior 
+
+Figure 5 shows the relationship between the hard constraint zero ratio and the recall-based pro-cess reward ( rsoft ) across different RL algorithms. FineStep consistently occupies the upper-left re-gion of the plot across both model scales (4B and 8B), achieving the lowest violation rates (0.018 and 0.014) and the highest recall-based rewards (1.739 and 1.710), indicating more reliable tool us-age and more informative intermediate execution. In contrast, other RL methods mostly fall into the lower-left region with higher violation rates and lower process rewards, with GRPO performing the worst. GIGPO performs better than other base-lines due to step-level advantage normalization, but still trails FineStep with its explicit step-level re-ward and advantage design. These results show that outcome-only optimization cannot ensure valid and 
+
+Configuration on Bird Dev EX (%) VES (%) 
+
+GRPO (Baseline) 66.56 68.13 FineStep w/ Precision-based Reward 66.95 69.24 w/ F1-based Reward 66.82 69.28 w/ Recall-based Reward 68.06 70.90 
+
+Table 2: Comparison of soft reward on FineStep-8B. 
+
+informative reasoning trajectories, while FineStep shifts the trajectory distribution toward more reli-able paths. 
+
+4.3 Training Dynamics Analysis 
+
+Figure 4 illustrates the training dynamics of dif-ferent RL algorithms. FineStep exhibits more sta-ble optimization and consistently higher reward signals. As shown in Fig. 4(a), FineStep main-tains moderate actor entropy, avoiding the entropy collapse in GSPO and the entropy explosion in GRPO. In terms of reasoning efficiency, Fig. 4(c,d) shows that FineStep produces more concise trajec-tories with fewer interaction turns, whereas GSPO tends to generate longer responses with redundant tool calls. FineStep also achieves higher process and execution rewards with near-perfect formatting (Fig. 4(e,f,g,h)), while baselines such as DAPO and GRPO suffer reward collapse in later training stages. Overall, these results indicate that FineStep shifts the reasoning trajectory distribution toward more reliable and informative paths. 0 100 200 300                      
+
+> 0.0
+> 0.5
+> 1.0
+> (a) Actor Entropy
+> 0100 200 300
+> -0.4
+> -0.2
+> 0.0
+> (b) Advantages
+> 0100 200 300
+> 500
+> 1000
+> (c) Response Length
+> 0100 200 300
+> 4
+> 5
+> 6
+> 7
+> (d) Number of Turns
+> 0100 200 300
+> Train Steps
+> 1.0
+> 1.5
+> (e) Process Reward
+> 0100 200 300
+> Train Steps
+> 1.25
+> 1.50
+> 1.75
+> (f) Execution Reward
+> 0100 200 300
+> Train Steps
+> 0.925
+> 0.950
+> 0.975
+> 1.000
+> (g) Format Reward
+> 0100 200 300
+> Train Steps
+> 2.00
+> 2.25
+> 2.50
+> 2.75
+> (h) Result Reward
+
+FineStep GIGPO GSPO DAPO GRPO Figure 4: Comparison of indicators of different algorithms during RL training. 0.01 0.02 0.03 0.04 0.05 0.06 0.07 
+
+Hard Constraint Zero Ratio (Lower is Better) 
+
+> 1.45
+> 1.50
+> 1.55
+> 1.60
+> 1.65
+> 1.70
+> 1.75
+> 1.80
+> Recall Mean Reward (Higher is Better)
+
+Optimal 
+
+> Algorithms
+> FineStep
+> GIGPO
+> GSPO
+> DAPO
+> GRPO
+> Model Scale
+> 4B Model
+> 8B Model
+
+Figure 5: Comparison of process rewards on Bird Dev. 
+
+4.4 Effect of Soft Reward Design 
+
+Table 2 shows that the recall-based soft reward achieves the best performance among all variants. This advantage stems from the nature of multi-step Text-to-SQL reasoning, where intermediate execu-tion results often form supersets of the final answer. In such cases, recall better captures whether useful information is preserved during intermediate steps. By contrast, precision-based and F1-based rewards tend to penalize exploratory yet informative inter-mediate results. 
+
+4.5 Decoding Strategy Comparison 
+
+Table 3 compares decoding strategies on the BIRD Dev. FineStep achieves the best performance across all settings and model scales. Under greedy decoding, it matches or surpasses the strongest baselines, indicating improved policy quality. With multiple samples, FineStep further improves Vot-ing@8 and Pass@8 (e.g., +2.28% and +2.81% on 
+
+Method BIRD Dev (%) Greedy Voting@8 Pass@8 
+
+Model Size: 4B 
+
+Training-free 63.95 65.58 73.53 GRPO 65.78 66.23 71.77 DAPO 66.75 67.67 72.29 GSPO 67.01 68.06 74.05 
+
+GIGPO 66.82 67.99 73.08 
+
+FineStep (Our) 67.01 ↑1.23 68.51 ↑2.28 74.58 ↑2.81 
+
+Model Size: 8B 
+
+Training-free 56.13 62.71 69.43 GRPO 64.60 66.56 73.73 DAPO 63.10 65.97 73.21 GSPO 64.86 66.62 73.79 
+
+GIGPO 65.19 66.88 73.53 
+
+FineStep (Our) 65.78 ↑1.18 68.06 ↑1.50 74.64 ↑0.91 
+
+Table 3: Comparison of decoding strategies. 
+
+4B over GRPO). This suggests that FineStep pro-duces a higher-quality candidate distribution, allow-ing self-consistency to more reliably select correct SQL queries. 
+
+4.6 Performance Across Difficulty Levels 
+
+Table 4 reports EX score across different query difficulty levels on the BIRD Dev. FineStep consis-tently achieves the best overall performance across all model sizes. The improvements are most pro-nounced on hard queries, with gains of +6.21% and +9.65% on the 4B and 8B models over GRPO. This suggests that FineStep benefits complex rea-soning scenarios, where multi-step SQL generation requires reliable intermediate decisions. 
+
+4.7 Ablation Study 
+
+Table 5 presents an ablation study of FineStep, ex-amining three components: reward design, reward Method Easy Mid Hard Total 
+
+Model Size: 4B 
+
+No-Train 71.24 59.48 48.97 65.58 GRPO 71.68 59.48 53.10 66.23 DAPO 73.73 59.05 56.55 67.67 GSPO 73.19 60.99 57.93 68.06 
+
+GIGPO 73.95 59.48 57.24 67.99 
+
+FineStep (Our) 74.16 ↑2.48 60.13 ↑0.65 59.31 ↑6.21 68.51 ↑2.28 
+
+Model Size: 8B 
+
+No-Train 70.27 54.09 42.07 62.71 GRPO 73.41 58.19 49.66 66.56 DAPO 72.86 56.90 51.03 65.97 GSPO 73.19 57.76 53.10 66.62 GIGPO 73.41 58.84 51.03 66.88 FineStep (Our) 74.05 ↑0.64 58.84 ↑0.65 59.31 ↑9.65 68.06 ↑1.50 
+
+Table 4: Difficulty analysis on Bird Dev. 
+
+Method / Ablation Greedy Voting@8 Pass@8 
+
+FineStep 67.01 68.51 74.58 
+
+w/o Hard Reward Ihard 66.95 ↓0.06 67.41 ↓1.10 73.86 ↓0.72 
+
+w/o Soft Reward rsoft 66.17 ↓0.84 67.21 ↓1.30 72.69 ↓1.89 
+
+No discounting ( γ = 1 ) 62.67 ↓4.34 66.62 ↓1.89 73.01 ↓1.57 
+
+No smoothing ( β = 0 ) 64.93 ↓2.08 65.84 ↓2.67 72.75 ↓1.83 
+
+Only ˆAout  
+
+> i,t
+
+(λ = 1 ) 65.19 ↓1.82 65.97 ↓2.54 72.75 ↓1.83 
+
+Only ˆAproc  
+
+> i,t
+
+(λ = 0 ) 66.43 ↓0.58 67.41 ↓1.10 73.21 ↓1.37 
+
+Table 5: Ablation of FineStep-4B on BIRD Dev. 
+
+propagation, and advantage composition. 
+
+Effect of Reward Design. Removing either the hard constraint reward Ihard or the soft reward rsoft 
+
+degrades performance. The larger drop without 
+
+rsoft suggests that recall-based process reward pro-vides the primary learning signal for intermediate reasoning, while Ihard mainly stabilizes tool usage by preventing invalid or repetitive actions. 
+
+Effect of Reward Propagation. Removing out-come reward discounting ( γ = 1 ) or process re-ward smoothing ( β = 0 ) reduces performance, in-dicating that both mechanisms help stabilize credit assignment across long reasoning trajectories. 
+
+Effect of Advantage Composition. Using only outcome advantage ( λ = 1 ) or only process advan-tage ( λ = 0 ) both harms performance, showing that outcome supervision and process supervision are complementary: the former provides global task-level guidance, while the latter supplies fine-grained signals for intermediate reasoning steps. 
+
+4.8 Hyperparameter Sensitivity 
+
+Figure 6 analyzes the effects of the smoothing co-efficient β and the advantage mixing weight λ. Per-0.0 0.2 0.4 0.5 0.6 0.8 1.0 
+
+Hyperparameter Value ( or )
+
+> 66
+> 67
+> 68
+> 69
+> BIRD Dev EX (%)
+
+66.23 
+
+68.51 Best : 0.5 Best : 0.5 GRPO 
+
+Figure 6: Sensitivity analysis of FineStep-4B. 1 4 8 12 16 20 24 28 32 36 72       
+
+> Number of Samples (i)
+> 65.0
+> 67.5
+> 70.0
+> 72.5
+> 75.0
+> 77.5
+> 80.0
+> Execution Accuracy (EX %)
+> 68.5 68.8 68.5
+> 74.6
+> 78.9 79.7
+> 68.1 68.1 67.8
+> 74.6
+> 78.3 79.1
+> Temperature = 1, when i > 1 else 0
+> 4B Size
+> 8B Size
+> Voting
+> Upper Bound
+
+Figure 7: The impact of sample numbers on Bird Dev. 
+
+formance peaks at β = 0 .5 and λ = 0 .5, indi-cating that both moderate reward smoothing and balanced process–outcome advantages are impor-tant, while extreme values lead to noticeable per-formance degradation. Across a wide range of hyperparameter values, FineStep consistently out-performs GRPO, demonstrating that the improve-ments mainly stem from the joint design of process and outcome supervision. More supplementary information is in Appendix A.8. 
+
+4.9 Effect of Sampling Size 
+
+Figure 7 analyzes the effect of inference sample size on execution accuracy. As the number of sam-ples increases, the upper bound (Pass@k) steadily improves for both 4B and 8B models, indicating higher chances of generating correct SQL queries. However, self-consistency voting quickly saturates. For example, increasing the sample size from 8 to 72 raises the upper bound from 74.6% to 79.7% on the 4B model, while voting accuracy only increases from 68.5% to 68.8%. 
+
+5 Conclusion 
+
+In this work, we address the credit assignment chal-lenge in tool-augmented Text-to-SQL reasoning, where existing RL methods rely on outcome-level rewards and fail to distinguish effective interme-diate steps from redundant or erroneous actions. To address this limitation, we propose FineStep , a fine-grained credit assignment framework that aug-ments outcome supervision with independent pro-cess rewards and introduces a multi-dimensional step-level advantage estimation strategy. Extensive experiments on benchmarks (BIRD and Spider) show that FineStep consistently improves execu-tion accuracy across different model architectures and decoding settings. Further analyses demon-strate that FineStep stabilizes RL training, reduces invalid tool interactions, and produces more con-cise and reliable reasoning trajectories. Overall, our results highlight the importance of explicitly modeling intermediate reasoning steps for improv-ing long-horizon agentic reasoning, and suggest that fine-grained credit assignment is key to build-ing reliable tool-augmented reasoning systems. 
+
+Limitation 
+
+While FineStep demonstrates strong improvements for Text-to-SQL through process-based reinforce-ment learning, several limitations remain. First, the current framework is tailored to the structured characteristics of SQL, where step-level decom-position and reward signals can be explicitly de-fined. Extending FineStep to broader reasoning domains—such as mathematical problem solving or multi-hop code generation—remains an impor-tant direction for future work. Second, the cur-rent reward design mainly relies on rule-based sig-nals derived from predefined heuristics and execu-tion results. Although this ensures high precision and interpretability, it may lack flexibility when handling ambiguous or unconventional reasoning paths. In future work, we plan to incorporate a learned Process-supervised Reward Model (PRM), trained with human feedback or high-quality model distillations, to provide more nuanced step-level evaluations and improve robustness in complex rea-soning scenarios. 
+
+References 
+
+Yuhan Chen, Yuxuan Liu, Long Zhang, Pengzhi Gao, Jian Luan, and Wei Liu. 2025. Step: Success-rate-aware trajectory-efficient policy optimization. 
+
+Preprint , arXiv:2511.13091. Ganqu Cui, Lifan Yuan, Zefan Wang, Hanbin Wang, Yuchen Zhang, Jiacheng Chen, Wendi Li, Bingxiang He, Yuchen Fan, Tianyu Yu, Qixin Xu, Weize Chen, Jiarui Yuan, Huayu Chen, Kaiyan Zhang, Xingtai Lv, Shuo Wang, Yuan Yao, Xu Han, and 6 others. 2025. Process reinforcement through implicit re-wards. Preprint , arXiv:2502.01456. Yaxun Dai, Wenxuan Xie, Xialie Zhuang, Tianyu Yang, Yiying Yang, Haiqin Yang, Yuhang Zhao, Pingfu Chao, and Wenhao Jiang. 2025. Reex-sql: Reasoning with execution-aware reinforcement learning for text-to-sql. CoRR , abs/2505.12768. Xiang Deng, Ahmed Hassan Awadallah, Christopher Meek, Oleksandr Polozov, Huan Sun, and Matthew Richardson. 2021. Structure-grounded pretraining for text-to-sql. In Proceedings of the 2021 Confer-ence of the North American Chapter of the Asso-ciation for Computational Linguistics: Human Lan-guage Technologies, NAACL-HLT 2021, Online, June 6-11, 2021 , pages 1337–1350. Association for Com-putational Linguistics. Guanting Dong, Hangyu Mao, Kai Ma, Licheng Bao, Yifei Chen, Zhongyuan Wang, Zhongxia Chen, Ji-azhen Du, Huiyang Wang, Fuzheng Zhang, Guorui Zhou, Yutao Zhu, Ji-Rong Wen, and Zhicheng Dou. 2025. Agentic reinforced policy optimization. 
+
+Preprint , arXiv:2507.19849. Kaixuan Fan, Kaituo Feng, Manyuan Zhang, Tianshuo Peng, Zhixun Li, Yilei Jiang, Shuang Chen, Peng Pei, Xunliang Cai, and Xiangyu Yue. 2026. Explor-ing reasoning reward model for agents. Preprint ,arXiv:2601.22154. Yuankai Fan, Tonghui Ren, Can Huang, Zhenying He, and X. Sean Wang. 2024. Grounding natural language to SQL translation with data-based self-explanations. CoRR , abs/2411.02948. Lang Feng, Zhenghai Xue, Tingcong Liu, and Bo An. 2025. Group-in-group policy optimization for LLM agent training. CoRR , abs/2505.10978. Yujian Gan, Xinyun Chen, Qiuping Huang, Matthew Purver, John R. Woodward, Jinxia Xie, and Peng-sheng Huang. 2021a. Towards robustness of text-to-sql models against synonym substitution. In Proceed-ings of the 59th Annual Meeting of the Association for Computational Linguistics and the 11th International Joint Conference on Natural Language Processing, ACL/IJCNLP 2021, (Volume 1: Long Papers), Virtual Event, August 1-6, 2021 , pages 2505–2515. Associa-tion for Computational Linguistics. Yujian Gan, Xinyun Chen, and Matthew Purver. 2021b. Exploring underexplored limitations of cross-domain text-to-sql generalization. In Proceedings of the 2021 Conference on Empirical Methods in Natural Lan-guage Processing, EMNLP 2021, Virtual Event / Punta Cana, Dominican Republic, 7-11 November, 2021 , pages 8926–8931. Association for Computa-tional Linguistics. Yingqi Gao, Yifu Liu, Xiaoxia Li, Xiaorong Shi, Yin Zhu, Yiming Wang, Shiqi Li, Wei Li, Yuntao Hong, Zhiling Luo, Jinyang Gao, Liyu Mou, and Yu Li. 2024. Xiyan-sql: A multi-generator ensemble frame-work for text-to-sql. CoRR , abs/2411.08599. Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Peiyi Wang, Qihao Zhu, Runxin Xu, Ruoyu Zhang, Shirong Ma, Xiao Bi, Xiaokang Zhang, Xingkai Yu, Yu Wu, Z. F. Wu, Zhibin Gou, Zhihong Shao, Zhu-oshu Li, Ziyi Gao, Aixin Liu, and 175 others. 2025. Deepseek-r1 incentivizes reasoning in llms through reinforcement learning. Nature , 645(8081):633–638. Yuxiang Ji, Ziyu Ma, Yong Wang, Guanhua Chen, Xi-angxiang Chu, and Liaoni Wu. 2025. Tree search for llm agent reinforcement learning. Preprint ,arXiv:2509.21240. Yonghui Kong, Hongbing Hu, Dan Zhang, Siyuan Chai, Fan Zhang, and Wei Wang. 2025. Bridging the gap: Transforming natural language questions into SQL queries via abstract query pattern and contextual schema markup. CoRR , abs/2502.14682. Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph E. Gonzalez, Hao Zhang, and Ion Stoica. 2023. Effi-cient memory management for large language model serving with pagedattention. In Proceedings of the ACM SIGOPS 29th Symposium on Operating Systems Principles .Hanyu Lai, Xiao Liu, Yanxiao Zhao, Han Xu, Hanchen Zhang, Bohao Jing, Yanyu Ren, Shuntian Yao, Yux-iao Dong, and Jie Tang. 2025. Computerrl: Scaling end-to-end online reinforcement learning for com-puter use agents. Preprint , arXiv:2508.14040. Dongjun Lee, Choongwon Park, Jaehyuk Kim, and Heesoo Park. 2025. MCS-SQL: leveraging multiple prompts and multiple-choice selection for text-to-sql generation. In COLING , pages 337–353. Association for Computational Linguistics. Boyan Li, Jiayi Zhang, Ju Fan, Yanwei Xu, Chong Chen, Nan Tang, and Yuyu Luo. 2025a. Alpha-sql: Zero-shot text-to-sql using monte carlo tree search. CoRR ,abs/2502.17248. Haoyang Li, Shang Wu, Xiaokang Zhang, Xinmei Huang, Jing Zhang, Fuxin Jiang, Shuai Wang, Tiey-ing Zhang, Jianjun Chen, Rui Shi, Hong Chen, and Cuiping Li. 2025b. Omnisql: Synthesiz-ing high-quality text-to-sql data at scale. CoRR ,abs/2503.02240. Haoyang Li, Jing Zhang, Hanbing Liu, Ju Fan, Xi-aokang Zhang, Jun Zhu, Renjie Wei, Hongyan Pan, Cuiping Li, and Hong Chen. 2024. Codes: Towards building open-source language models for text-to-sql. 
+
+Proc. ACM Manag. Data , 2(3):127. Jinyang Li, Binyuan Hui, Ge Qu, Jiaxi Yang, Binhua Li, Bowen Li, Bailin Wang, Bowen Qin, Ruiying Geng, Nan Huo, Xuanhe Zhou, Chenhao Ma, Guoliang Li, Kevin Chen-Chuan Chang, Fei Huang, Reynold Cheng, and Yongbin Li. 2023. Can LLM already serve as A database interface? A big bench for large-scale database grounded text-to-sqls. In Advances in Neural Information Processing Systems 36: Annual Conference on Neural Information Processing Sys-tems 2023, NeurIPS 2023, New Orleans, LA, USA, December 10 - 16, 2023 .Xuefeng Li, Haoyang Zou, and Pengfei Liu. 2025c. Torl: Scaling tool-integrated rl. Preprint ,arXiv:2503.23383. Hunter Lightman, Vineet Kosaraju, Yuri Burda, Harri-son Edwards, Bowen Baker, Teddy Lee, Jan Leike, John Schulman, Ilya Sutskever, and Karl Cobbe. 2024. Let’s verify step by step. In The Twelfth In-ternational Conference on Learning Representations, ICLR 2024, Vienna, Austria, May 7-11, 2024 . Open-Review.net. Shu Liu, Sumanth Hegde, Shiyi Cao, Alan Zhu, Dacheng Li, Tyler Griggs, Eric Tang, Akshay Ma-lik, Kourosh Hakhamaneshi, Richard Liaw, Philipp Moritz, Matei Zaharia, Joseph E. Gonzalez, and Ion Stoica. 2025. Skyrl-sql: Matching gpt-4o and o4-mini on text2sql with multi-turn rl. Xinyu Liu, Shuyu Shen, Boyan Li, Peixian Ma, Runzhi Jiang, Yuyu Luo, Yuxin Zhang, Ju Fan, Guoliang Li, and Nan Tang. 2024a. A survey of NL2SQL with large language models: Where are we, and where are we going? CoRR , abs/2408.05109. Xinyu Liu, Shuyu Shen, Boyan Li, Peixian Ma, Runzhi Jiang, Yuxin Zhang, Ju Fan, Guoliang Li, Yuyu Luo, and Nan Tang. 2024b. A survey of nl2sql with large language models: Where are we, and where are we going? CoRR , abs/2408.05109. Shuai Lyu, Haoran Luo, Zhonghong Ou, Yifan Zhu, Xi-aoran Shang, Yang Qin, and Meina Song. 2025. Sql-o1: A self-reward heuristic dynamic search method for text-to-sql. CoRR , abs/2502.11741. Peixian Ma, Xialie Zhuang, Chengjin Xu, Xuhui Jiang, Ran Chen, and Jian Guo. 2025. SQL-R1: training natural language to SQL reasoning model by rein-forcement learning. CoRR , abs/2504.08600. Xinji Mai, Haotian Xu, Zhong-Zhi Li, Xing W, Weinong Wang, Jian Hu, Yingying Zhang, and Wenqiang Zhang. 2025. Agent rl scaling law: Agent rl with spontaneous code execution for mathematical prob-lem solving. Preprint , arXiv:2505.07773. Mohammadreza Pourreza, Hailong Li, Ruoxi Sun, Yeounoh Chung, Shayan Talaei, Gaurav Tarlok Kakkar, Yu Gan, Amin Saberi, Fatma Ozcan, and Sercan O Arik. 2024. Chase-sql: Multi-path reason-ing and preference optimized candidate selection in text-to-sql. arXiv preprint arXiv:2410.01943 .Mohammadreza Pourreza and Davood Rafiei. 2023. DIN-SQL: decomposed in-context learning of text-to-sql with self-correction. In Advances in Neural Information Processing Systems 36: Annual Confer-ence on Neural Information Processing Systems 2023, NeurIPS 2023, New Orleans, LA, USA, December 10 - 16, 2023 .Mohammadreza Pourreza, Shayan Talaei, Ruoxi Sun, Xingchen Wan, Hailong Li, Azalia Mirhoseini, Amin Saberi, and Sercan Ö. Arik. 2025. Reasoning-sql: Reinforcement learning with SQL tailored partial rewards for reasoning-enhanced text-to-sql. CoRR ,abs/2503.23157. Yang Qin, Chao Chen, Zhihang Fu, Ze Chen, Dezhong Peng, Peng Hu, and Jieping Ye. 2024. ROUTE: ro-bust multitask tuning and collaboration for text-to-sql. 
+
+CoRR , abs/2412.10138. Ge Qu, Jinyang Li, Bowen Li, Bowen Qin, Nan Huo, Chenhao Ma, and Reynold Cheng. 2024. Before generation, align it! A novel and effective strategy for mitigating hallucinations in text-to-sql generation. In ACL (Findings) , pages 5456–5471. Association for Computational Linguistics. Amrith Setlur, Chirag Nagpal, Adam Fisch, Xinyang Geng, Jacob Eisenstein, Rishabh Agarwal, Alekh Agarwal, Jonathan Berant, and Aviral Kumar. 2024. Rewarding progress: Scaling automated process veri-fiers for llm reasoning. Preprint , arXiv:2410.08146. Ning Shang, Yifei Liu, Yi Zhu, Li Lyna Zhang, Wei-jiang Xu, Xinyu Guan, Buze Zhang, Bingcheng Dong, Xudong Zhou, Bowen Zhang, Ying Xin, Zim-ing Miao, Scarlett Li, Fan Yang, and Mao Yang. 2025. rstar2-agent: Agentic reasoning technical re-port. Preprint , arXiv:2508.20722. Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Mingchuan Zhang, Y. K. Li, Y. Wu, and Daya Guo. 2024. Deepseekmath: Pushing the limits of mathematical reasoning in open language models. CoRR , abs/2402.03300. Zhili Shen, Pavlos Vougiouklis, Chenxin Diao, Kaus-tubh Vyas, Yuanyi Ji, and Jeff Z. Pan. 2024. Improv-ing retrieval-augmented text-to-sql with ast-based ranking and schema pruning. In EMNLP , pages 7865– 7879. Association for Computational Linguistics. Guangming Sheng, Chi Zhang, Zilingfeng Ye, Xibin Wu, Wang Zhang, Ru Zhang, Yanghua Peng, Haibin Lin, and Chuan Wu. 2024. Hybridflow: A flexible and efficient rlhf framework. arXiv preprint arXiv: 2409.19256 .Joykirat Singh, Raghav Magazine, Yash Pandya, and Akshay Nambi. 2025. Agentic reasoning and tool integration for llms via reinforcement learning. 
+
+Preprint , arXiv:2505.01441. SQLite. n.d. Sqlite home page. Accessed: 2025-05-10. Ruoxi Sun, Sercan Ö. Arik, Hootan Nakhost, Hanjun Dai, Rajarishi Sinha, Pengcheng Yin, and Tomas Pfis-ter. 2024. Sql-palm: Improved large language model adaptation for text-to-sql. CoRR , abs/2306.00739. Sebastián Ramírez Tiangolo. 2024. Fastapi: A modern, high-performance, python web framework. GitHub repository. Peiyi Wang, Lei Li, Zhihong Shao, Runxin Xu, Damai Dai, Yifei Li, Deli Chen, Yu Wu, and Zhifang Sui. 2024. Math-shepherd: Verify and reinforce llms step-by-step without human annotations. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), ACL 2024, Bangkok, Thailand, August 11-16, 2024 ,pages 9426–9439. Association for Computational Linguistics. Pengfei Wang, Baolin Sun, Xuemei Dong, Yaxun Dai, Hongwei Yuan, Mengdie Chu, Yingqi Gao, Xiang Qi, Peng Zhang, and Ying Yan. 2025. Agentar-scale-sql: Advancing text-to-sql through orchestrated test-time scaling. CoRR , abs/2509.24403. Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Brian Ichter, Fei Xia, Ed H. Chi, Quoc V. Le, and Denny Zhou. 2022. Chain-of-thought prompting elicits reasoning in large language models. In Ad-vances in Neural Information Processing Systems 35: Annual Conference on Neural Information Process-ing Systems 2022, NeurIPS 2022, New Orleans, LA, USA, November 28 - December 9, 2022 .Yu Xia, Jingru Fan, Weize Chen, Siyu Yan, Xin Cong, Zhong Zhang, Yaxi Lu, Yankai Lin, Zhiyuan Liu, and Maosong Sun. 2025. AgentRM: Enhancing agent generalization with reward modeling. In Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) ,pages 19277–19290, Vienna, Austria. Association for Computational Linguistics. Zekun Xu, Siyu Xia, Chuhuai Yue, Jiajun Chai, Mingxue Tian, Xiaohan Wang, Wei Lin, Haoxuan Li, and Guojun Yin. 2025. MTIR-SQL: multi-turn tool-integrated reasoning reinforcement learning for text-to-sql. CoRR , abs/2510.25510. Zhenghai Xue, Longtao Zheng, Qian Liu, Yingru Li, Xiaosen Zheng, Zejun Ma, and Bo An. 2025. Simpletir: End-to-end reinforcement learning for multi-turn tool-integrated reasoning. Preprint ,arXiv:2509.02479. Haolin Yang, Jipeng Zhang, Zhitao He, and Yi R. Fung. 2025. MARS-SQL: A multi-agent reinforce-ment learning framework for text-to-sql. CoRR ,abs/2511.01008. Jiaxi Yang, Binyuan Hui, Min Yang, Jian Yang, Junyang Lin, and Chang Zhou. 2024. Synthesizing text-to-sql data from weak and strong llms. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), ACL 2024, Bangkok, Thailand, August 11-16, 2024 ,pages 7864–7875. Association for Computational Linguistics. Zhewei Yao, Guoheng Sun, Lukasz Borchmann, Zheyu Shen, Minghang Deng, Bohan Zhai, Hao Zhang, Ang Li, and Yuxiong He. 2025. Arctic-text2sql-r1: Sim-ple rewards, strong reasoning in text-to-sql. CoRR ,abs/2505.20315. Qiying Yu, Zheng Zhang, Ruofei Zhu, Yufeng Yuan, Xiaochen Zuo, Yu Yue, Weinan Dai, Tiantian Fan, Gaohong Liu, Lingjun Liu, Xin Liu, Haibin Lin, Zhiqi Lin, Bole Ma, Guangming Sheng, Yuxuan Tong, Chi Zhang, Mofan Zhang, Wang Zhang, and 16 others. 2025. Dapo: An open-source llm re-inforcement learning system at scale. Preprint ,arXiv:2503.14476. Tao Yu, Rui Zhang, Kai Yang, Michihiro Yasunaga, Dongxu Wang, Zifan Li, James Ma, Irene Li, Qingning Yao, Shanelle Roman, Zilin Zhang, and Dragomir R. Radev. 2018. Spider: A large-scale human-labeled dataset for complex and cross-domain semantic parsing and text-to-sql task. In Proceed-ings of the 2018 Conference on Empirical Methods in Natural Language Processing, Brussels, Belgium, October 31 - November 4, 2018 , pages 3911–3921. Association for Computational Linguistics. Shuozhi Yuan, Liming Chen, Miaomiao Yuan, Jin Zhao, Haoran Peng, and Wenming Guo. 2025. MCTS-SQL: an effective framework for text-to-sql with monte carlo tree search. CoRR , abs/2501.16607. Guibin Zhang, Hejia Geng, Xiaohang Yu, Zhenfei Yin, Zaibin Zhang, Zelin Tan, Heng Zhou, Zhongzhi Li, Xiangyuan Xue, Yijiang Li, Yifan Zhou, Yang Chen, Chen Zhang, Yutao Fan, Zihu Wang, Songtao Huang, Francisco Piedrahita-Velez, Yue Liao, Hongru Wang, and 6 others. 2026. The landscape of agentic re-inforcement learning for llms: A survey. Preprint ,arXiv:2509.02547. Weixu Zhang, Yifei Wang, Yuanfeng Song, Victor Jun-qiu Wei, Yuxing Tian, Yiyan Qi, Jonathan H. Chan, Raymond Chi-Wing Wong, and Haiqin Yang. 2024. Natural language interfaces for tabular data querying and visualization: A survey. IEEE Trans. Knowl. Data Eng. 
+
+Yuxin Zhang, Meihao Fan, Ju Fan, Mingyang Yi, Yuyu Luo, Jian Tan, and Guoliang Li. 2025a. Reward-sql: Boosting text-to-sql via stepwise rea-soning and process-supervised rewards. Preprint ,arXiv:2505.04671. Zhenru Zhang, Chujie Zheng, Yangzhen Wu, Beichen Zhang, Runji Lin, Bowen Yu, Dayiheng Liu, Jin-gren Zhou, and Junyang Lin. 2025b. The lessons of developing process reward models in mathematical reasoning. In Findings of the Association for Compu-tational Linguistics: ACL 2025 , pages 10495–10516, Vienna, Austria. Association for Computational Lin-guistics. Chujie Zheng, Shixuan Liu, Mingze Li, Xiong-Hui Chen, Bowen Yu, Chang Gao, Kai Dang, Yuqiong Liu, Rui Men, An Yang, Jingren Zhou, and Jun-yang Lin. 2025. Group sequence policy optimization. 
+
+Preprint , arXiv:2507.18071. Ruiqi Zhong, Tao Yu, and Dan Klein. 2020. Semantic evaluation for text-to-sql with distilled test suites. In 
+
+Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing, EMNLP 2020, Online, November 16-20, 2020 , pages 396–411. Association for Computational Linguistics. Victor Zhong, Caiming Xiong, and Richard Socher. 2017. Seq2sql: Generating structured queries from natural language using reinforcement learning. 
+
+CoRR , abs/1709.00103. A Appendices 
+
+A.1 Benchmarks 
+
+In this study, we evaluate our method on several representative Text-to-SQL benchmarks. 
+
+BIRD (Li et al., 2023) is a large-scale cross-domain Text-to-SQL benchmark designed for re-alistic applications. It contains 12,751 natural lan-guage questions paired with SQL queries across 95 databases from 37 domains, with a total data scale of 33.4 GB. Compared with earlier datasets such as Spider (Yu et al., 2018) and WikiSQL (Zhong et al., 2017), BIRD places greater emphasis on database contents (e.g., field values and real data distributions), making it closer to real-world query scenarios. 
+
+Spider (Yu et al., 2018) is a widely used Text-to-SQL benchmark consisting of 8,659 training examples, 1,034 development examples, and 2,147 test examples across 200 databases from 138 do-mains. It adopts a cross-database evaluation setting, where models must generalize to unseen database schemas. 
+
+Spider-DK (Gan et al., 2021b), Spider-Syn (Gan et al., 2021a), and Spider-Realistic (Deng et al., 2021) are three variants derived from Spider to better simulate real-world queries. Spider-DK introduces domain knowledge and semantic distractions to increase reason-ing difficulty, Spider-Syn evaluates robustness to paraphrasing and syntactic variations, and Spider-Realistic reformulates queries into more conversational and incomplete forms. Table 6 summarizes the statistics of the Spi-der and BIRD datasets. In general, SQL queries in BIRD are more complex than those in Spi-der, reflecting its closer alignment with real-world database applications. 
+
+A.2 Reinforcement Learning Baselines 
+
+This appendix briefly introduces the reinforcement learning (RL) baseline algorithms used in this study. All selected methods follow a critic-free or group-relative optimization paradigm, which removes the need for an auxiliary value network and improves training efficiency for large reasoning models. 
+
+A.2.1 Group Relative Policy Optimization 
+
+Group Relative Policy Optimization (GRPO) (Shao et al., 2024), introduced in the DeepSeekMath framework, replaces the traditional critic with group-based advantage estimation. Given a prompt           
+
+> Examples Databases Tables Domains Rows BIRD 12,751 92 7.3 37 549k Spider 10,181 200 5.1 138 2k
+> Table 6: Statistics of the BIRD and Spider benchmarks
+
+q, the policy samples a group of G outputs 
+
+{o1, . . . , o G}. The advantage ˆAi of each output is computed by normalizing the rewards {r1, . . . , r G}
+
+within the group: 
+
+ˆAi = ri − mean( r1, . . . , r G)std( r1, . . . , r G) . (11) The policy is optimized using a clipped surrogate objective with a KL-divergence regularization term to stabilize training. 
+
+A.2.2 Decoupled Clip and Dynamic Sampling Policy Optimization 
+
+DAPO (Yu et al., 2025) extends GRPO with several techniques designed to improve exploration and sampling efficiency in long chain-of-thought (CoT) reasoning. The main components include: 1. Clip-Higher. An asymmetric clipping mech-anism where the upper clipping bound ϵhigh 
+
+(e.g., 0.28 ) is larger than the lower bound ϵlow 
+
+(e.g., 0.20 ), allowing more aggressive updates for high-reward samples. 2. Dynamic Sampling. Groups with zero re-ward variance are filtered out during training, ensuring that computation focuses on samples providing meaningful gradient signals. 3. Token-Level Loss. Gradients are aggregated at the token level to mitigate the bias toward shorter responses that may arise in long rea-soning trajectories. 
+
+A.2.3 Group Sequence Policy Optimization 
+
+Group Sequence Policy Optimization (GSPO) (Zheng et al., 2025) addresses train-ing instability in large Mixture-of-Experts (MoE) models. Instead of token-level optimization, GSPO operates at the sequence level. The importance ratio si(θ) is computed using length-normalized sequence likelihood: 
+
+si(θ) = 
+
+ πθ(yi | x)
+
+πθold (yi | x)
+
+ 1
+
+> |yi|
+
+. (12) By shifting the optimization granularity from to-kens to sequences, GSPO reduces the high variance Parameter Value 
+
+Hardware Configuration 
+
+GPU (4B / 8B) 8 × A100 (80GB) GPU (30B-A3B MoE) 32 × A100 (80GB) 
+
+Common Training Parameters 
+
+Max prompt length 8192 Max response length 3072 Max tool response length 256 Responses per prompt ( nresp ) 8Training prompt batch size 128 Max assistant turns 10 Learning rate 1 × 10 −6
+
+Rollout temperature 1.0 Loss aggregation mode token-mean Rollout Type vLLM (Kwon et al., 2023) 
+
+GRPO 
+
+Clip ratio 0.2 KL regularization Enabled 
+
+DAPO 
+
+Clip ratio (low, high) (0.2, 0.28) Overlong buffer length 2048 Dynamic sampling Enabled Token-level loss Enabled 
+
+GSPO 
+
+Optimization granularity Sequence-level Length normalization Enabled 
+
+GIGPO 
+
+Hierarchical advantage Enabled Step weight ( ω) 1.0 
+
+FineStep (Ours) 
+
+Step advantage weight ( λ) 0.5 Reward smoothing ( β) 0.5 
+
+Table 7: Training configuration and algorithm-specific hyperparameters. 
+
+introduced by token-level importance sampling in MoE architectures and improves training stability. 
+
+A.2.4 Group-in-Group Policy Optimization 
+
+Group-in-Group Policy Optimization (GIGPO) (Feng et al., 2025) introduces a hi-erarchical advantage structure for fine-grained credit assignment in multi-turn LLM agents. It groups trajectories that visit identical environment states (referred to as anchor states) and computes advantages using both global and local signals. The final advantage is defined as 
+
+A(a(i)
+
+t ) = AE (τi) + ωA S (a(i)
+
+t ), (13) where AE denotes the episode-level relative ad-vantage capturing task completion, and AS denotes the step-level relative advantage measuring local action effectiveness. However, both signals are still derived from outcome-level rewards and do not explicitly evaluate the utility of intermediate rea-soning steps. As a result, compared with methods                                                                           
+
+> Methods BIRD Dev Spider Dev Spider Test EX VES EX TS EX
+> Closed-source methods
+> XiYan-SQL (Gao et al., 2024) 73.3 ---89.6
+> CHASE-SQL (Pourreza et al., 2024) 73.0 73.0 --87.6 MCTS-SQL + GPT-4 (Yuan et al., 2025) 69.4 66.2 88.7 -86.6 PAS-SQL + GPT-4o (Kong et al., 2025) 64.7 65.0 87.9 -86.8 MCS-SQL + GPT-4 (Lee et al., 2025) 63.4 64.8 89.5 -89.6
+> Training base methods
+> SFT CodeS-7B (Li et al., 2024) 57.2 58.8 85.4 80.3 -OmniSQL-7B (Li et al., 2025b) 66.1 -81.6 -88.9 Reasoning-SQL (Pourreza et al., 2025) 64.0 ---78.7 SQl-R1-7B (Ma et al., 2025) 63.1 -84.5 -86.1 Arcitc-Text2SQL-R1 (Yao et al., 2025) 64.8 ---87.1 SQL-o1-8B (Lyu et al., 2025) 63.4 64.7 87.4 79.6 85.4 ReEx-SQL-7B (Dai et al., 2025) 65.3 73.3 89.1 83.9 86.9 MTIR-SQL + Qwen3-14B (Xu et al., 2025) 68.1 -86.7 -87.2
+> Our method
+> FineStep-4B 68.51 71.65 90.3 84.3 89.9
+> FineStep-8B 68.06 70.90 88.9 82.4 89.9
+
+Table 8: Performance comparison on BIRD and Spider benchmarks (%).                                                                                     
+
+> Methods Syn Realistic DK EX TS EX TS EX
+> Closed-source methods
+> FastRAT ext +GPT-4 (Shen et al., 2024) 74.4 -80.9 -72.3 TA-SQL + GPT-4 (Qu et al., 2024) --79.5 -72.9
+> CYCLESQL + GPT-4 (Fan et al., 2024) 76.0 66.3 70.6 56.9 68.5 SQL-PaLM + PaLM2 (Sun et al., 2024) 74.6 -77.6 -66.5
+> Training base methods
+> ROUTE + Llama3-8B (Qin et al., 2024) 77.4 70.2 80.9 72.6 74.6 SFT CodeS-15B (Li et al., 2024) 77.0 69.4 83.1 75.6 70.7 SENSE-13B (Yang et al., 2024) 77.6 70.2 84.1 76.6 80.2 OmniSQL-32B (Li et al., 2025b) 72.1 -77.2 -77.6 Reasoning-SQL ∗(Pourreza et al., 2025) 69.3 ---73.3 SQl-R1-7B ∗(Ma et al., 2025) 76.7 -83.3 -78.1 SQL-o1 + Llama3-8B (Lyu et al., 2025) 77.6 69.2 82.7 72.8 78.7 ReEx-SQL-7B (Dai et al., 2025) 78.7 72.0 85.5 79.9 80.2 MTIR-SQL + Qwen3-14B (Xu et al., 2025) 81.0 -81.1 -76.3
+> Our method
+> FineStep-4B 83.1 75.2 88.6 80.9 81.5
+> FineStep-8B 81.4 71.6 86.0 77.9 80.0
+
+Table 9: Performance comparison on Spider variants robustness benchmarks (%). 
+
+such as FineStep that directly model process-level rewards, the credit assignment in GIGPO remains relatively coarse-grained. 
+
+A.3 More experimental Configuration. 
+
+All RL algorithms are implemented using the 
+
+verl (Sheng et al., 2024) framework under a uni-fied training setup. For the 4B and 8B models, experiments are conducted on 8 NVIDIA A100 GPUs (80GB), while the MoE model (30B-A3B) is trained on 32 NVIDIA A100 GPUs (80GB). Dur-ing inference, we fix the random seed for vLLM to ensure reproducibility under both greedy decoding and sampling settings. Implementation details can be found in Table 7. A.4 Comparison with Existing Methods 
+
+Tables 8 and 9 compare FineStep with a wide range of existing Text-to-SQL systems on both in-domain and out-of-domain benchmarks. 
+
+In-domain performance. As shown in Table 8, FineStep achieves competitive results against both closed-source and training-based approaches on the BIRD and Spider benchmarks. Notably, FineStep-4B achieves 90.3% EX and 84.3% TS on Spider Dev, outperforming many existing methods despite using a significantly smaller model. On Spider Test, both FineStep-4B and FineStep-8B reach 89.9% EX, which is competitive with several GPT-4-based systems. On the BIRD Dev, FineStep-4B also achieves strong performance, reaching 68.51% EX and 71.65% VES. 
+
+Out-of-domain robustness. Table 9 further evaluates model robustness on Spider variants, in-cluding Spider-Syn, Spider-Realistic, and Spider-DK. FineStep consistently achieves state-of-the-art or competitive performance across these bench-marks. For example, FineStep-4B obtains 81.4% EX on Spider-Syn and 86.0% EX on Spider-Realistic, outperforming many larger models. FineStep-8B further achieves the best performance on Spider-DK with 81.9% EX. Overall, these results demonstrate that FineStep maintains strong performance not only on standard benchmarks but also under distribution shifts, high-lighting its effectiveness in improving both reason-ing accuracy and robustness. 
+
+A.5 Theoretical Analysis of FineStep 
+
+We provide a simple theoretical interpretation showing why trajectory-level outcome optimiza-tion may incorrectly reinforce useless intermediate step in successful trajectory, while FineStep can suppress them through step-level credit assignment. 
+
+Proposition 1 (Successful τ may contain useless ak)
+
+Consider a multi-step reasoning trajectory 
+
+τ = ( s0, a 0, s 1, . . . , a T , s T +1 ) (14) 
+
+with final outcome reward Rout (τ ) = 1 . A step ak
+
+is useless if removing it does not change the final answer or outcome: 
+
+Rout (τ ) = Rout (τ \ ak). (15) 
+
+Such steps naturally exist in tool-integrated rea-soning. For example, an SQL tool call may be syntactically valid but irrelevant to the final query, or may repeat already obtained information. The trajectory can still be successful if later steps re-cover and produce the correct final SQL. 
+
+Proposition 2 (GRPO reinforces ak in successful τ )
+
+In trajectory-level GRPO, all steps in the same trajectory share the same normalized outcome advantage: 
+
+AGRPO  
+
+> i,t
+
+= Rout  
+
+> i
+
+− Mean( {Rout  
+
+> j
+
+}Gj=1 )Std( {Rout  
+
+> j
+
+}Gj=1 ) + ϵ . (16) 
+
+For a successful trajectory with above-average out-come reward, we have AGRPO  
+
+> i,t
+
+> 0, ∀t. The policy-gradient update for step t is proportional to 
+
+AGRPO  
+
+> i,t
+
+∇θ log πθ(ai,t | si,t ). (17) 
+
+Therefore, if ai,k is a useless step inside a suc-cessful trajectory, it still receives a positive up-date AGRPO  
+
+> i,k
+
+> 0. Thus, GRPO cannot distinguish useful steps from useless ones within a successful trajectory, and will incorrectly increase the proba-bility of both. 
+
+Proposition 3 ( FineStep can suppress useless ak)
+
+FineStep assigns each step its own advantage: 
+
+AFineStep  
+
+> i,t
+
+= λ ˆAout  
+
+> i,t
+
++ (1 − λ) ˆAproc  
+
+> i,t
+
+. (18) 
+
+For a useless step ai,k , its process value is low because it provides little or no information gain: 
+
+V proc  
+
+> i,k
+
+< Mean( Vproc ), (19) 
+
+which leads to ˆAproc  
+
+> i,k
+
+< 0. FineStep suppresses this step when 
+
+λ ˆAout  
+
+> i,k
+
++ (1 − λ) ˆAproc  
+
+> i,k
+
+< 0, (20) 
+
+equivalently, 
+
+| ˆAproc  
+
+> i,k
+
+| > λ
+
+1 − λ ˆAout  
+
+> i,k
+
+. (21) 
+
+Under this condition, the policy-gradient update for the useless step becomes negative: 
+
+AFineStep  
+
+> i,k
+
+∇θ log πθ(ai,k | si,k ), AFineStep  
+
+> i,k
+
+< 0,
+
+(22) 
+
+which decreases the probability of the useless ac-tion. 
+
+This analysis shows that trajectory-level GRPO gives identical credit to all steps in a successful trajectory, including redundant or uninformative ones. In contrast, FineStep can assign lower or even negative advantages to useless steps by incorporat-ing step-level process signals. Therefore, FineStep provides a more discriminative credit assignment mechanism for long-horizon tool-integrated reason-ing. Method EX(%) Tool Calls Avg. Time (s) Resp. Len. GRPO 65.78 1.09 0.231 841.7 DAPO 66.75 1.10 0.276 1086.2 GSPO 67.01 3.66 0.421 732.4 GIGPO 66.82 1.23 0.252 552.2 FineStep 67.01 1.22 0.250 541.4 
+
+> Table 10: Inference overhead under greedy decoding.
+
+A.6 Computational Overhead Analysis 
+
+We demonstrate the computational overhead in both training and inference scenarios. Our results show that the gains of FineStep do not come from longer reasoning, more tool calls, or higher test-time computation, but from more efficient step-level credit assignment. 
+
+A.6.1 Training Overhead Analysis 
+
+From the training dynamics as shown in Figure 4, different RL methods exhibit distinct overhead: • GSPO tends to produce more interaction turns, leading to substantially more tool calls. • GRPO and DAPO rely more on longer reason-ing text, resulting in larger response lengths. • GIGPO and FineStep obtain external feedback through more stable tool usage and shorter rea-soning traces. By assigning credit at the step level, FineStep sup-presses redundant reasoning and invalid tool inter-actions. As a result, it improves accuracy without noticeably increasing rollout overhead. 
+
+A.6.2 Inference Overhead Analysis 
+
+We further measure inference overhead on the BIRD Dev set using Qwen3-4B-Instruct as the base model. Table 10 reports results under greedy de-coding, and Table 11 reports results under self-consistency with 8 samples. In both tables, Tool Calls, Avg. Time, and Resp. Len. denote the av-erage number of tool calls, average inference time, and average response length per sample, respec-tively. FineStep achieves the highest EX under self-consistency, while maintaining tool calls, inference time, and response length comparable to GIGPO and substantially lower than GSPO. Compared with GSPO, FineStep improves EX from 68.06 to 68.51, while reducing tool calls from 29.27 to 9.73 and av-erage inference time from 2.981s to 1.162s. These results indicate that FineStep’s improvements do                         
+
+> Method EX(%) Tool Calls Avg. Time (s) Resp. Len. GRPO 66.23 8.71 1.064 6728 DAPO 67.67 8.83 1.295 8688 GSPO 68.06 29.27 2.981 5856 GIGPO 67.99 9.84 1.174 4416 FineStep 68.51 9.73 1.162 4328
+> Table 11: Inference overhead under self-consistency with 8 samples.
+
+not rely on increased test-time computation, but instead come from more efficient and reliable tool-integrated reasoning. 
+
+A.7 Generalizability on Non-SQL Reasoning 
+
+To evaluate the generalizability of FineStep beyond Text-to-SQL, we conduct a preliminary experiment on AIME24, a mathematical reasoning benchmark, using Qwen2.5-7B-Instruct as the base model with a Python execution tool for interactive reasoning. Results are shown in Table 12.     
+
+> Method Pass@1 Accuracy No-Train 16.7 GRPO 33.3 FineStep 34.6
+> Table 12: Results on AIME24 (Qwen2.5-7B-Instruct).
+
+Since AIME24 has no SQL executor or interme-diate execution results, we adapt FineStep with the following modifications: 1. No SQL-specific soft reward. The recall-based reward used in Text-to-SQL is not ap-plicable, as there is no intermediate execution feedback. 2. Only hard-constraint process reward. We use simple process constraints to transfer the step-level credit assignment idea without intro-ducing task-specific reward shaping. 3. No process smoothing. The process signal in AIME24 is weaker than SQL execution feed-back; smoothing may propagate noisy signals. 4. Larger outcome weight ( λ = 0 .8). Since final-answer correctness is more reliable than the weak process signal, we let the outcome reward dominate while keeping the process reward as an auxiliary constraint. These preliminary results suggest that FineStep’s step-level credit assignment can provide gains be-yond Text-to-SQL, even with minimal task-specific adaptation. Broader general-agent evaluation re-mains future work. 
+
+A.8 Reward Robustness and Hyperparameter Sensitivity 
+
+FineStep’s reward design relies only on gen-eral SQL executor feedback, without benchmark-specific rules or annotations. Therefore, its gains mainly come from step-level credit assignment rather than benchmark-specific reward tuning. To further verify this, we conduct cross-dataset hyperparameter sensitivity analysis. Using Qwen3-4B-Instruct, we fix λ = 0 .5 and vary β, and then fix β = 0 .5 and vary λ. We report results on BIRD Dev, Spider Dev, and Spider-Realistic. 
+
+A.8.1 Sensitivity to β (λ = 0 .5)                            
+
+> β00.2 0.4 0.5 0.6 1BIRD Dev 65.84 66.82 67.86 68.51 68.19 66.36 Spider Dev 87.3 88.4 89.9 90.3 89.7 87.2 Spider-Realistic 86.9 87.6 87.4 88.6 88.2 86.0
+> Table 13: EX (%) with varying β(fixed λ= 0 .5).
+
+A.8.2 Sensitivity to λ (β = 0 .5)                            
+
+> λ00.2 0.4 0.5 0.6 1BIRD Dev 67.41 67.21 67.73 68.51 67.60 65.97 Spider Dev 88.2 88.3 89.5 90.3 88.9 87.6 Spider-Realistic 87.4 87.6 88.1 88.6 87.8 85.4
+> Table 14: EX (%) with varying λ(fixed β= 0 .5).
+
+The results show that β = 0 .5 and λ = 0 .5
+
+achieve the best or near-best performance not only on BIRD Dev, but also on Spider Dev and Spider-Realistic. This demonstrates FineStep’s robustness to reward design choices and its consistent cross-dataset generalization. 
+
+A.9 Prompt Design 
+
+FineStep Prompt (Figure 8) Following the paradigm of MTIR-SQL (Xu et al., 2025), we designed a multi-turn tool-integrated reasoning prompt to elicit structured and verifiable logic. This design facilitates an iterative "hypothesize-verify-refine" process by providing distinct modules for <reasoning>, tool-based validation, and final an-swer encapsulation. Such a mechanism effectively reduces hallucinations in complex SQL generation by forcing the model to validate its internal reason-ing against the database engine before committing to a final output. 
+
+A.10 Case Study 
+
+Figure 9 presents a representative example from the BIRD development set (question_id = 29) to illus-trate the behavioral differences between FineStep and GRPO. The middle block shows a successful reasoning trajectory produced by FineStep. With explicit step-level supervision, the model correctly identifies the relevant tables ( schools and frpm )and generates a valid SQL query in a single inter-action step, leading to the correct execution result. In contrast, the bottom block shows a trajectory generated by a GRPO-trained model. Without ex-plicit process-level guidance, the model initially hallucinates a nonexistent column and repeatedly attempts invalid queries, eventually falling back to an unrelated table ( satscores ). Although the final query executes successfully, it does not corre-spond to the correct reasoning path and produces an incorrect result. This example highlights the advantage of FineStep in guiding models toward valid and infor-mative intermediate steps, thereby avoiding hallu-cination loops and improving reasoning reliability. Multi-Turn Tool-Integrated Reasoning Prompt 
+
+Task Overview: 
+
+You are a helpful SQL expert assistant. You should first think about how to write the SQL query by analyzing the question, database schema, and external knowledge, you can use the provided SQL execution tool to verify and refine your reasoning hypotheses. Finally, you provide the final SQL query in <answer> </answer> .
+
+Database Information: 
+
+• Database Engine: {dialect} • Database Schema: {db_schemas} • Matched Contents: {matched_contents} 
+
+Requirements: 
+
+1. Precision: Make sure you only output the information that is asked in the question. If the question asks for a specific column, make sure to only include that column in the SELECT clause, nothing more. 2. Completeness: The generated query should return all of the information asked in the question without any missing or extra information. 3. Correctness: Before generating the final SQL query, please think through the steps of how to write the query. Validate your reasoning through tool testing. 
+
+Output Format [Important]: 
+
+Respond strictly in one of the following two modes. Do not mix the structures: 
+
+Option A (Tool call for validation or exploration): 
+
+<reasoning> Concise reasoning here. </reasoning> 
+
+[Tool call code/statement here] 
+
+Option B (Final answer): 
+
+<reasoning> Concise reasoning here. </reasoning> <answer> YOUR FINAL SQL QUERY HERE </answer> 
+
+[Question] {question} 
+
+[Hint] {hint} 
+
+> Figure 8: The proposed multi-turn reasoning prompt for FineStep.
+
+Problem Definition 
+
+Question: When did the first-through-twelfth-grade school with the largest enrollment open? 
+
+Hint: K-12 means First-through-twelfth-grade. 
+
+Ground Truth SQL: 
+
+> SELECT T1.OpenDate FROM schools AS T1 JOIN frpm AS T2 ON T1.CDSCode = T2.CDSCode ORDER BY T2."Enrollment (K-12)" DESC LIMIT 1
+
+Case 1: Positive Sample (Efficient Reasoning) 
+
+Step 1: Hypothesis & Tool Execution 
+
+<reasoning> To find the K-12 school with the largest enrollment, I need the Enrollment (K-12) column from the frpm table and the OpenDate from the schools table. 
+
+<tool_call> 
+
+> SELECT s.OpenDate FROM schools s JOIN frpm f ON s.CDSCode = f.CDSCode WHERE f."Enrollment (K-12)" = (SELECT MAX("Enrollment (K-12)") FROM frpm);
+
+Observation: | OpenDate: 2006-08-29 | (Row Count: 1) 
+
+Step 2: Final Verification 
+
+<reasoning> The execution returned a valid date. This JOIN correctly maps question entities to schema. 
+
+<answer> SELECT s.OpenDate FROM schools s JOIN frpm f ON s.CDSCode =f.CDSCode WHERE f."Enrollment (K-12)" = (SELECT MAX("Enrollment (K-12)") FROM frpm) 
+
+Step-level Reward (Mean): Ihard = 1 .0, rsoft = 1 .0 Outcome: SUCCESS 
+
+Case 2: Negative Sample (Hallucination & Error Loop) 
+
+Step 1: Initial Hallucination 
+
+<reasoning> I will select OpenDate from schools and order by Enrollment (K-12) .
+
+<tool_call> SELECT OpenDate FROM schools ORDER BY "Enrollment (K-12)" DESC LIMIT 1; 
+
+Observation: Error: no such column: Enrollment (K-12) 
+
+Step 2: Persistent Errors 
+
+<reasoning> Maybe the column is just named Enrollment ... The backticks might be wrong... 
+
+<tool_call> SELECT OpenDate FROM schools ORDER BY Enrollment DESC LIMIT 1; 
+
+Observation: Error: no such column: Enrollment 
+
+Step 3: Suboptimal Fallback 
+
+<reasoning> I’ll try joining satscores using enroll12 as a fallback... 
+
+<tool_call> SELECT s.OpenDate FROM schools s JOIN satscores sc ON s.CDSCode = sc.cds ORDER BY sc.enroll12 DESC LIMIT 1; 
+
+Observation: | OpenDate: [NULL] | 
+
+Step 4: Final Suboptimal Answer 
+
+<reasoning> The query successfully executed by joining with satscores . I will provide this as the final answer. 
+
+<answer> SELECT s.OpenDate FROM schools s JOIN satscores sc ON s.CDSCode = sc.cds ORDER BY sc.enroll12 DESC LIMIT 1 
+
+Step-level Reward (Mean): Ihard = 0 .33 , rsoft = 0 .0 Outcome: FAILED 
+
+Figure 9: Comparison of reasoning paths. The top block shows the task definition and Ground Truth; the middle and bottom blocks contrast a successful FineStep trajectory with a failed hallucination-prone trajectory.

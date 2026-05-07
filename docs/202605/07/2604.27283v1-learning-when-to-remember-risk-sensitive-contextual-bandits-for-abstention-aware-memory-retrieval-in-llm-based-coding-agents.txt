@@ -1,0 +1,408 @@
+Title: Learning When to Remember: Risk-Sensitive Contextual Bandits for Abstention-Aware Memory Retrieval in LLM-Based Coding Agents
+
+URL Source: https://arxiv.org/pdf/2604.27283v1
+
+Published Time: Fri, 01 May 2026 00:24:04 GMT
+
+Number of Pages: 26
+
+Markdown Content:
+# Learning When to Remember: Risk-Sensitive Contextual Bandits for Abstention-Aware Memory Retrieval in LLM-Based Coding Agents 
+
+## Mehmet Iscan 1* 
+
+1* PythaLab, Yildiz Technical University, Istanbul, T¨ urkiye. Corresponding author(s). E-mail(s): miscan@yildiz.edu.tr; 
+
+Abstract 
+
+Large language model (LLM)-based coding agents increasingly depend on exter-nal memory to reuse previous debugging experience, historical repair traces, and repository-local operational knowledge. This memory is valuable only when the current failure is genuinely compatible with a previous one. In software debug-ging, superficial similarity is often misleading: different root causes can expose similar stack traces, terminal errors, paths, or configuration symptoms. Conse-quently, unsafe memory injection can anchor the agent on an incorrect repair strategy, consume context budget, and amplify hallucinated fixes. This paper reframes issue-memory use as a selective, risk-sensitive control problem rather than a pure top-k retrieval problem. We introduce RSCB-MC , a risk-sensitive contextual bandit memory controller that decides whether an agent should use no memory, inject the top resolution, summarize multiple candidates, perform high-precision or high-recall retrieval, abstain, or ask for feedback. The system stores reusable issue knowledge through a pattern-variant-episode schema and converts retrieval evidence into a fixed 16-feature contextual state that captures rele-vance, uncertainty, structural compatibility, feedback history, false-positive risk, latency, and token cost. Its reward design intentionally penalizes false-positive memory injection more strongly than missed reuse, making non-injection and abstention first-class safety actions. In the supplied deterministic smoke-scale artifacts, RSCB-MC obtains the strongest non-oracle offline replay success rate, 
+
+62.5% , while maintaining a 0.0% false-positive rate. In a bounded 200-case hot-path validation, it reaches 60.5% proxy success with 0.0% false positives and a 331.466 μs p95 decision latency. The evidence is intentionally scoped: the current evaluation is local, deterministic, and proxy-based rather than a causal online LLM-agent deployment study. The central result is nevertheless clear: for 
+
+1
+
+> arXiv:2604.27283v1 [cs.CL] 30 Apr 2026 coding-agent memory, the main question is not only which memory is most simi-lar, but whether any retrieved memory is safe enough to influence the debugging trajectory.
+
+Keywords: LLM coding agents; issue memory; contextual bandits; risk-sensitive reinforcement learning; abstention; retrieval-augmented generation; automated debug-ging; automated program repair. 
+
+# 1 Introduction 
+
+This work began with a concrete operational frustration rather than with an abstract retrieval question. While operating an LLM-based coding agent on a working Python repository, we repeatedly observed the same pattern: the agent would recognize a familiar-looking error, reach for a previously stored “fix,” and confidently apply it— only to make the situation worse. A SQLite database is locked message and a stale migration produced almost identical surface logs, but the first required releasing a lingering connection while the second required re-running alembic upgrade head . A failure caused by activating the wrong virtual environment looked, on the terminal, indistinguishable from a wrong PYTHONPATH : both ended in ModuleNotFoundError ,both pointed at the same file, and both had been “solved” by previous memory entries that were no longer applicable. An invalid configuration key for an internal service threw the same generic KeyError as a path-resolution failure for a backup directory. In each case, retrieval by surface similarity was not merely unhelpful; it actively pushed the agent down the wrong repair branch and consumed context budget on a misleading hint. This is the practical mismatch that motivated RSCB-MC. LLM coding agents have moved beyond passive completion toward autonomous systems that inspect reposi-tories, run tests, read traces, and iteratively repair failures [1–3], and once such an agent can execute shell commands and persist across sessions, memory stops being optional prompt decoration and becomes a safety surface in its own right [4]. The agent has to remember which fixes were already attempted, which diagnostic paths failed, and which repository-specific lessons have been validated, because debug-ging sessions accumulate commands, stack traces, dependency versions, test outputs, hypotheses, and human feedback that no finite context window can hold [5–7]. Recent reinforcement-learning work on Memory-R1 and Agentic Memory shows that mem-ory operations themselves can be learned rather than hard-coded [8, 9]. The question we faced was narrower and sharper: given that we already have such a memory, when should we be willing to actually use it? The broader RAG literature gives a partial answer but stops short of our setting. Knowledge-boundary work argues that retrieval is sometimes beneficial, sometimes neutral, and sometimes harmful, depending on the query and on what the model already knows [10]. Parametric RAG shows that simply adding more retrieved context raises online cost and can degrade reasoning when the evidence is poorly integrated 2[11]. Knowledge-base access methods such as KnowledGPT and direct retrieval-augmented optimization improve how external knowledge is selected and represented [12, 13]. None of these directly ask whether retrieved operational memory —a piece of historical debugging evidence about a specific repository—is safe to be inserted into an agent that will then run commands and edit files based on it. The automated-debugging and APR literature confirms that prior fixes are valu-able, but it implicitly inherits the same blind spot. History-driven program repair learns from recurring human fix patterns [14]; RAP-Gen retrieves bug-fix pairs to guide patch generation [15]; ReAPR injects retrieved bug-fix pairs into LLM repair prompts [16]; and Repair-Ingredients-Search separates root-cause ingredients from solution-phase ingredients [17]. These systems all assume that, once a sufficiently sim-ilar past fix is found, injecting it is the right move. The five concrete failure modes we encountered—SQLite lock vs. stale migration, wrong virtual environment vs. wrong 
+
+PYTHONPATH , invalid configuration key vs. missing backup directory, retrieval false positive vs. rejected memory reuse, and outdated memory variant vs. migration-order mismatch—show why this assumption is unsafe in practice: each pair shares logs and command fragments while requiring a different fix. Agentic RAG and process-supervised RL have begun to model retrieval as a train-able decision process. RAG-Gym formulates agentic RAG as a high-level Markov decision process and optimizes prompt engineering, actor tuning, and critic train-ing [18]. ReasonRAG and TreePS-RAG argue that outcome-only rewards are too sparse and that process-level or tree-derived supervision improves multi-step retrieval behavior [19, 20]. SIRAG introduces lightweight agents that decide when to continue retrieval and which evidence to select [21], and FLAIR adapts retrieval based on user feedback in a copilot setting [22]. These works are valuable because they move beyond static retrieve-then-generate pipelines, but their unit of decision is still “which evi-dence improves the next answer.” None of them treat false-positive memory injection in a debugging trajectory as a first-class safety event with its own measurable cost. The abstention and refusal literature provides the complementary lens. Selective prediction allows a model to abstain on low-confidence examples [23]; selective genera-tion extends this to controllable language generation under risk control [24]; conformal abstention adapts thresholds for risk management [25]; independent rejectors improve reliability without repeatedly querying the LLM [26]; Learn-to-Refuse imposes a struc-tured knowledge scope and refusal mechanism [27]; and I-CALM studies prompt-level incentives for confidence-aware abstention [28]. These methods establish that refusing or deferring is rational, but their target is almost always the final answer . In our set-ting, the object being accepted or rejected is not an answer; it is a piece of retrieved operational memory that, if injected, will quietly shape every subsequent reasoning step the agent takes. A wrong final answer is visible to the user; a wrong memory injection is not. These five observations—repeated false-positive injections in real debugging sessions, the gap between RAG safety and operational memory safety, the unsafe-by-default assumption in repair-ingredient retrieval, the answer-centric scope of agentic RAG, and the answer-centric scope of abstention—together pushed us toward a different formulation. We treat issue-memory use as risk-sensitive selective control .3Retrieval remains necessary, but its score is treated as evidence rather than permis-sion. The controller observes a structured state built from candidate scores, ambiguity, failure-family compatibility, entity overlap, command/path/stack signatures, histori-cal acceptance, historical false-positive rate, session rejection state, and operational cost. It then chooses whether to inject memory, compress memory, retrieve conser-vatively, abstain, ask for feedback, or proceed without memory. Two design choices follow directly from the failure modes above. First, because false-positive injection is the most damaging outcome we observed, the reward function makes its penalty strictly larger than the bonus for a correct injection. Second, because abstention was the action that would have saved us the most repair time in those sessions, abstention and no memory are first-class actions, not fallback states. The design is also aligned with context-budget work that treats context as a constrained resource [29] and with calibration-oriented RAG that argues relevance alone is insufficient when downstream decisions must be reliable [30]. This paper introduces RSCB-MC (Risk-Sensitive Contextual Bandit with Mem-ory Control). The method is intentionally lightweight: it does not fine-tune an LLM, does not require hosted inference, and does not perform expensive multi-trajectory rollouts in the benchmark pipeline. Instead, it operates as a local hot-path controller over a fixed action set. Its core contribution is the explicit modeling of unsafe memory reuse: false-positive memory injection is measured, penalized, and compared against safe non-injection behavior. The resulting question is simple but central to practical coding agents: when should the agent remember, and when should it deliberately not remember? 
+
+The contributions are as follows. First, we define coding-agent issue-memory reuse as an abstention-aware, risk-sensitive contextual-bandit problem, motivated by the concrete failure modes encountered above. Second, we introduce a pattern-variant-episode memory representation that separates reusable root-cause patterns, context-specific variants, and validated episodes, so that two failures sharing a symp-tom but differing in root cause are not collapsed into one “similar” record. Third, we construct a fixed 16-feature state representation for auditable memory decisions. Fourth, we define a risk-sensitive reward and action score that penalize false-positive memory injection more strongly than missed reuse. Fifth, we evaluate the method through deterministic local artifacts covering retrieval, paraphrase robustness, hard negatives, abstention behavior, offline replay, reward sensitivity, ablations, context-budget proxies, and bounded hot-path validation. Finally, we position the method relative to RAG optimization, program-repair retrieval, memory-management RL, process-supervised agentic RAG, and abstention/refusal methods. 
+
+# 2 Method 
+
+## 2.1 Task and notation 
+
+At time t, a coding agent observes a raw debugging context 
+
+xt ∈ X , (1) 4where xt may contain an error message, stack excerpt, command, file path, repository scope, environment metadata, previous repair attempts, and session-level feedback. A deterministic normalization function maps this raw context to a query profile 
+
+qt = ϕ(xt). (2) The profile qt contains normalized lexical evidence, root-cause tokens, failure-family signals, command signatures, path signatures, stack signatures, entity slots, and feedback-derived signals. A local memory bank M stores prior issue knowledge. Retrieval produces a candidate set 
+
+Ct = R(qt, M ) = {ct, 1, . . . , c t,k }. (3) A pure retrieval formulation would rank Ct and inject the top candidate. RSCB-MC instead builds a policy state 
+
+zt = ψ(qt, C t) ∈ R16 (4) and chooses an action 
+
+at ∈ At ⊆ A. (5) The action may inject memory, request more information, or avoid memory entirely. The controller then observes feedback yt, computes a reward rt, and updates its policy state Θ. This is a contextual-bandit approximation of a richer debugging process. It delib-erately optimizes the immediate memory-gating decision and does not claim to model all delayed multi-turn repair effects. That restriction is important: a production cod-ing agent is a partially observable, non-stationary system, but the hot-path memory decision must still be fast enough to run before every memory injection. 
+
+## 2.2 Pattern-variant-episode memory representation 
+
+The memory bank is not treated as a flat vector store. Each reusable issue-memory record is organized into three levels: 
+
+mi = ( pi, V i, E i), (6) where pi is a canonical pattern, Vi is a set of variants, and Ei is a set of observed episodes. A pattern stores a reusable symptom and root-cause class. A variant stores context-specific fix strategy and command/path/stack signatures. An episode stores concrete observed failure evidence, validation evidence, and feedback. This represen-tation makes the memory more auditable than a single retrieved text chunk: the controller can inspect whether the current failure matches only the symptom, or also the operational signatures and previous validation context. Figure 1 summarizes the end-to-end RSCB-MC pipeline and highlights the archi-tectural separation that motivates this paper. On the left, a raw debugging context 
+
+xt produced by the coding agent is normalized into a query profile qt = ϕ(xt), and a 5Fig. 1 Detailed RSCB-MC pipeline. The retrieval stage proposes candidate memories, but the con-troller separately decides whether any candidate is safe enough to influence the coding agent. Feedback updates the policy after each local decision. 
+
+local memory bank M is queried by the retrieval adapter R to produce a candidate set Ct. The pipeline does not stop at this point. Instead, the candidate set and the query profile are jointly mapped into the fixed 16-feature state zt = ψ(qt, C t), which exposes relevance, ambiguity, structural compatibility, feedback history, false-positive risk, and operational cost. The controller then chooses an action at ∈ At over the full action set, including non-injection actions such as no memory and abstain . Only after this decision is memory allowed to alter the agent’s repair trajectory. The diagram emphasizes a key invariant of the system: retrieval evidence flows into the policy as input, not as a permission signal, and feedback yt closes the loop by updating Θ so that future decisions become more risk-aware. Figure 2 unfolds the three-level memory record mi = ( pi, V i, E i) used by RSCB-MC and shows why this layering is essential for safe reuse in coding agents. The pattern layer pi captures a canonical symptom and root-cause class that is inten-tionally repository-agnostic, so that the same lesson can be reused across debugging sessions. The variant layer Vi refines that pattern with context-specific fix strategies and operational signatures over commands, paths, and stack traces, which lets the controller distinguish failures that share surface symptoms but differ in underlying cause. The episode layer Ei stores concrete observed evidence, validation outcomes, and feedback for each historical case, which provides the auditable history needed for 6Fig. 2 Pattern-variant-episode memory schema. The schema separates canonical root-cause patterns, context-specific variants, and validated episodes, then exposes retrieval, structural, risk, and cost evidence to the policy state. 
+
+risk estimation. The right side of the figure makes the controller-facing view explicit: each layer projects different evidence into the 16-feature state—retrieval scores from candidate matching, structural compatibility from variants and episodes, risk evidence from the historical false-positive rate, and cost evidence from estimated payload size and latency. This structured projection is what enables the controller to reason about whether a retrieved memory is genuinely compatible with the current failure rather than merely lexically similar. 
+
+## 2.3 Candidate evidence and uncertainty features 
+
+Each candidate ct,i receives a compatibility score st,i ≥ 0 derived from available lexical, structural, failure-family, entity, command, path, stack, and historical feedback evidence. We write this abstractly as 
+
+st,i = F (qt, c t,i ), (7) where F denotes the deterministic candidate scoring and feature aggregation used by the local retrieval adapter. The controller does not assume that st,i is a calibrated 7Table 1 RSCB-MC state vector zt ∈ R16 .
+
+Index Feature Interpretation 1 top1 score Best candidate compatibility score. 2 top2 score Second-best candidate compatibility score. 3 score margin Difference between the top two scores. 4 candidate entropy Ambiguity of the candidate score distribution. 5 candidate count Number of retrieved candidates. 6 family confidence Confidence that candidates match the same failure family. 7 entity match ratio Overlap between query and memory entities. 8 command signature match Compatibility of command-level evidence. 9 path signature match Compatibility of path-level evidence. 10 stack signature match Compatibility of stack-level evidence. 11 session rejection count Recent session-level memory rejections. 12 historical acceptance rate Prior acceptance rate for similar contexts. 13 historical false positive rate Prior false-positive rate for similar contexts. 14 estimated latency ms Estimated decision or payload latency. 15 estimated token cost Estimated memory payload token cost. 16 token budget remaining Remaining context-budget allowance. 
+
+probability. Instead, it extracts uncertainty statistics from the score distribution. Let 
+
+πt,i = st,i + ϵ
+
+∑kj=1 (st,j + ϵ) (8) for a small smoothing constant ϵ > 0. Candidate entropy is 
+
+Ht = −
+
+> k
+
+∑
+
+> i=1
+
+πt,i log πt,i , (9) and the score margin is ∆t = st, (1) − st, (2) , (10) where st, (1) and st, (2) are the top two candidate scores. A large margin with low entropy suggests a concentrated retrieval result; a small margin or high entropy sug-gests ambiguity. Ambiguity is not automatically failure, but it increases the burden on the controller before memory can be safely injected. 
+
+## 2.4 The 16-feature contextual state 
+
+The policy state zt has fixed order and fixed dimension. Table 1 lists the implemented features. The features intentionally mix relevance, ambiguity, structural compatibility, feedback history, and operational cost. This is the main difference between a top-k
+
+retriever and a memory controller: the retriever describes what was found, while the controller reasons about whether that evidence is safe, useful, and affordable. 8Table 2 Memory-control actions. Action Meaning Injects memory?               
+
+> no memory Continue the agent trajectory without external issue memory. No
+> top1 resolution Inject the highest-scoring resolution. Yes
+> top3 summary Inject a compact summary of the top three candi-dates. Yes
+> high precision retrieval Use only high-specificity evidence. Yes
+> high recall retrieval Retrieve broader evidence when missing a valid memory is costly. Yes
+> abstain Explicitly decline memory reuse under unsafe evi-dence. No
+> ask feedback Ask for clarification or external feedback before reuse. No
+
+## 2.5 Action space 
+
+The implemented action space is 
+
+A = {no memory , top1 resolution , top3 summary , high precision retrieval ,
+
+high recall retrieval , abstain , ask feedback }.
+
+(11) The action semantics are summarized in Table 2. The important point is that absten-tion and no-memory are legitimate outcomes of a memory controller. They are not missing predictions; they are safety-preserving actions. 
+
+## 2.6 Reward design 
+
+Feedback is mapped to a decomposed reward 
+
+rt = αI verified + βI accepted + κI correct abstain 
+
+− γI false positive − δI rejected − ηL t − λT t, (12) where Lt is latency cost and Tt is token cost. The default coefficients are (α, β, κ, γ, δ, η, λ ) = (2 .0, 1.0, 0.5, 4.0, 1.0, 0.001 , 0.01) . (13) The ordering 
+
+γ > α > β (14) is a design invariant. A false-positive memory injection is more harmful than a suc-cessful accepted reuse is beneficial. This mirrors the operational reality of debugging: a wrong fix can move the repository farther from repair, while a missed memory can still leave the agent free to reason from current evidence. Let I ⊂ A denote injection actions. A false-positive memory injection event is FP t = ⊮{at ∈ I} ⊮{memory is judged unsafe or causally wrong }. (15) 9In the reported deterministic artifacts, this judgment is provided by replay/proxy metadata rather than by live user feedback. 
+
+## 2.7 Risk-sensitive action score 
+
+The controller scores each available action through a risk-regularized objective 
+
+S(a, z t) = ̂ R(a, z t) − μ̂ pf p (a, z t) − λĉ c(a, z t), (16) where ̂ R is expected reward, ̂ pf p is estimated false-positive probability, and ̂ c is a normalized cost. The implemented policy augments this score with action-level quality, adoption evidence, confidence terms, and contextual reward/risk models: 
+
+St(a) = Qt(a) + ρA t(a) − μF P t(a) − λcC(a)+ wu
+
+√
+
+log( Nt + 2) 
+
+Nt(a) + 1 − wr
+
+√
+
+log( Nt + 2) 
+
+N f p t (a) + 1 ̂ pctx f p (zt)+ gθ(a, z t) − hθ(a, z t).
+
+(17) Here Qt(a) is empirical action quality, At(a) is adoption evidence, F P t(a) is action-level false-positive evidence, C(a) is cost, Nt(a) is the action feedback count, Nt is the total feedback count, and N f p t (a) is false-positive evidence for action a. The terms gθ
+
+and hθ are lightweight contextual reward and risk models over the 16-feature vector. The selected action is 
+
+at = arg max 
+
+> a∈At
+
+St(a), (18) subject to safety override rules. Figure 3 visualizes how the action score St(a) in Eq. (17) combines heterogeneous evidence into a single risk-aware decision. The reward branch on the left aggregates empirical action quality Qt(a), adoption evidence At(a), an exploration bonus that scales with √log( Nt + 2) /(Nt(a) + 1), and the contextual reward model gθ(a, z t). The risk branch on the right aggregates the action-level false-positive term μF P t(a), a context-conditional penalty that scales the false-positive exploration term by ̂ pctx f p (zt), the contextual risk model hθ(a, z t), and the cost term λcC(a). The two branches are subtracted, which makes the scoring rule directly express the design invariant 
+
+γ > α > β : a candidate with a high retrieval score is not sufficient for injection when the historical false-positive evidence, the contextual risk model, or the cost penalty dominates the reward terms. The figure also shows the safety-override stage applied after the arg max, which can promote abstain or no memory when session-level rejection signals or hard-negative cues indicate that injection is unsafe regardless of the raw score. This separation between scoring and override is what allows RSCB-MC to keep the false-positive rate at zero on the hard-negative and hot-path validation sets while still selecting useful injections elsewhere. 10 Fig. 3 Risk-sensitive scoring rule. RSCB-MC separates reward evidence from false-positive risk and cost; a high retrieval score is not sufficient for injection when the false-positive term dominates. 
+
+## 2.8 When refusing to remember is the right move 
+
+The statements below are not theorems in any deep sense; they are direct algebraic consequences of the reward function in Eq. 12 and the score in Eq. 16. We label them 
+
+decision boundaries rather than propositions to make that scope explicit. Let aI ∈ I be an injection action and aA be a non-injection action such as abstain or no-memory. Let pv , pa, pf , and pr denote the probabilities that aI produces ver-ified reuse, accepted reuse, false-positive injection, and rejection. Let pc denote the probability that aA is a correct abstention. Ignoring small latency and token terms for readability, the expected rewards satisfy 
+
+E[r | aI ] = αp v + βp a − γp f − δp r, (19) 
+
+E[r | aA] = κp c. (20) 
+
+Decision boundary 1 (when non-injection dominates). 
+
+For a fixed context zt, a non-injection action aA has greater expected reward than an injection action aI exactly when 
+
+γp f + δp r + κp c > αp v + βp a, (21) 11 because subtracting E[r | aI ] from E[r | aA] leaves κp c − αp v − βp a + γp f + δp r,and the inequality is preserved when aA has no larger token or latency cost than aI
+
+under the cost terms of Eq. 12. The point of stating Eq. 21 is operational: under the design invariant γ > α > β , even a moderate false-positive probability pf can flip the boundary in favour of aA, which is precisely the regime we observed on hard negatives. 
+
+Decision boundary 2 (the score as a one-step Lagrangian). 
+
+The action score in Eq. 16 is the one-step Lagrangian relaxation of max 
+
+> a∈At
+
+̂ R(a, z t) s.t. ̂ pf p (a, z t) ≤ ϵ, ̂ c(a, z t) ≤ b, (22) with Lagrangian L(a) = ̂ R(a, z t) − μ(̂ pf p (a, z t) − ϵ) − λc(̂c(a, z t) − b). For fixed ϵ and 
+
+b, the constants μϵ + λcb do not affect the maximizing action, leaving exactly Eq. 16. This is a re-reading of the score, not an optimality claim: it justifies treating μ and 
+
+λc as risk-budget and cost-budget multipliers rather than free hyperparameters. Neither boundary asserts global optimality of the policy over a full debugging tra-jectory. They only clarify the local control logic: when false-positive risk is sufficiently high, abstention or no-memory is not conservative noise; under the reward model, it is the rational action. 
+
+## 2.9 Algorithm 
+
+Algorithm 1 summarizes RSCB-MC. The benchmark implementation is local-first and deterministic: it does not require hosted LLM calls, external embedding services, or network access. 
+
+# 3 Experiments and Results 
+
+## 3.1 Evaluation boundary 
+
+The evaluation uses the supplied pythalab-codex-issue-memory artifact, package root codex issue memory , branch main , commit 227bbe3 , and Python 3.12.3. All reported results in this manuscript are generated from data/paper seed . The scripts run locally and deterministically. They do not call a hosted LLM, external embedding service, or network API. The larger data/paper benchmark dataset is present as a full-scale target, but the results reported here are smoke-scale/proxy evidence unless explicitly stated otherwise. This boundary is deliberate. The paper evaluates the memory-control mechanism, not the full repair quality of an arbitrary production LLM agent. Offline replay and bounded hot-path validation are useful for testing safety, latency, and policy behavior, but they are not causal online counterfactual experiments. 
+
+## 3.2 Benchmark artifacts 
+
+Table 3 summarizes the current smoke-scale artifacts and the full target scale. The failure families include duplicate server instances, SQLite initialization and locking, 12 Algorithm 1 RSCB-MC memory control 
+
+Require: Raw debugging context xt, memory bank M , policy state Θ.  
+
+> 1:
+
+qt ← ϕ(xt) ▷ normalize error, command, path, stack, entity, and family evidence  
+
+> 2:
+
+Ct ← R(qt, M ) ▷ retrieve candidate memories  
+
+> 3:
+
+zt ← ψ(qt, C t) ▷ build 16-feature state vector  
+
+> 4:
+
+At ← AvailableActions( Ct, Θ)  
+
+> 5:
+
+for each a ∈ At do  
+
+> 6:
+
+Estimate ̂ R(a, z t), ̂ pf p (a, z t), and ̂ c(a, z t) 
+
+> 7:
+
+Compute St(a) using Eq. 17  
+
+> 8:
+
+end for  
+
+> 9:
+
+at ← arg max a∈At St(a) 
+
+> 10:
+
+if SafetyOverride( zt, C t, Θ) is true then  
+
+> 11:
+
+Replace unsafe injection with abstain or no memory  
+
+> 12:
+
+end if  
+
+> 13:
+
+ot ← ApplyAction( at, C t) 
+
+> 14:
+
+Observe feedback yt 
+
+> 15:
+
+rt ← ComputeReward( yt, o t) using Eq. 12  
+
+> 16:
+
+Θ ← Update(Θ , a t, z t, r t, y t) 
+
+> 17:
+
+return selected action at, memory output ot, updated policy state Θ                  
+
+> Table 3 Benchmark scale. Reported results use the smoke-scale artifacts. Artifact Smoke scale Full target Canonical retrieval queries 24 400 Paraphrase variants 96 1600 Hard-negative cases 32 1000 Feedback replay events 40 per seed 3000 Memory records 16 80 Memory variants 32 160 Context-budget proxy cases 24 400
+
+wrong virtual environment paths, wrong PYTHONPATH , lock-file conflict, stale migra-tion, retrieval false positive, session-level rejected memory reuse, wrong environment variable, outdated memory variant, migration-order mismatch, corrupted local state, missing backup directory, invalid configuration key, and runtime diagnostic evidence gaps. 
+
+## 3.3 Baselines and metrics 
+
+The retrieval baselines are lexical only , static hybrid ,
+
+static hybrid with abstention , full system , and oracle upper bound .The RL/bandit baselines are epsilon greedy , ucb1 , thompson , linucb ,
+
+risk sensitive thompson , full rscb mc , and oracle upper bound . The oracle is a non-deployable diagnostic upper bound. The evaluation reports retrieval metrics (Recall@1, Recall@3, MRR, nDCG@3, top-1 accuracy), safety metrics (false-positive rate, unsafe injection rate, correct 13 Table 4 Paraphrase robustness. Percentages are computed over 24 original and 96 paraphrase queries.                         
+
+> Method Original R@1 Paraphrase R@1 Original MRR Paraphrase MRR Lexical 100.0% 78.1% 100.0% 84.0% Static hybrid 100.0% 80.2% 100.0% 85.1% Static+abstention 100.0% 51.0% 100.0% 52.1% Full retriever 100.0% 51.0% 100.0% 52.1% Oracle upper bound 100.0% 100.0% 100.0% 100.0%
+
+Table 5 Hard-negative safety over 32 cases.                                 
+
+> Method False-positive Unsafe injection Correct safe non-injection Cases Static hybrid 75.0% 100.0% 0.0% 32 Static+abstention 0.0% 0.0% 100.0% 32 Thompson 50.0% 50.0% 31.2% 32 LinUCB 75.0% 100.0% 0.0% 32 Risk-sensitive TS 0.0% 0.0% 100.0% 32 RSCB-MC 0.0% 0.0% 100.0% 32 Oracle upper bound 0.0% 0.0% 100.0% 32
+
+abstention rate, wrong abstention rate), replay metrics (average reward, cumulative reward, success rate, regret proxy), context metrics (token cost, latency proxy, risk-adjusted utility), and hot-path metrics (mean and p95 decision latency). All rates in the tables below are reported as percentages. 
+
+## 3.4 Retrieval and paraphrase behavior 
+
+On the canonical smoke-scale retrieval set, all retrieval methods obtain 100.0% Recall@1, 100.0% Recall@3, 100.0% MRR, 100.0% nDCG@3, and 100.0% top-1 accu-racy over 24 queries. This result should not be overinterpreted: it shows that the canonical seed set is easy for deterministic matching. The paraphrase set is more informative. Table 4 shows that lexical-only and static-hybrid retrieval degrade under paraphrasing, while the oracle remains at 100.0%. RSCB-MC is not a raw retrieval baseline in this experiment; as a controller over full-system candidates, it is evaluated through downstream memory-use behavior rather than direct Recall@1. The paraphrase result matters because it separates two problems. Canonical matching can be saturated, while robust memory-use control remains difficult. A safe memory controller should not assume that high canonical retrieval accuracy eliminates the need for abstention, structural matching, or false-positive risk estimation. 
+
+## 3.5 Hard-negative safety and abstention 
+
+Hard negatives are cases that look similar to stored memories but should not be injected. Table 5 shows the main safety behavior. Static hybrid retrieval injects memory on all hard negatives and reaches a 75.0% false-positive rate. Risk-sensitive Thompson and full RSCB-MC produce 0.0% false-positive rate and 100.0% correct safe non-injection behavior on these cases. 14 Fig. 4 Offline replay comparison. RSCB-MC provides the strongest non-oracle success rate while keeping the false-positive rate at 0.0%. The oracle is non-deployable and included only as a diagnostic upper bound.  
+
+> Table 6 Offline replay comparison. Rates are percentages; rewards are deterministic proxy rewards.
+
+Method Success False-positive Abstention Verified reuse Cum. reward Lexical 50.0% 17.5% 0.0% 25.0% -70.800 Static 50.0% 17.5% 0.0% 25.0% -70.800 Static+Abs 35.0% 2.5% 75.0% 10.0% -33.350 Epsilon-greedy 53.8% 8.7% 30.0% 21.3% -49.818 UCB1 55.0% 2.5% 50.0% 17.5% -35.865 Thompson 53.7% 2.5% 38.8% 20.0% -52.315 LinUCB 37.5% 10.0% 50.0% 15.0% -76.775 Risk-TS 60.0% 0.0% 37.5% 22.5% -33.700 RSCB-MC 62.5% 0.0% 35.0% 25.0% -31.740 
+
+Oracle 67.5% 0.0% 50.0% 25.0% -5.900 
+
+The abstention benchmark contains 56 cases. Under the conservative threshold used in the smoke-scale artifacts, full RSCB-MC and risk-sensitive Thompson answer 0.0% of cases, incur 0.0% risk, correctly abstain on 57.1%, and wrongly abstain on 42.9%. This reveals both the benefit and the cost of the current safety setting. The controller prevents unsafe injection but is over-conservative on some answerable cases. The correct future direction is calibration improvement, not removal of abstention. 
+
+## 3.6 Offline replay algorithm comparison 
+
+Table 6 summarizes the main offline replay comparison across two deterministic seeds and 40 replay events per seed. The success metric counts accepted/verified reuse or safe abstention according to replay/proxy labels. Full RSCB-MC has the best non-oracle success rate, 62.5%, and a 0.0% false-positive rate. The oracle upper bound reaches 67.5% success, showing a remaining gap of 5.0 percentage points. 15 Fig. 5 Ablation result. Removing abstention produces the largest safety degradation, increasing false-positive rate to 17.5% and sharply reducing cumulative reward.  
+
+> Table 7 Selected ablations. Percentages are rates; reward is cumulative proxy reward over replay.
+
+Variant False-positive Correct abstention Cum. reward Full RSCB-MC 0.0% 5.0% -31.740 No failure-family features 0.0% 5.0% -41.740 No entity features 0.0% 5.0% -33.495 No abstention 17.5% 0.0% -87.800 No contextual bandit 0.0% 5.0% -33.700 No risk-sensitive objective 0.0% 5.0% -33.820 Static hybrid only 17.5% 0.0% -70.800 Oracle upper bound 0.0% 5.0% -5.900 
+
+The important comparison is not only RSCB-MC versus static retrieval. Static retrieval has 50.0% success but a 17.5% false-positive rate. RSCB-MC improves success to 62.5% while reducing false positives to 0.0%. This is the intended behavior of risk-sensitive memory control: it should not merely retrieve more memories; it should prevent dangerous memories from becoming prompt-level influence. 
+
+## 3.7 Ablations 
+
+The strongest ablation is removal of abstention and other non-injection actions. As shown in Table 7 and Fig. 5, minus abstention raises the false-positive rate from 0.0% to 17.5% and decreases cumulative reward from -31.740 to -87.800. This confirms that abstention is not a cosmetic fallback; it is a functional safety component. Some ablations are explicitly not applicable in the current artifact because the corresponding components are not exposed by the offline replay path. We keep those cases out of the table rather than inventing unsupported measurements. 16 Fig. 6 Context-budget proxy. The short hint improves expected success, but risk-adjusted utility penalizes false-positive influence and payload cost.  
+
+> Table 8 Context-budget proxy over 24 cases. Percentages are proxy rates; token and latency are estimates.
+
+Mode Tokens Latency Exp. success FP influence Utility No memory 0.0 0.0 ms 60.8% 0.0% 60.8% Short hint 41.1 17.8 ms 74.5% 12.0% 48.6% Top-1 resolution 29.2 15.9 ms 58.3% 86.3% -115.9% Top-3 summary 157.4 54.3 ms 56.8% 86.3% -122.7% Full trace 351.1 114.6 ms 48.3% 53.0% -72.7% 
+
+## 3.8 Reward sensitivity and context budget 
+
+The reward-sensitivity sweep covers false-positive penalties of -1.0, -2.5, -4.0, and -8.0, accepted-reuse rewards, correct-abstention rewards, and token penalties. The best risk-adjusted configuration in the smoke-scale sweep is fp1 acc0p5 cab0p5 tok0 , with 0.0% false-positive rate and risk-adjusted utility -14.982. The experiment also reveals an evaluation limitation: reward magnitude changes alter reported utility directly, but in the current implementation they may not always alter action selection unless they change the signs or categories consumed by the policy update. The context-budget proxy in Table 8 and Fig. 6 supports a simple conclusion: more memory is not always better. short hint has the highest expected success proxy, 74.5%, but it also has a 12.0% false-positive influence proxy. no memory has lower expected success, 60.8%, but the best risk-adjusted utility because it has no token cost, no latency cost, and no false-positive influence. Full traces are expensive and not dominant under the current proxy. 17 Fig. 7 Bounded hot-path validation. RSCB-MC maintains 0.0% false positives with sub-millisecond p95 decision latency. Points with nonzero false-positive rates are shown in red.  
+
+> Table 9 Bounded 200-case hot-path validation. Rates are percentages.
+
+Method Success False-positive Mean lat. ( μs) p95 lat. ( μs) Lexical 50.0% 17.5% 3.273 3.920 Static 50.0% 17.5% 6.137 7.327 Static+Abs 35.0% 2.5% 5.282 6.041 Epsilon-greedy 28.0% 2.5% 5.396 7.213 UCB1 32.0% 0.5% 7.687 9.510 Thompson 35.5% 7.0% 14.666 16.230 LinUCB 42.0% 5.5% 2865.263 3567.384 Risk-TS 60.0% 0.0% 285.689 411.821 RSCB-MC 60.5% 0.0% 267.792 331.466 
+
+Oracle 67.5% 0.0% 78.106 113.588 
+
+## 3.9 Bounded live hot-path validation 
+
+The live hot-path validation executes 200 in-process decisions per method, for 2000 total decisions. It does not call a live LLM; reward labels remain deterministic replay proxies. Table 9 reports success, false-positive rate, and decision latency. Full RSCB-MC reaches 60.5% success with 0.0% false positives. Its p95 decision latency is 331.466 
+
+μs, which is sub-millisecond and lower than the risk-sensitive Thompson p95 latency of 411.821 μs. LinUCB is substantially slower in this hot-path setting, with p95 latency of 3567.384 μs. 18 Table 10 Where RSCB-MC sits relative to the closest RAG and knowledge-boundary methods.                             
+
+> Method Gated object First-class failure Cost of a wrong deci-sion Knowledge-boundary RAG [10] Whether to retrieve at all Unhelpful retrieval Wrong text answer Parametric RAG [11] How to integrate retrieved context Reasoning degrada-tion Wrong text answer + token cost KnowledGPT / DRO [12, 13] Knowledge access and selection Poor knowledge selec-tion Wrong text answer Calibration-oriented RAG [30] Confidence in retrieved evidence Mis-calibrated deci-sion Wrong downstream choice RSCB-MC (this work) Whether retrieved memory may enter the agent’s context False-positive mem-ory injection in adebugging trajectory Wrong file edits, repeated failed commands, wasted context budget
+
+# 4 Discussion 
+
+## 4.1 Reading the numbers 
+
+The results support a specific and bounded claim. In the supplied deterministic bench-mark, canonical retrieval is not the bottleneck: it reaches 100.0% on the easy canonical set. The bottleneck is safe use of memory under ambiguity, paraphrase shift, and hard negatives. RSCB-MC improves the non-oracle offline replay success rate to 62.5% while keeping false-positive memory injection at 0.0%. The hard-negative result is even more direct: static hybrid retrieval injects unsafe memory in all hard-negative cases, whereas RSCB-MC avoids false-positive injection entirely. The strongest abla-tion confirms the mechanism. Removing abstention raises the false-positive rate to 17.5% and reduces cumulative reward to -87.800. This does not mean the controller is fully calibrated. In the abstention benchmark, the conservative setting refuses all cases, causing wrong abstentions on answerable examples. The safety profile is therefore asymmetric: the current controller is better at avoiding unsafe memory than at maximizing coverage. This is acceptable for an early safety-oriented memory controller, but it is not the final target. The next technical step is not to remove abstention; it is to calibrate the boundary between safe reuse and unnecessary refusal. 
+
+## 4.2 How RSCB-MC differs from RAG and knowledge-boundary methods 
+
+Rather than rephrasing the related work, it is more useful to lay out the differences side by side. Table 10 contrasts the closest RAG-side methods with RSCB-MC along the dimensions that matter for coding agents: what is being gated, what counts as a failure, and what the cost of a wrong decision actually is. The philosophical stance is the same—retrieval score alone is not a permission— but the failure surface differs. In general RAG, a bad passage produces a bad answer; in coding-agent memory, a bad memory produces operational damage that can persist across turns. That is why RSCB-MC exposes command, path, stack, and session-rejection signals to the controller: in the failure modes that motivated the system, 19 those structural signals were the only ones that distinguished, e.g., a stale-migration episode from a database-lock episode after the surface error message had already collided. 
+
+## 4.3 A critical view of repair-ingredient retrieval 
+
+Program-repair systems have repeatedly demonstrated that prior fixes are useful— history-driven repair learns from recurring human fix patterns [14], RAP-Gen retrieves bug-fix pairs to guide patch generation [15], ReAPR injects retrieved bug-fix pairs into LLM repair prompts [16], and Repair-Ingredients-Search separates root-cause ingredients from solution-phase ingredients [17]. RSCB-MC is not a competitor to these systems; it is a safety layer that should sit in front of them. The points below summarize where the existing repair-retrieval design and our memory-control design pull in different directions: 
+
+• Default action. Repair-retrieval systems default to “inject the best retrieved fix” once a similar past case is found. RSCB-MC’s default is “do not inject unless evi-dence beyond similarity supports it.” On the hard-negative set, this single difference moved the false-positive rate from 75.0% (static hybrid) to 0.0%. 
+
+• Failure asymmetry. Repair-retrieval rewards typically count successful patches. They do not separately measure how often a retrieved ingredient produced a wrong patch that an APR pipeline then had to revert. Our reward design makes that cost explicit through γ > α > β .
+
+• Granularity of memory. Repair-retrieval usually treats a retrieved bug-fix pair as a single unit. The pattern-variant-episode schema instead separates the symptom from the operational signature, which is what allowed us to distinguish, e.g., “wrong virtual environment” from “wrong PYTHONPATH ” even when both produced the same surface trace. 
+
+• Scope of evaluation. Repair-retrieval results are usually reported on Defects4J or GitBug-Java. We make no such claim. RSCB-MC is not a patch generator and would be misjudged on a patch-success benchmark. The net effect is complementary rather than competitive: a production repair pipeline can keep its retrieval and patch-generation components and add RSCB-MC as a gate that decides whether the retrieved ingredient is allowed to influence the next agent step at all. 
+
+## 4.4 An honest trade-off against process-supervised agentic RAG 
+
+It would be misleading to present RSCB-MC as strictly superior to process-supervised agentic RAG. RAG-Gym [18], ReasonRAG [19], TreePS-RAG [20], and SIRAG [21] all operate at a higher level of expressivity: they optimize multi-step retrieval and reasoning trajectories, can assign credit across long chains, and can in principle learn behaviors that a single-step controller cannot represent. RSCB-MC cannot do any of that. It sees one decision at a time, scores a fixed action set, and updates with a deterministic feedback signal. 20 What RSCB-MC offers in exchange is a different operating point. It does not require an annotated rollout tree, a process-reward model, a critic, or a hosted LLM in the training loop. It runs in-process, makes a decision in a few hundred microseconds at p95, and produces an audit trail that a human reviewer can read action-by-action. For a coding agent that must decide before every memory injection whether the retrieved evidence is safe, that latency-and-auditability profile is the binding con-straint. Process-supervised methods are the right answer when the goal is end-to-end retrieval-and-reasoning quality; RSCB-MC is the right answer when the goal is a fast, transparent gate that prevents unsafe memory from entering the agent’s context in the first place. The two are best read as complementary layers, not as competing solutions to the same problem. 
+
+## 4.5 Where memory-management RL ends and RSCB-MC begins 
+
+Memory-R1 and Agentic Memory teach agents the full lifecycle of memory operations: add, update, delete, retrieve, summarize, discard [8, 9]. MIRIX further organizes this lifecycle across multiple specialized memory types in a multi-agent architecture [6]. RSCB-MC does much less than any of these. It does not write memory, does not compress memory off-line, does not resolve contradictions between competing entries, and does not decide when an old episode should be retired. It only answers one question at read time: “is this retrieved memory safe to inject right now?” This is a deliberate scoping choice, and it has a real downside. RSCB-MC inherits whatever memory the upstream write path produces, including stale, duplicated, or contradictory entries. If a wrong fix has been written into memory and re-validated by an unreliable feedback signal, RSCB-MC will eventually trust it. The right way to read this paper is therefore not as a replacement for memory-management RL but as the read-time safety layer that such systems are currently missing. In a complete production stack, Memory-R1-style learning would manage what enters memory, and an RSCB-MC-style controller would decide whether what comes out of memory is allowed to alter the agent’s next move. Memory aging, contradiction resolution, and privacy governance, all of which appear in memory surveys as open problems [5], remain firmly outside our scope. 
+
+## 4.6 What changes when abstention targets memory rather than answers 
+
+Abstention has become a respectable answer-time strategy: selective prediction [23], selective generation [24], conformal abstention [25], learning-to-defer [31], and Learn-to-Refuse [27] all show that refusing to answer can improve reliability under uncertainty, and recent work argues that prompt-level incentives alone can already shift LLMs toward more honest abstention [26, 28]. We borrow the core idea but move the decision boundary one step earlier in the pipeline. The controller is not deciding whether the LLM should answer; it is deciding whether a retrieved memory should be inserted into the prompt that the LLM will then read. 21 This displacement changes what is being measured. A wrong generated answer is visible at the output layer and can be flagged, scored, or rolled back; a wrong memory injection is hidden inside the prompt and silently biases every reasoning step that follows. Treating false-positive memory injection as its own first-class metric, separate from any final-answer accuracy, is therefore not a stylistic preference. It is the only way to see the failure mode at all. The ablation study makes this concrete: when abstention is removed and the controller is forced to commit on every ambiguous case, the false-positive rate jumps from 0.0% to 17.5% and cumulative reward collapses from -31.740 to -87.800. The lesson is narrow but useful: abstention literature has been studying the right idea on the wrong object for coding-agent memory. 
+
+## 4.7 What this means in practice 
+
+Three practical implications follow. First, memory systems for coding agents should report false-positive injection rates, not only Recall@k or MRR. Second, memory payload size should be controlled jointly with risk. The context-budget proxy suggests that short hints may be useful, but large traces and summaries can be dominated when they carry high false-positive influence or high token cost. Third, memory gating should be separated from retrieval. This separation makes the system easier to audit: one can inspect why a memory was retrieved and separately why it was or was not injected. 
+
+## 4.8 Where this evidence stops 
+
+The evidence has several boundaries. First, the reported benchmark is smoke-scale. The full benchmark artifacts exist, but final journal claims should be refreshed using the full-scale pipeline. Second, the offline replay evaluation is not a causal online counterfactual guarantee. When a policy selects an action, feedback is obtained from deterministic replay metadata rather than from live user outcomes. Third, the hot-path validation measures in-process decision cost and update behavior, but its reward labels are still offline proxies. Fourth, the context-budget and agent dry-run exper-iments are proxy tasks, not direct measurements of production LLM repair quality. Fifth, the contextual-bandit formulation optimizes immediate memory-control deci-sions and does not model delayed repository evolution, multi-turn repair consequences, or non-stationary memory aging. These limitations do not invalidate the core mechanism, but they constrain the claim. The appropriate conclusion is that RSCB-MC provides a coherent, efficient, and safety-oriented memory-control mechanism in the supplied deterministic artifacts. It does not yet prove broad production superiority across arbitrary repositories, LLMs, or live coding-agent deployments. 
+
+# 5 Conclusion 
+
+This paper introduced RSCB-MC, a risk-sensitive contextual bandit controller for abstention-aware memory retrieval in LLM-based coding agents. The method reframes issue-memory use as a selective control problem: the agent should not only ask which 22 memory is most similar, but whether any retrieved memory is safe enough to influence the debugging trajectory. RSCB-MC stores issue knowledge through a pattern-variant-episode schema, constructs a 16-feature context vector from retrieval evidence, and uses a reward function that penalizes false-positive memory injection more strongly than missed reuse. The current deterministic smoke-scale artifacts show that canonical retrieval can be saturated while safe memory use remains difficult. Full RSCB-MC achieves the best non-oracle offline replay success rate, 62.5%, with a 0.0% false-positive rate. It preserves a 0.0% false-positive rate in bounded live hot-path validation and remains sub-millisecond at p95 decision latency. The ablations show that explicit abstention is central to safety: removing abstention raises false positives to 17.5% and substantially worsens cumulative reward. Future work should extend the current evidence in five directions: full-scale bench-mark refresh, live LLM-agent evaluation, better calibration of the safe-reuse boundary, off-policy evaluation with stronger counterfactual estimators, and longer-horizon mod-eling of delayed repair outcomes, stale memory, and repository drift. The broader lesson is simple: for coding agents, memory is useful only when the agent also learns when not to use it. 
+
+# Declarations 
+
+Funding Not applicable. 
+
+Conflict of interest The author declares no conflict of interest. 
+
+Ethics approval and consent to participate Not applicable. This study did not involve human participants, human data, or animal subjects. 
+
+Consent for publication Not applicable. 
+
+Materials availability Not applicable. 
+
+Author contributions M.I. conceived the study, designed and implemented the RSCB-MC method, conducted all experiments, analyzed the results, and wrote the manuscript. 
+
+Data and code availability The source code, deterministic local artifacts, and reproduction scripts supporting the findings of this study are openly available at https://github.com/PhiniteLab/codex-issue-memory. The reported smoke-scale results are generated from data/paper seed ; the full target benchmark is stored under 
+
+data/paper benchmark in the same repository. 
+
+# References 
+
+[1] Wang, J., Ni, T., Lee, W.B., Zhao, Q.: A contemporary survey of large lan-guage model assisted program analysis. arXiv preprint arXiv:2502.18474 (2025) arXiv:2502.18474 [2] Yang, J., Liu, X., Lv, W., Deng, K., Guo, S., Jing, L., Zheng, B., et al.: From code foundation models to agents and applications: A comprehensive survey and practical guide to code intelligence. arXiv preprint arXiv:2511.18538 (2025) arXiv:2511.18538 23 [3] Jiang, Z., Lo, D., Liu, Z.: Agentic Software Issue Resolution with Large Language Models: A Survey. arXiv preprint arXiv:2512.22256 (2025) arXiv:2512.22256 [4] Bui, N.D.Q.: Building Effective AI Coding Agents for the Terminal: Scaf-folding, Harness, Context Engineering, and Lessons Learned. arXiv preprint arXiv:2603.05344 (2026) arXiv:2603.05344 [5] Du, P.: Memory for autonomous LLM agents: Mechanisms, evaluation, and emerging frontiers. arXiv preprint arXiv:2603.07670 (2026) arXiv:2603.07670 [6] Wang, Y., Chen, X.: MIRIX: Multi-agent memory system for LLM-based agents. arXiv preprint arXiv:2507.07957 (2025) arXiv:2507.07957 [7] Guo, J., Li, N., Qi, J., Yang, H., Li, R., Feng, Y., Xu, M., et al.: Empowering work-ing memory for large language model agents. arXiv preprint arXiv:2312.17259 (2023) arXiv:2312.17259 [8] Yan, S., Yang, X., Huang, Z., Nie, E., Ding, Z., Li, Z., Ma, Y., et al.: Memory-R1: Enhancing large language model agents to manage and utilize memories via reinforcement learning. arXiv preprint arXiv:2508.19828 (2025) arXiv:2508.19828 [9] Yu, Y., Yao, L., Xie, Y., Tan, Q., Feng, J., Li, Y., Wu, L.: Agentic memory: Learn-ing unified long-term and short-term memory management for large language model agents. arXiv preprint arXiv:2601.01885 (2026) arXiv:2601.01885 [10] Zhang, Z., Wang, X., Jiang, Y., Chen, Z., Mu, F., Hu, M., Huang, F., et al.: Exploring Knowledge Boundaries in Large Language Models for Retrieval Judgment. arXiv preprint arXiv:2411.06207 (2024) arXiv:2411.06207 [11] Su, W., Tang, Y., Ai, Q., Yan, J., Wang, C., Wang, H., Liu, Y., et al. : Parametric retrieval augmented generation. In: Proceedings of the 48th International ACM SIGIR Conference on Research and Development in Information Retrieval, pp. 1240–1250 (2025) [12] Shi, Z., Yan, L., Sun, W., Feng, Y., Ren, P., Ma, X., Ren, Z., et al.: Direct retrieval-augmented optimization: Synergizing knowledge selection and language models. ACM Transactions on Information Systems (2025) [13] Wang, X., Yang, Q., Qiu, Y., Liang, J., He, Q., Gu, Z., Wang, W., et al.: Knowl-edGPT: Enhancing large language models with retrieval and storage access on knowledge bases. arXiv preprint arXiv:2308.11761 (2023) arXiv:2308.11761 [14] Le, X.B.D., Lo, D., Le Goues, C.: History driven program repair. In: 2016 IEEE 23rd International Conference on Software Analysis, Evolution, and Reengineering (SANER), vol. 1, pp. 213–224 (2016) 24 [15] Wang, W., Wang, Y., Joty, S., Hoi, S.C.H.: RAP-Gen: Retrieval-augmented patch generation with CodeT5 for automatic program repair. In: Proceedings of the 31st ACM Joint European Software Engineering Conference and Symposium on the Foundations of Software Engineering, pp. 146–158 (2023) [16] Liu, Z., Du, X., Liu, H.: ReAPR: Automatic program repair via retrieval-augmented large language models. Software Quality Journal 33 (3), 30 (2025) [17] Zhang, J., Huang, K., Zhang, J., Liu, Y., Chen, C.: Repair Ingredients Are All You Need: Improving Large Language Model-Based Program Repair via Repair Ingredients Search. arXiv preprint arXiv:2506.23100 (2025) arXiv:2506.23100 [18] Xiong, G., Jin, Q., Wang, X., Fang, Y., Liu, H., Yang, Y., Zhang, A., et al.: RAG-Gym: Systematic optimization of language agents for retrieval-augmented generation. arXiv preprint arXiv:2502.13957 (2025) arXiv:2502.13957 [19] Zhang, W., Li, X., Dong, K., Wang, Y., Jia, P., Li, X., Zhao, X., et al.: Process vs. Outcome Reward: Which is Better for Agentic RAG Reinforcement Learning. arXiv preprint arXiv:2505.14069 (2025) arXiv:2505.14069 [20] Zhang, T., Li, K., Li, J., Li, Y., Luo, H., Wu, X., Meng, H., et al.: TreePS-RAG: Tree-based Process Supervision for Reinforcement Learning in Agentic RAG. arXiv preprint arXiv:2601.06922 (2026) arXiv:2601.06922 [21] Wang, J., Wu, Z., Lu, S., Li, Y., Huang, X.: SIRAG: Towards Stable and Interpretable RAG with A Process-Supervised Multi-Agent Framework. arXiv preprint arXiv:2509.18167 (2025) arXiv:2509.18167 [22] Zhang, W., Zhu, Y., Lu, Y., Demarne, M., Wang, W., Deng, K., Krishnan, S., 
+
+et al. : FLAIR: Feedback learning for adaptive information retrieval. In: Proceed-ings of the 34th ACM International Conference on Information and Knowledge Management, pp. 6284–6292 (2025) [23] Xin, J., Tang, R., Yu, Y., Lin, J.: The art of abstention: Selective prediction and error regularization for natural language processing. In: Proceedings of the 59th Annual Meeting of the Association for Computational Linguistics and the 11th International Joint Conference on Natural Language Processing (Volume 1: Long Papers), pp. 1040–1051 (2021) [24] Lee, M., Kim, K., Kim, T., Park, S.: Selective generation for controllable language models. Advances in Neural Information Processing Systems 37 , 50494–50527 (2024) [25] Tayebati, S., Kumar, D., Darabi, N., Jayasuriya, D., Krishnan, R., Trivedi, A.R.: Learning conformal abstention policies for adaptive risk management in large language and vision-language models. arXiv preprint arXiv:2502.06884 (2025) arXiv:2502.06884 25 [26] Sch¨ onw¨ alder, E., Falkenberg, C., Hartmann, C., Lehner, W.: Abstention is all you need. In: 2025 IEEE 12th International Conference on Data Science and Advanced Analytics (DSAA), pp. 1–10 (2025) [27] Cao, L.: Learn to refuse: Making large language models more controllable and reli-able through knowledge scope limitation and refusal mechanism. In: Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing, pp. 3628–3646 (2024) [28] Zong, H., Li, B., Long, Y., Chang, S., Wu, J., Hadfield, G.K.: I-CALM: Incen-tivizing Confidence-Aware Abstention for LLM Hallucination Mitigation. arXiv preprint arXiv:2604.03904 (2026) arXiv:2604.03904 [29] Wu, Y., Zheng, Y., Xu, T., Zhang, Z., Yu, Y., Zhu, J., Yu, G., et al.: ContextBud-get: Budget-Aware Context Management for Long-Horizon Search Agents. arXiv preprint arXiv:2604.01664 (2026) arXiv:2604.01664 [30] Jang, C., Cho, D., Lee, S., Lee, H., Lee, J.: Reliable Decision Making via Calibra-tion Oriented Retrieval Augmented Generation. arXiv preprint arXiv:2411.08891 (2024) arXiv:2411.08891 [31] Montreuil, Y., Yeo, S.H., Carlier, A., Ng, L.X., Ooi, W.T.: Optimal query alloca-tion in extractive QA with LLMs: A learning-to-defer framework with theoretical guarantees. arXiv preprint arXiv:2410.15761 (2024) arXiv:2410.15761 26
