@@ -1,0 +1,1565 @@
+Title: Beyond Uniform Credit Assignment: Selective Eligibility Traces for RLVR
+
+URL Source: https://arxiv.org/pdf/2605.05965v1
+
+Published Time: Fri, 08 May 2026 01:08:44 GMT
+
+Number of Pages: 24
+
+Markdown Content:
+# Beyond Uniform Credit Assignment: Selective Eligibility Traces for RLVR 
+
+Chaoli Mou 1 Zhan Zhuang 1,2 Xinning Chen 1 Yu Zhang 1,∗
+
+> 1
+
+Southern University of Science and Technology 2City University of Hong Kong 
+
+12432691@mail.sustech.edu.cn 12250063@mail.sustech.edu.cn chenxn@sustech.edu.cn yu.zhang.ust@gmail.com 
+
+Abstract 
+
+Reinforcement Learning with Verifiable Rewards (RLVR) has become a key ap-proach for improving the reasoning abilities of large language models. However, widely used critic-free algorithms such as Group Relative Policy Optimization (GRPO) necessitate a “uniform credit assignment” assumption that indiscriminately broadcast trajectory-level advantages, hindering learning efficiency by failing to distinguish critical reasoning steps. To address this limitation, we propose Selective Eligibility Traces (S-trace). Grounded in the intuition of partial trust region preser-vation, we initially introduce P-trace as a sample-efficient, critic-free eligibility traces method, upon which we build S-trace, implementing a sparse eligibility traces mechanism to further mitigate variance and achieve fine-grained credit assignment by selectively masking low-entropy tokens. Theoretically, we contextu-alize the recent Group Sequence Policy Optimization (GSPO) method within the critic-free eligibility traces framework, identifying it as a special instance of the eligibility traces method operating under uniform credit assignment. Experiments demonstrate that S-trace not only outperforms GRPO, showing gains of 0.49% on Qwen3-1.7B and 3.16% on Qwen3-4B, and maintaining a robust 2.98% improve-ment when scaled further to Qwen3-8B in average pass@16, but notably achieves this with simultaneously higher sample and token efficiency. 
+
+1 Introduction 
+
+Reasoning-oriented post-training has increasingly moved beyond Reinforcement Learning from Human Feedback (RLHF) toward Reinforcement Learning with Verifiable Rewards (RLVR), where supervision comes from objective outcome-level feedback. Unlike RLHF, which relies on subjective human preference labels [ 1 , 2 , 3], RLVR is particularly well suited to mathematical and logical reasoning, where final answers can often be automatically verified. Recent frameworks, such as DeepSeek-R1 [ 4], demonstrate the effectiveness of this paradigm, showing that verifiable rewards can elicit strong reasoning behaviors in large language models (LLMs). In particular, DeepSeek-R1 exhibits an emergent “aha moment”, where the model reflects on and revises its reasoning during generation, suggesting that RLVR may encourage forms of model-free planning [5, 6]. The triumph of DeepSeek-R1 is underpinned by Group Relative Policy Optimization (GRPO) [ 7], a critic-free reinforcement learning algorithm that eschews the critic network central to PPO [ 8]. By estimating advantages from groups of sampled responses, GRPO reduces memory overhead and avoids the inaccuracies inherent in learned value estimation. However, this critic-free design also results in coarser credit assignment. GRPO effectively relies on a “uniform credit assignment” assumption, assigning identical effective credit to every token in a response. For long mathematical 
+
+> ∗Corresponding author. Preprint.
+> arXiv:2605.05965v1 [cs.LG] 7 May 2026
+
+reasoning traces spanning thousands of tokens, this uniform assignment can introduce substantial noise since routine tokens and critical reasoning steps are reinforced indiscriminately. Credit assignment is a fundamental and long-standing challenge in reinforcement learning [ 9 ]. The difficulty is notably pronounced in the RLVR setting, where the sparsity of outcome-based rewards clashes with the combinatorial vastness of the token-based action space. Widely used approaches such as GRPO struggle to bridge this gap, as their reliance on the aforementioned coarse granularity leads to sample-inefficient optimization, leaving the dense temporal dependencies within reasoning chains largely unexploited. To address this limitation, drawing inspiration from eligibility traces [10 , 11 , 12 , 13 ] and conceptually revisiting the paradigm of actor-only eligibility traces method [ 14 ], we propose S-trace. By reformulating the policy gradient of PPO and grounded in the intuition of partial trust region preservation, we approximate the historical importance weights r<t (θ) within the eligibility traces term with the current importance weight rt(θ) to deduce P-trace, a sample-efficient and critic-free eligibility traces method. While the integration of eligibility traces into RLVR is not unprecedented, as seen in approaches like GRPO( λ) [ 15 ], such methods typically rely on dense eligibility traces, which risk indiscriminately reinforcing noisy tokens. Guided by the 80/20 rule [ 16 ], S-trace distinguishes itself by selectively incorporating into the eligibility trace computation only high-entropy tokens that facilitate logical transitions, an approach that reduces the variance inherent in P-trace while simultaneously constructing sparse eligibility traces akin to selective credit assignment [17] to effectively mitigate overfitting and enhance generalization. To summarize, our contributions are three-fold. • We propose S-trace, a critic-free eligibility-trace method for RLVR that introduces temporal structure into token-level credit assignment through stop-gradient-based eligible importance weights, while sparsifying the trace computation by selectively retaining high-entropy tokens. • We empirically validate S-trace’s superior sample efficiency over GRPO( λ) and theoretically char-acterize GSPO [ 18 ] as a special instance of eligibility traces operating under uniform assignment. • Comprehensive evaluations across mathematical benchmarks confirm the superiority and scalabil-ity of S-trace over GRPO, yielding consistent pass@16 improvements of 0.49% on Qwen3-1.7B, 3.16% on Qwen3-4B, and a sustained 2.98% on Qwen3-8B, while simultaneously operating with higher sample and token efficiency. 
+
+2 Related Work 
+
+Critic-free RL . Driven by the need to reduce memory overhead and enhance computational effi-ciency, critic-free RL has become a dominant paradigm in LLM fine-tuning. Before the prevalence of group-based methods, representative on-policy approaches such as ReMax [ 19 ], and RLOO [ 20 ]sought to eliminate the critic by leveraging simplistic baseline estimates. Subsequently, GRPO [ 7] estimates baselines on-the-fly by standardizing rewards across a group of sampled responses, enabling robust, critic-free updates within the PPO framework. Recent variants extend this frame-work through improved advantage estimation, refined clipping, dynamic sampling, or importance-weighting designs, including REINFORCE++ [ 21 ], Dr.GRPO [ 22 ], OPO [ 23 ], DAPO [ 24 ], Sta-bleReinforce [ 25 ], CISPO [ 26 ], GSPO [ 18 ], and GEPO [ 27 ]. Another line explores off-policy or experience-enhanced formulations, such as GRPO with expert demonstrations [ 28 ], ExGRPO [ 29 ], RL-Plus [ 30 ], TOPR [ 31 ], and Asymmetric REINFORCE [ 32 ]. Despite these advances, most critic-free methods still assign the same trajectory-level advantage uniformly to all tokens, leaving fine-grained temporal credit assignment largely underexplored. 
+
+Non-uniform Credit Assignment . Advantage shaping strategies have emerged to facilitate non-uniform credit assignment, utilizing entropy [ 33 , 34 ] or statistical methods such as Fisher’s exact test and information gain [ 35 ] to modulate token reward. However, these methods are typically heuristic. Another line of work utilizes process reward models to offer denser reward signals [ 36 , 37 ]. Nevertheless, [ 38 ] theoretically suggests that such dense supervision is not statistically superior to outcome supervision. Alternatively, vine sampling [ 39 ] has been employed for finer credit assignment. However, this strategy involves an intricate rollout process that can be practically cumbersome to deploy in large-scale training pipelines. Within a parallel strand of research, a promising value-based RL method, TBRM [ 40 ], offers a principled alternative, ensuring that credit assignment is implicitly and provably handled during the learning procedure. Despite the theoretical appeal of such a method, 2our study specifically focuses on optimizing policy gradient algorithms, which currently dominate the landscape of RLVR. 
+
+Eligibility Traces . Eligibility traces [ 10 , 11 , 12 , 13 ] serve as a cornerstone of temporal credit assignment in classical RL, significantly accelerating learning efficiency. However, their application has predominantly been confined to value function estimation [ 41 , 12 , 13 , 42 ]. Different from these works, we resurrect the actor-only eligibility trace paradigm [ 14 ]. While conceptually echoing the integration of eligibility traces in GRPO( λ) [ 15 ] into critic-free policy gradients, the proposed S-trace method diverges by offering more nuanced algorithmic design. 
+
+3 Preliminaries 
+
+We begin by establishing the formal framework for RLVR, followed by a review of two popular reinforcement learning algorithms commonly used in LLM fine-tuning. Formally, let o represent the full output sequence and ot a single token at time step t. We formulate RLVR as a sequential decision-making process. Specifically, given data distribution Q and a query prompt x ∼ Q , the generation process is modeled as an MDP, where the state st is defined as the full context history 
+
+st = x ⊕ o<t , with ⊕ denoting concatenation, and the action at at time t is to select a token ot from the vocabulary V. The environmental dynamics are deterministic such that given the current state st
+
+and action at, the environment transitions to st+1 = st ⊕ at = x ⊕ o<t ⊕ ot with probability 1. 
+
+3.1 Proximal Policy Optimization (PPO) 
+
+PPO [ 8] addresses the instability inherent in vanilla policy gradients by enforcing a trust region constraint without computational overhead of second-order optimization. It employs a clipped surrogate objective to restrain the policy update within a safe vicinity of the behavioral policy πθold .Formally, the objective function to be maximized is formulated as 
+
+JPPO (θ) = Ex∼Q ,o∼πθold (·| x)
+
+" |o|
+
+X
+
+> t=1
+
+min 
+
+
+
+rt(θ) ˆAt, clip (rt(θ), 1 − ϵ, 1 + ϵ) ˆAt
+
+#
+
+, (1) where rt(θ) = πθ (ot|x, o<t )  
+
+> πθold (ot|x, o<t )
+
+denotes the importance ratio, ϵ is the clipping range, and the advantage 
+
+ˆAt is estimated via Generalized Advantage Estimation (GAE) [ 43 ] by leveraging immediate reward 
+
+r(st, a t) and a fitted critic network V (·):
+
+ˆAt =
+
+> ∞
+
+X
+
+> k=0
+
+(γλ )kδt+k, where δt = r(st, a t) + γV (st+1 ) − V (st). (2) 
+
+3.2 Group Relative Policy Optimization (GRPO) 
+
+Building upon PPO while streamlining the architecture, GRPO [ 7 ] eliminates the critic network V (·)
+
+to reduce computational overhead, estimating the baseline via group-wise statistics instead. For each query x, GRPO samples a group of G outputs {oi}Gi=1 from the old policy πθold . Then the advantage 
+
+ˆAi,t is computed by standardizing the outcome rewards within the group as 
+
+ˆAi,t = r(x, oi) − mean ({r(x, oj )}Gj=1 )
+
+std ({r(x, oj )}Gj=1 ) . (3) The final objective of GRPO combines the clipped surrogate loss in PPO with a KL-divergence penalty, typically approximated via the k3 estimator [7], to strictly regulate the policy update as 
+
+JGRPO (θ) = E x∼Q {oi}Gi=1 ∼πθold (·| x)
+
+"
+
+1
+
+G
+
+> G
+
+X
+
+> i=1
+
+1
+
+|oi|
+
+> |oi|
+
+X
+
+> t=1
+
+min 
+
+
+
+ri,t (θ) ˆAi,t , clip (ri,t (θ), 1 − ϵ, 1 + ϵ) ˆAi,t 
+
+#
+
+,
+
+(4) where ri,t (θ) = πθ (oi,t |x, oi,<t )  
+
+> πθold (oi,t |x, oi,<t )
+
+.34 Methodology 
+
+In this section, motivated by the intuition of partial trust region preservation and grounded in the proximal assumption, we propose a novel and sample-efficient critic-free eligibility traces method tailored for the RLVR framework. Distinct from conventional eligibility traces, our formulation integrates the importance weights of future tokens into the trace coefficients and simultaneously sparsifies the traces based on token entropy to accomplish selective credit assignment. 
+
+4.1 Reformulating PPO Gradient via Eligibility Traces 
+
+Recognizing that GAE [ 43 ] is structurally isomorphic to the TD (λ) return mechanism [ 10 ] applied to the advantage estimation, we derive Proposition 4.1, which explicitly reformulates the PPO policy gradient as actor eligibility traces. Proposition 4.1 establishes the off-policy counterpart to Theorem 1 in [15]. We defer the proof to Appendix B.1. 
+
+Proposition 4.1 (Eligibility Traces Formulation of PPO) . In the absence of the clipping mechanism and the minimization operator, the policy gradient of PPO is equivalent to the sum of the products of the policy eligibility traces and the temporal difference error. Formally, we have 
+
+∇θ E x∼Q  
+
+> o∼πθold (·| x)
+
+
+
+> |o|
+
+X
+
+> t=1
+
+rt(θ) ˆAt
+
+ = E x∼Q  
+
+> o∼πθold (·| x)
+
+" |o|
+
+X
+
+> t=1
+
+δtet
+
+#
+
+, (5) 
+
+where et denotes PPO eligibility traces at time t given by 
+
+et =
+
+> t
+
+X
+
+> k=1
+
+(γλ )k−1rν (θ)∇θ log πθ (oν |x, o<ν ) = rt(θ)∇θ log πθ (ot|x, o<t ) + γλe t−1 (6) 
+
+with ν = t + 1 − k, t ∈ 1, 2, . . . , |o| and e0 equals 0.
+
+What Proposition 4.1 essentially reveals is that PPO functions as an eligibility traces method akin to [ 14 ]. However, it is distinctively characterized by the finite-horizon nature of the RLVR setting, the reliance on importance weights for off-policy correction and the utilization of γλ as the trace decay factor (as opposed to γ in [ 14 ]). Nevertheless, Eq. (5) remains dependent on a critic network for calculating the TD error δt. To this end, following the same approximation principle adopted in GRPO, we replace the TD error δt with the trajectory-level group advantage ˆA = δ1, for which Lemma 1 in [ 15 ] provides an explicit upper bound. Accordingly, we arrive at the policy gradient estimator for our actor-only eligibility traces within critic-free RLVR framework as 
+
+> |oi|
+
+X
+
+> t=1
+
+ˆAi
+
+h
+
+ri,t (θ)∇θ log πθ (oi,t |x, oi,<t ) + γλe i,t −1
+
+i
+
+. (7) 
+
+4.2 Proximal Policy Eligibility Traces (P-trace) 
+
+Building upon this approximation, the central idea of our method lies in further approximating the historical importance weights ri,<t (θ) within the eligibility traces term in Eq. (7) by the current importance weight ri,t (θ), thereby allowing it to be factored out. This approximation is justified under a “proximal assumption” that the off-policy deviation remains nearly uniform across tokens, which not only simplifies the computation but also explicitly couples each token at time t with its subsequent tokens, leading to improved sample efficiency as discussed in Appendix D.1. Intuitively, this assumption facilitates a mechanism we term partial trust region preservation . In standard clipped objectives, an out-of-bound importance ratio ri,t (θ) nullifies the gradient for the current token oi,t .However, if a subsequent token oi,t +∆ , which is causally dependent on oi,t , maintains an unclipped ratio ri,t +∆ (θ) ∈ (1 − ϵ, 1 + ϵ), it still preserves a valid learning signal. By embedding ri,t +∆ (θ)
+
+into the trace coefficient of oi,t , our approach salvages these uncorrupted downstream signals to effectively update critical ancestral tokens. Under this approximation, Eq. (7) admits a simplified form within the group-based learning framework, yielding 
+
+1
+
+G
+
+> G
+
+X
+
+> i=1
+
+1
+
+|oi|
+
+> |oi|
+
+X
+
+> t=1
+
+ri,t (θ) ˆAi,t ×
+
+ tX
+
+> k=1
+
+(γλ )k−1∇θ log πθ (oi,t +1 −k|x, oi,<t +1 −k)
+
+
+
+. (8) 4To formulate a surrogate objective that yields the gradient equal to Eq. (8) , we design the eligible importance weight (EIW) as 
+
+˜ri,t (θ) = sg 
+
+ ri,t (θ)
+
+rλi,t (θ)
+
+
+
+· rλi,t (θ), (9) where sg [·] denotes the stop-gradient operator, and λ-importance weight rλi,t (θ) is defined as 
+
+rλi,t (θ) = 
+
+> t
+
+Y
+
+> k=1
+
+πθ (oi,t +1 −k|x, oi,<t +1 −k)(γλ )k−1
+
+πθold (oi,t +1 −k|x, oi,<t +1 −k)(γλ )k−1 . (10) EIW remains numerically identical to standard importance weight by harnessing the stop-gradient operator, while distinctively inducing the required eligibility traces structure upon differentiation. Furthermore, EIW can be conceptualized as a sequence-level importance weight analogous to that of GSPO [18], distinguished fundamentally by its incorporation of a recency-based structure featuring temporal decay rather than a uniform distribution, with comprehensive details and corresponding empirical results elaborated in Appendix D.2. By substituting Eq. (9) for the standard importance weight ri,t (θ) within Eq. (4) , we formally derive our proposed approach, which we term Proximal Policy Eligibility Traces , abbreviated as P-trace. P-trace serves as a natural extension of GRPO, since setting λ = 0 will recover the original GRPO formulation. By synthesizing gradient dependencies from historical actions, P-trace facilitates holistic trajectory updates. Eligibility traces in P-trace establish a temporal coupling absent in GRPO through retroactive updates, thereby significantly amplifying the sample efficiency. A detailed comparison between P-trace and the closely related GRPO( λ) is provided in Appendix D.1. 
+
+4.3 Selective Eligibility Traces (S-trace) 
+
+While eligibility traces are instrumental for high sample efficiency, they inherently risk indiscriminate credit propagation. Aligning with a broader philosophy of selective mechanism design [ 44 , 45 , 17 ], we propose Selective Eligibility Traces (S-trace) to reconcile this trade-off. Specifically, we filter updates based on the intra-rollout token entropy by retaining only the top ρ fraction of tokens, where 
+
+ρ ∈ (0 , 1] denotes the selective rate . This strategy targets high-entropy “forking tokens” [ 16 ] that dominate the reasoning path, yielding the (λ, ω )-importance weight as 
+
+rλ,ω i,t (θ) = 
+
+> t
+
+Y
+
+> k=1
+
+πθ (oi,ν |x, oi,<ν )ωi,ν (γλ )k−1
+
+πθold (oi,ν |x, oi,<ν )ωi,ν (γλ )k−1 , (11) where ν = t + 1 − k. The selective mask ωi,ν is set to 0 if the entropy of token oi,ν falls within the bottom (1 − ρ) fraction of the i-th rollout, aligning with the empirical 80/20 rule (i.e., setting ρ to be 
+
+0.2) [ 16 ]. Hence, under this formulation, the eligibility trace term in S-trace corresponding to token 
+
+oi,t takes the form as 
+
+ei,t = ωi,t ∇θ log πθ (oi,t |x, oi,<t ) + γλe i,t −1. (12) Eq. (12) is related to the method in [ 17 ]. The critical difference is that they employ eligibility traces for the critic, whereas we focus on the actor. In practice, we adopt a leave-own-out (LOWO) variant (for details of the LOWO variant, please refer to Appendices C.1 and C.3, respectively) for the implementation of rλ,ω i,t (θ) to isolate the efficacy of sparse eligibility traces from sparse policy gradients and ensure the degeneration to GRPO as ρ → 0.To theoretically ground this design, the following proposition formally compares the variance of S-trace against P-trace, demonstrating the roles of ρ and λ in regulating policy gradient variance. 
+
+Proposition 4.2 (Variance Reduction via Selective Rate) . Let wt = rt(θ) ˆA and gt =
+
+∇θ log πθ (ot|x, o<t ) denote the scaled advantage and the per-token policy gradient, respectively. The policy gradient estimators for P-trace and S-trace can be succinctly expressed as: 
+
+Gt = wttX
+
+> k=1
+
+(γλ )k−1gt+1 −k, (13) 
+
+Gωt = wt
+
+"
+
+gt +
+
+> t
+
+X
+
+> k=2
+
+(γλ )k−1ωt+1 −kgt+1 −k
+
+#
+
+. (14) 5Let expectations E[·] and variances Var[ ·] be evaluated over the joint distribution P (τ, ω ) = 
+
+PQ(x)πθold (o|x)P (ω), where τ = ( x, o) is the sampled trajectory, and the selective mask ωt ∈ { 0, 1}
+
+is an independent Bernoulli variable with E[ωt] = ρ. Assuming the temporal gradients are mutually uncorrelated ( Cov( wtgi, w tgj ) ≈ 0 for i̸ = j ∈ [1 , t ]), and the historical weighted gradients are zero-mean with uniform bounded variance ( E[wtgk] ≈ 0, Var[ wtgk] ≈ σ2 for k < t ), the variances of the respective estimators can be approximated as: 
+
+Var[ Gt] ≈ Var[ wtgt] + σ2
+
+> t−1
+
+X
+
+> k=1
+
+(γλ )2k, (15) 
+
+Var[ Gωt ] ≈ Var[ wtgt] + ρσ 2
+
+> t−1
+
+X
+
+> k=1
+
+(γλ )2k. (16) Given a selective rate ρ ∈ (0 , 1) , Eq. (16) demonstrates that the variance of S-trace is strictly smaller than that of P-trace. Consequently, it strategically interpolates between the low-variance, sample-inefficient GRPO (recovered as ρ → 0) and the high-variance, sample-efficient P-trace (recovered as 
+
+ρ → 1). The complete proof of Proposition 4.2 is deferred to Appendix B.2 and the complete S-trace algorithm is summarized in Algorithm 1. 
+
+5 Experiments 
+
+In this section, we empirically evaluate the proposed S-trace method. We focus on mathematical reasoning tasks. Methodologies validated here are readily transferable to other complex reasoning domains. All experiments are implemented within the veRL [46] framework. 
+
+5.1 Experimental Setup Baselines. We compare our method against the standard GRPO [ 7] and closely related method GRPO( λ) [ 15 ]. For the latter, we specifically instantiate the trace-style variant and exclude “both”-type decay and the advantage clamping trick used in [ 15 ] to isolate the core contribution of the eligibility traces. Furthermore, to broaden our evaluation across different optimization paradigms, we include OPO [ 23 ], a representative on-policy algorithm integrated into veRL [ 46 ] training framework that approximates the optimal baseline to minimize policy gradient variance, serving to investigate whether strictly minimized variance necessarily translates to superior performance. We instantiate P/S-trace with λ = 0 .9, while evaluating GRPO( λ) using λ ∈ { 0.9, 0.99 }. Further details regarding hyperparameter selection and sensitivity analysis are provided in Appendix A. 
+
+Models and Datasets. For our main evaluations, we use the Qwen3 family [ 47 ], in particular the Qwen3-1.7B and Qwen3-4B variants, as our policy backbones. For training, we utilize DAPO-Math-14k, the English subset of the DAPO-Math-17k dataset [ 24 ], to fine-tune the base policy models. We evaluate generalization performance across five benchmarks, i.e, MATH500 [ 48 ], Minerva [ 49 ], AMC23 [ 50 ], AIME24 and AIME25. Building upon these findings, we highlight the scalability and superior performance of our approach by extending the evaluation to the Qwen3-8B model, incorporating the exceptionally challenging BeyondAIME [ 51 ] benchmark. Comprehensive training configurations are provided in Appendix A.1. 
+
+5.2 Main Results 
+
+Results for Qwen3-4B and Qwen3-1.7B 2 are summarized in Tables 2 and 1, respectively, while their training reward dynamics are visualized in Figure 1. As illustrated in Figure 1, both P-trace-0.9 and GRPO( λ)-0.9 exhibit faster convergence and superior asymptotic performance during training compared to GRPO and OPO. However, they do not exhibit a corresponding dominance in evaluation across all settings. A clear instance of this discrepancy is observed in the Qwen3-1.7B experiments (Table 1), where GRPO( λ)-0.9 fails to surpass GRPO on any of the five benchmarks. This indicates that standard eligibility traces methods are prone to overfitting. This trend is further corroborated on Qwen3-4B, where GRPO( λ)-0.99 underperforms GRPO( λ)-0.9, suggesting that a larger λ exacerbates 
+
+> 2We omit the evaluation results for P-trace-0.9 in Table 1 due to training instability induced by extreme gradient norm spikes. We analyze this phenomenon in Appendices A.2 and D.1.
+
+6Table 1: Results on Qwen3-1.7B in terms of the pass@16 score across five mathematical reasoning benchmarks. The best performance is highlighted in bold , and the second-best is underlined. 
+
+Qwen3-1.7B MATH500 AIME24 AIME25 AMC23 Minerva Avg. OPO [23] 79.09 16.67 20.00 55.00 24.34 39.02 GRPO [7] 81.34 20.00 13.33 57.50 27.44 39.92 GRPO( λ)-0.9 [15] 80.59 13.33 10.00 57.50 23.01 36.89 GRPO( λ)-0.99 [15] 79.19 20.00 16.67 60.00 21.97 39.69 S-trace-0.9 (ours) 82.14 23.33 16.67 57.50 22.41 40.41 
+
+Table 2: Results on Qwen3-4B in terms of the pass@16 score across five mathematical reasoning benchmarks. The best performance is highlighted in bold , and the second-best is underlined. 
+
+Qwen3-4B MATH500 AIME24 AIME25 AMC23 Minerva Avg. OPO [23] 84.42 25.48 32.06 70.00 28.50 48.09 GRPO [7] 85.04 33.33 26.67 70.00 30.02 49.01 GRPO( λ)-0.9 [15] 84.87 38.83 26.66 80.00 30.52 52.18 
+
+GRPO( λ)-0.99 [15] 86.85 26.67 24.49 80.00 27.94 49.19 P-trace-0.9 (ours) 84.23 23.33 36.20 77.50 28.18 49.89 S-trace-0.9 (ours) 85.40 30.00 32.18 80.00 33.28 52.17 0 100 200 300 400 
+
+> Step
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> Reward
+> Reward Training Dynamics on DAPO-Math-14k
+> GRPO( λ)-0.99
+> GRPO( λ)-0.9
+> GRPO
+> OPO
+> S-trace-0.9
+
+(a) Qwen3-1.7B 0 50 100 150 200  
+
+> Step
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> Reward
+> 2× Sample Efficiency
+> Reward Training Dynamics on DAPO-Math-14k
+> GRPO( λ)-0.99
+> GRPO( λ)-0.9
+> GRPO
+> OPO
+> P-trace-0.9
+> S-trace-0.9
+
+(b) Qwen3-4B 
+
+Figure 1: Reward training dynamics on DAPO-Math-14k. (a) On Qwen3-1.7B, S-trace-0.9 marginally outpaces other methods in learning speed, converging to an asymptotic performance similar to GRPO( λ)-0.9 while maintaining a consistent lead over GRPO and OPO. (b) Extending to Qwen3-4B, our proposed methods demonstrate markedly efficient learning compared to the baselines. Notably, our methods match the performance level where GRPO and OPO reach their plateau ( ∼step 80) using approximately half the training iterations. the reinforcement of noisy tokens, thereby degrading generalization. These results underscore the fundamental challenge where dense eligibility traces, by indiscriminately reinforcing tokens via temporal proximity, risk capturing spurious training-specific heuristics. In contrast, S-trace mitigates this by modulating eligibility traces sparsity based on information salience. As summarized in Tables 2 and 1, S-trace shows robust effectiveness across varying model scales. On Qwen3-1.7B, S-trace-0.9 matches or surpasses GRPO and GRPO( λ) on four out of five benchmarks, securing the highest overall average pass@16. This robustness extends to Qwen3-4B, where S-trace consistently outperforms OPO and exceeds GRPO on four out of five tasks. Furthermore, these gains are coupled with superior token efficiency (Figure 2). Although excluding gradients from low-entropy tokens slows convergence slightly relative to P-trace, S-trace retains a significant efficiency advantage over other baselines, empirically confirming its ability to reconcile the trade-off between optimization efficiency and generalization capabilities. 
+
+Remarks. We hypothesize that shorter responses originate from a structural asymmetry where noisy tokens predominantly accumulate in the later stages of reasoning chains, a phenomenon that unlocks a mechanism we conceptualize as relative noise suppression . Whereas uniform credit assignment perpetuates this late-stage noise by allocating identical massive gradient updates across all positions, recency-based methods such as P-trace, S-trace, and GRPO( λ) aggressively reinforce early actions. Consequently, as policy gradients sharpen the action distribution, these heavily updated early tokens 70 100 200 300 400 
+
+> Step
+> 1200
+> 1400
+> 1600
+> 1800
+> 2000
+> Mean Response Length
+> Mean Response Length Dynamics on DAPO-Math-14k
+> GRPO( λ)-0.99
+> GRPO( λ)-0.9
+> GRPO
+> OPO
+> S-trace-0.9
+
+(a) Qwen3-1.7B 0 50 100 150 200  
+
+> Step
+> 1000
+> 1200
+> 1400
+> 1600
+> 1800
+> 2000
+> Mean Response Length
+> Mean Response Length Dynamics on DAPO-Math-14k
+> GRPO( λ)-0.99
+> GRPO( λ)-0.9
+> GRPO
+> OPO
+> P-trace-0.9
+> S-trace-0.9
+
+(b) Qwen3-4B 
+
+Figure 2: Response training dynamics of Qwen3 models on DAPO-Math-14k. (a) On Qwen3-1.7B, S-trace-0.9 exhibits the best token efficiency overall. (b) On Qwen3-4B, methods incorporating eligibility traces demonstrate significant token efficiency. Although P/S-trace exhibits fluctuations, these methods consistently yield shorter reasoning trajectories than the GRPO and OPO baselines. rapidly dominate the trajectory to effectively suppress late-stage noise, an advantage that S-trace further amplifies by utilizing an entropy-based selective mask to strategically concentrate learning signals on pivotal reasoning steps. 
+
+5.3 Scaling Properties 
+
+To further explore the scalability of S-trace, we evaluate the fine-tuning performance of GRPO, GRPO( λ)-0.9, and S-trace-0.9 on Qwen3-8B. The training dynamics and benchmark results are presented in Figure 3 (subplots 3a and 3b) and Table 3. In the 8B experiments, GRPO( λ)-0.9 shows no discernible sample efficiency gains, as evidenced by a reward curve that aligns almost identically with the baseline GRPO, coupled with a response length that eventually surpasses it. Conversely, S-trace successfully preserves its high sample efficiency and asymptotic performance. Beyond achieving the best average accuracy across six benchmarks, S-trace maintains a significantly lower mean response length, evidencing strong token efficiency. These results indicate that the algorithmic advantages of S-trace scale highly effectively with model size. Table 3: Scaling results on Qwen3-8B in terms of the pass@16 score across six mathematical reason-ing benchmarks. The best performance is highlighted in bold , and the second-best is underlined. Qwen3-8B MATH500 AIME24 AIME25 AMC23 Minerva BeyondAIME Avg. GRPO [7] 89.73 44.99 38.81 95.68 40.93 17.68 54.64 GRPO( λ)-0.9 [15] 90.11 48.24 38.62 92.30 36.36 27.61 55.54 S-trace-0.9 (ours) 90.49 54.82 42.07 90.62 39.89 27.84 57.62 
+
+5.4 Analysis of Eligible Importance Weight 
+
+We empirically investigate the variance properties of the importance weights for our proposed methods compared to the trace-style variant GRPO( λ) [ 15 ], providing a detailed analysis of their optimization characteristics. We monitor the clip fraction , defined as the average proportion of tokens within reasoning responses that trigger the clipping mechanism during policy gradient computation, as a proxy metric for the variance of importance weights. As shown in Figure 4, the clip fraction of GRPO( λ) consistently exceeds that of both P-trace and S-trace throughout the training process. This observation suggests that the eligible importance weights employed in P-trace and S-trace closely mirror the numerical behavior of the standard importance weights in GRPO for the majority of training steps. 
+
+Remarks. We posit that this property is a primary driver of the accelerated learning speed of P-trace compared to GRPO( λ). Specifically, the use of eligible importance weights results in significantly fewer gradients being clipped during policy updates. This preservation of gradient information provides P/S-trace with richer learning signals, thereby further enhancing learning efficiency. Through 80 100 200 300 400 
+
+> Step
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> 0.8
+> Reward
+> Reward Training Dynamics on DAPO-Math-14k
+> GRPO
+> GRPO( λ)-0.9
+> S-trace-0.9
+> 1.8× Sample Efficiency
+
+(a) Reward 0 100 200 300 400  
+
+> Step
+> 1250
+> 1500
+> 1750
+> 2000
+> 2250
+> 2500
+> 2750
+> 3000
+> Mean Response Length
+> Mean Response Length Dynamics on DAPO-Math-14k
+> GRPO
+> GRPO( λ)-0.9
+> S-trace-0.9
+
+(b) Response 
+
+Figure 3: Training dynamics of Qwen3-8B on DAPO-Math-14k. (a) The reward curve of GRPO( λ)-0.9 visually overlaps with GRPO, showing no efficiency gains, whereas S-trace-0.9 sustains superior sample efficiency and asymptotic performance. (b) S-trace-0.9 consistently maintains a significantly lower mean response length than the baselines throughout training, demonstrating superior token efficiency. 0 100 200 300 400 
+
+> Step
+> 0.000
+> 0.002
+> 0.004
+> 0.006
+> 0.008
+> 0.010
+> 0.012
+> 0.014
+> 0.016
+> Ratio
+> Policy Gradient Clip Fraction on DAPO-Math-14k
+> GRPO( λ)-0.9
+> GRPO
+> S-trace-0.9
+
+(a) Qwen3-1.7B 0 50 100 150 200  
+
+> Step
+> 0.000
+> 0.002
+> 0.004
+> 0.006
+> 0.008
+> 0.010
+> 0.012
+> 0.014
+> Ratio
+> Policy Gradient Clip Fraction on DAPO-Math-14k
+> GRPO( λ)-0.9
+> GRPO
+> P-trace-0.9
+> S-trace-0.9
+
+(b) Qwen3-4B 
+
+Figure 4: Policy gradient clip fraction dynamics on DAPO-Math-14k. In both settings, GRPO( λ)exhibits consistently higher clipping fraction compared to P/S-trace, indicating high variance in its importance weights. In contrast, P/S-trace maintains a low clipping profile, thereby retaining richer gradient signals for accelerated learning. the lens of regularization, the high clip fraction in GRPO( λ) effectively functions as a mechanism similar to stochastic dropout [ 52 ], imposing irregular and randomized credit assignment. In contrast, S-trace, inheriting the superior sample efficiency of P-trace, achieves a form of selective dropout via selective credit assignment. Both mechanisms mitigate over-exploitation to varying degrees, albeit through different pathways where the former relies on blind stochasticity and the latter is governed by informed, strategic selection. A detailed discussion of this property, along with an ablation study validating the entropy-based selective credit assignment, is provided in Appendices D.1 and C.4. 
+
+6 Conclusion and Future Work 
+
+We propose S-trace as a critic-free eligibility traces method that leverages future token importance weights for sample efficiency and entropy-driven sparse eligibility traces for training stability, ul-timately demonstrating the strictly superior sample and token efficiency of recency-based credit assignment over uniform paradigms within the RLVR framework. Looking ahead, although S-trace partially mitigates the training instability inherent in the dense updates of P-trace, its reliance on partial trust region preservation inevitably compromises strict trust region boundaries and induces potential optimization instability. Consequently, future research must prioritize developing methods that concurrently optimize stability and sample efficiency through 9more theoretically principled construction of sparse eligibility traces. Furthermore, uncovering the fundamental mechanisms that enable recency-based credit assignment paradigms, exemplified by S-trace, to exhibit strictly superior token efficiency to uniform credit assignment is a highly compelling avenue for future exploration. 
+
+References 
+
+[1] Long Ouyang, Jeffrey Wu, Xu Jiang, Diogo Almeida, Carroll Wainwright, Pamela Mishkin, Chong Zhang, Sandhini Agarwal, Katarina Slama, Alex Ray, et al. Training language models to follow instructions with human feedback. Advances in neural information processing systems ,35:27730–27744, 2022. [2] Rafael Rafailov, Archit Sharma, Eric Mitchell, Christopher D Manning, Stefano Ermon, and Chelsea Finn. Direct preference optimization: Your language model is secretly a reward model. 
+
+Advances in neural information processing systems , 36:53728–53741, 2023. [3] Stephen Casper, Xander Davies, Claudia Shi, Thomas Krendl Gilbert, Jérémy Scheurer, Javier Rando, Rachel Freedman, Tomek Korbak, David Lindner, Pedro Freire, Tony Tong Wang, Samuel Marks, Charbel-Raphael Segerie, Micah Carroll, Andi Peng, Phillip J.K. Christoffersen, Mehul Damani, Stewart Slocum, Usman Anwar, Anand Siththaranjan, Max Nadeau, Eric J Michaud, Jacob Pfau, Dmitrii Krasheninnikov, Xin Chen, Lauro Langosco, Peter Hase, Erdem Biyik, Anca Dragan, David Krueger, Dorsa Sadigh, and Dylan Hadfield-Menell. Open problems and fundamental limitations of reinforcement learning from human feedback. Transactions on Machine Learning Research , 2023. Survey Certification, Featured Certification. [4] Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Peiyi Wang, Qihao Zhu, Runxin Xu, Ruoyu Zhang, Shirong Ma, Xiao Bi, et al. Deepseek-r1 incentivizes reasoning in llms through reinforcement learning. Nature , 645(8081):633–638, 2025. [5] Thomas Bush, Stephen Chung, Usman Anwar, Adrià Garriga-Alonso, and David Krueger. Inter-preting emergent planning in model-free reinforcement learning. In The Thirteenth International Conference on Learning Representations , 2025. [6] Josiah P. Hanna and Nicholas E. Corrado. When can model-free reinforcement learning be enough for thinking? In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. [7] Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan Zhang, YK Li, Yang Wu, et al. Deepseekmath: Pushing the limits of mathematical reasoning in open language models. arXiv preprint arXiv:2402.03300 , 2024. [8] John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. Proximal policy optimization algorithms. arXiv preprint arXiv:1707.06347 , 2017. [9] Eduardo Pignatelli, Johan Ferret, Matthieu Geist, Thomas Mesnard, Hado van Hasselt, and Laura Toni. A survey of temporal credit assignment in deep reinforcement learning. Transactions on Machine Learning Research , 2024. Survey Certification. [10] Richard S Sutton. Learning to predict by the methods of temporal differences. Machine learning ,3(1):9–44, 1988. [11] Richard S Sutton, Andrew G Barto, et al. Reinforcement learning: An introduction , volume 1. MIT press Cambridge, 1998. [12] Hado van Hasselt, Sephora Madjiheurem, Matteo Hessel, David Silver, André Barreto, and Diana Borsa. Expected eligibility traces. In Proceedings of the AAAI conference on artificial intelligence , volume 35, pages 9997–10005, 2021. [13] Dhawal Gupta, Scott M Jordan, Shreyas Chaudhari, Bo Liu, Philip S Thomas, and Bruno Castro da Silva. From past to future: rethinking eligibility traces. In Proceedings of the AAAI Conference on Artificial Intelligence , volume 38, pages 12253–12260, 2024. 10 [14] Hajime Kimura and Shigenobu Kobayashi. An analysis of actor/critic algorithms using eligibility traces: Reinforcement learning with imperfect value function. In Proceedings of the Fifteenth International Conference on Machine Learning , ICML ’98, page 278–286, San Francisco, CA, USA, 1998. Morgan Kaufmann Publishers Inc. [15] Prasanna Parthasarathi, Mathieu Reymond, Boxing Chen, Yufei Cui, and Sarath Chandar. Grpo-λ: Credit assignment improves llm reasoning. arXiv preprint arXiv:2510.00194 , 2025. [16] Shenzhi Wang, Le Yu, Chang Gao, Chujie Zheng, Shixuan Liu, Rui Lu, Kai Dang, Xiong-Hui Chen, Jianxin Yang, Zhenru Zhang, Yuqiong Liu, An Yang, Andrew Zhao, Yang Yue, Shiji Song, Bowen Yu, Gao Huang, and Junyang Lin. Beyond the 80/20 rule: High-entropy minority tokens drive effective reinforcement learning for LLM reasoning. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. [17] Veronica Chelu, Diana Borsa, Doina Precup, and Hado van Hasselt. Selective credit assignment. 
+
+CoRR , abs/2202.09699, 2022. [18] Chujie Zheng, Shixuan Liu, Mingze Li, Xiong-Hui Chen, Bowen Yu, Chang Gao, Kai Dang, Yuqiong Liu, Rui Men, An Yang, et al. Group sequence policy optimization. arXiv preprint arXiv:2507.18071 , 2025. [19] Ziniu Li, Tian Xu, Yushun Zhang, Zhihang Lin, Yang Yu, Ruoyu Sun, and Zhi-Quan Luo. Remax: A simple, effective, and efficient reinforcement learning method for aligning large language models. In Forty-first International Conference on Machine Learning , 2024. [20] Arash Ahmadian, Chris Cremer, Matthias Gallé, Marzieh Fadaee, Julia Kreutzer, Olivier Pietquin, Ahmet Üstün, and Sara Hooker. Back to basics: Revisiting REINFORCE-style optimization for learning from human feedback in LLMs. In Lun-Wei Ku, Andre Martins, and Vivek Srikumar, editors, Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 12248–12267, Bangkok, Thailand, August 2024. Association for Computational Linguistics. [21] Jian Hu, Jason Klein Liu, and Wei Shen. Reinforce++: An efficient rlhf algorithm with robustness to both prompt and reward models. arXiv preprint arXiv:2501.03262 , 2025. [22] Zichen Liu, Changyu Chen, Wenjun Li, Penghui Qi, Tianyu Pang, Chao Du, Wee Sun Lee, and Min Lin. Understanding r1-zero-like training: A critical perspective. In Second Conference on Language Modeling , 2025. [23] Yaru Hao, Li Dong, Xun Wu, Shaohan Huang, Zewen Chi, and Furu Wei. On-policy rl with optimal reward baseline. arXiv preprint arXiv:2505.23585 , 2025. [24] Qiying Yu, Zheng Zhang, Ruofei Zhu, Yufeng Yuan, Xiaochen Zuo, YuYue, Weinan Dai, Tiantian Fan, Gaohong Liu, Juncai Liu, LingJun Liu, Xin Liu, Haibin Lin, Zhiqi Lin, Bole Ma, Guangming Sheng, Yuxuan Tong, Chi Zhang, Mofan Zhang, Ru Zhang, Wang Zhang, Hang Zhu, Jinhua Zhu, Jiaze Chen, Jiangjie Chen, Chengyi Wang, Hongli Yu, Yuxuan Song, Xiangpeng Wei, Hao Zhou, Jingjing Liu, Wei-Ying Ma, Ya-Qin Zhang, Lin Yan, Yonghui Wu, and Mingxuan Wang. DAPO: An open-source LLM reinforcement learning system at scale. In 
+
+The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. [25] Yi-Fan Zhang, Xingyu Lu, Xiao Hu, Chaoyou Fu, Bin Wen, Tianke Zhang, Changyi Liu, Kaiyu Jiang, Kaibing Chen, Kaiyu Tang, et al. R1-reward: Training multimodal reward model through stable reinforcement learning. arXiv preprint arXiv:2505.02835 , 2025. [26] Aili Chen, Aonian Li, Bangwei Gong, Binyang Jiang, Bo Fei, Bo Yang, Boji Shan, Changqing Yu, Chao Wang, Cheng Zhu, et al. Minimax-m1: Scaling test-time compute efficiently with lightning attention. arXiv preprint arXiv:2506.13585 , 2025. [27] Han Zhang, Ruibin Zheng, Zexuan Yi, Zhuo Zhang, Hanyang Peng, Hui Wang, Zike Yuan, Cai Ke, Shiwei Chen, Jiacheng Yang, et al. Gepo: Group expectation policy optimization for stable heterogeneous reinforcement learning. arXiv preprint arXiv:2508.17850 , 2025. 11 [28] Jianhao Yan, Yafu Li, Zican Hu, Zhi Wang, Ganqu Cui, Xiaoye Qu, Yu Cheng, and Yue Zhang. Learning to reason under off-policy guidance. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. [29] Runzhe Zhan, Yafu Li, Zhi Wang, Xiaoye Qu, Dongrui Liu, Jing Shao, Derek F Wong, and Yu Cheng. Exgrpo: Learning to reason from experience. arXiv preprint arXiv:2510.02245 ,2025. [30] Yihong Dong, Xue Jiang, Yongding Tao, Huanyu Liu, Kechi Zhang, Lili Mou, Rongyu Cao, Yingwei Ma, Jue Chen, Binhua Li, et al. Countering capability boundary collapse of llms in reinforcement learning with hybrid-policy optimization. arXiv preprint arXiv:2508.00222 ,2025. [31] Nicolas Le Roux, Marc G Bellemare, Jonathan Lebensold, Arnaud Bergeron, Joshua Greaves, Alexandre Fréchette, Carolyne Pelletier, Eric Thibodeau-Laufer, Sándor Tóth, and Sam Work. Tapered off-policy reinforce-stable and efficient reinforcement learning for large language models. In The Thirty-ninth Annual Conference on Neural Information Processing Systems ,2025. [32] Charles Arnal, Gaëtan Narozniak, Vivien Cabannes, Yunhao Tang, Julia Kempe, and Remi Munos. Asymmetric REINFORCE for off-policy reinforcement learning: Balancing positive and negative rewards. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. [33] Daixuan Cheng, Shaohan Huang, Xuekai Zhu, Bo Dai, Wayne Xin Zhao, Zhenliang Zhang, and Furu Wei. Reasoning with exploration: An entropy perspective. arXiv preprint arXiv:2506.14758 , 2025. [34] Haozhe Wang, Qixin Xu, Che Liu, Junhong Wu, Fangzhen Lin, and Wenhu Chen. Emergent hierarchical reasoning in llms through reinforcement learning. arXiv preprint arXiv:2509.03646 ,2025. [35] Wei Sun, Wen Yang, Pu Jian, Qianlong Du, Fuwei Cui, Shuo Ren, and Jiajun Zhang. KTAE: A model-free algorithm to key-tokens advantage estimation in mathematical reasoning. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. [36] Wendi Li and Yixuan Li. Process reward model with q-value rankings. In The Thirteenth International Conference on Learning Representations , 2025. [37] Jie Cheng, Gang Xiong, Ruixi Qiao, Lijun Li, Chao Guo, Junle Wang, Yisheng Lv, and Fei-Yue Wang. Stop summation: Min-form credit assignment is all process reward model needs for reasoning. In The Thirty-ninth Annual Conference on Neural Information Processing Systems ,2025. [38] Zeyu Jia, Alexander Rakhlin, and Tengyang Xie. Do we need to verify step by step? rethinking process supervision from a theoretical perspective. In Forty-second International Conference on Machine Learning , 2025. [39] Amirhossein Kazemnejad, Milad Aghajohari, Eva Portelance, Alessandro Sordoni, Siva Reddy, Aaron Courville, and Nicolas Le Roux. VinePPO: Refining credit assignment in RL training of LLMs. In Forty-second International Conference on Machine Learning , 2025. [40] Yurun Yuan, Fan Chen, Zeyu Jia, Alexander Rakhlin, and Tengyang Xie. Trajectory bellman residual minimization: A simple value-based method for LLM reasoning. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. [41] Doina Precup, Richard S. Sutton, and Satinder P. Singh. Eligibility traces for off-policy policy evaluation. In Proceedings of the Seventeenth International Conference on Machine Learning ,ICML ’00, page 759–766, San Francisco, CA, USA, 2000. Morgan Kaufmann Publishers Inc. [42] Esraa Elelimy, Brett Daley, Andrew Patterson, Marlos C. Machado, Adam White, and Martha White. Deep reinforcement learning with gradient eligibility traces. In Reinforcement Learning Conference , 2025. 12 [43] John Schulman, Philipp Moritz, Sergey Levine, Michael Jordan, and Pieter Abbeel. High-dimensional continuous control using generalized advantage estimation. arXiv preprint arXiv:1506.02438 , 2015. [44] Zaheer Abbas, Samuel Sokota, Erin Talvitie, and Martha White. Selective dyna-style planning under limited model capacity. In International Conference on Machine Learning , pages 1–10. PMLR, 2020. [45] Nishanth Anand and Doina Precup. Preferential temporal difference learning. In International Conference on Machine Learning , pages 286–296. PMLR, 2021. [46] Guangming Sheng, Chi Zhang, Zilingfeng Ye, Xibin Wu, Wang Zhang, Ru Zhang, Yanghua Peng, Haibin Lin, and Chuan Wu. Hybridflow: A flexible and efficient rlhf framework. In 
+
+Proceedings of the Twentieth European Conference on Computer Systems , EuroSys ’25, page 1279–1297, New York, NY, USA, 2025. Association for Computing Machinery. [47] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et al. Qwen3 technical report. arXiv preprint arXiv:2505.09388 , 2025. [48] Dan Hendrycks, Collin Burns, Saurav Kadavath, Akul Arora, Steven Basart, Eric Tang, Dawn Song, and Jacob Steinhardt. Measuring mathematical problem solving with the MATH dataset. In Thirty-fifth Conference on Neural Information Processing Systems Datasets and Benchmarks Track (Round 2) , 2021. [49] Aitor Lewkowycz, Anders Andreassen, David Dohan, Ethan Dyer, Henryk Michalewski, Vinay Ramasesh, Ambrose Slone, Cem Anil, Imanol Schlag, Theo Gutman-Solo, et al. Solving quan-titative reasoning problems with language models. Advances in neural information processing systems , 35:3843–3857, 2022. [50] Jia Li, Edward Beeching, Lewis Tunstall, Ben Lipkin, Roman Soletskyi, Shengyi Huang, Kashif Rasul, Longhui Yu, Albert Q Jiang, Ziju Shen, et al. Numinamath: The largest public dataset in ai4maths with 860k pairs of competition math problems and solutions. Hugging Face repository ,13(9):9, 2024. [51] ByteDance Seed, Jiaze Chen, Tiantian Fan, Xin Liu, Lingjun Liu, Zhiqi Lin, Mingxuan Wang, Chengyi Wang, Xiangpeng Wei, Wenyuan Xu, et al. Seed1. 5-thinking: Advancing superb reasoning models with reinforcement learning. arXiv preprint arXiv:2504.13914 , 2025. [52] Nitish Srivastava, Geoffrey Hinton, Alex Krizhevsky, Ilya Sutskever, and Ruslan Salakhutdinov. Dropout: a simple way to prevent neural networks from overfitting. The journal of machine learning research , 15(1):1929–1958, 2014. [53] Roger L Redondo and Richard GM Morris. Making memories last: the synaptic tagging and capture hypothesis. Nature reviews neuroscience , 12(1):17–30, 2011. [54] Wei Xiong, Jiarui Yao, Yuhui Xu, Bo Pang, Lei Wang, Doyen Sahoo, Junnan Li, Nan Jiang, Tong Zhang, Caiming Xiong, et al. A minimalist approach to llm reasoning: from rejection sampling to reinforce. arXiv preprint arXiv:2504.11343 , 2025. 13 A Implementation Details 
+
+In this section, we provide comprehensive details on the experimental setup, followed by an in-depth analysis of stability issues of P-trace and hyperparameter sensitivity. 
+
+A.1 Experimental Setup and Hyperparameters 
+
+This section outlines the key hyperparameters and environmental configurations adopted in our experiments. Table 4: Hyperparameters and experimental configurations for the experiments. 
+
+Hyperparameter Qwen3-1.7B/4B Qwen3-8B Optimization 
+
+Optimizer AdamW AdamW Learning Rate 1 × 10 −6 1 × 10 −6
+
+Weight Decay 0.01 0.01 LR Scheduler Constant Constant Batch Size 128 64 Mini-batch Size 32 16 
+
+Algorithm 
+
+Maximum Prompt Length 512 512 Maximum Response Length 2048 3072 Group Size ( G) 5 8Temperature ( τ ) 1.0 1.0 Discount Factor ( γ) 1.0 1.0 KL Coefficient ( β) 0.001 0.001 Clipping Range ( ϵ) 0.2 0.2 Selective Rate ( ρ) 0.2 0.2 
+
+Infrastructure 
+
+Parallelism Strategy PyTorch FSDP2 PyTorch FSDP2 Training Hardware 2 × NVIDIA A100 GPU 4 × NVIDIA A100 GPU 0 100 200 300 400 
+
+> Step
+> 0
+> 5
+> 10
+> 15
+> 20
+> Gradient Norm
+> Policy Gradient Norm Dynamics on DAPO-Math-14k
+> GRPO
+> P-trace-0.9
+> S-trace-0.9
+
+(a) Gradient Norm 0 100 200 300 400  
+
+> Step
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> Reward
+> Reward Training Dynamics on DAPO-Math-14k
+> GRPO
+> P-trace-0.9
+> S-trace-0.9
+
+(b) Training Reward 
+
+Figure 5: Training instability of P-trace on Qwen3-1.7B at λ = 0 .9. S-trace-0.9 preserves the sample efficiency of P-trace-0.9 while resolving its optimization volatility through selective credit assignment. 
+
+A.2 Training Instability Analysis 
+
+In this work, we investigate eligibility traces methods under high temporal horizons (e.g., λ ∈{0.9, 0.99 }) to maximize their ability to capture long-term dependencies. However, our experiments reveal that P-trace is highly susceptible to training instability in these regimes, as illustrated in Figure 6 and Figure 5, necessitating the design of the selective mechanism in S-trace. 14 0 50 100 150 200 
+
+> Step
+> 0.00
+> 0.02
+> 0.04
+> 0.06
+> 0.08
+> Ratio
+> Policy Gradient Clip Fraction on DAPO-Math-14k
+> GRPO( λ)-0.99
+> P-trace-0.99
+> GRPO
+
+(a) Policy Gradient Clip Fraction 0 50 100 150 200  
+
+> Step
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> Reward
+> Reward Training Dynamics on DAPO-Math-14k
+> GRPO( λ)-0.99
+> P-trace-0.99
+
+(b) Training Reward 0 50 100 150 200 
+
+> Step
+> 0.00
+> 0.05
+> 0.10
+> 0.15
+> 0.20
+> 0.25
+> 0.30
+> 0.35
+> Pass@1
+> Evaluation Dynamics on AIME24
+> GRPO( λ)-0.99
+> P-trace-0.99
+
+(c) Pass@1 on AIME24 0 50 100 150 200  
+
+> Step
+> 0.00
+> 0.05
+> 0.10
+> 0.15
+> 0.20
+> 0.25
+> 0.30
+> 0.35
+> Pass@1
+> Evaluation Dynamics on AIME25
+> GRPO( λ)-0.99
+> P-trace-0.99
+
+(d) Pass@1 on AIME25 
+
+Figure 6: Training instability of P-trace on Qwen3-4B at λ = 0 .99 . P-trace exhibits severe training instability at this setting. In contrast, GRPO( λ) maintains stability by inducing significantly higher clipping fractions (up to 24 × higher at step 200). This suggests that GRPO( λ)’s inherent stochastic dropout acts as a smoothing regularizer that enhances training stability, albeit at the cost of sample efficiency. On Qwen3-4B, increasing λ to 0.99 results in severe training instability, as illustrated in Figure 6. To elucidate the underlying dynamics, we compared the clipping behavior of GRPO( λ)-0.99 and P-trace-0.99 on the DAPO-Math-14k dataset. As evidenced in Figure 6a, the clipping fraction associated with GRPO( λ)-0.99 is substantially higher than that of P-trace-0.99, notably dwarfing the latter by nearly 24 times around step 200. We deem that the stochastic dropout mechanism inherent to the GRPO( λ) formulation effectively attenuates the aggressive policy updates induced by eligibility traces, thereby functioning as a smoothing regularizer that stabilizes the training process. However, this stability is achieved at a cost. As depicted in Figure 6b, the consistently high clipping fraction compromises sample efficiency, whereas P-trace-0.99 conversely prioritizes efficiency at the expense of stability. Experiments on Qwen3-1.7B reveal that P-trace-0.9 suffers from similar instability issues. Although dense updates grant P-trace high sample efficiency, it lacks the stochastic regularization naturally present in GRPO( λ). Consequently, the gradient norm is prone to explosive surges (Figure 5a), leading to unstable optimization. S-trace effectively mitigates this issue by introducing selective dropout to construct sparse eligibility traces, effectively stabilizing training without sacrificing the long-term memory strength provided by λ = 0 .9. Figure 5b demonstrates that S-trace-0.9 successfully retains the fast learning speed of P-trace while achieving robust stability. For a comprehensive discourse on this stability-efficiency trade-off in eligibility traces methods, we refer readers to the discussion in Appendix D.1. 
+
+A.3 Hyperparameter Sensitivity Studies 
+
+To probe the sensitivity of the P-trace estimator regarding the hyperparameter λ, we extend our experiments on Qwen3-4B to include λ ∈ { 0.7, 0.8} as illustrated in Figure 7, discovering that these configurations maintain sample efficiency and evaluation performance virtually indistinguishable from the P-trace-0.9 baseline while simultaneously exhibiting significantly more stable clipping fractions, thereby underscoring the high robustness of the λ parameter. 15 0 20 40 60 80 100 120 
+
+> Step
+> 0.000
+> 0.001
+> 0.002
+> 0.003
+> 0.004
+> 0.005
+> 0.006
+> 0.007
+> Ratio
+> Policy Gradient Clip Fraction on DAPO-Math-14k
+> P-trace-0.7
+> P-trace-0.8
+> P-trace-0.9
+
+(a) Policy Gradient Clip Fraction 0 20 40 60 80 100 120  
+
+> Step
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> Reward
+> Reward Training Dynamics on DAPO-Math-14k
+> P-trace-0.7
+> P-trace-0.8
+> P-trace-0.9
+
+(b) Training Reward 0 20 40 60 80 100 120 
+
+> Step
+> 0.00
+> 0.05
+> 0.10
+> 0.15
+> 0.20
+> 0.25
+> 0.30
+> 0.35
+> 0.40
+> Pass@1
+> Evaluation Dynamics on AIME24
+> P-trace-0.7
+> P-trace-0.8
+> P-trace-0.9
+
+(c) Pass@1 on AIME24 0 20 40 60 80 100 120  
+
+> Step
+> 0.00
+> 0.05
+> 0.10
+> 0.15
+> 0.20
+> 0.25
+> 0.30
+> Pass@1
+> Evaluation Dynamics on AIME25
+> P-trace-0.7
+> P-trace-0.8
+> P-trace-0.9
+
+(d) Pass@1 on AIME25 
+
+Figure 7: Sensitivity analysis of P-trace to λ. Reducing λ to {0.7, 0.8} preserves sample efficiency comparable to the λ = 0 .9 baseline while yielding more stable clipping fractions. This demonstrates that P-trace operates within a lenient hyperparameter landscape, maintaining robustness without sacrificing performance. Additionally, Figure 8 illustrates the dynamics of mean response length, where both λ = 0 .7 and 
+
+λ = 0 .8 settings exhibit token efficiency comparable to P-trace-0.9 and consistently outperform the GRPO baseline. This further attests to the robustness of P-trace across a wide effective range of 
+
+λ values, while simultaneously suggesting a lenient hyperparameter landscape that invites further exploration to fully exploit the trade-off between stability and efficiency for optimal performance. 
+
+B Proofs 
+
+B.1 Proof of Proposition 4.1 
+
+We adopt a derivation logic analogous to that of [ 15 ], but extend it to the off-policy case. The core insight lies in the decomposition and recombination of the Generalized Advantage Estimation (GAE) components. For notational brevity, we denote ∇θ,t ≜ ∇θ log πθ (ot|x, o<t ). Additionally, recall that 
+
+et represents the PPO eligibility traces at time t, defined as: 
+
+et =
+
+tX
+
+k=1 
+
+(γλ )k−1rt+1 −k(θ)∇θ,t +1 −k
+
+= rt(θ)∇θ,t + γλe t−1,
+
+with t ∈ 1, 2, . . . , |o| and initial condition e0 := 0 . Note that since the trajectory terminates at step 
+
+|o|, the terms δt vanish for t > |o|.
+
+Proof. 
+
+∇θ E x∼Q 
+
+o∼πθold (·| x)
+
+" |o|
+
+X
+
+t=1 
+
+rt(θ) ˆAt
+
+#
+
+16 = E x∼Q  
+
+> o∼πθold (·| x)
+
+"
+
+∇θ
+
+> |o|
+
+X
+
+> t=1
+
+rt(θ)
+
+> ∞
+
+X
+
+> k=0
+
+(γλ )kδt+k
+
+#
+
+= E x∼Q  
+
+> o∼πθold (·| x)
+
+" |o|
+
+X
+
+> t=1
+
+rt(θ)∇θ,t 
+
+> ∞
+
+X
+
+> k=0
+
+(γλ )kδt+k
+
+#
+
+= E x∼Q  
+
+> o∼πθold (·| x)
+
+" |o|
+
+X
+
+> t=1
+
+rt(θ)∇θ,t 
+
+
+
+δt + ( γλ )δt+1 + ( γλ )2δt+2 + . . . 
+
+#
+
+= E x∼Q  
+
+> o∼πθold (·| x)
+
+"
+
+r1(θ)∇θ, 1
+
+
+
+δ1 + ( γλ )δ2 + ( γλ )2δ3 + . . . 
+
+
+
++ r2(θ)∇θ, 2
+
+
+
+δ2 + ( γλ )δ3 + ( γλ )2δ4 + . . . 
+
+
+
++ r3(θ)∇θ, 3
+
+
+
+δ3 + ( γλ )δ4 + ( γλ )2δ5 + . . . 
+
+
+
++ . . . 
+
+#
+
+= E x∼Q  
+
+> o∼πθold (·| x)
+
+"
+
+δ1 r1(θ)∇θ, 1
+
+| {z }
+
+> e1
+
++ δ2
+
+
+
+r2(θ)∇θ, 2 + ( γλ )r1(θ)∇θ, 1
+
+| {z }
+
+> e2
+
+
+
++ δ3
+
+
+
+r3(θ)∇θ, 3 + ( γλ )r2(θ)∇θ, 2 + ( γλ )2r1(θ)∇θ, 1
+
+| {z }
+
+> e3
+
+
+
++ . . . 
+
+#
+
+= E x∼Q  
+
+> o∼πθold (·| x)
+
+" |o|
+
+X
+
+> t=1
+
+δtet
+
+#
+
+.
+
+B.2 Proof of Proposition 4.2 
+
+In this section, we derive the variances of the policy gradient estimators Gt (P-trace) and Gωt
+
+(S-trace). 
+
+Proof. By definition and applying a change of index j = t + 1 − k, the P-trace estimator can be rewritten as: 
+
+Gt = wtgt +
+
+> t−1
+
+X
+
+> j=1
+
+(γλ )t−j wtgj . (17) Applying the variance operator and leveraging the assumption of negligible cross-covariance (Cov( wtgi, w tgj ) ≈ 0 for i̸ = j ∈ [1 , t ]), we have: 
+
+Var[ Gt] = Var 
+
+wtgt +
+
+> t−1
+
+X
+
+> j=1
+
+(γλ )t−j wtgj
+
+
+
+≈ Var[ wtgt] + 
+
+> t−1
+
+X
+
+> j=1
+
+(γλ )2( t−j) Var[ wtgj ]. (18) Given the uniform historical variance bound Var[ wtgj ] ≈ σ2 for 1 ≤ j < t , and substituting 
+
+k = t − j, we obtain the first result: 
+
+Var[ Gt] ≈ Var[ wtgt] + σ2
+
+> t−1
+
+X
+
+> k=1
+
+(γλ )2k. (19) 17 Similarly, the S-trace estimator can be expressed as: 
+
+Gωt = wtgt +
+
+> t−1
+
+X
+
+> j=1
+
+(γλ )t−j ωj wtgj . (20) Using the negligible cross-covariance assumption, its variance expands to: 
+
+Var[ Gωt ] ≈ Var[ wtgt] + 
+
+> t−1
+
+X
+
+> j=1
+
+(γλ )2( t−j) Var[ ωj wtgj ]. (21) To compute the term Var[ ωj wtgj ], we exploit the independence between the Bernoulli mask ωj and the trajectory-dependent gradient wtgj . We utilize the variance identity for independent variables, 
+
+Var[ XY ] = E[X2]E[Y 2] − (E[X]E[Y ]) 2. Since ωj follows a Bernoulli distribution, we have 
+
+E[ω2 
+
+> j
+
+] = E[ωj ] = ρ. Furthermore, the zero-mean assumption ( E[wtgj ] ≈ 0) implies E[( wtgj )2] = Var[ wtgj ] ≈ σ2. Consequently, the variance of the product is tightly derived as: 
+
+Var[ ωj wtgj ] = E[ω2 
+
+> j
+
+]E[( wtgj )2] −  E[ωj ]E[wtgj ]2
+
+≈ ρσ 2 − (ρ · 0) 2
+
+= ρσ 2. (22) Substituting this result back into Eq. (21) and re-indexing k = t − j, we arrive at the final variance expression for S-trace: 
+
+Var[ Gωt ] ≈ Var[ wtgt] + ρσ 2
+
+> t−1
+
+X
+
+> k=1
+
+(γλ )2k. (23) Comparing Eq. (23) with Eq. (19) , it strictly holds that Var[ Gωt ] < Var[ Gt] for any selective rate 
+
+ρ ∈ (0 , 1) , which completes the proof. 
+
+C Details of Selective Eligibility Traces 
+
+C.1 Leave-Own-Out variant 
+
+We implement the Leave-Own-Out (LOWO) variant of the (λ, ω )-importance weight. In contrast to the standard formulation in Eq. (11) , the LOWO variant explicitly exempts the current time step t
+
+(i.e., its “own” importance weight) from the modulation of ωi,t . Consequently, regardless of the local entropy or the composition of the eligibility traces, this formulation ensures that the policy gradient for every token incorporates the component derived from its own importance weight. We can see this explicitly from the following derivation 
+
+rλ,ω i,t (θ) = ri,t (θ) ·
+
+> t
+
+Y
+
+> k=2
+
+πθ (oi,t −k+1 |x, oi,<t −k+1 )ωi,t −k+1 (γλ )k−1
+
+πθold (oi,t −k+1 |x, oi,<t −k+1 )ωi,t −k+1 (γλ )k−1 (24) 
+
+∇θ ˜ri,t (θ) = sg 
+
+ ri,t (θ)
+
+rλ,ω i,t (θ)
+
+
+
+· ∇ θ rλ,ω i,t (θ)= ri,t (θ)∇θ log πθ (oi,t |x, oi,<t )+ ri,t (θ)
+
+> t
+
+X
+
+> k=2
+
+ωi,t −k+1 (γλ )k−1∇θ log πθ (oi,t −k+1 |oi,<t −k+1 , x ). (25) On the one hand, this design choice is critical for isolating the efficacy of the “sparse eligibility traces” from that of a “sparse policy gradient” which is a regime explicitly explored in [ 16 ]. While [ 16 ] leverages gradient sparsity (effectively masking out low-entropy tokens) to invoke the “80/20 rule” , our LOWO formulation avoids this confounding factor. By ensuring that the gradient update for every token explicitly includes the intrinsic contribution from its own importance weight, we guarantee that any observed performance gains are strictly attributable to the structural pruning of the 18 Algorithm 1 S-trace 
+
+Input: initial policy model πθ , query dataset Q, hyperparameters γ, λ, ϵ , seletive rate ρ = 0 .2;
+
+for s = 1 to S do 
+
+Sample a batch QB from Q;For each prompt x ∈ Q B , sample G trajectories {oi}Gi=1 ∼ πθold (·| x);Compute the advantage ˆAi for each sampled response oi using Eq. (3); 
+
+for b = 1 to B do 
+
+Compute the LOWO variant of rλ,ω i,t (θ) for each token oi,ν with ν = t + 1 − k and ωi,t = 1 :
+
+rλ,ω i,t (θ) = 
+
+> t
+
+Y
+
+> k=1
+
+πθ (oi,ν |x, oi,<ν )ωi,ν (γλ )k−1
+
+πθold (oi,ν |x, oi,<ν )ωi,ν (γλ )k−1
+
+Compute EIW ˜ri,t (θ) for each token oi,t using rλ,ω i,t (θ) via Eq. (9); Update policy πθ by maximizing: 
+
+E x∼Q {oi}Gi=1 ∼πθold (·| x)
+
+"
+
+1
+
+G
+
+> G
+
+X
+
+> i=1
+
+1
+
+|oi|
+
+> |oi|
+
+X
+
+> t=1
+
+min 
+
+
+
+˜ri,t (θ) ˆAi, clip (˜ ri,t (θ), 1 − ϵ, 1 + ϵ) ˆAi
+
+#
+
+end for end for 
+
+eligibility traces rather than the selective training of tokens. On the other hand, the LOWO variant formulation establishes a connection between GRPO and S-trace via the selective rate ρ. Specifically, similar to GRPO( λ), P/S-trace degenerates to standard GRPO when λ → 0. Uniquely, the LOWO formulation provides an alternative degeneration path for S-trace which also reduces to GRPO as 
+
+ρ → 0. Otherwise, without the LOWO mechanism, setting ρ = 0 would mask the policy gradients for all tokens, resulting in invalid updates. In our experiments, we fixed ρ = 0 .2, motivated by the empirical 80/20 rule. While other values remain viable, we leave the exploration of this hyperparameter to future work. 
+
+C.2 S-trace Algorithm 
+
+In this section, we provide the detailed pseudocode for the proposed S-trace algorithm, which is summarized in Algorithm 1. 
+
+C.3 Interpretation of S-trace 
+
+As shown in Proposition 4.2, the hyperparameter λ in critic-free eligibility traces primarily governs the temporal horizon of credit assignment, where a larger λ enhances memory persistence by preserving dependencies over extended sequences but inevitably incurs substantial variance. This creates a rigid coupling in standard formulations like GRPO( λ) or P-trace such that extending the memory horizon necessitates accepting higher variance. In contrast, S-trace introduces an orthogonal dimension of control via the selective rate ρ which governs structural sparsity by allowing the algorithm to selectively retain past events based on their informational salience (e.g., entropy) rather than indiscriminately incorporating the entire history. This design effectively decouples the temporal horizon from variance accumulation, enabling the maintenance of a long memory window for critical events while suppressing variance through the filtering of trivial actions. Theoretically, the LOWO formulation ensures consistency by guaranteeing that S-trace smoothly degenerates to the standard GRPO baseline at boundary conditions where either λ or ρ approaches zero. Biologically, this mechanism mirrors the Synaptic Tagging and Capture (STC) hypothesis [ 53 ], where 
+
+ρ functions as a gating mechanism analogous to “Synaptic Tagging” that identifies salient events for potential consolidation while λ corresponds to “Synaptic Capture” by defining the temporal window during which plasticity-related resources remain available to stabilize these tagged synapses. 19 C.4 Ablation Study on Entropy-Based S-trace 
+
+In our proposed S-trace formulation, the selective mask ω is dynamically determined by the entropy of the generated tokens. To validate the efficacy of this design choice, we conduct an ablation study by substituting the entropy-based masking mechanism with a purely random mask (where tokens are selected uniformly at random with a matching expected probability). The empirical results evaluated on the Qwen3-4B backbone are presented in Table 5. As demonstrated in Table 5, replacing the entropy-based selective credit assignment with a random mask leads to a severe performance degradation across all five benchmarks. This substantial degradation demonstrates that arbitrarily propagating credit across random tokens fails to establish valid temporal dependencies. Conversely, the entropy-based mask in S-trace strategically identifies actions that serve as true logical bottlenecks within the reasoning chain, systematically linking them via eligibility traces. By concentrating credit assignment optimally on these pivotal steps, this mechanism enforces correct causal dependencies and maximizes the efficacy of trace-style updates. 0 20 40 60 80 100 120 
+
+> Step
+> 1000
+> 1200
+> 1400
+> 1600
+> 1800
+> 2000
+> Mean Response Length
+> Mean Response Length Dynamics on DAPO-Math-14k
+> P-trace-0.7
+> P-trace-0.8
+> P-trace-0.9
+> GRPO
+
+Figure 8: Dynamics of mean response length under varying λ. Both λ = 0 .7 and λ = 0 .8 settings maintain superior token efficiency comparable to the P-trace-0.9 baseline and consistently outperform GRPO. These results attest to the robustness of P-trace across a wide effective range. Table 5: Ablation study on the selection mechanism of S-trace-0.9 using the Qwen3-4B backbone. The best performance is highlighted in bold .Qwen3-4B MATH500 AIME24 AIME25 AMC23 Minerva Avg. S-trace-0.9 w/ random mask 83.19 23.33 30.00 67.50 31.19 47.04 S-trace-0.9 w/ entropy mask 85.40 30.00 32.18 80.00 33.28 52.17 
+
+D Comparative Analysis of Actor-Only Eligibility Traces Methods 
+
+We provide a detailed comparison between P-trace and GRPO( λ), elucidating their structural differ-ences and connection to prior works. 
+
+D.1 P-trace vs. GRPO( λ)
+
+To facilitate a rigorous comparison between our P-trace method and the baselines proposed by [15 ]—namely the trace-style (GRPO( λ)-t) and weight-style (GRPO( λ)-w) formulations—we derive the effective policy gradient from a per-token perspective. 
+
+Sample-Level Objectives. We first formulate the sample-level surrogate objectives for the token at time step t across the three methods. Let ˜Jt(θ) denote the objective for P-trace, and J (1)  
+
+> t
+
+(θ), J (2)  
+
+> t
+
+(θ)
+
+for GRPO( λ)-t and GRPO( λ)-w, respectively 
+
+P-trace : ˜Jt(θ) = sg 
+
+ ri,t (θ)
+
+rλi,t (θ)
+
+
+
+rλi,t (θ) ˆAi, (26) 20 GRPO( λ)-t : J (1)  
+
+> t
+
+(θ) = rλi,t (θ) ˆAi, (27) 
+
+GRPO( λ)-w : J (2)  
+
+> t
+
+(θ) = ri,t (θ) ˆAi
+
+> |oi|
+
+X
+
+> k=t
+
+(γλ )k−t. (28) 
+
+Aggregated Gradient Derivation. For each method, we differentiate the respective objective with respect to θ. Subsequently, by iterating through the entire trajectory and collecting all terms involving the specific policy gradient at time t, ∇θ log πθ (oi,t |x, oi,<t ), we obtain the aggregated policy gradient contribution for that token. 
+
+Comparative Results. The resulting aggregated gradients for the token at time t can be expressed in a unified form 
+
+Ti,t · ˆAi∇θ log πθ (oi,t |oi,<t , x ), (29) where the trace coefficient Ti,t varies by method 
+
+P-trace : Ti,t =
+
+> |oi|
+
+X
+
+> k=t
+
+ri,k (θ)( γλ )k−t, (30a) 
+
+GRPO( λ)-t : Ti,t =
+
+> |oi|
+
+X
+
+> k=t
+
+rλi,k (θ)( γλ )k−t, (30b) 
+
+GRPO( λ)-w : Ti,t =
+
+> |oi|
+
+X
+
+> k=t
+
+ri,t (θ)( γλ )k−t = ri,t (θ)
+
+> |oi|
+
+X
+
+> k=t
+
+(γλ )k−t. (30c) 
+
+Analysis. We begin by observing that under the strict on-policy setting where importance weights satisfy rt(θ) = 1 , all three formulations converge to an identical trace coefficient. The divergence in their performance arises solely from how they handle off-policy deviations, specifically through the mechanism of clipping. P-trace distinguishes itself by maintaining a significantly higher learning signal density compared to its counterparts. On the one hand, as empirically validated in Figure 4, GRPO( λ)-t is prone to frequent clipping, a consequence of higher variance inherent in its importance weights compared to P-trace. This results in a sparse trace coefficient, where many learning signals in Eq. (30b) are inadvertently discarded. Specifically, numerous rλi,k (θ) terms are clipped to constant, thereby excluding them from the effective policy gradient computation. On the other hand, GRPO( λ)-w relies exclusively on the instantaneous importance weight ri,t (θ). If the specific token at time t
+
+triggers the clipping threshold, its associated eligibility traces vanishes entirely, rendering the trace coefficient in Eq. (30c) identically zero, which signifies a significantly more aggressive form of truncation than that of GRPO( λ)-t. In contrast, P-trace orchestrates the trace coefficient Ti,t by encompassing the full spectrum of future importance weights. Eq. (30a) ensures that the gradient update remains active as long as there exist valid, unclipped importance weights in the future horizon—a condition that holds with high probability, as the simultaneous truncation of every future token is a statistically negligible event. This design is congruous with the principles of CISPO [ 26 ], which advocates for utilizing truncated importance weights rather than silencing the gradient entirely, thereby maximizing sample utilization. However, as demonstrated in Appendix A.2, the retention of a denser learning signal implies that P-trace undergoes more drastic parameter updates that lead to tangible training instability, under-scoring a fundamental trade-off inherent to eligibility traces-based RLVR methods regarding how to reconcile the maximization of signal retention for enhanced sample efficiency with the imperative of optimization stability. To navigate this trade-off, trace-style GRPO( λ) introduces a sequence-level importance weighting scheme analogous to GSPO (see Appendix D.2), which smooths token-level importance weights and induces an endogenously high clipping fraction due to increased variance. Although this stabilizes training, it inevitably compromises sample efficiency. Our approach, S-trace, capitalizes on the sample efficiency provided by P-trace, yet refines and stabilizes the update via selective credit assignment to mask trivial and noisy signals, thus maintaining training stability without compromising learning speed. This kind of trade-off also manifests similarly in the advantage computation within the RLVR domain, where REINFORCE-Rej [ 54 ] posits that the superior per-formance of GRPO likely stems from its group-based advantage formulation capable of performing 21 online filtering by discarding prompts yielding uniformly correct or incorrect responses where the resulting zero-valued advantage prevents parameter updates to ensure stability while conversely compromising sample efficiency. 
+
+D.2 GRPO( λ) vs. GSPO 
+
+By elevating importance ratios and clipping mechanism to the sequence level, GSPO [ 18 ] strictly aligns the optimization granularity with sequence-level rewards. This structural consistency effectively mitigates the volatility inherent in the token-level importance weights of GRPO, thereby securing the training stability requisite for large-scale architectures, particularly Mixture-of-Experts (MoE) models. Here, we elucidate the theoretical connection between trace-style GRPO( λ) and GSPO in this subsection, characterizing the latter as a specialized instantiation of eligibility traces mechanisms with uniform credit assignment. Disregarding the clipping mechanism and the minimization operator to focus on the core gradient dynamics, the objective function for trace-style GRPO( λ) can be formulated as 
+
+JGRPO (λ)(θ) = Ex∼Q ,{oi}Gi=1 ∼πθold (·| x)
+
+ 1
+
+G
+
+> G
+
+X
+
+> i=1
+
+1
+
+|oi|
+
+> |oi|
+
+X
+
+> t=1
+
+rλi,t (θ) ˆAi
+
+ (31) We restrict our attention to the optimization objective associated with the terminal token of each group response oi, denoted as 
+
+JGRPO (λ),−1(θ) = Ex∼Q ,{oi}Gi=1 ∼πθold (·| x)
+
+"
+
+1
+
+G
+
+> G
+
+X
+
+> i=1
+
+rλi, |oi|(θ) ˆAi
+
+#
+
+(32) Deriving the policy gradient for this terminal-token objective reveals 
+
+∇θ JGRPO (λ),−1(θ)= E x∼Q {oi}Gi=1 ∼πθold 
+
+"
+
+1
+
+G
+
+> G
+
+X
+
+> i=1
+
+ˆAi∇θ rλi, |oi|(θ)
+
+#
+
+= E x∼Q {oi}Gi=1 ∼πθold 
+
+"
+
+1
+
+G
+
+> G
+
+X
+
+> i=1
+
+ˆAi
+
+> |oi|
+
+Y
+
+> t=1
+
+πθ (oi,t |x, oi,<t )(γλ )|oi|− t
+
+πθold (oi,t |x, oi,<t )(γλ )|oi|− t
+
+!
+
+×
+
+> |oi|
+
+X
+
+> t=1
+
+(γλ )|oi|− t∇θ log πθ (oi,t |x, oi,<t )
+
+#
+
+(33) Similarly, GSPO optimizes the policy by leveraging a sequence-level importance weight. The original objective function of GSPO is defined as 
+
+JGSPO (θ) = Ex∼Q ,{oi}Gi=1 ∼πθold (·| x)
+
+"
+
+1
+
+G
+
+> G
+
+X
+
+> i=1
+
+si(θ) ˆAi
+
+#
+
+(34) where the sequence importance weight si(θ) employs a length-normalized sequence likelihood given by 
+
+si(θ) = 
+
+ πθ (oi|x)
+
+πθold (oi|x)
+
+ 1
+
+> |oi|
+
+=
+
+> |oi|
+
+Y
+
+> t=1
+
+πθ (oi,t |x, oi,<t ) 1
+
+> |oi|
+
+πθold (oi,t |x, oi,<t ) 1
+
+> |oi|
+
+(35) Computing the gradient of Eq. (34) yields 
+
+∇θ JGSPO (θ) = Ex∼Q ,{oi}Gi=1 ∼πθold (·| x)
+
+ 1
+
+G
+
+> G
+
+X
+
+> i=1
+
+si(θ) ˆAi
+
+1
+
+|oi|
+
+> |oi|
+
+X
+
+> t=1
+
+∇θ log πθ (oi,t |x, oi,<t )
+
+ (36) 22 0 50 100 150 200 
+
+> Step
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> Reward
+> Reward Training Dynamics on DAPO-Math-14k
+> GRPO
+> GRPO( λ)-0.9
+> GSPO
+
+(a) Reward 0 50 100 150 200  
+
+> Step
+> 1200
+> 1400
+> 1600
+> 1800
+> 2000
+> Mean Response Length
+> Mean Response Length Dynamics on DAPO-Math-14k
+> GRPO
+> GRPO( λ)-0.9
+> GSPO
+
+(b) Response 0 50 100 150 200 
+
+> Step
+> 0.00
+> 0.02
+> 0.04
+> 0.06
+> 0.08
+> 0.10
+> 0.12
+> Ratio
+> Policy Gradient Clip Fraction on DAPO-Math-14k
+> GRPO
+> GRPO( λ)-0.9
+> GSPO
+
+(c) Clip Fraction 0 50 100 150 200  
+
+> Step
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> Loss
+> KL Loss on DAPO-Math-14k
+> GRPO
+> GRPO( λ)-0.9
+> GSPO
+
+(d) KL Divergence 
+
+Figure 9: Training dynamics comparison between uniform-based and recency-based eligibility traces. The recency-based method (GRPO( λ)) consistently outperforms the uniform-based baseline (GSPO) by achieving higher asymptotic performance and enhanced token efficiency, while simulta-neously maintaining greater optimization stability with significantly lower KL divergence and clip fractions. Substituting the explicit expansion of si(θ) from Eq. (35) into Eq. (36) allows us to express the GSPO gradient in a eligibility traces-analogous form 
+
+∇θ JGSPO (θ) = E x∼Q {oi}Gi=1 ∼πθold 
+
+"
+
+1
+
+G
+
+GX
+
+i=1 
+
+ˆAi
+
+|oi|
+
+Y
+
+t=1 
+
+πθ (oi,t |x, oi,<t ) 1
+
+> |oi|
+
+πθold (oi,t |x, oi,<t ) 1
+
+> |oi|
+
+!
+
+×
+
+|oi|
+
+X
+
+t=1 
+
+1
+
+|oi| ∇θ log πθ (oi,t |x, oi,<t )
+
+# (37) Table 6: Empirical comparison of uniform-based and recency-based RL methods on Qwen3-4B. “Resp.” denotes the overall mean response length, calculated as the average of the mean response lengths across all training steps. The best performance is highlighted in bold , and the second-best is underlined. Method Credit Assignment MATH AIME24 AIME25 AMC23 Minerva Avg. Resp. ( ↓)GRPO [7] uniform 85.04 33.33 26.67 70.00 30.02 49.01 1517.64 GSPO [18] uniform 86.42 25.48 32.88 72.50 31.31 49.72 1508.55 GRPO( λ)-0.9 [15] recency 84.87 38.83 26.66 80.00 30.52 52.18 1405.60 S-trace-0.9 (ours) recency 85.40 30.00 32.18 80.00 33.28 52.17 1353.16 
+
+This derivation unveils that GSPO inherently functions as a variation of the eligibility traces method where the temporal decay factors are replaced by a uniform averaging constant 1/|oi| and the importance weights are smoothed via a geometric mean. Rooted in this theoretical kinship, empirical evaluations of GSPO reveal a high incidence of clipping events [ 18 ] resembling that observed in our GRPO( λ) experiments. Nevertheless, unlike GSPO, the trace-style GRPO( λ) extends the gradient 23 computation beyond the terminal token to leverage the partial sequences corresponding to every token within the response, synthesizing these partial signals through arithmetic averaging. Based on the preceding theoretical analysis, GSPO can be fundamentally characterized as a trace-style method operating under a uniform credit assignment regime. To provide an empirical comparison between uniform-based and recency-based credit assignment strategies, we evaluate the fine-tuning performance of GSPO on the Qwen3-4B backbone, adopting its officially recommended clip ranges of 3 × 10 −4 and 4 × 10 −4. The results, summarized in Table 6, offer a comprehensive view of how different temporal decay priors influence model performance, clearly demonstrating the superiority of recency-based credit assignment over uniform-based methods in both reasoning accuracy and token efficiency. 24
