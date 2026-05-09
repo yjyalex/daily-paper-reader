@@ -1,0 +1,1037 @@
+Title: EGREFINE: An Execution-Grounded Optimization Framework for Text-to-SQL Schema Refinement
+
+URL Source: https://arxiv.org/pdf/2605.00628v1
+
+Published Time: Mon, 04 May 2026 01:07:28 GMT
+
+Number of Pages: 15
+
+Markdown Content:
+> 1
+
+# EGR EFINE : An Execution-Grounded Optimization Framework for Text-to-SQL Schema Refinement 
+
+Jiaqian Wang, Yutao Qi ∗, Wenjin Hou, Yu Pang, and Rui Yang Xidian University, Xi’an, Shaanxi 710071, China Email: 24151111272@stu.xidian.edu.cn, ytqi@xidian.edu.cn, houwenjinmail@gmail.com 
+
+∗Corresponding author 
+
+Abstract —Text-to-SQL enables non-expert users to query databases in natural language, yet real-world schemas often suffer from ambiguous, abbreviated, or inconsistent naming con-ventions that degrade model accuracy. Existing approaches treat schemas as fixed and address errors downstream. In this paper, we frame schema refinement as a constrained optimization prob-lem: find a renaming function that maximizes downstream Text-to-SQL execution accuracy while preserving query equivalence through database views. We analyze the computational hardness of this problem, which motivates a column-wise greedy decompo-sition, and instantiate it as EGR EFINE : a four-phase pipeline that screens ambiguous columns, generates context-aware candidate names, verifies them through execution-grounded feedback, and materializes the result as non-destructive SQL views. The pipeline carries two structural properties: column-local non-degradation, ensured by the conservative selection rule in the verification phase, and database-level query equivalence, ensured by the view-based materialization phase. Together they make the resulting refinement safe by construction at the column level , with cross-column and prompt-level interactions handled empirically rather than analytically. Across controlled schema-degradation, real-world, and enterprise benchmarks, EGR EFINE recovers accuracy lost to schema naming noise where applicable and correctly abstains where the underlying task exceeds current Text-to-SQL capabilities, with refined schemas transferring across model families to enable refine-once, serve-many-models deployment. Code and data are publicly available at https://github.com/ ai-jiaqian/EGRefine. 
+
+Index Terms —Text-to-SQL, Schema Refinement, Execution Feedback, Database Views, Optimization 
+
+I. I NTRODUCTION 
+
+Text-to-SQL—the task of translating natural-language ques-tions into executable SQL queries—has emerged as a pivotal technology for democratizing data access [1], [2]. Driven by rapid advances in large language models (LLMs), recent systems have achieved impressive performance on standard benchmarks [3]–[6], with execution accuracies exceeding 85% on the widely used Spider dataset [7]. However, a persistent gap remains between benchmark per-formance and production reliability. Real-world databases are frequently characterized by inconsistent naming standards, ad-hoc abbreviations, and sparse documentation [8], [9]. Columns named A2 , nm , sal , or dt carry little semantic information, forcing Text-to-SQL models to rely on fragile heuristic cues during schema linking [10]. Diagnostic evaluations confirm that even state-of-the-art systems suffer substantial accuracy degradation when schema names are perturbed or obfus-cated [11], [12], establishing schema-level naming quality as a critical yet underexplored bottleneck for robust Text-to-SQL. The prevailing response has been to treat schema quality as a fixed background condition and address its consequences 
+
+downstream : constrained decoding improves syntactic validity but not naming ambiguity [13]; error-correction and self-refinement repair generated SQL after the fact [14]–[16], yet schema-linking errors rooted in opaque names persist; interac-tive clarification shifts the burden to users [17]–[19], imprac-tical at scale; and recent ambiguity benchmarks probe query-level perturbations rather than schema-internal defects [20]– [22]. The schema itself—the root cause—remains untreated. A small but growing line of work has begun to consider 
+
+upstream schema-level interventions. Odin [23] recommends multiple SQL interpretations for ambiguous schemas at query time. CLEAR [24] provides a parser-independent disambigua-tion framework. While these efforts represent important steps, they share two fundamental limitations. First, they operate at query time , incurring per-query overhead without produc-ing durable schema-level improvements. Second, they lack a grounded optimization objective : the quality of a schema modification is assessed by linguistic plausibility rather than by its measurable effect on downstream task performance. In this paper, we propose a fundamentally different ap-proach. We observe that schema quality, viewed through the lens of Text-to-SQL, can be defined objectively as the downstream execution accuracy it induces. This allows us to formalize schema refinement as a constrained optimization problem: find a renaming of schema elements that maximizes execution accuracy while preserving query equivalence via SQL views. We analyze the computational hardness—the search space is exponential (Observation 1) and the con-strained problem is at least NP-hard (Theorem 1)—and pro-pose EGR EFINE (Execution-Grounded Refinement), a four-phase pipeline whose key innovation is execution-grounded verification : rather than relying on an LLM’s semantic judg-ment to select column names, we use downstream SQL execution results as the selection signal, treating execution accuracy as a reward function for schema refinement. This applies execution feedback at a novel granularity—not to the generated query as in prior work [25]–[27], but to the schema itself. Our contributions are as follows: 1) Formal Problem Framing. We cast schema refinement for Text-to-SQL as a constrained optimization problem 
+
+> arXiv:2605.00628v1 [cs.DB] 1 May 2026 2
+
+with a task-grounded objective (Definition 2), analyze its computational complexity (§III-C), and establish two structural properties: column-local non-degradation (each isolated renaming is constrained to be non-harmful on its query subset, Proposition 1) and query equivalence at the database level under standard DBMS view-expansion semantics (Proposition 2). 2) The EGR EFINE Framework. We propose a four-phase pipeline operationalizing the optimization frame-work: heuristic pruning reduces the search space (§IV-A), LLM generation proposes candidate renamings (§IV-B), execution-grounded verification selects the optimal candi-date via downstream SQL execution (§IV-C), and VIEW synthesis materializes the result as a non-destructive semantic layer (§IV-D). The pipeline is model-agnostic: any downstream Text-to-SQL system benefits from the refined schema without modification. 3) Comprehensive Empirical Evaluation. We evaluate on three benchmarks playing complementary evidentiary roles: Dr.Spider [11] establishes the mechanism under controlled degradation; BIRD [12] shows smaller but measurable gains on natural schemas, with workload-holdout (§V-G) confirming persistence on unseen queries; BEAVER [28] delineates the applicability boundary, where SQL-generation rather than schema-linking is the bottleneck and Phase 3 correctly abstains. Regressions on well-named schemas are rare and small under the conservative rule, ablations confirm execution-grounded verification significantly outperforms pure LLM-based selection, and benefits amplify for weaker models—the setting most relevant to cost-sensitive deployments. Our mechanism analysis (§VI) additionally yields a coverage– improvement linearity that makes expected impact pre-dictable at deployment time. II. R ELATED WORK 
+
+We review three lines of research relevant to our work: Text-to-SQL systems, schema ambiguity and robustness, and execution-guided methods. 
+
+A. Text-to-SQL Systems 
+
+Text-to-SQL has progressed through several paradigm shifts: early sequence-to-sequence generation [29] and schema-aware encoders [10], [30]; constrained decoding for syntactic validity [13]; and decoupled schema-linking-then-parsing architectures [31]. The advent of LLMs shifted the dominant paradigm toward prompt-based methods such as DIN-SQL [3] (decomposed prompting), DAIL-SQL [4] (token-efficient skeleton-based prompts), and multi-agent sys-tems including MAC-SQL [5] and CHESS [6]; fine-tuned variants such as CodeS [32] also appear in this landscape. Recent work [33] questions whether explicit schema linking is needed at all when LLMs have sufficient context; in either regime, schema-side quality remains a precondition for accu-rate generation. Comprehensive surveys include [1], [2], [34], [35]. All of the above treat the database schema as a fixed input. EGR EFINE is orthogonal: it operates as an upstream preprocessing layer that refines the schema before any Text-to-SQL system is invoked, composable with any of the above without modification. 
+
+B. Schema Ambiguity and Robustness 1) Robustness Evaluation: Earlier benchmarks established schema-side brittleness: Spider-Syn [36] showed accuracy collapses under synonym substitution that breaks lexical matching between question tokens and schema names, and Spider-DK [37] extended this to domain-knowledge gen-eralization. Dr.Spider [11] subsequently introduced 17 per-turbation types—including schema-level modifications—and showed substantial accuracy drops even for the strongest models. F¨ urst et al. [8] evaluated robustness to data model variations using real user queries, while Renggli et al. [9] identified fundamental challenges in evaluating Text-to-SQL under realistic conditions. These studies diagnose rather than resolve schema-side brittleness. 
+
+2) Query-Level Ambiguity: A separate line of work ad-dresses ambiguity in the question rather than the schema [20]– [22], including interactive disambiguation that solicits user clarification [18], [19], [38] and detection of unanswerable questions [39]. These are complementary: we address ambi-guity in the schema, not the question. 
+
+3) Schema-Level Interventions: Several benchmarks ac-knowledge schema quality as a real-world challenge: BIRD [12] provides supplementary knowledge descriptions alongside schemas; Spider 2.0 [40] features enterprise-scale schemas with over 1,000 columns and domain-specific ab-breviations; BEAVER [28] provides enterprise data ware-house schemas with extremely low Text-to-SQL baselines; and BenchPress [41] addresses enterprise schema ambiguity through human-in-the-loop annotation. Two recent systems directly tackle schema-level disam-biguation. Odin [23] recommends multiple SQL candidates based on alternative schema interpretations and learns from user feedback. CLEAR [24] provides a parser-independent framework that generates and selects among candidate SQL interpretations. Chen et al. [42] address schema linking un-certainty through adaptive abstention. Closer to our setting, SNAILS [43] shows that schema-identifier naturalness mate-rially affects LLM-based NL-to-SQL accuracy and proposes natural views as a mitigation; EGR EFINE extends this di-rection by tying view construction to an execution-grounded optimization objective rather than a naturalness classifier. These methods operate at query time —each incoming question triggers disambiguation—and evaluate schema modifications through linguistic plausibility or user feedback. EGR EFINE 
+
+differs along two axes: it performs schema refinement once 
+
+as offline preprocessing, producing a durable refined schema; and it selects refinements through a grounded optimization objective tied directly to downstream execution accuracy. 
+
+C. Execution-Guided Methods 
+
+In Text-to-SQL, execution feedback has been used to con-strain or re-rank candidate queries [13], iteratively repair 3
+
+TABLE I: Comparison with closely related approaches.                          
+
+> Method Upstream Offline Exec.-grounded Model-agnostic Non-destructive
+> PICARD [13] ✗✗✗✗–DART-SQL [16] ✗✗✓✗–Odin [23] ✓✗✗✓✓
+> CLEAR [24] ✓✗✗✓✓
+> EGRefine (Ours) ✓✓✓✓✓
+
+SQL [14], [16], and drive self-correction loops in multi-agent frameworks [5], [44]. Beyond SQL, execution-based verification is effective in general code generation, including dual-execution agreement [25], self-debugging from execution traces [26], and verbal reinforcement learning over execution feedback [27]. Our work draws inspiration from this paradigm but applies execution feedback at a different granularity. Prior methods use execution signals to improve the generated output while holding the schema constant; EGR EFINE uses them to improve the input representation itself, producing a durable refined schema that benefits all subsequent queries without per-query loops. Table I summarizes the distinctions. III. P ROBLEM FORMULATION 
+
+In this section, we formalize schema refinement as a con-strained optimization problem, analyze its computational hard-ness, and present our decomposition strategy with associated structural properties. 
+
+A. Preliminaries and Notation 
+
+Database Schema. A relational database is described by a schema S = ( T , C, F), where T = {t1, . . . , t n} is the set of tables, C = {c1, . . . , c m} is the set of columns, and F ⊆ C ×C 
+
+encodes foreign-key relationships. Each column c ∈ C belongs to a unique table tab( c) ∈ T and carries a surface name 
+
+name( c)—the identifier visible to downstream systems. We define the scope of a column c as the set of columns that share its naming namespace: 
+
+scope( c) = {c′ ∈ C | tab( c′) = tab( c)}∪ { c′ | (c, c ′) ∈ F or (c′, c ) ∈ F} . (1) Scope includes same-table columns (where SQL forbids du-plicate column names) and FK-related columns across ta-bles (where duplicates create joining ambiguity). Cross-table homonyms without FK relationships are permitted by SQL and left untouched (§IV-A). 
+
+Text-to-SQL Task. A Text-to-SQL model M takes anatural-language question nl and a schema S as input, and produces a predicted SQL query M (nl , S). Performance is measured by execution accuracy (ExAcc): given a benchmark 
+
+Q = {(nl j , sql ∗ 
+
+> j
+
+)}|Q| 
+
+> j=1
+
+of question–gold-SQL pairs, we define 
+
+ExAcc( M, S, Q ) = 1
+
+|Q|
+
+> |Q|
+
+X
+
+> j=1
+
+⊮exec( M (nl j , S)) = exec( sql ∗ 
+
+> j
+
+), (2) where exec( ·) denotes the result set obtained by executing a query on the underlying database. 
+
+B. Schema Refinement as Optimization 
+
+We adopt a task-grounded perspective: schema quality is determined solely by its effect on downstream Text-to-SQL performance, avoiding subjective ambiguity taxonomies. 
+
+Definition 1 (Refinement Mapping) . A refinement mapping 
+
+r : C → Σ∗ assigns a (possibly new) surface name r(c) to each column c ∈ C , where Σ∗ is the set of valid SQL identifiers. The identity mapping rid corresponds to the unchanged schema; we write r(S) for the schema obtained by applying r. A refinement is admissible if (i) no two columns in the same scope receive identical names, and (ii) only surface names are modified (data types, constraints, foreign keys, and table structure remain unchanged). We denote the set of admissible refinements by R(S).
+
+Definition 2 (Schema Quality) . Given S, a set of Text-to-SQL models M = {M1, . . . , M l}, and a query set Q:
+
+Quality( S, M, Q ) = 1
+
+|M| 
+
+X 
+
+> Mj∈M
+
+ExAcc( Mj , S, Q ). (3) 
+
+Averaging over multiple models ensures the metric reflects general schema clarity rather than single-system idiosyn-crasies. 
+
+Problem 1 (Optimal Schema Refinement) . Given S, M, and 
+
+Q, find: 
+
+r∗ = arg max   
+
+> r∈ R (S)
+
+Quality  r(S), M, Q , (4) 
+
+subject to: for every SQL query q′ over r(S), exec( q′, r (S)) = exec( q, S) for the semantically equivalent query q over S.
+
+The equivalence constraint ensures refinement is non-destructive: the original database remains untouched. Proposi-tion 2 shows this is satisfied by construction when the refined schema is materialized as SQL views over the original tables. 
+
+Remark 1. A column c is considered refinement-improvable 
+
+iff there exists an alternative name c′ such that replacing 
+
+name( c) with c′ strictly increases Quality . This operational definition sidesteps ambiguity taxonomies and ties refinement directly to measurable task improvement. C. Hardness Analysis 
+
+Observation 1 (Exponential Search Space) . Let |C| = m
+
+and suppose each column has k candidates (including the original). Then |R (S)| = O(km): for m=100 and k=3 ,
+
+|R (S)| > 5 × 10 47 , rendering exhaustive search infeasible. 4
+
+To establish hardness rigorously, we introduce a constrained decision variant isolating the combinatorial core. 
+
+Definition 3 (Constrained Refinement Decision Problem) .
+
+CONSTRAINED -R EFINEMENT -D ECISION (CRD). Given aschema S with column set C = {c1, . . . , c n}, within-scope conflict relation E ⊆ C × C , candidate lists L(ci) ⊆ Σ+
+
+(|L (ci)| ≥ 1), and a forced-rename subset C† ⊆ C , does there exist an assignment r : C → Σ+ satisfying (i) r(ci) ∈ L (ci)
+
+for all i; (ii) r(ci)̸ = r(cj ) for all (ci, c j ) ∈ E; and (iii) 
+
+r(ci)̸ = c0 
+
+> i
+
+for all ci ∈ C †?
+
+Theorem 1 (NP-hardness of Constrained Refinement) .
+
+CONSTRAINED -R EFINEMENT -D ECISION is NP-hard. The op-timization version of Problem 1—maximizing Quality over assignments satisfying the same constraints—is therefore also NP-hard. Proof: We reduce from L IST -C OLORING , NP-complete for general graphs [45]. A L IST -C OLORING instance is a graph 
+
+G = ( V, E G) with color lists L(v) ⊆ N, asking whether a proper coloring ϕ exists with ϕ(v) ∈ L(v) and ϕ(u)̸ = ϕ(v)
+
+for all (u, v ) ∈ EG.Given (G, L ), construct a CRD instance: for each vi ∈ V ,introduce a column ci under a single shared scope; set E =
+
+EG and L(ci) = {σ(ℓ) : ℓ ∈ L(vi)} for an injective encoding 
+
+σ : N → Σ+; set C† = ∅. The construction is polynomial. A valid coloring ϕ yields a valid CRD assignment r(ci) = 
+
+σ(ϕ(vi)) (condition (iii) is vacuous since C† = ∅); conversely, a valid CRD assignment r yields a valid coloring ϕ(vi) = 
+
+σ−1(r(ci)) via injectivity of σ. The optimization version of Problem 1 contains CRD as a feasibility sub-problem, so it is at least as hard. 
+
+Remark 2 (Scope of the Hardness Result) . Theorem 1 cap-tures hardness from the combinatorial structure of constrained candidate assignment, not from properties of Quality . In-approximability results exploiting structure of Quality itself remain open. D. Decomposition and Structural Properties 
+
+Since exact optimization is intractable (Observation 1, The-orem 1), we decompose the joint problem into independent per-element subproblems, analogous to coordinate descent. 
+
+1) Element-Wise Refinement: For each column ci ∈ C , let 
+
+Q(ci) = {(nl , sql ∗) ∈ Q | ci appears in sql ∗} denote the queries referencing ci. We solve the following subproblem independently for each ci identified as a refinement candidate (§IV): 
+
+c∗ 
+
+> i
+
+= arg max     
+
+> c′∈Cand( ci)∪ { c0
+> i}
+
+Quality  S[ci → c′], M, Q (ci),
+
+(5) where c0 
+
+> i
+
+= name( ci) is the original name, Cand( ci) is the set of k candidates from the proposal module, and S[ci → c′]
+
+denotes S with the substitution name( ci) ← c′.
+
+2) Conservative Selection Rule: To prevent regressions, we adopt a conservative policy: a column is renamed only if the best candidate strictly improves on the original. Let 
+
+∆i = max  
+
+> c′∈Cand( ci)
+
+Quality( S[ci → c′], M, Q (ci)) 
+
+− Quality( S, M, Q (ci)) (6) denote the quality gain of the best candidate over the original. The conservative selection is: 
+
+c∗ 
+
+> i
+
+=
+
+(
+
+arg max c′ Quality( ·), if ∆i > 0; 
+
+c0 
+
+> i
+
+, otherwise. (7) This rule yields a local guarantee at the per-column level. 
+
+Proposition 1 (Per-Column Local Non-Degradation) . Con-sider the conservative selection rule (7) applied to a column ci,holding all other columns fixed. Let Sci→c0 
+
+> i
+
+denote the schema with ci keeping its original name, and Sci→c∗ 
+
+> i
+
+the schema after applying the rule’s selected name. Then on the column-local query subset Q(ci):
+
+Quality( Sci→c∗ 
+
+> i
+
+, M, Q (ci)) ≥ Quality( Sci→c0 
+
+> i
+
+, M, Q (ci)) .
+
+(8) 
+
+Proof: By the rule (7), the candidate c∗ 
+
+> i
+
+is adopted only if ∆i > 0, where ∆i is defined as the change in Quality 
+
+on Q(ci) between Sci→c∗ 
+
+> i
+
+and Sci→c0 
+
+> i
+
+. Otherwise, the original name is retained and the two schemas are identical on Q(ci).Either way, inequality (8) holds. 
+
+Remark 3 (Scope of the Guarantee) . Proposition 1 is a per-column local property: it constrains only the change on Q(ci)
+
+when column ci alone is renamed. It does not extend to a global non-degradation guarantee on the full workload, for two reasons. First, LLM-based Text-to-SQL systems consume the entire schema as prompt context, so renaming one column can affect behavior on queries that do not reference ci—through schema-linking attention, candidate-table pruning, or query-decomposition strategy—effects not bounded by the column-local ∆i. Second, simultaneously applying renamings to multiple columns can produce schema-level interactions that single-column verification does not detect, since Phase 3 evaluates each candidate in isolation. We therefore character-ize EGR EFINE as empirically regression-resistant rather than provably non-degrading: the conservative rule substantially reduces the risk of harmful renamings (15/18 configurations show net positive ∆ in §VI-C) but does not eliminate it under cross-column or prompt-level interactions. 3) Global Conflict Resolution: After all per-element se-lections are made, we perform a global consistency check. If two columns ci, c j within the same scope have been assigned identical refined names ( c∗ 
+
+> i
+
+= c∗ 
+
+> j
+
+), a naming collision 
+
+arises, violating the admissibility constraint. We resolve such collisions by retaining the refinement with the higher ∆ and reverting the other to its next-best non-conflicting candidate. This process repeats for at most two iterations, after which any remaining conflicts are resolved by retaining the original names. 
+
+4) Query Equivalence via VIEW Synthesis: The refined schema r(S) is materialized as a set of SQL CREATE VIEW 5
+
+statements aliasing original column names to their refined counterparts: 
+
+CREATE VIEW ˆt AS SELECT 
+
+c1 AS r(c1), . . . , c n AS r(cn) FROM t, (9) for each table t with columns c1, . . . , c n. Downstream models generate SQL referencing the refined names; the database engine resolves these to underlying columns during query planning, with no intermediate string rewriting. 
+
+Proposition 2 (Query Equivalence under DBMS View Se-mantics) . Let r be an admissible refinement mapping, and let V = VIEW( r, S) be the corresponding view definitions. For any read-only SQL query q′ over r(S) consisting of relational-algebra core operators (projection, selection, equi-join, set operations) over the views, there exists a semantically equivalent query q over S such that: 
+
+exec( q, S) = exec( q′, r (S)) . (10) 
+
+For SQL features beyond the core algebra (aggregation, 
+
+ORDER BY , LIMIT , DISTINCT , scalar functions, quoted identifiers, NATURAL JOIN ), equivalence is provided by DBMS view-expansion semantics [46]. Proof: For the relational-algebra core, view definition (9) implements a rename operation ρ: ˆt = ρr (t). By the commuta-tivity of ρ with selection, projection, equi-join, and set opera-tions [47], and admissibility of r (so r−1 is well-defined within each scope), any expression e′ over r(S) admits an equivalent rewrite e = e′[r−1] over S, establishing (10). For SQL constructs outside this core, equivalence is delegated to DBMS view-expansion semantics: a query against a view is evaluated as if the view definition were textually substituted [46]. We verified empirically across all benchmarks (Dr.Spider, BIRD, BEAVER) that no execution discrepancy arises between gold SQL run against S and its r-aliased counterpart run against 
+
+V .Together, Observation 1, Theorem 1, Proposition 1 (with Remark 3), and Proposition 2 provide the formal underpinning for our method: the problem is intractable in general, but the greedy decomposition is locally non-degrading at the column level and the output is provably non-destructive at the database level. Section IV presents EGR EFINE , a concrete instantiation of this framework. IV. M ETHOD : EGR EFINE 
+
+EGR EFINE is a four-phase pipeline that approximately solves Problem 1 via the column-wise decomposition of §III. Algorithm 1 provides a high-level overview. 
+
+Deployment setting. EGR EFINE is an offline preprocessing step: it produces a refined schema once and amortizes the cost over future queries. The input includes a representative query workload Q with ground-truth SQL—reflecting deployments where business questions and expert-authored SQL character-ize how the schema is used. We use benchmark dev sets as proxies; settings without ground-truth SQL are outside scope (§VII). 
+
+Algorithm 1 EGR EFINE Pipeline 
+
+Require: Schema S, models M, queries Q, data samples D
+
+Ensure: Refined schema S∗ (as SQL VIEWs)  
+
+> 1:
+
+A ← PHASE 1-S CREEN (S, Mscreen ) ▷ LLM screening  
+
+> 2:
+
+A ← A \ STRUCTURAL EXCLUDE (S) ▷ Remove FK / join keys  
+
+> 3:
+
+for each column ci ∈ A do  
+
+> 4:
+
+Cand( ci) ← PHASE 2-G ENERATE (ci, S, D ) 
+
+> 5:
+
+c∗ 
+
+> i
+
+, ∆i ← PHASE 3-V ERIFY (ci, Cand( ci), Q, M) 
+
+> 6:
+
+end for  
+
+> 7:
+
+R ← { (ci, c ∗ 
+
+> i
+
+) | ∆i ≥ τmin } 
+
+> 8:
+
+R ← R ∪ PROPAGATE PK (R, S) ▷ PK →FK  
+
+> 9:
+
+S∗ ← PHASE 4-S YNTHESIZE (R, S) ▷ CREATE VIEW  
+
+> 10:
+
+return S∗
+
+A. Phase 1: LLM-Based Schema Screening 
+
+The refinement search space is exponential (Observation 1), so Phase 1 selects a subset A ⊆ C of refinement-improvable columns (|A| = n ≪ m). We use a lightweight LLM (Qwen3.5-27B) as a schema quality assessor, prompting it with the binary question “Could this column name cause con-fusion for a Text-to-SQL model?” and five contextual signals: database domain description, table name and column data type, neighboring column names, 5 sample rows, and explicit crite-ria covering abbreviations, domain-specific polysemy, single-letter codes, and generic vocabulary. LLM screening captures semantic ambiguity beyond surface-level rules—e.g., label 
+
+passes lexical checks yet denotes a carcinogenicity indicator in toxicology. 
+
+Structural Exclusion. A structural filter preserves join in-tegrity: primary keys are allowed (with refined names propa-gated to FKs in Phase 4); foreign keys are excluded (driven by the corresponding PK); cross-table homonyms sharing both name and data type are excluded as likely implicit join keys. This design favors recall—false positives incur no harm since Phase 3’s conservative rule retains their original names. 
+
+B. Phase 2: Context-Aware Candidate Generation 
+
+For each candidate column ci ∈ A, we prompt an LLM to generate k alternative names (default k=3 ) using four context elements: a one-sentence database domain description; neighboring columns with names, types, and 5 sample values; 20 sample values from the target column; and conservative renaming guidelines (include the original name if already clear, avoid over-specification, interpret data values in light of the domain). The LLM returns a ranked JSON list, forming the augmented set Cand +(ci) = {c0 
+
+> i
+
+} ∪ Cand( ci).
+
+C. Phase 3: Execution-Grounded Verification 
+
+Instead of relying on the LLM’s subjective ranking, Phase 3 evaluates each candidate by its downstream effect on Text-to-SQL execution accuracy. This is conceptually related to self-consistency [48], which selects the most consistent answer across multiple sampled outputs; we replace the abstract notion of consistency with the concrete signal of execution accuracy 6
+
+Fig. 1: Overview of the EGR EFINE pipeline. Given a raw schema S (left, with example tables employee , department ,
+
+salary ), the four phases progressively refine column names and output a refined schema S′ as a non-destructive view layer (right). Phase 1 (LLM-Based Screening, §IV-A) selects n ≪ m candidate columns whose names may impede Text-to-SQL interpretation, using full-schema LLM judgment rather than surface-level rules. Phase 2 (Candidate Generation, §IV-B) proposes k context-aware renaming candidates per selected column, conditioned on schema context, neighbor column values, and conservative renaming guidelines. Phase 3 (Execution-Grounded Verification, §IV-C) builds a temporary view per candidate, prepares a workload subset, runs multiple Text-to-SQL methods (e.g., MAC-SQL, DIN-SQL), and compares execution against gold results to select c∗ = arg max cj ∆( cj ); the conservative rule keeps the original name when ∆ < τ min . Phase 4 (VIEW Synthesis, §IV-D) materializes accepted refinements as SQL views, with query equivalence delegated to engine-level view expansion (§III-D). The original database remains untouched. By design, the user query workload (bottom-left) is consumed only by Phase 3; Phases 1, 2, and 4 are schema-only, so candidate generation does not overfit to current workload phrasing and supervision is concentrated at a single, replaceable bottleneck. 
+
+on a verifier query subset, and apply it at the schema-element rather than per-query granularity. 
+
+1) Query Subset Selection: For each candidate column ci,we extract the relevant query subset Q(ci) = {(nl, sql ∗) ∈ Q |
+
+ci ∈ cols( sql ∗)}. If Q(ci) = ∅, execution-based verification is impossible and we retain the original name. 
+
+2) Per-Candidate Scoring: For each candidate c′ 
+
+> j
+
+∈
+
+Cand +(ci), we (1) construct a temporary schema S[ci → c′ 
+
+> j
+
+]
+
+via CREATE VIEW ; (2) for each nl ∈ Q(ci), invoke the Text-to-SQL model on the modified schema; (3) execute predicted SQL against the views and compare with gold SQL on S (equivalence by Proposition 2). The resulting execution accuracy is: 
+
+Score( c′ 
+
+> j
+
+) = ExAcc( M, S[ci → c′ 
+
+> j
+
+], Q (ci)) . (11) 
+
+3) Multi-Algorithm Aggregation: To reduce dependence on any single Text-to-SQL system, we aggregate scores: 
+
+Score( c′ 
+
+> j
+
+) = 1
+
+|M| 
+
+X 
+
+> M∈M
+
+Score M (c′ 
+
+> j
+
+). (12) We use M = {C3 , DIN-SQL }, holding out MAC-SQL to test cross-algorithm transfer (§V-D). |M| =2 is empirically moti-vated (§V-C): M =1 overfits and degrades other algorithms, while M =2 forces consensus that generalizes. 
+
+4) Conservative Selection: The best candidate is selected as: 
+
+c∗ 
+
+> i
+
+= arg max  
+
+> c′
+> j∈Cand +(ci)
+
+Score( c′ 
+
+> j
+
+), (13) subject to: 
+
+∆i = Score( c∗ 
+
+> i
+
+) − Score( c0 
+
+> i
+
+) ≥ τmin , (14) where τmin is a minimum improvement threshold; if ∆i <τmin , the original name is retained. This filters marginal noise and instantiates Proposition 1; Algorithm 2 details the procedure. 
+
+5) Computational Cost: Phase 3 dominates the offline cost: O |A| · k · |M| · | Q(c)| Text-to-SQL inferences. On Dr.Spider-Abbr (Qwen3.5-27B) with |A|=665 , k=3 , |M| =2 ,
+
+|Q(c)|≈ 10 , this yields ≈ 4 × 10 4 inferences ( ≈4–6 h on one A800 at 16-parallel concurrency); on BIRD, ≈ 9 × 10 3
+
+inferences ( ≈1–2 h). This one-time cost amortizes across fu-ture queries and multiple downstream models (§V-D). For very large schemas, Phase 1 reduces |A|/|C| to under 35% (Table XII). 
+
+D. Phase 4: Non-Destructive Schema Synthesis 
+
+The final phase materializes the refinement as SQL CREATE VIEW statements (Eq. 9), implementing the non-destructive layer guaranteed by Proposition 2. Original tables and data are 7
+
+Algorithm 2 Execution-Grounded Verification (Phase 3) 
+
+Require: Column ci, candidates Cand +(ci), queries Q(ci),models M, data samples Ds
+
+Ensure: Selected name c∗ 
+
+> i
+
+, improvement ∆i 
+
+> 1:
+
+if Q(ci) = ∅ then  
+
+> 2:
+
+return c0 
+
+> i
+
+, skipped ▷ retain original: no queries to verify  
+
+> 3:
+
+end if  
+
+> 4:
+
+for each c′ 
+
+> j
+
+∈ Cand +(ci) do  
+
+> 5:
+
+Score( c′ 
+
+> j
+
+) ← 0 
+
+> 6:
+
+for each M ∈ M do  
+
+> 7:
+
+for each (nl, sql ∗) ∈ Q(ci) do  
+
+> 8:
+
+ˆsql ← M (nl, S[ci → c′ 
+
+> j
+
+], D s) 
+
+> 9:
+
+Execute ˆsql on view S[ci → c′ 
+
+> j
+
+]; compare with 
+
+exec( sql ∗) on S 
+
+> 10:
+
+end for  
+
+> 11:
+
+Score( c′ 
+
+> j
+
+) += ExAcc /|M|  
+
+> 12:
+
+end for  
+
+> 13:
+
+end for  
+
+> 14:
+
+c∗ 
+
+> i
+
+← arg max c′ 
+
+> j
+
+Score( c′ 
+
+> j
+
+) 
+
+> 15:
+
+∆i ← Score( c∗ 
+
+> i
+
+) − Score( c0 
+
+> i
+
+) 
+
+> 16:
+
+if ∆i < τ min then  
+
+> 17:
+
+return c0 
+
+> i
+
+, 0 ▷ conservative: keep original  
+
+> 18:
+
+end if  
+
+> 19:
+
+return c∗ 
+
+> i
+
+, ∆i
+
+preserved verbatim; the refined schema is exposed as an addi-tional view layer. The downstream system queries the views directly; the database engine evaluates them via relational-algebra rewriting, so no data is duplicated and original tables remain queryable. 
+
+Engineering scope. CREATE VIEW targets read-only Text-to-SQL workloads (BI queries, dashboards, ad-hoc analytics). Production deployments may require DBMS-specific adjust-ments (reserved-keyword quoting, dialect casing, view up-dateability, optimizer interaction with view expansion, view-layer access control). Our experiments use SQLite; replication on PostgreSQL/MySQL is straightforward in principle but empirically unverified. 
+
+1) PK →FK Name Propagation: When a PK column is renamed, all FKs referencing it must follow to maintain join consistency. For each renamed PK (Tp, c p) → c′
+
+> p
+
+, we apply the same rename to every FK column referencing (Tp, c p).This propagation is deterministic and requires no LLM calls or execution verification. Columns with Q(ci) = ∅ retain their original names. The complete set of view definitions constitutes the refined schema S∗.V. E XPERIMENTS 
+
+We organize our evaluation around four research questions: 
+
+RQ1 : Can EGR EFINE recover performance lost to schema naming degradation? RQ2 : How much does each pipeline component contribute, and how sensitive is the method to its hyperparameters? RQ3 : Does refinement transfer across model families ( refine-once, serve-many-models )? RQ4 : Is EGR EFINE effective on real-world schemas? Four supporting analyses follow: complementarity with query-time domain knowledge (§V-F), workload-holdout generalization (§V-G), a controlled comparison against description annotation (§V-H), and a screening-funnel breakdown (§V-I). Section VI then dissects the mechanism behind these results. 
+
+A. Experimental Setup 1) Benchmarks: Dr.Spider [11] serves as our primary benchmark with two schema perturbation subsets: Schema-Abbreviation (Dr.Spider-Abbr; 691 perturbed columns across 90 databases) systematically replaces column names with abbreviations (e.g., country → cntry ), and Column-Synonym replaces them with semantic equivalents. Built on Spider [7] (1,034 dev queries expanded to 2,853 by pertur-bation), Dr.Spider provides a controlled setting to measure 
+
+recovery capability : how much of the performance lost to schema degradation can be restored. Unless otherwise noted, “Dr.Spider” refers to the Schema-Abbreviation subset. 
+
+BIRD [12] (1,534 queries, 11 databases) validates EGR E- 
+
+> FINE
+
+on naturally occurring schemas with domain-specific abbreviations and irregular naming. We deliberately exclude all hints to simulate realistic deployment conditions where human-curated annotations are unavailable. 
+
+BEAVER [28] (88 queries, 4 databases, 1,439 columns) provides enterprise-scale validation with complex schemas from real data warehouses. The three play complementary roles: Dr.Spider provides large-effect, high-resolution evidence that the mechanism works; BIRD probes transfer to natural schemas (small coverage, modest aggregate effect); BEAVER delineates the applicability boundary. 
+
+2) Text-to-SQL Systems: We evaluate three representative algorithms covering distinct prompting paradigms: C3 [49] (zero-shot), DIN-SQL [3] (decomposed prompting), and a MAC-SQL-style [5] multi-agent system (Selector → Decom-poser → Refiner). We use a unified zero-shot prompting setup across all three for evaluation consistency; reported numbers reflect baselines under this harness, not original published numbers. The default backbone is Qwen3.5-27B; cross-model analysis (RQ3) additionally evaluates Qwen3.5-9B, Gemma3-27B, and Phi-4-14B. 
+
+3) Refinement Baselines: No Refinement (NoRef): the (possibly degraded) schema is used as-is. LLM-Direct : Phases 1–2 of EGRefine, then select the LLM’s top-ranked candidate without execution verification (isolates Phase 3’s contribution). 
+
+Description Annotation : LLM-generated column descriptions are injected as schema-prompt comments while identifiers remain unchanged (used in §V-H only). 
+
+4) Metrics: We report Execution Accuracy (ExAcc). For Dr.Spider, we additionally report Recovery Rate :
+
+RecRate = ExAcc refined − ExAcc degraded 
+
+ExAcc clean − ExAcc degraded 
+
+× 100% (15) where ExAcc clean is accuracy on the unperturbed Spider schema; values above 100% indicate the refined schema ex-ceeds the original. 8
+
+TABLE II: Execution Accuracy (%) on Dr.Spider Schema-Abbreviation (2,853 queries, Qwen3.5-27B). Recovery Rate per Eq. 15.                          
+
+> Method C3 DIN-SQL MAC-SQL
+> Clean (Original Spider) 72.77 80.41 63.79 Degraded (Abbreviated) 70.87 76.73 59.59 + LLM-Direct 72.34 75.85 57.17 +EGRefine 73.43 79.21 60.22
+> ∆(EGRefine −Degraded) +2.56 +2.48 +0.63 Recovery Rate 134.7% 67.4% 15.0%
+
+5) Implementation: All EGRefine phases use Qwen3.5-27B deployed locally via vLLM (zero API cost), with k=3 
+
+candidates per column, Ns=20 sampled rows, τmin =0 .05 , and verifier set M = {C3, DIN-SQL }. The refinement backbone never acts as its own downstream evaluator: downstream systems treat the refined schema as opaque input. Reported gains on C3 and DIN-SQL (the verifier set) are in-loop 
+
+measurements; gains on MAC-SQL are out-of-loop , reflecting refinements selected without reference to its behavior. 
+
+B. RQ1: Recovery from Schema Degradation 
+
+Table II presents the main results on Dr.Spider Schema-Abbreviation. Schema abbreviation degrades ExAcc by 1.9– 4.2 percentage points (pp); EGR EFINE recovers this loss across all three systems, matching or exceeding the clean baseline on C3 (134.7% recovery, indicating refinement also improves over Spider’s original names) and recovering 67.4% / 15.0% on DIN-SQL / MAC-SQL respectively. LLM-Direct, in contrast, worsens DIN-SQL ( −0.88 pp) and MAC-SQL (−2.42 pp), confirming that unverified renaming introduces harmful noise. On Column-Synonym (C3 only), EGR EFINE 
+
+achieves +2.25 pp recovery (64.87% → 67.12%), generalizing to non-abbreviation degradations. 
+
+C. RQ2: Component Ablation and Sensitivity 
+
+Table III isolates the contribution of each component on Dr.Spider Schema-Abbreviation. 
+
+w/o Execution (= LLM-Direct) removes Phase 3 verification and causes the largest degradation across all three systems—on Dr.Spider-Abbr it leaves DIN-SQL and MAC-SQL below their no-refinement baselines ( −0.88 and −2.42 pp), meaning naive LLM-based refinement actively harms downstream accuracy. The query-level flip analysis in §VI-C confirms this pattern. 
+
+w/o Conservative Rule removes the τmin threshold, apply-ing all renamings regardless of verification score. The drop (−0.42/ −0.38/ −1.30) is much smaller than under w/o Execu-tion (−1.09/ −3.36/ −3.05): execution verification is the dom-inant mechanism, with abstention as secondary refinement. 
+
+w/o Phase 1 Screening sends all non-structural columns to Phase 2. The second-largest drop (−2.35/ −1.89 on C3/DIN) shows that indiscriminate candidate generation di-lutes Phase 3’s signal. 
+
+w/o Multi-Algo Verification (M =1 , C3 only) exposes ver-ifier overfitting: while C3 itself gains comparably ( +2.49 TABLE III: Ablation on Dr.Spider Schema-Abbreviation (Ex-Acc %). M =1 uses C3-only verification; full pipeline uses 
+
+M =2 (C3 +DIN-SQL).                         
+
+> Variant C3 DIN-SQL MAC-SQL EGRefine (full, M=2 )73.43 79.21 60.22
+> w/o Execution 72.34 75.85 57.17 w/o Conservative 73.01 78.83 58.92 w/o Screening 71.08 77.32 58.78 w/o Multi-Algo ( M=1 )73.36 76.34 59.48 Degraded (no refine) 70.87 76.73 59.59
+
+TABLE IV: Sensitivity to τmin on Dr.Spider Schema-Abbreviation (Qwen3.5-27B). “Cols” is the number of columns committed. ∆ values are relative to the no-refinement baseline. Boldface marks the chosen default.                                      
+
+> τmin Cols ExAcc (%) ∆vs. NoRef
+> C3 DIN MAC C3 DIN MAC 0.01 104 71.57 76.48 58.78 +0.70 −0.25 −0.81 0.03 89 71.68 77.88 59.48 +0.81 +1.15 −0.11
+> 0.05 81 73.43 79.21 60.22 +2.56 +2.48 +0.63
+> 0.10 54 71.57 77.67 60.15 +0.70 +0.94 +0.56
+
+vs +2.56 with M =2 ), the refined schema degrades DIN-SQL ( −0.39 pp) and slightly hurts MAC-SQL ( −0.11 pp). This mechanistically explains why held-out cross-algorithm transfer (§V-D) works: M =2 forces consensus refinements that generalize to unseen algorithms. 
+
+Sensitivity to the conservative threshold τmin . We sweep 
+
+τmin ∈ {0.01 , 0.03 , 0.05 , 0.10 } on Dr.Spider-Abbr (Ta-ble IV). Too permissive (τmin =0 .01 ) commits 23% more columns and causes net regressions on DIN-SQL/MAC-SQL (−0.25/ −0.81 pp), validating τmin >0; too strict (τmin =0 .10 )shrinks gains to roughly one-third of the optimum. The chosen τmin =0 .05 Pareto-dominates: highest ExAcc on every algorithm– τ cell, with worst-case spread of 2.7 pp across the four values—the pipeline is not finely tuned to one threshold. The sweep also reinforces §VI-D: MAC-SQL’s ∆ is mono-tonically increasing in τmin over {0.01 , 0.03 , 0.05 }, indicating heightened sensitivity to low-confidence renamings. 
+
+Sensitivity to the verifier-set choice. We test whether re-ported gains depend on cherry-picking a favorable verifier set by re-running the pipeline with an alternative M′ =
+
+{DIN-SQL, MAC-SQL }; C3 now serves as the held-out eval-uator (Table V). EGR EFINE yields positive gains on every 
+
+algorithm under both configurations ( ∆ ∈ [+0 .63 , +4 .47] ). The held-out role does not determine performance: C3—now held out—achieves the strongest result ( +4.47 pp, exceeding the clean Spider baseline by 2.57 pp), ruling out “held-out exclusion” as the cause of MAC-SQL’s modest gain in the original configuration. MAC-SQL’s bounded recovery is in-trinsic to its agent design: even when MAC-SQL is itself a verifier, its 85.2% recovery matches DIN-SQL’s rather than approaching the higher recoveries observed for less brittle algorithms (cf. §VI-D). 9
+
+TABLE V: Cross-verifier robustness on Dr.Spider Schema-Abbreviation (Qwen3.5-27B). Original M = {C3, DIN };alternative M′ = {DIN, MAC }. Held-out role is shaded.                           
+
+> Verifier set Algo ExAcc (%) ∆Recovery
+> {C3, DIN }(original) C3 73.43 +2.56 134.7% DIN-SQL 79.21 +2.48 67.4% MAC-SQL 60.22 +0.63 15.0%
+> {DIN, MAC }(alternative) C3 75.34 +4.47 235.3%
+> DIN-SQL 79.87 +3.14 85.2% MAC-SQL 63.17 +3.58 85.2% Qwen-9B
+> (self)
+> Qwen-9B
+> (27B-ref)
+> Qwen-27B Gemma3
+> -27B
+> Phi-4
+> -14B
+> 50
+> 55
+> 60
+> 65
+> 70
+> 75
+> 80
+> 85
+> ExAcc (%) on Dr.Spider-Abbr
+> 74% 56%
+> 135%
+> 79%
+> 30%
+> Recovery Rate (%) shown above each EGRefine bar
+> Clean
+> Degraded
+> EGRefine
+
+Fig. 2: Cross-model results on Dr.Spider Schema-Abbreviation (DIN-SQL algorithm). All EGRefine bars use 27B-refined schema unless marked “self”. Recovery Rate (%) annotated above each EGRefine bar. 
+
+D. RQ3: Cross-Model Transferability 
+
+A practical question is whether a refined schema produced by one model benefits a different model at serving time, enabling refine-once, serve-many-models deployment. 
+
+1) Multi-Backbone Evaluation: Figure 2 reports results across four model families on Dr.Spider Schema-Abbreviation, all using the same 27B-refined schema (except “self-refine” rows). EGR EFINE delivers positive recovery across all fami-lies, with DIN-SQL recovery exceeding 100% on Gemma3-27B (133.7%) and Phi-4 (188.1%)—refined schemas can un-lock cross-family gains beyond the original clean baseline. 
+
+2) Transfer Matrix: Table VI presents the full refine ×eval transfer matrix for Qwen3.5-9B and 27B. Strong →Weak transfer is nearly lossless : 27B-refined schema evaluated on 9B trails 9B self-refinement by less than 1 pp on ev-ery system. Weak →Strong transfer can match or exceed self-refinement : 9B-refined schema evaluated on 27B sur-passes 27B self-refinement on DIN-SQL (79.53 vs. 79.21). 
+
+Weak models should not self-refine : Phi-4’s self-refined schema yields −0.63 pp on C3 versus +0.74 pp under 27B refinement—weak backbones lack the capability to generate high-quality candidates, making Phase 2 the bottleneck. 
+
+E. RQ4: Deployment on Real-World Schemas 
+
+While Dr.Spider uses controlled perturbations, real-world schemas exhibit naturally occurring naming issues. We val-TABLE VI: Refine × Eval transfer matrix on Dr.Spider Schema-Abbreviation. ∆ = improvement over eval model’s no-refinement baseline.                        
+
+> Refine Eval C3 ( ∆)DIN ( ∆)MAC ( ∆)
+> 9B 9B 63.34 (+3.96) 75.81 (+5.18) 53.63 (+2.11) 27B 9B 62.36 (+2.98) 75.60 (+4.97) 53.49 (+1.97) 9B 27B 73.22 (+2.35) 79.53 (+2.80) 59.34 ( −0.25) 27B 27B 73.43 (+2.56) 79.21 (+2.48) 60.22 (+0.63)
+
+TABLE VII: Execution verification necessity on BIRD (Qwen3.5-9B, 1,534 queries, no hints).                       
+
+> Method C3 DIN-SQL MAC-SQL
+> No Refinement 28.75 31.75 20.60 + LLM-Direct 28.23 ↓0.52 30.12 ↓1.63 19.17 ↓1.43
+> +EGRefine 30.25 ↑1.50 33.25 ↑1.50 20.14 ↓0.46
+> Separation (EGR −Dir) +2.02 +3.13 +0.97
+
+idate on BIRD (curated academic schemas) and BEAVER (enterprise data warehouses). 
+
+1) BIRD: Execution Verification is Essential: On BIRD’s professionally curated schemas, EGR EFINE conservatively re-fines only 28 of 798 columns (3.5%), yielding modest but positive aggregate improvements on 27B ( +0.20/ +0.65/ +1.24 on C3/DIN/MAC). A finer-grained analysis in §VI-F reveals an algorithm-specific differential: on the 126-query touching subset, DIN-SQL gains +6.35 pp while C3 ( −1.59 pp) and MAC-SQL ( −3.17 pp) do not benefit—a pattern we trace to agent-level brittleness (§VI-D). 
+
+Robustness of the BIRD aggregate effect. Aggregate gains of this magnitude on single-run dev-set evaluation lack the statistical resolution to be claimed from any point estimate alone; we therefore ground the effect in four convergent lines of evidence: (i) the workload-holdout (§V-G) yields +1.04 pp on n=96 unseen queries—5 × the in-loop +0.20 pp on C3; (ii) the touching-subset decomposition (§VI-F) shows DIN-SQL amplifying to +6.35 pp on the 126 affected queries ( ≈10 ×
+
+the aggregate)—dilution, not noise; (iii) cross-backbone repro-duction on Qwen3.5-9B (Table VII) gives direction-consistent gains ( +1.50/ +1.50/ −0.46); (iv) the coverage–improvement linearity (§VI-A) predicts BIRD’s +0.8 to +1.4 pp range from its 3.39% query-weighted coverage—the observed +0.20 to 
+
++1.24 pp falls within this envelope. Stochastic noise alone would not exhibit all four. The critical finding emerges on the weaker 9B back-bone (Table VII): LLM-Direct degrades all three systems (−0.52/ −1.63/ −1.43), while EGR EFINE improves C3 and DIN-SQL ( +1.50/ +1.50) with marginal regression on MAC-SQL ( −0.46). The 0.97–3.13 pp separation between verified and unverified refinement establishes execution-grounded ver-ification as necessary for safe refinement on smaller models. 
+
+2) BEAVER: Scoping the Signal-Dependency of EGRe-fine: BEAVER’s enterprise schemas (1,439 columns across 4 databases, 88 queries) present an unusual regime: baseline ExAcc is substantially lower than any other setting we exam-ined (C3: 7.95%, DIN-SQL: 7.95%, MAC-SQL: 3.41%) due 10 
+
+TABLE VIII: BEAVER with MiniMax-M2.7 refiner. Despite Phase 1 recall (172 vs. Qwen’s 106) and 4 commits (vs. 0), C3 and DIN-SQL show zero improvement: gold queries do not intersect the refined column set.             
+
+> Algorithm NoRef Refined (MiniMax-M2.7) ∆
+> C3 7.95% (7/88) 7.95% (7/88) +0.00 DIN-SQL 7.95% (7/88) 7.95% (7/88) +0.00 MAC-SQL 3.41% (3/88) 5.68% (5/88) +2.27
+
+TABLE IX: BIRD evidence × refinement ablation (Qwen3.5-27B, 1,534 queries). Evidence and EGR EFINE are comple-mentary.                      
+
+> Configuration C3 DIN MAC
+> No Refinement 41.53 38.59 29.99 + Evidence 54.24 62.13 46.74 + EGRefine 41.72 39.24 31.23 + Both 54.82 63.56 47.33
+> ∆(Both −Evidence) +0.58 +1.43 +0.59
+
+to schemas whose complexity, domain specificity, and scale exceed current Text-to-SQL system capabilities. This regime exposes a fundamental precondition: execution-grounded ver-ification requires a non-trivial baseline for discriminative sig-nal. 
+
+Qwen3.5-27B abstains; MiniMax-M2.7 commits but does not move downstream ExAcc. With Qwen3.5-27B as refiner, Phase 3 rejects all 106 Phase 1 candidates—the conserva-tive rule operating as designed when ∆ scores cannot be reliably distinguished from noise. Testing whether refiner capability is the bottleneck, we repeat with MiniMax-M2.7 (Table VIII): Phase 1 screens 172 candidates and Phase 3 commits 4 refinements. Despite this, downstream ExAcc on C3 and DIN-SQL is unchanged ( +0.00 pp): the 4 refined columns simply do not intersect the columns gold queries reference (BEAVER’s gold queries span dozens of columns under stacked JOINs). The invariance is a downstream ceiling, not Phase 3 failure (cf. §VI-E). The lone exception is MAC-SQL ( +2.27 pp), which inverts the Dr.Spider pattern where MAC benefits least: on BEAVER’s extremely difficult queries, MAC-SQL’s multi-agent decomposition rarely reaches the aggressive re-decomposition stage that causes regressions on easier benchmarks, providing independent out-of-distribution validation of the agent-instability hypothesis (§VI-D). 
+
+F. Complementarity with Domain Knowledge 
+
+BIRD provides optional per-query evidence (domain hints). A 2 ×2 ablation (Table IX) confirms EGR EFINE provides additional gains on top of evidence across all three systems on 27B ( +0.58/ +1.43/ +0.59): structural disambiguation (col-umn renaming) and semantic disambiguation (domain hints) are orthogonal—evidence explains a column’s meaning in a specific query context, while refinement makes the column name inherently more interpretable regardless of query. TABLE X: Workload-holdout validation on BIRD with C3 + Qwen3.5-27B. The 96 holdout queries are LLM-generated and execution-validated, unseen during Phase 3.             
+
+> Setup nNoRef EGRefine ∆
+> BIRD dev (in-loop) 1534 41.53 41.72 +0.19 BIRD holdout (unseen) 96 47.92 48.96 +1.04
+
+G. Workload-Holdout Validation 
+
+A natural question is whether BIRD gains reflect overfitting to the queries used during Phase 3 verification, since our setup uses BIRD’s dev set as both the representative workload Q and the evaluation set. We focus the holdout on BIRD because its queries were curated alongside the schemas, making coupling more acute than on Dr.Spider (where queries predate any perturbation; additionally, Dr.Spider’s small academic schemas lack the column-description metadata required for our isolation protocol). We constructed an independent holdout against a fixed EGRefine refined schema (unchanged from main experiments). We generated 110 (NL, SQL) pairs for BIRD’s 11 databases (10 per database) using DeepSeek-V4-Pro under a strict isolation protocol: NL questions were authored using only BIRD’s official column descriptions, with sample-data headers replaced by col_1 , col_2 , . . . ; only after the NL was finalized did the model see real column names to author gold SQL. Execution validation retained 96 queries (executed successfully, non-empty result sets ≤1000 rows, non-duplicate within database). These are non-trivial: 65/96 aggregations, 37/96 GROUP BY , 32/96 ORDER BY , 22/96 subqueries; mean SQL length 184 characters, mean JOIN count 0.93. The holdout ∆ (+1.04 pp) exceeds the in-loop ∆ (+0.19 pp) by 5× (Table X). We treat this as preliminary evidence mitigating the workload-overfit concern rather than decisive refutation (single cell, n=96 , C3 alone), consistent with our pipeline structure: Phases 1–2 produce candidates without consulting queries, and Phase 3’s discrete execution-grounded signal lacks the bandwidth to encode dev-set-specific patterns into column names. 
+
+H. Identifier Replacement vs. Description Annotation 
+
+A natural alternative to renaming columns is to leave column identifiers untouched and inject column descriptions as SQL comments into the schema prompt. We test whether this non-invasive route is sufficient. 
+
+Protocol. We reuse EGRefine’s Phase 1 screened column set on Dr.Spider-Abbr (665 columns) and prompt Qwen3.5-27B to generate one 8–25-word SQL comment per column from its name, neighbor columns, and 20 sampled values. The descriptions are injected as inline SQL comments (e.g., gf TEXT, -- The country’s form of government, e.g., Republic, Monarchy ); column identifiers are unchanged. Critically, the description baseline performs no execution verification—a single-pass annotation matching the simplest deployment without our full pipeline. We evaluate four cells with C3 + Qwen3.5-27B (Table XI). 11 
+
+TABLE XI: Identifier replacement vs. description annotation (C3 + Qwen3.5-27B, n=2853 ). Description annotations are LLM-generated SQL comments. ExAcc differs slightly from Table II due to prompt-formatting tokenization effects.                 
+
+> Schema Description ExAcc ∆vs. NoRef NoRef no 70.83 —NoRef yes 72.48 +1.65 EGRefine no 73.46 +2.63 EGRefine yes 74.69 +3.86
+
+Result. Description annotation alone yields +1.65 pp—non-trivially helpful, ruling out a strawman baseline. Identifier replacement (EGRefine) yields +2.63 pp, exceeding descrip-tion annotation by 0.98 pp on the same Phase 1 column set and same backbone. The combined treatment yields +3.86 pp, 
+
+0.42 pp below the linear sum of the two—indicating partial redundancy: once a column is renamed to a semantically clear identifier, an additional description provides diminishing returns. 
+
+Scope of the comparison. Two design differences confound a strict “identifier vs. description” attribution. First, EGRefine includes execution-grounded selection (Phase 3) while the description baseline applies a single-pass LLM annotation; the gap therefore conflates identifier-vs-annotation and verified-vs-unverified selection. Second, the descriptions are LLM-generated rather than expert-authored. We frame the con-clusion narrowly: under the specific configuration we test, identifier replacement outperforms by 1.6 ×, and the two mech-anisms remain partially complementary. A stronger description baseline with execution-grounded selection paralleling Phase 3 is a natural future extension. 
+
+I. Screening Funnel and Refinement Examples 1) Phase 1 Screening Funnel: Table XII traces the search-space reduction from raw columns to final refinements. Across all benchmarks, ∼66–93% of columns are filtered by structural exclusion and LLM screening (Phase 1), and Phase 3 verifi-cation further prunes to 3.5–7.6% of the original schema. On refined columns, the average quality gain ( ∆refined ) ranges from 19.95 to 26.62 pp—each committed refinement delivers substantial benefit on its affected query subset. On BEAVER, Qwen3.5-27B’s conservative Phase 3 commits zero; MiniMax-M2.7 raises Phase 1 recall to 12.0% and commits 4 re-finements, yet downstream impact remains bounded by the benchmark’s column-insensitive query structure (§VI-E). 
+
+2) Case Analysis: Table XIII presents representative re-finement outcomes from EGR EFINE ’s scoring logs. Three patterns emerge: (i) the largest gains concentrate on short, uninformative abbreviations where ExAcc is near zero on the original and the refined name recovers near-perfect accuracy; (ii) for natural-schema anonymized codes (e.g., BIRD’s financial.district A3 /A12 /A16 ), Phase 3identifies domain-grounded replacements with moderate but stable gains; (iii) the conservative rule correctly retains the original name when improvement falls below τmin (e.g., 
+
+cntry_code → nationality yields only +0.028). VI. A NALYSIS AND INSIGHTS 
+
+Section V established that EGR EFINE delivers consistent improvements across benchmarks and models. This section dissects why it works and where its limits lie , through six analyses operating at increasing granularity: database (§VI-A), column (§VI-B), query (§VI-C), and three diagnostic studies— of the algorithm that benefits least (§VI-D), the benchmark where applicability ends (§VI-E), and a query-subset decom-position exposing dilution and algorithm-specific differentials (§VI-F). 
+
+A. Database-Level: Coverage Predicts Improvement 
+
+A central question is whether aggregate ExAcc improve-ment tracks the amount of schema actually modified. We ana-lyze 606 (benchmark, backbone, algorithm, database) config-urations across Dr.Spider-Abbr and BIRD, defining coverage 
+
+as n(D) 
+
+> r
+
+/m (D) for each database. Across the 273 database-algorithm pairs with zero refined columns, ∆ is identically zero (the refined schema is byte-identical to the original), confirming the conservative rule’s safety property: when Phase 3 finds no improvement, the schema is left untouched. Aggregating by (benchmark, backbone, algorithm) and weighting by per-database query count, coverage predicts improvement cleanly: each percentage point of coverage yields approximately +0 .25 to +0 .40 pp of benchmark-wide ExAcc gain. Binning by coverage (Figure 3) confirms this: databases with >15% coverage achieve a +6 .30 pp n-weighted aggre-gate gain with 62.5% of configurations exhibiting positive deltas. This explains the BIRD results: with 3.39% query-weighted coverage (3.51% column-fraction, §V-I), the ob-served +0 .20 to +1 .24 pp falls within the predicted +0 .8 to 
+
++1 .4 pp range. The modest BIRD improvement is not weak methodology but a direct consequence of BIRD’s schemas already being well-named—only 3.5% of columns meet the refinement bar. 
+
+B. Column-Level: LLM Top-1 is Unreliable 
+
+RQ2’s ablation showed that removing Phase 3 degrades performance. We now measure how often Phase 3 overrides the LLM’s top-ranked candidate (Figure 4). Across all six configurations, Phase 3 disagrees with the LLM’s top choice in 60–80% of cases; on BIRD with 27B, the adoption rate is only 19.5%—four out of five LLM recommendations are overridden. When Phase 3 selects a non-top-1 outcome, the positive-to-negative ratio (Phase 3’s pick beats LLM top-1) ranges from ≈8:1 (Dr.Spider-Abbr 27B) to ≈35:1 (BIRD 27B): when Phase 3 disagrees, it is overwhelmingly right. The dominant overrule category is overrule-to-original :LLM proposes a change, but Phase 3 rejects all candidates and retains the original name (62.7% of BIRD-27B verifica-tions, all 106 BEAVER decisions). LLMs systematically over-recommend changes; execution grounding filters this bias. 12 
+
+TABLE XII: Phase 1 screening funnel. m: total columns, n: candidates after Phase 1, nr : finally refined after Phase 3. ∆refined 
+
+is averaged over refined columns on their affected query subsets. 
+
+Benchmark Backbone DBs m n (P1) nr (final) Excl. rate Compr. nr /m ∆refined 
+
+Dr.Spider-Abbr Qwen3.5-27B 90 1985 665 81 66.5% 4.08% 20.68 pp Dr.Spider-Abbr Qwen3.5-9B 90 1985 841 151 57.6% 7.61% 20.94 pp BIRD Qwen3.5-27B 11 798 251 28 68.5% 3.51% 26.62 pp BIRD (+evidence) Qwen3.5-27B 11 798 252 28 68.4% 3.51% 21.76 pp BIRD Qwen3.5-9B 11 798 308 39 61.4% 4.89% 19.95 pp BEAVER Qwen3.5-27B 4 1439 106 0 92.6% 0.00% —BEAVER MiniMax-M2.7 4 1439 172 4 88.0% 0.28% —
+
+TABLE XIII: Representative refinement cases from the pipeline. †: conservative rule retained original name. 
+
+Benchmark DB Table.Column Original → Refined Score 0 Score r ∆
+
+Successful refinements: uninformative abbreviation → semantic name 
+
+Dr.Spider-Abbr battle death 2 ship.dos dos → disposition 0.000 1.000 +1.000 Dr.Spider-Abbr tvshow 1 TV Channel.par par → aspect_ratio 0.250 1.000 +0.750 BIRD california schools schools.DOCType DOCType → school_type 0.000 1.000 +1.000 BIRD california schools schools.EILName EILName → school_level 0.000 1.000 +1.000 
+
+Natural-schema refinements: anonymized codes → domain-grounded names 
+
+BIRD financial district.A3 A3 → region_name 0.083 0.194 +0.111 BIRD financial district.A12 A12 → population_density 0.250 0.500 +0.250 BIRD financial district.A16 A16 → total_population 0.000 0.250 +0.250 
+
+Conservative retention †: best candidate below τmin = 0 .05 
+
+Dr.Spider-Abbr wta 1 0 players.cntry code cntry_code → cntry_code † 0.944 0.972 +0.028 Dr.Spider-Abbr pets 1 2 Pets.wt wt → wt † 0.917 0.958 +0.042 0% 
+
+> n=273
+> 0% pos
+> (0,3%]
+> n=30
+> 47% pos
+> (3,7%]
+> n=87
+> 37% pos
+> (7,15%]
+> n=120
+> 55% pos
+> >15%
+> n=96
+> 62% pos
+> Per-Database Coverage ( nr/m)
+> 0
+> 2
+> 4
+> 6
+> n-weighted  ExAcc (pp)
+> 0
+> +1.34
+> +0.60
+> +2.35
+> +6.30
+
+Higher coverage larger and more consistent gains 
+
+Fig. 3: ExAcc ∆ by per-database coverage bin (606 configura-tions, n-weighted by query count). Positive-∆ rate annotated below each bar. Databases with > 15% coverage achieve the largest gains (+6.30 pp) and highest positive rate (62.5%). 
+
+C. Query-Level: Flips Reveal Systematic Repair 
+
+The finest-grained evidence comes from per-query correct-ness changes. For each query, we classify its (NoRef →
+
+Refined) outcome into four categories and focus on C→W
+
+(NoRef correct, refined wrong—a regression) and W→C
+
+(NoRef wrong, refined correct—a genuine repair). 
+
+EGR EFINE achieves W →C ≥ C→W in 15/18 configura-tions. On Dr.Spider-Abbr with 27B DIN-SQL, the repair-to-break ratio reaches 6.46:1 (84 repairs vs 13 breaks); on 9B ABBR       
+
+> 27B
+> ABBR
+> 9B
+> BIRD
+> 27B
+> BIRD
+> 27B+ev
+> BIRD
+> 9B
+> BIRD
+> 9B+ev
+> 0
+> 25
+> 50
+> 75
+> 100
+> Phase 3 decision (%)
+> 37%
+> 63%
+> 40%
+> 60%
+> 20%
+> 80%
+> 23%
+> 77%
+> 31%
+> 69%
+> 38%
+> 62%
+> 8.4:1 15.7:1 35:1 7.8:1 9.4:1 7.7:1
+> pos:neg ratio (Phase 3 vs LLM top-1)
+> Phase 3 overrides LLM in 60 80% of columns
+> Adopt LLM top-1 Phase 3 overrule
+
+Fig. 4: Phase 3 overrides LLM’s top-1 candidate in 60–80% of verified columns. Green text shows the pos:neg ratio when Phase 3 disagrees with LLM (almost always Phase 3 wins). BIRD 27B (highlighted) has the highest override rate (80.5%) and cleanest pos:neg (35:1). DIN-SQL it is 4.15:1 (195 vs 47). The three configurations with ratio <1 are all on MAC-SQL with small margins (≤13 queries)—a pattern we trace to its source in §VI-D. The systematic positive skew rules out the hypothesis that aggregate improvements are random noise. 
+
+LLM-Direct fails the flip test on 9B BIRD, achieving ratios of 0.69 on DIN-SQL (56 repairs vs. 81 breaks) and 0.68 on MAC-SQL (47 vs. 69)—it breaks more queries than it repairs. Comparing EGR EFINE to LLM-Direct on 13 0 50 100 150 200            
+
+> CW (correct wrong, breaks)
+> 0
+> 50
+> 100
+> 150
+> 200
+> W C (wrong  correct, repairs)
+> WC>CW
+> (net repair)
+> CW>WC
+> (net break)
+> 6.46:1
+> 0.69:1
+> EGRefine clusters in the net-repair region;
+> LLM-Direct scatters across both
+> EGRefine (n=18) LLM-Direct (n=12)
+
+Fig. 5: Query-level C →W vs W →C flips across 30 configura-tions: 18 EGR EFINE (incl. 6 BIRD+evidence variants) and 12 LLM-Direct. EGR EFINE clusters in the upper-left net-repair region (15/18 with ratio >1, max 6.46:1); LLM-Direct scatters and includes severe failures below the diagonal (worst DIN-SQL point 0.69:1, worst overall 0.68:1 on MAC-SQL). the same (benchmark, backbone, algorithm) cell, EGRefine breaks fewer queries in all 12 cells (median reduction: 63 queries/cell). Phase 3’s dominant contribution is preventing regressions, not producing additional repairs. 
+
+D. Error Modes: Why MAC-SQL Benefits Least 
+
+Under the main configuration ( M = {C3, DIN-SQL }), MAC-SQL shows the smallest gain from refinement ( +0.63 pp on Dr.Spider-Abbr, vs. +2.56 and +2.48 for C3 and DIN-SQL). The cross-verifier experiment (§V-C) confirms this gap is bounded rather than incidental: even when MAC-SQL is itself a verifier and refinements are explicitly tuned to its preferences, its recovery rate ( 85 .2% ) matches DIN-SQL’s rather than approaching the higher recoveries observed for algorithms with more stable schema linking. We diagnose the cause on the 633 queries referencing refined columns, ruling out two candidate explanations before identifying the true mechanism. 
+
+It is not a usage problem. MAC-SQL references refined names in 86.1% of its predictions, comparable to C3 (91.3%) and DIN-SQL (92.4%); the 5–6 pp gap cannot explain a 2–4 pp ExAcc gap. 
+
+It is not a dilution problem. Even on the 633-query touching subset, MAC-SQL gains only +2.84 pp while C3 and DIN-SQL gain +11.53 and +11.22 pp respectively. The small gain is intrinsic, not averaged away. 
+
+It is a structural rewriting problem. MAC-SQL’s Pass →Fail rate on the touching subset is 7.7%—2–4 × that of C3 (3.8%) and DIN-SQL (2.1%). Among its 49 regressions, 73% involve structural query edits: 33% change SELECT column count, TABLE XIV: Gold SQL structural statistics across bench-marks. BEAVER’s query structure differs from standard Text-to-SQL benchmarks by 1–2 orders of magnitude.                
+
+> Metric BEAVER BIRD Dr.Spider-Abbr
+> Median query length (chars) 3,312 ∼150 ∼115 Max query length 10,168 ∼1,000 ∼400 Median JOIN count 40–2 0–1 Max JOIN count 13 ∼5∼3
+
+24% drop JOIN clauses, 26% drop aggregates, 10% drop 
+
+WHERE clauses. For C3 and DIN-SQL, 77–79% of regressions are non-structural (identical query shape with minor semantic drift). A representative example: on “how many types of government are in Africa” with gf → government_form ,MAC-SQL drops the COUNT(DISTINCT) aggregate—the refined name triggers its multi-agent refiner to re-decompose the query, occasionally losing essential clauses. On the weaker 9B backbone, MAC-SQL improves +2.11 pp, consistent with the hypothesis that over-aggressive rewriting is a capability-emergent property of stronger backbones. This exposes an agent-level instability in multi-agent Text-to-SQL systems that is orthogonal to schema linking: clearer column names can prompt over-aggressive query rewriting. The cross-verifier robustness experiment (§V-C) confirms this is intrinsic to MAC-SQL’s agent design: even when MAC-SQL is itself a verifier, its 85.2% recovery matches DIN-SQL’s rather than approaching less-brittle algorithms—the bound is on the agent, not on verifier-set choice. Schema refinement cannot offset downstream agent-level breakage; agent-level stabilization is a complementary direction. 
+
+E. Benchmark-Level Scope: Why BEAVER Probes a Different Task 
+
+The near-zero improvement on BEAVER raises a deeper question: is this an EGRefine limitation, or a property of the benchmark? A closer look at BEAVER’s gold SQL suggests the latter—it probes a problem structurally distinct from stan-dard Text-to-SQL. 
+
+Structural divergence. Table XIV contrasts BEAVER with BIRD and Dr.Spider-Abbr. BEAVER’s median gold query length is 3,312 characters (vs. ∼100–200 for BIRD/Dr.Spider) with a median JOIN count of 4 (vs. 0–2)—a 20–40 ×
+
+structural gap. The gold SQL is predominantly ORM-generated (SQLAlchemy-style), featuring SELECT * with column aliases over stacked LEFT OUTER JOIN s. 
+
+Solved queries are structurally trivial. The 7–9 queries any method solves on BEAVER are all <400 characters with 0–1 JOINs. Queries exceeding 3,500 characters with 
+
+≥5 JOINs—about 70% of BEAVER—fail under every back-bone, method, and schema variant we tested, with predicted SQL running ∼30 characters against ∼3,000-character gold (code-generation-scale failure, not schema comprehension). This caps ExAcc at 8–10%, bounding refinement’s contri-bution space by (ceiling − baseline) × Pr(column naming affects solvability), which approaches zero on BEAVER. The MiniMax-M2.7 result (§V-E) sharpens this: even when Phase 14 
+
+TABLE XV: Touching-subset decomposition. ∆touching : per-query effect on queries referencing ≥1 refined column; ∆full :aggregate effect. Cross-model row: 27B-refined schema served to 9B (DIN-SQL).                                                                  
+
+> Cell Algo ntch ∆tch ∆full Ratio Dr.Spider 27B C3 633 +11.53 +2.56 4.50 ×
+> Dr.Spider 27B DIN 633 +11.22 +2.48 4.52 ×
+> Dr.Spider 27B MAC 633 +2.84 +0.63 4.51 ×
+> Dr.Spider 9B C3 1126 +10.04 +3.96 2.53 ×
+> Dr.Spider 9B DIN 1126 +13.14 +5.19 2.53 ×
+> Dr.Spider 9B MAC 1126 +5.33 +2.10 2.54 ×
+> BIRD 27B DIN 126 +6.35 +0.65 9.77 ×
+> BIRD 27B C3 126 −1.59 +0.20 —BIRD 27B MAC 126 −3.17 +1.24 —BIRD 9B C3 320 +7.19 +1.64 4.39 ×
+> BIRD 9B DIN 320 +5.62 +1.64 3.43 ×
+> 27B →9B DIN 633 +21.48 +8.95 2.40 ×
+
+3 commits 4 refinements (versus Qwen’s 0), C3 and DIN-SQL remain unchanged because the refined columns do not intersect the dozens of columns each gold query spans. BEAVER thus exposes the boundary between schema-linking (which EGR EFINE addresses) and code-generation complexity (which dominates here)—future schema-refinement research should consider whether its target benchmark falls in the schema-bounded or generation-bounded regime. 
+
+F. Query-Subset Decomposition: Concentration and Dilution 
+
+This subsection quantifies where refinement helps at the query granularity. For each (benchmark, backbone, algorithm) cell, we partition queries into the touching subset —queries whose gold SQL references ≥1 refined column—and its complement. The reference set of refined columns is fixed for each (benchmark, backbone) pair so NoRef and EGR EFINE 
+
+are evaluated on identical partitions. 
+
+Concentration. On Dr.Spider-Abbr (27B), C3 and DIN-SQL show 4.5 × concentration ( +11.5 pp touching vs. +2.5 pp full); the largest per-query lift is +21.48 pp on the cross-model cell (27B-refined schema served to 9B DIN-SQL). This gives a query-level reading of the coverage–improvement linearity: modest aggregate ∆ on benchmarks with limited coverage reflects the small fraction of touching queries ( ≈22% on Dr.Spider-Abbr, ≈8% on BIRD), not weak per-query effect. 
+
+Algorithm-specific differential on BIRD. BIRD’s touching subset (n =126) shows divergent per-algorithm behavior. DIN-SQL gains +6.35 pp—consistent with the Dr.Spider pattern. C3 ( −1.59 pp) and MAC-SQL ( −3.17 pp) do not benefit on touching queries; their full-set positive aggregates come from non-touching queries ( +0.36 pp, +1.63 pp respectively). We trace this to the algorithm-specific mechanism diagnosed in §VI-D: column-name token shifts disrupt brittle prompting in C3’s schema-pruning and MAC-SQL’s multi-agent decompo-sition, while DIN-SQL’s structured chain-of-thought prompt-ing [50] is more robust. 
+
+Localized effect and prompt-noise floor. Refinements pre-dominantly affect touching queries. On Dr.Spider in reuse-mode, non-touching ∆ is zero by construction; on BIRD with-out reuse, non-touching ∆ ranges from +0.14 to +1.63 pp— prompt-level noise rather than systematic distortion. VII. C ONCLUSION 
+
+We presented EGR EFINE , a four-phase pipeline that for-malizes Text-to-SQL schema refinement as a constrained optimization problem and solves it through execution-grounded verification. The framework couples column-local non-degradation with database-level query equivalence (via view-based materialization), producing a durable refined schema that any downstream Text-to-SQL system can con-sume without modification. Across Dr.Spider, BIRD, and BEAVER and four LLM backbones, execution feedback proves to be the load-bearing component: it converts unreliable LLM preferences into empirically dependable refinements, transfers across model families to enable refine-once, serve-many-models deployment, and correctly abstains where the task exceeds current Text-to-SQL capabilities. 
+
+Limitations and Scope. EGR EFINE produces a refined schema specific to the (schema, workload Q, verifier-set M)triple under which it was computed; the resulting artifact is durable for fixed inputs but not absolute. Three limitations follow from this scope. 
+
+First , recovery rates vary across Text-to-SQL architectures. MAC-SQL benefits least on controlled perturbations, which §VI-D traces to an agent-level query re-decomposition insta-bility orthogonal to schema linking. Agent-level stabilization is a complementary direction to schema-level preprocessing, not a competing one. 
+
+Second , on enterprise schemas with very low baseline ExAcc (BEAVER, <10%), Phase 3’s discriminative signal becomes sparse and the conservative rule abstains. Even with a stronger refiner (MiniMax-M2.7, §V-E), downstream ExAcc on C3 and DIN-SQL remains unchanged: this regime is dominated by SQL-generation rather than schema-linking bottlenecks. The coverage–improvement linearity (§VI-A) and a baseline-ExAcc threshold together provide a pre-deployment applicability test; extending EGR EFINE to very-low-baseline regimes requires raising the effective baseline first, e.g., through query decomposition or schema-hint integration. 
+
+Third , refinement is computed against a representative query workload Q with ground-truth SQL. For organizations de-ploying Text-to-SQL, curating such a workload is typically a prerequisite—not a byproduct—of evaluation, since model and algorithm selection themselves require it; EGR EFINE reuses this artifact at no additional cost. The workload-holdout valida-tion (§V-G) gives preliminary evidence that benefits transfer to independently distributed queries with similar schema profile. Robustness under workload drift and extensions to weaker supervision (e.g., SQL logs without paired NL) are left to future work. REFERENCES [1] G. Katsogiannis-Meimarakis and G. Koutrika, “A survey on deep learning approaches for text-to-SQL,” The VLDB Journal , vol. 32, no. 4, pp. 905–936, 2023. [2] Y. Luo, G. Li, J. Fan, C. Chai, and N. Tang, “Natural language to SQL: State of the art and open problems,” Proceedings of the VLDB Endowment , vol. 18, no. 12, pp. 5466–5471, 2025. 15 
+
+[3] M. Pourreza and D. Rafiei, “DIN-SQL: Decomposed in-context learning of text-to-SQL with self-correction,” in NeurIPS , pp. 36339–36348, 2023. [4] D. Gao, H. Wang, Y. Li, et al. , “Text-to-SQL empowered by large language models: A benchmark evaluation,” arXiv preprint arXiv:2308.15363 , 2023. [5] B. Wang, C. Ren, J. Yang, et al. , “MAC-SQL: A multi-agent collabo-rative framework for text-to-SQL,” in COLING , pp. 540–557, 2025. [6] S. Talaei, M. Pourreza, Y.-C. Chang, A. Mirhoseini, and A. Saberi, “CHESS: Contextual harnessing for efficient SQL synthesis,” arXiv preprint arXiv:2405.16755 , 2024. [7] T. Yu, R. Zhang, K. Yang, M. Yasunaga, et al. , “Spider: A large-scale human-labeled dataset for complex and cross-domain semantic parsing and text-to-SQL task,” in EMNLP , pp. 3911–3921, 2018. [8] J. F¨ urst, C. Kosten, F. Nooralahzadeh, et al. , “Evaluating the data model robustness of text-to-SQL systems based on real user queries,” arXiv preprint arXiv:2402.08349 , 2024. [9] C. Renggli, I. F. Ilyas, and T. Rekatsinas, “Fundamental challenges in evaluating text2SQL solutions and detecting their limitations,” arXiv preprint arXiv:2501.18197 , 2025. [10] B. Wang, R. Shin, X. Liu, O. Polozov, and M. Richardson, “RAT-SQL: Relation-aware schema encoding and linking for text-to-SQL parsers,” in ACL , pp. 7567–7578, 2020. [11] S. Chang, J. Wang, M. Dong, et al. , “Dr.Spider: A diagnostic eval-uation benchmark towards text-to-SQL robustness,” arXiv preprint arXiv:2301.08881 , 2023. [12] J. Li, B. Hui, G. Qu, et al. , “Can LLM already serve as a database interface? a big bench for large-scale database grounded text-to-SQLs,” in Advances in Neural Information Processing Systems (NeurIPS) ,vol. 36, 2023. [13] T. Scholak, N. Schucher, and D. Bahdanau, “PICARD: Parsing in-crementally for constrained auto-regressive decoding from language models,” in EMNLP , pp. 9895–9901, 2021. [14] Z. Chen, S. Chen, M. White, R. Mooney, et al. , “Text-to-SQL error correction with language models of code,” in ACL (Short Papers) ,pp. 1359–1372, 2023. [15] G. Qu, J. Li, B. Qin, et al. , “SHARE: An SLM-based hierarchical action correction assistant for text-to-SQL,” in ACL , pp. 11268–11292, 2025. [16] W. Mao et al. , “Enhancing text-to-SQL parsing through question rewrit-ing and execution-guided refinement,” in Findings of ACL , pp. 2009– 2024, 2024. [17] T. Yu, R. Zhang, H. Er, et al. , “CoSQL: A conversational text-to-SQL challenge towards cross-domain natural language interfaces to databases,” in EMNLP-IJCNLP , pp. 1962–1979, 2019. [18] A. Elgohary, S. Hosseini, and A. H. Awadallah, “Speak to your parser: Interactive text-to-SQL with natural language feedback,” in ACL ,pp. 2065–2077, 2020. [19] Y. Tian, Z. Zhang, Z. Ning, et al. , “Interactive text-to-SQL generation via editable step-by-step explanations,” in EMNLP , pp. 16149–16166, 2023. [20] A. Bhaskar, T. Tomar, A. Sathe, and S. Sarawagi, “Benchmarking and improving text-to-SQL generation under ambiguity,” in EMNLP ,pp. 7053–7074, 2023. [21] I. Saparina and M. Lapata, “AMBROSIA: A benchmark for parsing ambiguous questions into database queries,” in NeurIPS , pp. 90600– 90628, 2024. [22] S. Qiu et al. , “PRACTIQ: A practical conversational text-to-SQL dataset with ambiguous and unanswerable queries,” in NAACL , 2025. [23] K. Vaidya, A. Sankararaman, J. Ding, C. Lei, X. Qin, B. Narayanaswamy, and T. Kraska, “ODIN: A NL2SQL recommender to handle schema ambiguity,” arXiv preprint arXiv:2505.19302 , 2025. [24] M. Zhang, K. Ma, L. Xu, K. Zhang, Y. Peng, and R. Jin, “CLEAR: A parser-independent disambiguation framework for NL2SQL,” in ICDE ,pp. 1–14, 2025. [25] B. Chen, F. Zhang, A. Nguyen, et al. , “CodeT: Code generation with generated tests,” arXiv preprint arXiv:2207.10397 , 2023. [26] X. Chen, M. Lin, N. Sch¨ arli, and D. Zhou, “Teaching large language models to self-debug,” arXiv preprint arXiv:2304.05128 , 2024. [27] N. Shinn, F. Cassano, A. Gopinath, K. Narasimhan, and S. Yao, “Reflexion: Language agents with verbal reinforcement learning,” in 
+
+NeurIPS , 2023. [28] P. B. Chen, M. Cafarella, C ¸ . Demiralp, and M. Stonebraker, “Beaver: An enterprise benchmark for text-to-sql,” arXiv preprint arXiv:2409.02038 ,2024. [29] V. Zhong, C. Xiong, and R. Socher, “Seq2SQL: Generating structured queries from natural language using reinforcement learning,” arXiv preprint arXiv:1709.00103 , 2017. [30] X. V. Lin, R. Socher, and C. Xiong, “Bridging textual and tabular data for cross-domain text-to-SQL semantic parsing,” in Findings of EMNLP ,pp. 4870–4888, 2020. [31] H. Li, B. Hui, G. Qu, J. Yang, B. Li, B. Li, B. Wang, B. Qin, R. Cao, and J. Li, “Resdsql: Decoupling schema linking and skeleton parsing for text-to-sql,” in Proc. of AAAI , 2023. [32] H. Li, J. Zhang, H. Liu, et al. , “CodeS: Towards building open-source language models for text-to-SQL,” Proceedings of the ACM on Management of Data , vol. 2, no. 3, pp. 1–28, 2024. [33] K. Maamari, F. Abubaker, D. Jaroslawicz, and A. Mhedhbi, “The death of schema linking? Text-to-SQL in the age of well-reasoned language models,” arXiv preprint arXiv:2408.07702 , 2024. [34] L. Xinyu, S. Shuyu, L. Boyan, et al. , “A survey of text-to-SQL in the era of LLMs: Where are we, and where are we going?,” arXiv preprint arXiv:2408.05109 , 2025. [35] Z. Hong, Z. Yuan, Q. Zhang, et al. , “Next-generation database interfaces: A survey of LLM-based text-to-SQL,” arXiv preprint arXiv:2406.08426 ,2025. [36] Y. Gan, X. Chen, Q. Huang, M. Purver, J. R. Woodward, J. Xie, and P. Huang, “Towards robustness of text-to-SQL models against synonym substitution,” in ACL , pp. 2505–2515, 2021. [37] Y. Gan, X. Chen, and M. Purver, “Exploring underexplored limitations of cross-domain text-to-SQL generalization,” in EMNLP , pp. 8926–8931, 2021. [38] L. Qiu, J. Li, C. Su, and L. Chen, “Interactive text-to-SQL via expected information gain for disambiguation,” arXiv preprint arXiv:2507.06467 ,2025. [39] B. Wang, Y. Gao, Z. Li, and J.-G. Lou, “Know what I don’t know: Han-dling ambiguous and unknown questions for text-to-SQL,” in Findings of ACL , pp. 5701–5714, 2023. [40] F. Lei et al. , “Spider 2.0: Evaluating language models on real-world enterprise text-to-SQL workflows,” in ICLR , 2025. [41] F. Wenz, O. Bouattour, D. Yang, J. Choi, C. Gregg, N. Tatbul, and C¸ a˘ gatay Demiralp, “BenchPress: A human-in-the-loop annotation sys-tem for rapid text-to-SQL benchmark curation,” in CIDR , 2026. [42] K. Chen, Y. Chen, X. Yu, and N. Koudas, “Reliable text-to-SQL with adaptive abstention,” arXiv preprint arXiv:2501.10858 , 2025. [43] K. Luoma and A. Kumar, “SNAILS: Schema naming assessments for improved LLM-based SQL inference,” Proceedings of the ACM on Management of Data , vol. 3, no. 1, pp. 1–25, 2025. [44] S. Chaturvedi, A. Chadha, and L. Bindschaedler, “SQL-of-Thought: Multi-agentic text-to-SQL with guided error correction,” arXiv preprint arXiv:2509.00581 , 2025. [45] K. Jansen and P. Scheffler, “Generalized coloring for tree-like graphs,” 
+
+Discrete Applied Mathematics , vol. 75, no. 2, pp. 135–155, 1997. [46] H. Garcia-Molina, J. D. Ullman, and J. Widom, Database Systems: The Complete Book . Pearson Prentice Hall, 2nd ed., 2008. [47] S. Abiteboul, R. Hull, and V. Vianu, Foundations of Databases . Addison-Wesley, 1995. [48] X. Wang, J. Wei, D. Schuurmans, Q. V. Le, E. H. Chi, S. Narang, A. Chowdhery, and D. Zhou, “Self-consistency improves chain of thought reasoning in language models,” in ICLR , 2023. [49] X. Dong, C. Zhang, Y. Ge, Y. Mao, Y. Gao, J. Lin, and D. Lou, “C3: Zero-shot text-to-sql with chatgpt,” arXiv preprint arXiv:2307.07306 ,2023. [50] J. Wei, X. Wang, D. Schuurmans, M. Bosma, B. Ichter, F. Xia, E. H. Chi, Q. V. Le, and D. Zhou, “Chain-of-thought prompting elicits reasoning in large language models,” in NeurIPS , pp. 24824–24837, 2022.
