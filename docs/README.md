@@ -6,91 +6,91 @@
 </div>
 
 ## 每次日报
-- 最新运行日期：2026-05-09
-- 运行时间：2026-05-09 20:19:48 UTC
+- 最新运行日期：2026-05-10
+- 运行时间：2026-05-10 20:49:11 UTC
 - 运行状态：成功
 - 本次总论文数：23
 - 精读区：9
 - 速读区：14
 
 ### 今日简报（AI）
-今日深度研读 23 篇 AI 论文，聚焦鲁棒策略优化与大模型多智能体博弈的前沿突破。
-重点推荐 ANO 框架及 LLM 战略博弈研究，揭示了大模型“先决策后解释”的认知特性与生成忠实度提升方案。
-建议优先关注多智能体系统故障归因基准，从底层逻辑优化复杂决策系统的稳定性。
-- 详情：[/202605/09/README](/202605/09/README)
+今日聚焦 23 篇 AI 前沿进展，重点解析京东 AGPO 算法在可验证推理与搜索广告中的满分表现。
+核心突破在于 AGPO 对搜索相关性的非对称优化，以及 V-GRPO 极大简化了生成模型的在线强化学习流程。
+建议深入研读 AGPO 框架以提升工业级推理效能，并参考 AI 推理测量指南构建标准化的评估体系。
+- 详情：[/202605/10/README](/202605/10/README)
 
 ### 精读区论文标签
-1. [ANO: A Principled Approach to Robust Policy Optimization](/202605/09/2605.02320v2-ano-a-principled-approach-to-robust-policy-optimization)  
+1. [AGPO: Asymmetric Group Policy Optimization for Verifiable Reasoning and Search Ads Relevance at JD](/202605/10/2605.05826v1-agpo-asymmetric-group-policy-optimization-for-verifiable-reasoning-and-search-ads-relevance-at-jd)  
+   标签：评分：10.0/10、query:rl-nlplr
+   evidence：具有可验证奖励的强化学习用于推理
+2. [Measuring AI Reasoning: A Guide for Researchers](/202605/10/2605.02442v1-measuring-ai-reasoning-a-guide-for-researchers)  
    标签：评分：9.0/10、query:rl-nlplr
-   evidence：用鲁棒策略优化替换PPO硬裁剪
-2. [Multi-Agent Strategic Games with LLMs](/202605/09/2605.03604v1-multi-agent-strategic-games-with-llms)  
+   evidence：通过多步搜索和中间解码评估推理能力
+3. [SensingAgents: A Multi-Agent Collaborative Framework for Robust IMU Activity Recognition](/202605/10/2605.04608v1-sensingagents-a-multi-agent-collaborative-framework-for-robust-imu-activity-recognition)  
    标签：评分：9.0/10、query:mas-gen
-   evidence：LLM多智能体策略博弈与合作研究
-3. [Rollout Pass-Rate Control: Steering Binary-Reward RL Toward Its Most Informative Regime](/202605/09/2605.05112v1-rollout-pass-rate-control-steering-binary-reward-rl-toward-its-most-informative-regime)  
+   evidence：使用LLM驱动的智能体构建多智能体协作框架
+4. [Maximizing Rollout Informativeness under a Fixed Budget: A Submodular View of Tree Search for Tool-Use Agentic Reinforcement Learning](/202605/10/2605.05262v1-maximizing-rollout-informativeness-under-a-fixed-budget-a-submodular-view-of-tree-search-for-tool-use-agentic-reinforcement-learning)  
+   标签：评分：9.0/10、query:token
+   evidence：智能体强化学习中的Token级熵奖励和策略梯度质量
+5. [Think, then Score: Decoupled Reasoning and Scoring for Video Reward Modeling](/202605/10/2605.05922v1-think-then-score-decoupled-reasoning-and-scoring-for-video-reward-modeling)  
    标签：评分：9.0/10、query:rl-nlplr
-   evidence：使用RLOO和GRPO引导智能体任务中的二元奖励强化学习
-4. [SANEmerg: An Emergent Communication Framework for Semantic-aware Agentic AI Networking](/202605/09/2605.05861v1-sanemerg-an-emergent-communication-framework-for-semantic-aware-agentic-ai-networking)  
-   标签：评分：9.0/10、query:mas-gen
-   evidence：用于协作协调的多智能体涌现通信协议
-5. [Pest-Thinker: Learning to Think and Reason like Entomologists via Reinforcement Learning](/202605/09/2605.06121v1-pest-thinker-learning-to-think-and-reason-like-entomologists-via-reinforcement-learning)  
-   标签：评分：9.0/10、query:rl-nlplr
-   evidence：用于害虫形态推理的强化学习框架
-6. [Teaching LLMs Program Semantics via Symbolic Execution Traces](/202605/09/2605.06184v1-teaching-llms-program-semantics-via-symbolic-execution-traces)  
-   标签：评分：9.0/10、query:rl-nlplr
-   evidence：结合思维链推理在符号执行轨迹上进行训练
-7. [Beyond Task Success: Measuring Workflow Fidelity in LLM-Based Agentic Payment Systems](/202605/09/2605.06457v1-beyond-task-success-measuring-workflow-fidelity-in-llm-based-agentic-payment-systems)  
-   标签：评分：9.0/10、query:mas-gen
-   evidence：基于大语言模型的多智能体支付系统工作流保真度度量
-8. [Less Is More: Engineering Challenges of On-Device Small Language Model Integration in a Mobile Application](/202605/09/2604.24636v1-less-is-more-engineering-challenges-of-on-device-small-language-model-integration-in-a-mobile-application)  
+   evidence：用于视频奖励建模的思维链推理
+6. [LatentRAG: Latent Reasoning and Retrieval for Efficient Agentic RAG](/202605/10/2605.06285v1-latentrag-latent-reasoning-and-retrieval-for-efficient-agentic-rag)  
+   标签：评分：9.0/10、query:llm-fo
+   evidence：推理延迟与检索效率之间的权衡
+7. [Shorthand for Thought: Compressing LLM Reasoning via Entropy-Guided Supertokens](/202605/10/2604.26355v3-shorthand-for-thought-compressing-llm-reasoning-via-entropy-guided-supertokens)  
    标签：评分：8.0/10、query:llm-fo
-   evidence：LLM生成JSON格式的完整结构化谜题
-9. [GeoContra: From Fluent GIS Code to Verifiable Spatial Analysis with Geography-Grounded Repair](/202605/09/2605.00782v1-geocontra-from-fluent-gis-code-to-verifiable-spatial-analysis-with-geography-grounded-repair)  
+   evidence：推理轨迹的Token级信息结构与推理计算
+8. [When Embedding-Based Defenses Fail: Rethinking Safety in LLM-Based Multi-Agent Systems](/202605/10/2605.01133v1-when-embedding-based-defenses-fail-rethinking-safety-in-llm-based-multi-agent-systems)  
+   标签：评分：8.0/10、query:mas-gen
+   evidence：大模型驱动的多智能体系统中的安全与通信
+9. [When to Think, When to Speak: Learning Disclosure Policies for LLM Reasoning](/202605/10/2605.03314v1-when-to-think-when-to-speak-learning-disclosure-policies-for-llm-reasoning)  
    标签：评分：8.0/10、query:llm-fo
-   evidence：在LLM输出中强制执行地理规则和模式
+   evidence：推理思考与输出时机之间的权衡
 
 ### 速读区论文标签
-1. [Large Language Models Decide Early and Explain Later](/202605/09/2604.22266v1-large-language-models-decide-early-and-explain-later)  
-   标签：评分：8.0/10、query:rl-nlplr
-   evidence：思维链推理步骤中预测答案的演变
-2. [Context-Fidelity Boosting: Enhancing Faithful Generation through Watermark-Inspired Decoding](/202605/09/2604.22335v1-context-fidelity-boosting-enhancing-faithful-generation-through-watermark-inspired-decoding)  
+1. [Discovering Agentic Safety Specifications from 1-Bit Danger Signals](/202605/10/2604.23210v1-discovering-agentic-safety-specifications-from-1-bit-danger-signals)  
    标签：评分：8.0/10、query:token
-   evidence：用于忠实生成的Token级Logit调整
-3. [Seeing the Whole Elephant: A Benchmark for Failure Attribution in LLM-based Multi-Agent Systems](/202605/09/2604.22708v1-seeing-the-whole-elephant-a-benchmark-for-failure-attribution-in-llm-based-multi-agent-systems)  
-   标签：评分：8.0/10、query:mas-gen
-   evidence：大语言模型多智能体系统故障归因基准
-4. [AutoPyVerifier: Learning Compact Executable Verifiers for Large Language Model Outputs](/202605/09/2604.22937v1-autopyverifier-learning-compact-executable-verifiers-for-large-language-model-outputs)  
+   evidence：大模型智能体从每步1比特的信号中进行安全推理
+2. [V-GRPO: Online Reinforcement Learning for Denoising Generative Models Is Easier than You Think](/202605/10/2604.23380v1-v-grpo-online-reinforcement-learning-for-denoising-generative-models-is-easier-than-you-think)  
    标签：评分：8.0/10、query:rl-nlplr
-   evidence：用于强化学习训练的可执行验证器
-5. [A Decoupled Human-in-the-Loop System for Controlled Autonomy in Agentic Workflows](/202605/09/2604.23049v1-a-decoupled-human-in-the-loop-system-for-controlled-autonomy-in-agentic-workflows)  
+   evidence：用于将生成模型与可验证奖励对齐的在线强化学习
+3. [SoccerRef-Agents: Multi-Agent System for Automated Soccer Refereeing](/202605/10/2604.23392v1-soccerref-agents-multi-agent-system-for-automated-soccer-refereeing)  
    标签：评分：8.0/10、query:mas-gen
-   evidence：多智能体环境中的人机协同
-6. [State Stream Transformer (SST) V2: Parallel Training of Nonlinear Recurrence for Latent Space Reasoning](/202605/09/2605.00206v1-state-stream-transformer-sst-v2-parallel-training-of-nonlinear-recurrence-for-latent-space-reasoning)  
+   evidence：足球裁判的多智能体决策框架
+4. [Thinking Like a Clinician: A Cognitive AI Agent for Clinical Diagnosis via Panoramic Profiling and Adversarial Debate](/202605/10/2604.23605v1-thinking-like-a-clinician-a-cognitive-ai-agent-for-clinical-diagnosis-via-panoramic-profiling-and-adversarial-debate)  
+   标签：评分：8.0/10、query:mas-gen
+   evidence：临床推理中的对抗性辩论
+5. [TCOD: Exploring Temporal Curriculum in On-Policy Distillation for Multi-turn Autonomous Agents](/202605/10/2604.24005v2-tcod-exploring-temporal-curriculum-in-on-policy-distillation-for-multi-turn-autonomous-agents)  
+   标签：评分：8.0/10、query:rl-nlplr
+   evidence：通过在线蒸馏将推理能力转移到小模型
+6. [Iterative Finetuning is Mostly Idempotent](/202605/10/2605.01130v1-iterative-finetuning-is-mostly-idempotent)  
    标签：评分：7.0/10、query:rl-nlplr
-   evidence：潜空间推理与连续潜意识审议
-7. [Are You the A-hole? A Fair, Multi-Perspective Ethical Reasoning Framework](/202605/09/2605.00270v1-are-you-the-a-hole-a-fair-multi-perspective-ethical-reasoning-framework)  
+   evidence：研究了直接偏好优化（DPO）中的特征放大现象
+7. [ClarifySTL: An Interactive LLM Agent Framework for STL Transformation through Requirements Clarification](/202605/10/2605.01209v1-clarifystl-an-interactive-llm-agent-framework-for-stl-transformation-through-requirements-clarification)  
+   标签：评分：7.0/10、query:mas-gen
+   evidence：用于需求澄清的交互式LLM智能体框架
+8. [LLM Output Detectability and Task Performance Can be Jointly Optimized](/202605/10/2605.01350v1-llm-output-detectability-and-task-performance-can-be-jointly-optimized)  
    标签：评分：7.0/10、query:rl-nlplr
-   evidence：用于自然语言判断逻辑一致性的神经符号框架
-8. [DynamicPO: Dynamic Preference Optimization for Recommendation](/202605/09/2605.00327v1-dynamicpo-dynamic-preference-optimization-for-recommendation)  
+   evidence：通过带有任务特定奖励函数的强化学习微调LLM
+9. [Focus on the Core: Empowering Diffusion Large Language Models by Self-Contrast](/202605/10/2605.01373v1-focus-on-the-core-empowering-diffusion-large-language-models-by-self-contrast)  
+   标签：评分：7.0/10、query:token
+   evidence：研究高信息密度 Token 以提升解码质量
+10. [Verbal-R3: Verbal Reranker as the Missing Bridge between Retrieval and Reasoning](/202605/10/2605.01399v1-verbal-r3-verbal-reranker-as-the-missing-bridge-between-retrieval-and-reasoning)  
    标签：评分：7.0/10、query:rl-nlplr
-   evidence：基于大语言模型系统的直接偏好优化 (DPO)
-9. [Impact of Task Phrasing on Presumptions in Large Language Models](/202605/09/2605.00436v1-impact-of-task-phrasing-on-presumptions-in-large-language-models)  
-   标签：评分：7.0/10、query:rl-nlplr
-   evidence：任务表述对LLM逻辑推理和决策的影响
-10. [LLM-Emu: Native Runtime Emulation of LLM Inference via Profile-Driven Sampling](/202605/09/2605.00616v1-llm-emu-native-runtime-emulation-of-llm-inference-via-profile-driven-sampling)  
-   标签：评分：7.0/10、query:llm-fo
-   evidence：大模型推理服务的延迟与吞吐量仿真
-11. [Escaping Mode Collapse in LLM Generation via Geometric Regulation](/202605/09/2605.00435v1-escaping-mode-collapse-in-llm-generation-via-geometric-regulation)  
-   标签：评分：6.0/10、query:token
-   evidence：用于大语言模型生成多样性的强化模式调节
-12. [Structure Liberates: How Constrained Sensemaking Produces More Novel Research Output](/202605/09/2605.00557v1-structure-liberates-how-constrained-sensemaking-produces-more-novel-research-output)  
-   标签：评分：6.0/10、query:rl-nlplr
-   evidence：用于完善推理的结构化认知阶段序列
-13. [EGREFINE: An Execution-Grounded Optimization Framework for Text-to-SQL Schema Refinement](/202605/09/2605.00628v1-egrefine-an-execution-grounded-optimization-framework-for-text-to-sql-schema-refinement)  
+   evidence：通过言语标注连接检索和 LLM 推理
+11. [Component-Aware Self-Speculative Decoding in Hybrid Language Models](/202605/10/2605.01106v1-component-aware-self-speculative-decoding-in-hybrid-language-models)  
    标签：评分：6.0/10、query:llm-fo
-   evidence：Text-to-SQL 模式精炼的约束优化
-14. [Learning to Act and Cooperate for Distributed Black-Box Consensus Optimization](/202605/09/2605.00691v1-learning-to-act-and-cooperate-for-distributed-black-box-consensus-optimization)  
-   标签：评分：6.0/10、query:mas-gen
-   evidence：黑盒优化中的多智能体任务分解与协调
+   evidence：通过自投机解码加速自回归推理
+12. [Zero-Shot Signal Temporal Logic Planning with Disjunctive Branch Selection in Dynamic Semantic Maps](/202605/10/2605.01222v1-zero-shot-signal-temporal-logic-planning-with-disjunctive-branch-selection-in-dynamic-semantic-maps)  
+   标签：评分：6.0/10、query:rl-nlplr
+   evidence：用于子任务逻辑连贯性的传递强化学习
+13. [Breaking the Computational Barrier: Provably Efficient Actor-Critic for Low-Rank MDPs](/202605/10/2605.01242v1-breaking-the-computational-barrier-provably-efficient-actor-critic-for-low-rank-mdps)  
+   标签：评分：6.0/10、query:rl-nlplr
+   evidence：高效的Actor-Critic强化学习算法
+14. [Active Reasoning Vision-Language Models via Sequential Experimental Design](/202605/10/2605.01345v1-active-reasoning-vision-language-models-via-sequential-experimental-design)  
+   标签：评分：6.0/10、query:rl-nlplr
+   evidence：视觉语言模型复杂推理中的序列决策
 
 
 <div class="dpr-home-promo-card">
