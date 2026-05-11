@@ -1,0 +1,598 @@
+Title: SCOPE:Planning for Hybrid Querying over Clinical Trial Data
+
+URL Source: https://arxiv.org/pdf/2604.25120v2
+
+Published Time: Mon, 04 May 2026 00:20:15 GMT
+
+Number of Pages: 16
+
+Markdown Content:
+## SC OPE: Planning for Hybrid Querying over Clinical Trial Data 
+
+> 1
+
+Suparno Roy Chowdhury * 1Manan Roy Choudhury * 1Tejas Anvekar 
+
+> 2
+
+Muhammad Ali Khan 2Kaneez Zahra Rubab Khakwani 2Mohamad Bassam Sonbol 
+
+> 2
+
+Irbaz Bin Riaz † 1Vivek Gupta †1Arizona State University 2Mayo Clinic 
+
+{srchowd3,mroycho1,tanvekar,vgupt140}@asu.edu {khan.muhammad2,Khakwani.kaneezzahra,Sonbol.mohamad,riaz.irbaz}@mayo.edu 
+
+Abstract 
+
+We study clinical trial table reasoning , where answers are not directly stored in visible cells but must be reasoned from semantic under-standing through normalization, classification, extraction, or lightweight domain reasoning. Motivated by the observation that current LLM approaches often suffer from “bad reasoning” under implicit planning assumptions, we fo-cus on settings in which the model must re-cover implicit attributes such as therapy type, added agents, endpoint roles, or follow-up sta-tus from partially observed clinical-trial tables. We propose SC OPE ( Structured Clinical hy-brid Planning for Evidence retrieval in clini-cal trials ), a multi-LLM planner-based frame-work that decomposes the task into row se-lection, structured planning, and execution. The planner makes the source field, reason-ing rules, and output constraints explicit before answer generation, reducing ambiguity rela-tive to direct prompting. We evaluate SC OPE on 1,500 hybrid reasoning questions over on-cology clinical-trial tables against zero-shot, few-shot, chain-of-thought, TableGPT2, Blend-SQL, and EHRAgent. Results show that ex-plicit multi-LLM planning improves accuracy for reasoning-based questions while offering a stronger accuracy-efficiency tradeoff than heav-ier agentic baselines. Our findings position clinical trial reasoning as a distinct table under-standing problem and highlight hybrid planner-based decomposition as an effective solution. 
+
+1 Introduction 
+
+Many clinical trial questions are neither pure re-trieval nor standard text-to-SQL. In these cases, the target value is not explicitly stored in a visible cell and cannot be obtained by simply selecting rows or projecting an existing column. Instead, it must      
+
+> *These authors contributed equally.
+> †Corresponding authors. Question: For Pembrolizumab trials list additional agents in the treatment regimen beyond the ICI.
+> Gold Answer: Every agent in Treatment Regimen besides
+> Pembrolizumab . Eg, [Pemetrexed+ Carboplatin]
+
+Figure 1: Sample exemplar hybrid reasoning question requiring semantic understanding of regimen structure: the model must recognize Pembrolizumab as the ICI named in the question and extract all other treatment agents from the visible regimen text as the held-out target field. For instance, in NCT0203, Pembrolizumab 
+
+is the ICI and Pemetrexed is the additional agent used in the treatment regimen 
+
+typically be derived from row contents through nor-malization, classification, extraction, aggregation, or lightweight domain reasoning. We study this setting as clinical trial reasoning : given a ques-tion and a partially observed table, the system must identify the relevant rows, ground the visible source field containing the evidence, and apply the correct row-wise transformation to produce a target field that is often absent from the schema. This setting is related to table question answering and semantic parsing, but is only partially captured by existing table QA benchmarks and classical text-to-SQL for-mulations (Pasupat and Liang, 2015; Zhong et al., 2017; Yu et al., 2018; Chen et al., 2019; Nan et al., 2022). Clinical trial reasoning arises naturally in sys-tematic reviews, where analysts often need to infer implicit attributes from raw fields such as treat-ment regimens, endpoint descriptions, follow-up text, and bibliographic metadata. Typical questions 1         
+
+> arXiv:2604.25120v2 [cs.CL] 30 Apr 2026 Execution Pipeline Selects
+> Rows
+> Question: In Small Cell Lung trials, classify the ICI
+> by target class from its generic name as PD-1,
+> PD-L1, or CTLA-4 .
+> Question/Table
+> Preparation
+> Executor: Selection Step
+> Question: In Small Cell Lung trials , classify
+> the ICI by target class from its generic name
+> as PD-1, PD-L1, or CTLA-4.
+> Question: In Small Cell Lung trials,
+> classify the ICI by target class from its
+> generic name as PD-1, PD-L1, or
+> CTLA-4.
+> Planning Step
+> {
+> "task_type":
+> "reason_answer_for_selected_ro
+> ws",
+> "derivation_rules": [
+> "Output 'CTLA-4' if the generic
+> name contains 'ipilimumab' or
+> other known CTLA-4 inhibitors"
+> ]
+> }
+> The Planner LLM will
+> create a reasoning
+> plan for the Executor
+> to follow based on
+> the question.
+> Reasoned Columns and Rows from Executor (highlighted in pink) is finally
+> evaluated against ground truth columns omitted during testing time (highlighted
+> in blue)
+> Planner
+> Agent
+> Code based pre-processing
+> Executor Agent
+> Executor Agent
+> Executor: Execution Step
+> Question: In Small Cell Lung trials,
+> classify the ICI by target class from its
+> generic name as PD-1, PD-L1, or
+> CTLA-4 .
+> Execution Pipeline Processes Plans
+> and Creates Reasoned Columns
+> and Rows
+
+1   
+
+> Copy of the full table for querying is generated, keeping the columns required for hybrid reasoning (highlighted in green) and removing columns used for gold answers (highlighted in blue) .LLM performs Execution step with selection of relevant rows from visible evidence
+> (highlighted in green)
+
+2 3
+
+4Figure 2: SC OPE for clinical tabular reasoning. Given a question and a copied visible table, SC OPE first prepares an inference-time table view by retaining the visible evidence columns and withholding the target column used for evaluation if there are any. The executor identifies the rows relevant to the question, the planner produces a structured reasoning plan over the selected table, and the executor follows this plan to generate the final row-aligned predictions. In this example, the method reasons over the Name of ICI column to recover the held-out Class of ICI 
+
+field, and the resulting predictions are compared against the omitted ground-truth targets. 
+
+require medically meaningful outputs such as ther-apy type, added agents, endpoint role, follow-up maturity, platinum status, or drug class. These questions are often compositional: solving them requires correct row selection, correct source-field grounding, and correct transformation of visible evidence. Errors in any of these steps can lead to incorrect or unusable outputs, making reliable decomposition critical for this setting. Existing approaches do not fully address this problem. Direct prompting with large language models often under-structures the task, typically re-lying on a single generation step to retrieve rows, in-fer the evidence-bearing field, apply the transforma-tion, and format row-aligned answers. Text-to-SQL methods assume that the answer can be recovered through executable operations over explicit schema values, which is often not true when the target field is latent rather than stored (Zhong et al., 2017; Yu et al., 2018). More structured agentic and program-based approaches can improve reasoning, but can introduce additional execution overhead and brittle multi-step traces (Gao et al., 2023; Cheng et al., 2022; Yao et al., 2022; Glenn et al., 2024; Shi et al., 2024). So, the main research question we are trying to address is: Can explicit hybrid planner-based de-composition improve grounded row-level reasoning over partially observed clinical-trial tables, and do the resulting gains appear more clearly in row-level grounding than in aggregate answer recovery? 
+
+To address these limitations, we introduce SC OPE, a planner-based framework for clinical querying that explicitly decomposes the task into row selection, structured planning, and execution. The executor grounds the question to relevant rows in the visible table and produces row-aligned out-2puts, while the planner interprets the question as a structured transformation over the selected evi-dence. Concretely, the executor first identifies a candidate subset of rows, the planner converts the question into an explicit transformation specifica-tion, and the executor then applies that specification to generate aligned predictions. This decomposi-tion makes the source-field choice, reasoning rules, and output constraints explicit prior to answer gen-eration, improving interpretability and reducing ambiguity compared to direct prompting. By in-troducing an explicit planning interface between reasoning and execution, SC OPE better aligns the model behavior with the compositional structure of clinical trial querying. We also construct a benchmark of 1,500 hybrid reasoning questions over oncology clinical-trial ta-bles, where target attributes must be inferred from visible evidence rather than directly retrieved. Unlike approaches that keep planning implicit in a single generation step or rely on heavier agentic pipelines, SC OPE introduces a lightweight plan-ning interface that separates reasoning specifica-tion from execution while preserving grounding in the visible table. We evaluate SC OPE against zero-shot, few-shot, chain-of-thought, TableGPT2, BlendSQL, and EHRAgent, and find that explicit planning improves reasoning accuracy while of-fering a better accuracy-efficiency tradeoff than heavier agentic baselines. Our main contributions are: • We introduce SC OPE, a planner-based frame-work that decomposes clinical trial reason-ing into row selection, source-field grounding, and structured execution. • We formalize clinical trial reasoning as a dis-tinct table understanding setting requiring in-ference over visible row evidence rather than direct cell retrieval. • We construct a benchmark of 1,500 oncology clinical-trial questions and show that explicit planning outperforms prompting baselines while remaining more efficient than heavier agentic methods. 
+
+Problem formulation. Given a question ˜q and a visible table X = {r1, . . . , r m} with a hidden tar-get field, the goal is to recover a set of row-aligned predictions ˆG = {(r, ˆyr)} for the subset of rows relevant to the query. Each ˆyr must be derived from visible evidence in r rather than retrieved directly from a stored field. Errors may arise from incorrect row selection, incorrect source-field grounding, or incorrect transformation of visible evidence, mak-ing joint reasoning over these steps essential. 
+
+2 Dataset 
+
+2.1 Dataset Construction 
+
+We begin with a seed set of 500 questions authored by a certified oncology researcher to reflect realistic evidence-review queries over a structured clinical-trial table containing bibliographic metadata, dis-ease labels, treatment regimens, control-arm de-scriptions, endpoint text, trial phase, sample size, and follow-up information. Each seed example is paired with an executable SQLite query, which serves as a scaffold for generating new questions and aligned ground truth. We retain the subset of table-solvable questions that require hybrid reason-ing rather than simple retrieval, and expand it to 
+
+1,500 questions through programmatic augmenta-tion. For each retained pair (q, s ), we generate a new pair (˜ q, ˜s) = T (q, s ) by applying a sin-gle atomic edit to the structured query, such as modifying the projection, simplifying predicates, swapping attribute values, relaxing thresholds, or changing the evidence field while preserving an-swerability. We keep only read-only variants that execute successfully and return non-empty results, then de-duplicate the resulting query patterns and rewrite each retained structured query into fluent natural language while preserving its exact seman-tics. 
+
+Ground-Truth Construction. For each final question ˜q, the corresponding query ˜s identifies a set of relevant rows R = {r1, . . . , r n} together with a visible evidence field csrc used to derive the hidden target. We then apply a deterministic row-level reasoning function f to each row to pro-duce the ground-truth target value yi = f (ri[csrc ]) 
+
+for every ri ∈ R. This function implements the intended task semantics for normalization, cate-gorization, boolean interpretation, and structured extraction, such as mapping an ICI mention to its class or brand name, determining endpoint role from endpoint text, bucketing follow-up duration or publication year, or extracting additional agents, schedules, regimen components, and control back-bones from treatment text. To form the benchmark input, we expose only the visible table copy while omitting the target values {yi}ni=1 . The ground 3Clinical-Trial Table Statistic Value      
+
+> Rows 159 Columns 32 Unique trials ( NCT )105 Cancer types 19 ICI names 13
+
+Table 1: Statistics of the underlying clinical-trial ta-ble used to construct the benchmark. The table covers trial-level oncology evidence, including study metadata, disease labels, treatment and control regimens, endpoint descriptions, and follow-up information, spanning 105 unique trials across 19 cancer types and 13 immune checkpoint inhibitor (ICI) names. 
+
+truth is stored separately as the row-aligned pairing 
+
+G = {(ri, y i)}ni=1 .Crucially, each target value is derived from ev-idence already present in the table rather than au-thored independently or requiring external domain knowledge at evaluation time. This design ensures that the benchmark evaluates hybrid reasoning over visible evidence: models must infer latent attributes by interpreting existing table content, rather than generating plausible but unsupported answers. 
+
+2.2 Dataset Guidelines 
+
+To create the seed set, a certified clinician authored questions based on the IOTOX living evidence ta-ble 1. They were asked to write realistic evidence-review questions while following three guidelines: • Each question had to be grounded in visible table evidence. • The expected answer had to be precise and structured, typically as a JSON value. • The answer had to be inferable from the table itself, without requiring unsupported external knowledge. 
+
+2.3 Dataset Statistics 
+
+As shown in Tables 1 and 2, the benchmark is built from a structured clinical-trial table with 159 
+
+records and 32 columns, spanning 105 unique NCT 
+
+identifiers, 131 unique PubMed ID s, 95 trial names, 
+
+19 cancer types, and 13 ICI names from 2010 to 2021. Although compact, the table is information-dense: many target outputs are not exposed as ready-made columns, but must be inferred from reg-imen text, endpoint descriptions, follow-up fields, and bibliographic metadata. At the benchmark          
+
+> 1https://iotox.living-evidence.com/
+> Question Statistic Value
+> Total questions 1,500 Mean question length (tokens) 21.2 Target fields 31
+> Answer Types Value
+> String 957 List 241 Boolean 224 Null-only 78
+
+Table 2: Question and answer-level benchmark statis-tics. Total questions gives the size of the benchmark; 
+
+Mean question length reports the average number of tokens per natural-language question; Target fields gives the number of distinct hidden target types covered by the dataset for reasoning . On the answer side, we re-port the number of questions whose gold supervision is primarily string-valued , list-valued , boolean-valued ,or null-only , where null-only questions are those whose held-out target values are absent for all aligned rows. 
+
+level, the dataset contains 1,500 questions with an average length of 21 .2 tokens and covers 31 dis-tinct target fields. The answer space is also diverse, including string-valued, list-valued, boolean, and null-only outputs, highlighting that the benchmark evaluates hybrid reasoning across multiple target types rather than a single narrow form of table question answering. 
+
+3 The SC OPE System & Flow 
+
+Given a question ˜q and a visible table copy 
+
+X = {r1, . . . , r m},
+
+where the answer-bearing target field is omitted but row identifiers and visible evidence columns are preserved, SC OPE uses two LLM components: an 
+
+executor and a planner . The executor grounds the question to relevant rows and produces the final row-level outputs, while the planner interprets the selected evidence as a structured reasoning prob-lem. The planner may use the same backbone as the executor or a different one. We provide the row-selection, planning, and final-execution prompts in Appendix A.1. The method has three steps. First, the executor identifies a candidate subset of relevant rows from the full visible table. Second, the planner receives the question and this candidate table and produces an explicit reasoning plan. Third, the executor follows that plan to generate the final row-aligned output table. In short, the planner determines what 
+
+to derive and from which visible evidence, while 4the executor determines where that evidence occurs and returns the final answers. 
+
+Executor: Row Selection. The first step grounds the question ˜q to the visible table X. The executor selects a candidate subset of rows 
+
+ˆR = Esel (˜ q, X ) ⊆ X. 
+
+At this stage, the executor is used only to identify relevant rows; it does not attempt to derive the final answer. 
+
+Planner: Structured Reasoning. The planner then receives the question ˜q and the candidate table 
+
+ˆR selected by the executor, and predicts a struc-tured plan 
+
+π = P (˜ q, ˆR) =  csrc , C rel , ρ, o ,
+
+where csrc denotes the inferred visible source col-umn that contains the supporting evidence, Crel 
+
+denotes the subset of visible columns retained for downstream execution, ρ denotes the reasoning rules needed to transform the source evidence into the target field, and o denotes the output constraints that specify the expected answer format. 
+
+Executor: Final Table Generation. Given the planner output π, the executor operates on the fo-cused candidate table 
+
+Xπ = ˆR[Crel ],
+
+and produces the final row-aligned prediction table 
+
+ˆG = Eans (˜ q, π, X π) = {(r, ˆyr) | r ∈ ˆR}.
+
+Each predicted value ˆyr is keyed by its row r, so the output remains aligned to the rows in the candi-date table rather than collapsing the question into a single free-form answer. 
+
+Why Planning Helps. A key advantage of plan-ning is that it explicitly separates decision points that are otherwise entangled in single-step gener-ation. In particular, SCOPE decomposes (i) row grounding, (ii) source-field identification, and (iii) transformation into distinct stages, each of which can fail independently in direct prompting. By ex-ternalizing these decisions into a structured plan, the model avoids implicit assumptions about where evidence resides and how it should be transformed. This leads to more stable row alignment and re-duces cascading errors compared to approaches where these steps are implicitly interleaved. 
+
+4 Experimental Setup 
+
+4.1 Baselines 
+
+We compare SC OPE against three baseline fami-lies under the same input setting. Every method receives the same question ˜q and visible table copy 
+
+X, where the target field is omitted at inference time. When a method produces free text, SQL, or other intermediate outputs, we normalize its re-sult programmatically into the shared row-aligned prediction format 
+
+ˆG = {(ˆ ri, ˆyi)}ki=1 ,
+
+so that all systems are evaluated against the same held-out ground truth G.The first family consists of zero-shot, few-shot, and chain-of-thought prompting (Brown et al., 2020; Wei et al., 2022), where the model is given the full visible table X and asked to recover the omitted target field directly without an explicit plan-ning stage. The second includes BlendSQL (Glenn et al., 2024) and EHRAgent (Shi et al., 2024), which introduce more intermediate tabular struc-ture reasoning through SQL-like compositional rea-soning or heavier agentic execution. The third in-cludes TableGPT2 (Li et al., 2024), a dedicated tabular reasoning model that jointly consumes the table and question to predict the hidden target field directly from the table representation. 
+
+4.2 Models and Hyperparameters 
+
+We evaluate three backbone LLMs: 
+
+Qwen3-30B-A3B-Instruct-2507 (Yang et al., 2025), gpt-oss-20b (Agarwal et al., 2025), and 
+
+Llama-3.3-70B-Instruct (Grattafiori et al., 2024). All generations use deterministic decoding with temperature 0.0 and top-p 1.0. Direct prompt-ing baselines are allowed up to 2048 generated tokens per question. For SC OPE, the planner and executor are chosen from the same model pool, enabling both same-model and cross-model configurations. The row-selection step uses 768 
+
+tokens, the planner 1024 , and the final executor step 2048 , keeping execution lightweight while reserving more capacity for structured planning. 
+
+4.3 Evaluation Metrics 
+
+We evaluate each predicted table against the held-out ground-truth table using three grounded metrics after one-to-one row alignment. Table F1 is our primary metric and measures how well a method recovers the correct hidden target values for the 5correct rows, balancing missed and spurious pre-dictions. Grounded Row Jaccard gives a stricter overlap-based view by measuring the intersection-over-union between predicted and gold row-level outputs. Grounded Fowlkes-Mallows (Fowlkes and Mallows, 1983) complements these metrics by summarizing the balance between grounded preci-sion and recall. Because the target field is omitted at inference time and restored only in held-out su-pervision, all three metrics evaluate recovery of hidden row-level attributes from visible evidence rather than direct copying. 
+
+Impact of row selection errors. Incorrect row se-lection directly affects all three metrics: missing relevant rows lowers recall, while selecting spuri-ous rows lowers precision and overlap. As a result, the metrics jointly capture both row grounding and answer correctness. 
+
+5 Results and Discussion 
+
+5.1 Main Results 
+
+Across all backbone families, the most important result is that SC OPE consistently achieves the strongest grounded performance while remaining lightweight relative to heavier structured baselines. The framework is best overall on GPT-OSS and Qwen3, and tied on Table F1 while stronger on grounding metrics for Llama-3.3. The clearest gain appears for Qwen3, where explicit planning sub-stantially improves row-aligned reasoning over di-rect prompting. A paired intent-level breakdown in Appendix A.4 helps explain these gains: the largest improvements appear on Schema / structural label-ing (+4.93 ∆F1, +7.94 ∆RJ), with further gains on 
+
+Normalization / classification (+1.36, +2.30) and 
+
+Structured extraction (+0.84, +2.08). 
+
+RQ1: Does explicit planning improve perfor-mance over direct prompting and tabular base-lines? Yes. Table 3 shows that SC OPE is strongest or tied for strongest across all three model families on the grounded metrics. It con-sistently outperforms BlendSQL, EHRAgent, and TableGPT2, and also improves over the strongest prompting baselines in most settings. This supports the central claim of the paper: explicit planning is more effective than leaving row grounding and rea-soning implicit inside a single generation step. 
+
+RQ2: Are these gains consistent across back-bone models? Largely yes, although the size of the gain varies by model. For GPT-OSS, SC OPE improves over the strongest prompting baseline from 74 .17 to 74 .31 Table F1 while also yielding the best grounded overlap scores. For Llama-3.3, it matches the best prompting Table F1 ( 70 .87 ) but improves Row Jaccard and Fowlkes-Mallows, indi-cating better row alignment. For Qwen3, the gains are largest, showing that the framework general-izes across backbones while being especially useful for weaker implicit reasoners. This pattern is also consistent with the appendix analysis: gains are strongest on schema-grounding-heavy categories, while Bucketing / discretization and Metadata nor-malization / extraction remain weak spots at -0.81/-0.90 ∆F1, respectively; see Appendix A.4. 
+
+RQ3: Which models benefit most from explicit planning? Qwen3 benefits the most. Its Table F1 increases from 56 .32 under the best prompting baseline to 63 .19 with SC OPE, with correspond-ing improvements in Row Jaccard and Fowlkes-Mallows. This suggests that explicit planning is particularly helpful when the underlying model is less reliable at performing row grounding and struc-tured reasoning implicitly. 
+
+Note. In addition to Table F1, grounded Row Jaccard (RJ) provides a complementary view of performance by measuring intersection-over-union over row-aligned outputs, directly capturing the joint correctness of row selection and target recov-ery. This is particularly relevant in our setting, where answers must be derived for the correct sub-set of rows rather than retrieved from explicit cells. Empirically, RJ highlights improvements in ground-ing quality: for Llama-3.3, SC OPE matches the best Table F1 (70.87) while improving RJ from 57.83 to 60.66; for Qwen3, gains are +6.87 in F1 (56.32 → 63.19) alongside a larger +7.12 in RJ (44.95 → 52.07); and for GPT-OSS, near-identical F1 (74.17 → 74.31) still corresponds to a consis-tent increase in RJ (61.77 → 62.48). These patterns align with the appendix error analysis, where sev-eral of the strongest intent categories show larger gains in ∆RJ than in ∆F1; see Appendix A.4. RJ is therefore a sensitive indicator of grounded row-level alignment, complementing Table F1 in assess-ing hybrid reasoning performance. 
+
+5.2 Cross-Model Ablation 
+
+We vary the planner and executor backbones to test whether planning and execution benefit from dif-ferent model strengths. In particular, this ablation asks whether a stronger planner can improve per-6Qwen3 Llama-3.3 GPT-OSS Method F1 (%) RJ (%) FM (%) F1 (%) RJ (%) FM (%) F1 (%) RJ (%) FM (%) Tabular Reasoning Methods                                                             
+
+> BlendSQL 11.56 6.52 20.63 5.60 5.15 5.81 7.30 6.48 7.71 EHRAgent 32.99 29.79 33.74 30.99 28.07 31.69 34.85 31.23 35.65
+> Prompting Technique Methods
+> Zero Shot 56.32 44.95 62.73 66.96 54.55 72.04 73.50 61.05 77.47 CoT 55.37 44.65 61.93 70.87 57.83 75.15 74.17 61.77 78.05 Few-Shot 54.74 44.09 61.48 69.38 56.56 74.05 73.99 61.55 77.85
+> Table Model Method
+> TableGPT2 F1: 44.03 RJ: 33.78 FM: 50.81
+> Ours: SC OPE
+> SC OPE 63.19 52.07 69.45 70.87 60.66 76.12 74.31 62.48 78.27
+
+Table 3: Per-model comparison across baselines and same-backbone SC OPE, where each listed model is used as 
+
+both the planner and the executor. We report F1 (Table F1), RJ (Row Jaccard), and FM (Fowlkes-Mallows). Higher is better for all metrics. Best values are shown in bold green. TableGPT2 is a table based model which does not have a Qwen3, Llama-3.3, or GPT-OSS backbone so it is tested individually.                             
+
+> Executor Planner F1 (%) RJ (%) FM (%) GPT-OSS Qwen3 75.07 63.74 79.26 Qwen3 GPT-OSS 59.59 48.26 66.32 Qwen3 Llama-3.3 62.47 51.40 68.88 GPT-OSS Llama-3.3 75.12 63.88 79.28
+> Llama-3.3 GPT-OSS 68.01 57.37 73.64 Llama-3.3 Qwen3 71.43 61.33 76.64
+
+Table 4: Cross-model ablation of SC OPE. Rows report configurations where the executor and planner use differ-ent backbones. Higher is better. The best cross-model result in each metric is shown in bold green. 
+
+formance even when the execution model is held fixed, and whether these two roles are better treated as complementary rather than identical. Table 4 shows that changing the planner can indeed improve performance. The clearest exam-ple is GPT-OSS: when used as both planner and executor in Table 3, SC OPE reaches 74 .31 Table F1, but replacing the planner with Llama-3.3 in-creases performance to 75 .12 , with similar gains in Row Jaccard and Fowlkes-Mallows. This suggests that the planner benefits from a stronger reasoning model even when execution remains fixed. Another example appears in the Llama-3.3 ex-ecutor family. In the same-backbone setting, Llama-3.3 reaches 70 .87 Table F1, but replacing the planner with Qwen3 improves performance to 
+
+71 .43 , with corresponding gains in Row Jaccard and Fowlkes-Mallows. Together with the GPT-OSS results, this suggests that changing the planner can improve performance even when the executor is             
+
+> Coder Model F1 (%) RJ (%) FM (%) GPT-OSS 14.56 11.67 23.39 Qwen3 48.92 37.53 56.01 Llama-3.3 63.40 51.55 69.10
+
+Table 5: Results for the planner-coder baseline across coder backbones. The same models are used for the planning and code generation execution stage. Best results are shown in bold green. 
+
+held fixed. 
+
+5.3 Planner-Coder Baseline 
+
+We include the planner-coder setting as an ablation of whether execution should be made more explicit through programmatic synthesis. The idea is that, if the planner already produces a structured reasoning trace, then compiling that trace into deterministic Python code could make execution more transpar-ent and reproducible. This tests an alternative to grounded LLM execution: executing the plan by first translating it into code. Table 5 shows that this formulation performs substantially worse than SC OPE across all back-bones. The drop is especially large for GPT-OSS (from 74 .21 to 14 .56 Table F1) and Qwen3 (from 
+
+63 .19 to 48 .92 ), while even the best planner-coder result with Llama-3.3 ( 63 .40 ) remains below the strongest same-backbone SC OPE systems. This suggests that code-generation-based execution is more brittle: the model must infer the procedure, translate it into executable code, and ensure that the code still matches the table context and output 7Figure 3: Cost-effectiveness comparison for Qwen-based methods. The x-axis shows average total tokens per question and the y-axis shows Table F1 .
+
+format. Overall, hybrid clinical table reasoning ap-pears to benefit more from constrained grounded execution than from open-ended code synthesis. 
+
+6 Model Cost Effectiveness Analysis 
+
+Figure 3 compares answer quality against token budget in the Qwen-based setting. Although TableGPT2 is not Qwen-based, we include it as a reference point for cost-effectiveness against a ded-icated table model. SC OPE lies on the strongest accuracy-cost frontier, achieving the highest Ta-ble F1 at roughly 63% with only a modestly larger token budget than direct prompting baselines. Zero-shot, few-shot, and chain-of-thought prompting cluster in the 28 k-30 k token range but remain in the mid-50% F1 range, while EHRAgent is cheaper but much less accurate and BlendSQL is both the most expensive and the weakest. Overall, SC OPE adds limited planning overhead while yielding the best accuracy, making it the most favorable cost-effective choice in this comparison. 
+
+7 Related Work 
+
+We situate our work at the intersection of clinical datasets and table reasoning methods, focusing on settings where answers must be inferred rather than directly retrieved. 
+
+Related Datasets. Clinical datasets such as MIMIC III & IV (Johnson et al., 2016, 2023) and the eICU Collaborative Research Database (Pol-lard et al., 2018) have enabled large-scale mod-eling over structured and semi-structured medi-cal records, while i2b2/n2c2 shared tasks (Uzuner et al., 2011) focus on extracting structured informa-tion from clinical text. In table reasoning, datasets such as TabFact (Chen et al., 2019) and FETAQA (Nan et al., 2022) study fact verification and free-form question answering over tables, typically as-suming that answers are grounded in explicit table entries. In contrast, our benchmark targets clinical-trial reasoning, where target attributes are often latent and must be inferred from visible row evi-dence through structured transformations. 
+
+Related Methods. Early table reasoning and semantic parsing approaches, such as Seq2SQL, TaBERT, and TAPAS (Zhong et al., 2017; Yin et al., 2020; Herzig et al., 2020), map natural language to executable queries or learned table representations and are strongest when the answer is explicitly rep-resented in the schema. More recent LLM-based methods, including PAL and ReAct (Gao et al., 2023; Yao et al., 2022), introduce intermediate rea-soning and action steps, while TableGPT2, Blend-SQL, and EHRAgent (Li et al., 2024; Glenn et al., 2024; Shi et al., 2024) add stronger structure for reasoning over tables and clinical data. However, these methods either keep planning implicit within generation or rely on heavier agentic pipelines with iterative execution. In contrast, SC OPE explicitly decomposes the task into row selection, source-field grounding, and structured execution, making the reasoning process more transparent and control-lable while achieving a better accuracy-efficiency tradeoff. 
+
+8 Conclusion 
+
+We introduced SC OPE, a planner-based framework for clinical trial table reasoning that separates row grounding, structured planning, & row-level execu-tion over visible evidence. Across same-backbone & cross-model settings, explicit planning consis-tently improves grounded reasoning performance over direct prompting & stronger structured base-lines such as BlendSQL, EHRAgent, & TableGPT2. The gains are especially pronounced for weaker im-plicit reasoners while remaining competitive for stronger backbones. These findings position clin-ical trial reasoning as a distinct table understand-ing problem & suggest that lightweight planner-executor decomposition is an effective and cost-conscious approach for recovering latent clinical attributes from partially observed oncology tables. 8Limitations 
+
+Our study has several limitations. First, although we evaluate multiple strong open-weight and open-access backbones, we do not include the latest fron-tier proprietary models in the main experiments. It is therefore possible that stronger frontier systems would reduce some of the gains we observe explicit planning, or alternatively benefit even more from the planner-executor decomposition. Second, while we study same-backbone, cross-model, & planner-coder ablations, we do not explore specialized fine-tuning of the planner & executor into separate task-specific models. A natural extension would be to train custom planner models for structured rea-soning and custom executor models for grounded row-level generation, which could further clarify how much of the observed gain comes from role specialization rather than prompting alone. Third, we do not perform a dedicated memorization study. Because the benchmark is derived from a compact clinical-trial table and programmatically expanded from a seed set, an additional analysis would be use-ful to determine whether some questions or trans-formations are partially recoverable from model memorization or prior exposure rather than purely from visible evidence. Finally, our benchmark is confined to a single clinical-trial table setting in on-cology. Although this makes evaluation focused & controlled, broader studies across additional clini-cal domains, schemas, & larger real-world evidence tables would be needed to fully establish generality. 
+
+Ethics Statement 
+
+This work is intended to support evidence review and clinical-trial exploration in oncology, not to guide patient-specific diagnosis, treatment selec-tion, or other forms of clinical decision-making. SC OPE operates on a structured representation of public clinical-trial records and does not use patient-level notes, protected health information (PHI), or personally identifiable information (PII). The benchmark and evaluation tables are derived from publicly available trial data and contain only trial-level evidence. No human subjects were re-cruited for this study, and no new patient data were collected, accessed, or released. Because large language models can produce in-correct, incomplete, or overconfident outputs, we design the system to remain auditable and grounded in the visible table evidence. The model is evalu-ated on row-aligned predictions derived from omit-ted fields, and the pipeline exposes intermediate planning and execution steps to reduce hidden rea-soning and make failures easier to inspect. We restrict execution to read-only operations and ap-ply schema validation and timeout safeguards to reduce the risk of unintended behavior. The bench-mark construction procedure retains only read-only variants that execute successfully and return valid results, which improves consistency but may bias coverage toward more frequent query patterns. The questions used to seed the benchmark were authored by domain experts to reflect realistic evidence-review needs in oncology and were re-viewed to ensure that the expected answers are inferable from the table itself rather than from ex-ternal medical knowledge. This design helps keep the task focused on grounded clinical table reason-ing, but it also means that the benchmark does not capture the full complexity of real-world clinical in-formation needs. In particular, the dataset is limited to a single oncology clinical-trial table and does not include broader clinical domains, longitudinal patient records, or free-text clinical narratives. We note that model performance on this bench-mark should not be interpreted as clinical reliability. In practice, outputs from SC OPE require expert re-view before use in any research or decision-making workflow. Future deployments should include ac-cess controls, logging, and clear user-facing warn-ings about model limitations and the possibility of hallucinated or unsupported outputs. The authors reviewed all technical claims and benchmark con-struction procedures, and any AI-assisted language editing used in manuscript preparation did not af-fect the scientific content or experimental results. 
+
+Acknowledgment 
+
+This research was supported by the Mayo Clinic and Arizona State University Alliance for Health Care Collaborative Research Seed Grant Pro-gram (Award ID: AWD00041508; Sponsor Award ID: ARI-358187) for the project: ‘Artificial intelligence-assisted digital, living, interactive clin-ical practice guidelines for cancer providers and patients 
+
+References 
+
+> Sandhini Agarwal, Lama Ahmad, Jason Ai, Sam Alt-man, Andy Applebaum, Edwin Arbus, Rahul K Arora, Yu Bai, Bowen Baker, Haiming Bao, and 1
+
+9others. 2025. gpt-oss-120b & gpt-oss-20b model card. arXiv preprint arXiv:2508.10925 .Tom Brown, Benjamin Mann, Nick Ryder, Melanie Subbiah, Jared D Kaplan, Prafulla Dhariwal, Arvind Neelakantan, Pranav Shyam, Girish Sastry, Amanda Askell, and 1 others. 2020. Language models are few-shot learners. Advances in neural information processing systems , 33:1877–1901. Wenhu Chen, Hongmin Wang, Jianshu Chen, Yunkai Zhang, Hong Wang, Shiyang Li, Xiyou Zhou, and William Yang Wang. 2019. Tabfact: A large-scale dataset for table-based fact verification. arXiv preprint arXiv:1909.02164 .Zhoujun Cheng, Tianbao Xie, Peng Shi, Chengzu Li, Rahul Nadkarni, Yushi Hu, Caiming Xiong, Dragomir Radev, Mari Ostendorf, Luke Zettlemoyer, and 1 others. 2022. Binding language models in sym-bolic languages. arXiv preprint arXiv:2210.02875 .Edward B Fowlkes and Colin L Mallows. 1983. Amethod for comparing two hierarchical clusterings. 
+
+Journal of the American statistical association ,78(383):553–569. Luyu Gao, Aman Madaan, Shuyan Zhou, Uri Alon, Pengfei Liu, Yiming Yang, Jamie Callan, and Gra-ham Neubig. 2023. Pal: Program-aided language models. In International conference on machine learning , pages 10764–10799. PMLR. Parker Glenn, Parag Dakle, Liang Wang, and Preethi Raghavan. 2024. Blendsql: A scalable dialect for uni-fying hybrid question answering in relational algebra. In Findings of the Association for Computational Linguistics: ACL 2024 , pages 453–466. Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Alex Vaughan, and 1 others. 2024. The llama 3 herd of models. arXiv preprint arXiv:2407.21783 .Jonathan Herzig, Pawel Krzysztof Nowak, Thomas Müller, Francesco Piccinno, and Julian Eisenschlos. 2020. Tapas: Weakly supervised table parsing via pre-training. In Proceedings of the 58th annual meet-ing of the association for computational linguistics ,pages 4320–4333. Alistair EW Johnson, Lucas Bulgarelli, Lu Shen, Alvin Gayles, Ayad Shammout, Steven Horng, Tom J Pol-lard, Sicheng Hao, Benjamin Moody, Brian Gow, and 1 others. 2023. Mimic-iv, a freely accessible elec-tronic health record dataset. Scientific data , 10(1):1. Alistair EW Johnson, Tom J Pollard, Lu Shen, Li-wei H Lehman, Mengling Feng, Mohammad Ghassemi, Benjamin Moody, Peter Szolovits, Leo Anthony Celi, and Roger G Mark. 2016. Mimic-iii, a freely accessi-ble critical care database. Scientific data , 3(1):1–9. Peng Li, Yeye He, Dror Yashar, Weiwei Cui, Song Ge, Haidong Zhang, Danielle Rifinski Fainman, Dong-mei Zhang, and Surajit Chaudhuri. 2024. Table-gpt: Table fine-tuned gpt for diverse table tasks. Proceed-ings of the ACM on Management of Data , 2(3):1–28. Linyong Nan, Chiachun Hsieh, Ziming Mao, Xi Victoria Lin, Neha Verma, Rui Zhang, Wojciech Kry´ sci´ nski, Hailey Schoelkopf, Riley Kong, Xiangru Tang, and 1 others. 2022. Fetaqa: Free-form table question answering. Transactions of the Association for Com-putational Linguistics , 10:35–49. Panupong Pasupat and Percy Liang. 2015. Composi-tional semantic parsing on semi-structured tables. In 
+
+Proceedings of the 53rd Annual Meeting of the As-sociation for Computational Linguistics and the 7th International Joint Conference on Natural Language Processing (Volume 1: Long Papers) , pages 1470– 1480. Tom J Pollard, Alistair EW Johnson, Jesse D Raffa, Leo A Celi, Roger G Mark, and Omar Badawi. 2018. The eicu collaborative research database, a freely available multi-center database for critical care re-search. Scientific data , 5(1):180178. Wenqi Shi, Ran Xu, Yuchen Zhuang, Yue Yu, Jieyu Zhang, Hang Wu, Yuanda Zhu, Joyce C Ho, Carl Yang, and May Dongmei Wang. 2024. Ehragent: Code empowers large language models for few-shot complex tabular reasoning on electronic health records. In Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing ,pages 22315–22339. Özlem Uzuner, Brett R South, Shuying Shen, and Scott L DuVall. 2011. 2010 i2b2/va challenge on concepts, assertions, and relations in clinical text. 
+
+Journal of the American Medical Informatics Associ-ation , 18(5):552–556. Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Fei Xia, Ed Chi, Quoc V Le, Denny Zhou, and 1 others. 2022. Chain-of-thought prompting elic-its reasoning in large language models. Advances in neural information processing systems , 35:24824– 24837. An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, and 1 others. 2025. Qwen3 technical report. arXiv preprint arXiv:2505.09388 .Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak Shafran, Karthik R Narasimhan, and Yuan Cao. 2022. React: Synergizing reasoning and acting in language models. In The eleventh international conference on learning representations .Pengcheng Yin, Graham Neubig, Wen-tau Yih, and Se-bastian Riedel. 2020. Tabert: Pretraining for joint understanding of textual and tabular data. In Proceed-ings of the 58th annual meeting of the association for computational linguistics , pages 8413–8426. 
+
+10 Tao Yu, Rui Zhang, Kai Yang, Michihiro Yasunaga, Dongxu Wang, Zifan Li, James Ma, Irene Li, Qingn-ing Yao, Shanelle Roman, and 1 others. 2018. Spider: A large-scale human-labeled dataset for complex and cross-domain semantic parsing and text-to-sql task. In Proceedings of the 2018 conference on empiri-cal methods in natural language processing , pages 3911–3921. Victor Zhong, Caiming Xiong, and Richard Socher. 2017. Seq2sql: Generating structured queries from natural language using reinforcement learning. arXiv preprint arXiv:1709.00103 .
+
+11 A Supplementary Material 
+
+A.1 Planner Prompts 
+
+We provide the three inference-time prompt vari-ants used by SC OPE below. Together, they imple-ment the core stages of the pipeline: the selector-executor prompt identifies the candidate rows rele-vant to the question, the planner prompt converts the question and candidate table into an explicit reasoning plan, and the planner-executor prompt uses that plan to produce the final row-aligned pre-dictions. Including these prompts makes clear how SC OPE externalizes row grounding, source-field selection, and answer generation rather than leav-ing them implicit in a single generation step. 
+
+Prompt A: Plan Executor 
+
+You are the final executor stage of a clinical-trials 
+
+,→ table reasoning system. Use the planner plan and the visible candidate table to 
+
+,→ derive the answer for each row. Return ONLY valid JSON in this exact shape: {"predictions":[{"table_row_id": 1, "answer": ...}]} Rules: - Return one prediction for each row in the candidate 
+
+,→ table. - Use the integer "rowid" values from the candidate table 
+
+,→ as table row id. - Use the planner’s inferred source column and derivation 
+
+,→ rules when helpful. - Derive the answer from visible values and visible row 
+
+,→ context. - Do not assume the answer already appears verbatim in the 
+
+,→ table. - Follow the planner’s normalization rules whenever 
+
+,→ possible. - Do not add explanations outside the JSON. 
+
+Prompt B: Planner 
+
+You are the planner stage of a clinical-trials hybrid 
+
+,→ querying system. Overall context: {{overall_context}} Your job is to understand the essence of the question and 
+
+,→ help another model derive the answer implied by 
+
+,→ the question for each selected row. The answer may need classification, normalization, 
+
+,→ extraction, boolean inference, or simple 
+
+,→ transformation. Focus on what must be derived from visible source values 
+
+,→ and row context. Return ONLY valid JSON in this exact shape: {"task_type": "derive_answer_for_selected_rows", "inferred_source_column": "...", "derived_field_description": "...", "answer_type": "string|boolean|number|list|object", "relevant_columns": ["__rowid__", "..."], "row_filter_restatement": "...", "derivation_rules": ["...", "..."], "normalization_rules": ["...", "..."], "output_constraints": ["...", "..."], "notes": "..." }
+
+Guidance: - ‘inferred_source_column‘ should name the visible column 
+
+,→ that most likely contains the source evidence the 
+
+,→ executor should derive from. - ‘relevant_columns‘ should be a focused subset of the 
+
+,→ visible headers that the executor needs in the 
+
+,→ final step. - ‘derivation_rules‘ should explain how to derive the 
+
+,→ answer from visible source values and context. - ‘normalization_rules‘ should specify canonical output 
+
+,→ formatting when relevant. Question: {{question}} Visible headers: {{headers_json}} Candidate row count: {{candidate_row_count}} Candidate preview JSON: {{candidate_preview_json}} 
+
+Prompt C: Selector-Executor 
+
+You are the executor stage of a clinical-trials table 
+
+,→ reasoning system. Your current job is only to identify which visible rows 
+
+,→ satisfy the question. Do not derive the final answer yet. Return ONLY valid JSON in this exact shape: {"selected_row_ids":[1,2,3],"selection_reason":"..."," 
+
+,→ needs_derivation":true} Rules: - Use only the visible table content. - Use the integer "__rowid__" values from the table. - If no rows satisfy the question, return {" 
+
+,→ selected_row_ids":[],"selection_reason":"..."," 
+
+,→ needs_derivation":true}. - Do not add explanations outside the JSON. Question: {{question}} Visible headers: {{headers_json}} Visible table (CSV): {{table_csv_text}} 
+
+A.2 Prompting Baselines 
+
+We provide the prompting templates used for the direct prompting baselines below. These are the prompts utilized by each of the direct prompting baselines that attempt to solve the reasoning ques-tions in a single LLM call. 
+
+Prompt D: Zero-Shot Prompt 
+
+You are an expert clinical-trial table reasoning system. The task is to answer a question over the visible clinical 
+
+,→ -trials table. Rules: 1. Use only the visible CSV table below. The column " 
+
+,→ __rowid__" uniquely identifies each visible row. 2. Do not use outside knowledge, hidden columns, or 
+
+,→ unstated assumptions. 3. Determine which visible rows satisfy the question. 
+
+12 4. For each matching row, derive the answer from the 
+
+,→ visible row content when the question requires 
+
+,→ classification, normalization, extraction, or 
+
+,→ transformation. 5. Return ONLY valid JSON in this exact shape: {"predictions":[{"table_row_id": 1, "answer": ...}]} 6. Use the integer __rowid__ values from the table as 
+
+,→ table_row_id. 7. Return one prediction for each row that satisfies the 
+
+,→ question. 8. If no rows satisfy the question, return {"predictions 
+
+,→ ":[]}. 9. The answer may be a string, boolean, number, list, or 
+
+,→ object. 10. Do not add explanations, markdown, or any text outside 
+
+,→ the JSON object. Question: {{question}} Visible table (CSV): {{table_csv_text}} 
+
+Prompt E: Few-Shot Prompt 
+
+You are answering a table question using only the visible 
+
+,→ CSV table below. The column "__rowid__" uniquely identifies each visible 
+
+,→ row. Use only the visible table content. Do not use outside 
+
+,→ knowledge. Return ONLY valid JSON in this exact shape: {"predictions":[{"table_row_id": 1, "answer": ...}]} Return one prediction for each row that satisfies the 
+
+,→ question. Use the integer __rowid__ values from the table as 
+
+,→ table_row_id. If no rows satisfy the question, return {"predictions":[]}. 
+
+,→
+
+The answer may be a string, boolean, number, list, or 
+
+,→ object. Do not add explanations. Here are examples. Example 1 Question: In Small Cell Lung trials, classify the ICI by 
+
+,→ target class from its generic name as PD-1, PD-L1 
+
+,→ , or CTLA-4. Visible table (CSV): __rowid__,NCT,PubMed ID,Trial name,Name of ICI,Cancer type 101,NCT02763579,30280641,IMPower 133,Atezolizumab,Small 
+
+,→ Cell Lung 102,NCT03043872,31590988,CASPIAN,Durvalumab,Small Cell 
+
+,→ Lung 103,NCT03066778,32468956,KEYNOTE-604,Pembrolizumab,Small 
+
+,→ Cell Lung 104,NCT01450761,27458307,CA184-156,Ipilimumab,Small Cell 
+
+,→ Lung Correct JSON: {"predictions":[{"table_row_id":101,"answer":"PD-L1"},{" 
+
+,→ table_row_id":102,"answer":"PD-L1"},{" 
+
+,→ table_row_id":103,"answer":"PD1"},{"table_row_id 
+
+,→ ":104,"answer":"CTLA-4"}]} Example 2 Question: In Head and Neck trials, from the secondary 
+
+,→ endpoint text flag if immune-related adverse 
+
+,→ events (irAEs) were explicitly assessed. Visible table (CSV): __rowid__,NCT,PubMed ID,Trial name,Secondary endpoint, 
+
+,→ Cancer type 201,NCT02105636,27718784,CheckMate 141,"PFS, ORR",Head and 
+
+,→ Neck 202,NCT02358031,31679945,KEYNOTE-048,"Safety and 
+
+,→ tolerability; proportion of participants with 
+
+,→ objective response",Head and Neck 203,NCT02369874,32294530,EAGLE,"PFS, ORR, DOR",Head and 
+
+,→ Neck 
+
+Correct JSON: {"predictions":[{"table_row_id":201,"answer":false},{" 
+
+,→ table_row_id":202,"answer":false},{"table_row_id 
+
+,→ ":203,"answer":false}]} Now answer the real question. Question: {{question}} Visible table (CSV): {{table_csv_text}} 
+
+Prompt F: Chain-of-Thought Prompt 
+
+You are an expert table reasoning agent. The task is to answer cancer drug trial questions using 
+
+,→ only the visible CSV table. You MUST follow the reasoning scaffold below, but do NOT 
+
+,→ show your work. Use only the visible table content. Do not use outside 
+
+,→ knowledge. STRICT OUTPUT FORMAT: * Return ONLY valid JSON. * The JSON MUST have this exact top-level shape: {"predictions":[{"table_row_id": 1, "answer": ...}]} * Do not output any text before or after the JSON. TABLE RULES (STRICT): * The column "__rowid__" uniquely identifies each visible 
+
+,→ row. * Return one prediction for each row that satisfies the 
+
+,→ question. * Use the integer "__rowid__" values from the visible 
+
+,→ table as ‘table_row_id‘. * If no rows satisfy the question, return {"predictions 
+
+,→ ":[]}. * The answer may be a string, boolean, number, list, or 
+
+,→ object. * Do not output your reasoning. * Do not add explanations. REASONING SCAFFOLD TO FOLLOW INTERNALLY (do not skip steps 
+
+,→ , keep this order in your reasoning, but do NOT 
+
+,→ reveal it): 1. Normalize terms: * Rewrite question terms so they match visible table 
+
+,→ headers or values when possible. * Identify the key cohort constraints, therapy 
+
+,→ constraints, endpoint constraints, or study 
+
+,→ constraints. 2. Identify intent: * State internally what the question is asking for. * Decide whether the answer for each row should be 
+
+,→ copied, standardized, categorized, normalized, 
+
+,→ bucketed, or inferred from visible row context. 3. Map to visible columns: * List internally which visible columns correspond to 
+
+,→ the filtering conditions. * Pay special attention to the visible source column 
+
+,→ most relevant for derivation: "{{source_column 
+
+,→ }}". * Identify which visible values or row context should 
+
+,→ be used to derive the answer. 4. Select matching rows: * Keep only rows that satisfy all requested conditions. * Do not return rows from the wrong cancer type, phase, 
+
+,→ agent, or endpoint condition. 5. Derive the answer per row: 
+
+13 * For each selected row, compute the final answer 
+
+,→ carefully from visible row evidence. * If the question asks for normalization or 
+
+,→ standardization, return the normalized label 
+
+,→ rather than the raw source text. * If the question asks for a boolean, return true/false. 
+
+,→
+
+* If the question asks for categorization or bucketing, 
+
+,→ return the category label. 6. Emit final JSON: * Return only the final JSON predictions. GOOD EXAMPLE (CORRECT ROW SELECTION + DERIVATION): Question: In Small Cell Lung trials, classify the ICI by target 
+
+,→ class from its generic name as PD-1, PD-L1, or 
+
+,→ CTLA-4. Visible table (CSV): __rowid__,Cancer type,Name of ICI,Trial name 101,Small Cell Lung,Atezolizumab,IMpower133 102,Small Cell Lung,Pembrolizumab,KEYNOTE-604 103,Breast,Ipilimumab,Example trial Correct reasoning pattern internally: 1. Normalize terms: * "Small Cell Lung" matches the visible cancer type. * "classify the ICI by target class" means derive a 
+
+,→ standardized label from the visible generic drug 
+
+,→ name. 2. Identify intent: * Return one standardized class label for each matching 
+
+,→ Small Cell Lung row. 3. Map to visible columns: * Filter by "Cancer type" = Small Cell Lung. * Derive answer from "Name of ICI". 4. Select matching rows: * Keep row 101 and row 102. * Exclude row 103 because it is Breast, not Small Cell 
+
+,→ Lung. 5. Derive the answer per row: * Atezolizumab -> PD-L1 * Pembrolizumab -> PD-1 6. Emit final JSON only. Correct output: {"predictions":[{"table_row_id":101,"answer":"PD-L1"},{" 
+
+,→ table_row_id":102,"answer":"PD-1"}]} BAD EXAMPLE (INCORRECT / WHAT NOT TO DO): Question: In Small Cell Lung trials, classify the ICI by target 
+
+,→ class from its generic name as PD-1, PD-L1, or 
+
+,→ CTLA-4. Visible table (CSV): __rowid__,Cancer type,Name of ICI,Trial name 101,Small Cell Lung,Atezolizumab,IMpower133 102,Small Cell Lung,Pembrolizumab,KEYNOTE-604 103,Breast,Ipilimumab,Example trial Incorrect output: {"predictions":[{"table_row_id":101,"answer":"PD-1"},{" 
+
+,→ table_row_id":102,"answer":"PD-1"},{"table_row_id 
+
+,→ ":103,"answer":"CTLA-4"}]} Why this is wrong internally: * It misclassifies Atezolizumab. * It includes a row from the wrong cancer type. * It does not enforce the filtering condition before 
+
+,→ deriving answers. GOOD EXAMPLE (BOOLEAN DERIVATION): Question: In Esophageal/GEJ trials, convert Original publication or 
+
+,→ Follow-up status into a boolean is_follow_up. Visible table (CSV): 
+
+__rowid__,Cancer type,Originial publication or Follow-up, 
+
+,→ Trial name 201,Esophageal/GEJ,Original publication,KEYNOTE-590 202,Esophageal/GEJ,Follow-up,CHECKMATE-648 203,Melanoma,Follow-up,Other trial Correct output: {"predictions":[{"table_row_id":201,"answer":false},{" 
+
+,→ table_row_id":202,"answer":true}]} Now, answer the following. Question: {{question}} Visible table (CSV): {{table_csv_text}} 
+
+14 A.3 Question Metadata  
+
+> Figure 4: Example benchmark instance from the clinical trial reasoning dataset. The top panel shows the metadata JSON for question gen_row_388 , including the natural-language question, the visible source column used for reasoning ( Name of ICI ), the hidden target column withheld at inference time ( Class of ICI ), the model’s raw and parsed row-aligned predictions, and token-level generation metadata. The bottom panel shows the first 20 rows of the corresponding visible table copy provided to the model during inference. In this example, the task is to identify Head and Neck Phase 3 monotherapy trials and infer the immune checkpoint inhibitor target class (PD-1, PD-L1, or CTLA-4) from the generic ICI name
+
+This section provides a representative example of the benchmark record format used in our exper-iments. It clarifies what information is exposed to the model at inference time, what target infor-mation is deliberately withheld for evaluation, and what prediction artifacts are stored for later anal-ysis. More concretely, the example shows the natural-language question, the visible evidence-bearing column used for reasoning, the hidden tar-get column omitted during inference, the model’s raw response, the parsed row-aligned predictions used for scoring, and token-level generation meta-data. The lower panel shows the corresponding visible table copy provided to the model. This makes clear that benchmark items are constructed to test grounded inference over visible evidence rather than direct retrieval from an explicit answer field. 15 A.4 Error Analysis by Question Intent                     
+
+> Intent Category Typical Question Intent N∆F1 ∆RJ Schema / structural labeling Interpret compact schema-level fields or map them into standard-ized labels, such as PD-L1 requirement flags, number of arms, or clinical setting labels. 168 +4.93 +7.94
+> Normalization / classifica-tion
+> Normalize visible values into canonical labels or booleans, such as control-arm type, combination type, or ICI class/brand mappings. 341 +1.36 +2.30
+> Structured extraction Extract agents, regimen names, chemotherapy backbones, or dos-ing schedules from treatment/control text. 433 +0.84 +2.08
+> Endpoint reasoning Determine endpoint role or related semantics from endpoint text, for example whether a listed endpoint is primary or secondary. 181 +0.45 +1.21
+> Bucketing / discretization Bucket continuous or ordinal values such as year, trial phase, sam-ple size, or follow-up maturity into standardized categories. 254 -0.81 +0.15
+> Metadata normalization / extraction
+> Recover or normalize metadata-derived values such as trial acronyms or PubMed-based identifiers. 123 -0.90 -0.92
+
+Table 6: Paired error-analysis summary by question intent for SC OPE (GPT-OSS executor, Llama-3.3 planner) versus the GPT-OSS chain-of-thought baseline. Questions are grouped heuristically by dominant intent. Positive ∆
+
+values indicate higher average per-question performance for SC OPE. 
+
+We perform a paired error analysis against the GPT-OSS chain-of-thought baseline to understand where SC OPE helps and where it remains brittle. We compare the same 1,500 benchmark questions under two settings: (i) SC OPE with a GPT-OSS ex-ecutor and a Llama-3.3 planner, and (ii) GPT-OSS CoT prompting. For each question, we compute 
+
+∆F1 and ∆RJ as the difference between SC OPE and the baseline, then group questions into broad intent categories using lightweight heuristics over the question templates. These categories are in-tended to capture the dominant reasoning demand of a question rather than define a formal ontology. Several patterns emerge. SC OPE helps most on schema-centric questions, with the largest gains on 
+
+Schema / structural labeling , and it also improves 
+
+Normalization / classification and Structured ex-traction . This suggests that explicit planning is especially useful when the task depends on identi-fying the correct evidence field and applying a con-strained transformation over visible table content. 
+
+Endpoint reasoning also shows modest positive gains, indicating that planning helps with semantic disambiguation even when the source text remains noisy or underspecified. The weakest categories are Bucketing / dis-cretization and Metadata normalization / extrac-tion . These questions often depend on exact thresh-olds, formatting conventions, acronym handling, or brittle string normalization, so errors can persist even when the correct rows and source fields are identified. Notably, the strongest categories show larger gains in ∆RJ than in ∆F1, suggesting that the main benefit of explicit planning is improved row-level grounding and alignment rather than only better aggregate answer recovery. Overall, the anal-ysis indicates that SC OPE is most effective when the main challenge is schema grounding and trans-formation intent, and less effective when the re-maining difficulty lies in exact normalization or surface-form matching. 16

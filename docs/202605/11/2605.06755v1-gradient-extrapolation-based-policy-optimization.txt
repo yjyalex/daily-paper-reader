@@ -1,0 +1,1797 @@
+Title: Gradient Extrapolation-Based Policy Optimization
+
+URL Source: https://arxiv.org/pdf/2605.06755v1
+
+Published Time: Mon, 11 May 2026 00:06:25 GMT
+
+Number of Pages: 26
+
+Markdown Content:
+# Gradient Extrapolation-Based Policy Optimization 
+
+Ismam Nur Swapnil 1 Aranya Saha 2∗ Tanvir Ahmed Khan 3
+
+Mohammad Ariful Haque 1 Ser-Nam Lim 41Bangladesh University of Engineering and Technology 
+
+> 2
+
+University of Maryland, College Park 
+
+> 3
+
+Illinois Institute of Technology 4University of Central Florida 
+
+## Abstract 
+
+Reinforcement learning is widely used to improve the reasoning ability of large language models, especially when answers can be automatically checked. Stan-dard GRPO-style training updates the model using only the current step, while full multi-step lookahead can give a better update direction but is too expensive because it needs many backward passes. We propose Gradient Extrapolation-Based Policy Optimization (GXPO) , a plug-compatible policy-update rule for GRPO-style reasoning RL. GXPO approximates a longer local lookahead using only three backward passes during an active phase. It reuses the same batch of rollouts, rewards, advantages, and GRPO loss, so it does not require new rollouts or reward computation at the lookahead points. GXPO takes two fast optimizer steps, measures how the gradients change, predicts a virtual K-step lookahead point, moves the policy partway toward that point, and then applies a corrective update using the true gradient at the new position. When the lookahead signal becomes unstable, GXPO automatically switches back to standard single-pass GRPO. We also give a plain-gradient-descent surrogate analysis that explains when the extrapolation is exact and where its local errors come from. Across Qwen2.5 and Llama math-reasoning experiments, GXPO improves the average sampled pass@1 by +1.65 to +5.00 points over GRPO and by +0.14 to +1.28 points over the strongest SFPO setting, while keeping the active-phase cost fixed at three backward passes. It also achieves up to 4.00 × step speedup, 2.33 × wall-clock speedup, and 1.33 × backward-pass speedup in reaching GRPO’s peak accuracy. 
+
+## 1 Introduction 
+
+Policy-gradient reinforcement learning underlies modern language-model alignment and reasoning (Sutton et al., 1999; Williams, 1992; Schulman et al., 2017). In reinforcement learning with verifiable rewards (RLVR), models generate candidate solutions, receive verifiable rewards, and update the policy with first-order gradients (Shao et al., 2024; Yu et al., 2025). This setting is central to MATH and GSM8K-style reasoning benchmarks, where correctness can be checked automatically after long-form generation (Hendrycks et al., 2021; Cobbe et al., 2021). At LLM scale, each added backward pass multiplies training time and memory, putting update quality in tension with per-step cost during repeated post-training iterations. Single-step methods such as PPO and GRPO avoid this cost but use only the current-policy gradient (Schulman et al., 2017; Shao et al., 2024). Explicit lookahead recovers trajectory information by paying for it: h-step policy mirror descent improves regularized policy iteration (Protopapas and Barakat, 2024), tree-expansion policies reduce policy-gradient variance (Dalal et al., 2025), and online 
+
+> ∗Work done before joining the University of Maryland, College Park. Preprint.
+> arXiv:2605.06755v1 [cs.LG] 7 May 2026
+
+Figure 1: Overall GXPO training framework. Each active step performs three backward passes: two probe gradients during gradient extrapolation and one corrective gradient gslow at the repositioned point ˜θt. The slow correction is always applied at the current step. After the update, the z-score gate checks ∥gslow ∥; if Z > τ , all subsequent steps permanently fall back to single-pass GRPO. or adaptive planning uses learned-model rollouts for action selection (Sikchi et al., 2021; Rosenberg et al., 2023). These methods rely on planning, tree expansion, or auxiliary value/model estimates rather than the rollout batch already in hand, making them difficult to drop into standard GRPO-style reasoning pipelines without changing the data path. Recent LLM reasoning-RL work improves stability and efficiency through objectives, values, entropy control, filtering, rewards, recipes, or off-policy reuse (Liu et al., 2025; Dai et al., 2025; Yue et al., 2025; Xiong et al., 2025; Cui et al., 2025; Wen et al., 2025; Fatemi et al., 2025; Shen et al., 2025; Mroueh, 2025; Mroueh et al., 2025), and through sample selection, down-sampling, selective rollouts, few-example training, test-time scaling, or RLHF/generation-system acceleration (Chen et al., 2024; Xia et al., 2024; Ye et al., 2025; Li et al., 2025; Xu et al., 2026; Wang et al., 2025; Zheng et al., 2025; Muennighoff et al., 2025; Sheng et al., 2025; Kwon et al., 2023; He et al., 2025). GXPO is orthogonal: it keeps the rollout batch, rewards, advantages, and GRPO loss unchanged, and only changes the policy update. This makes the update rule a narrow intervention, not a new reasoning-RL training recipe or reward pipeline component. Optimizer-side lookahead is closer to our setting. The Lookahead optimizer interleaves fast inner steps with a slow update (Zhang et al., 2019; Zhou et al., 2021), and SFPO ports this idea to policy optimization with K fast inner steps before a slow correction (Wang et al., 2026)—paying K+1 
+
+backward passes per update. The question we address is whether a policy update can gain similar gradient-trajectory information to explicit lookahead methods without increasing the number of backward passes. 
+
+We introduce Gradient Extrapolation-Based Policy Optimization (GXPO) , a GRPO-compatible update that approximates K local policy-gradient steps with three backward passes, independent of virtual depth K (see Figure 1). GXPO reuses the rollout batch, rewards, advantages, and regular-ization; estimates a per-coordinate retention ratio ri = g1,i /g 0,i from two probe gradients; moves toward the geometric displacement; and applies a corrective gradient at the repositioned policy, so the final step remains anchored to the true objective rather than the extrapolated prediction. A rolling z-score gate falls back to a single-pass update when the corrective-gradient norm becomes unstable during training. Our contributions are: • A GRPO-compatible update with three active-phase backward passes for any virtual looka-head depth K, using two probe gradients, geometric extrapolation, and one corrective gradient; • A fixed-batch implementation that reuses rollouts, rewards, advantages, loss, and regulariza-tion, with a gate that reverts to the base single-pass update when the local trajectory signal becomes unreliable; 2• A local quadratic surrogate analysis, plus benchmark, budget, ablation, and diagnostic evidence across two model families. 
+
+## 2 Method: Gradient Extrapolation-Based Policy Optimization 
+
+GXPO replaces a single GRPO update with a three-step update, while reusing the same rollouts, rewards, advantages, and objective, so no additional data or reward computation is required. During training, it first takes two quick optimization steps using the base actor optimizer (AdamW in our experiments (Loshchilov and Hutter, 2019)) and observes how the parameters change. It then uses this change to estimate the direction of the update, moves partway in that direction, and applies one final corrective step. The theory studies a simplified version to clarify this behavior, while the experiments evaluate the method under the chosen optimizer. 
+
+Setup and notation. Let θ ∈ Rd parameterise the policy and let L(θ) be the GRPO loss. Write 
+
+g(θ) = ∇θ L(θ), H(θ) = ∇2 
+
+> θ
+
+L(θ), and gn = g(θn). Let η > 0 be the learning rate and K the virtual depth. 
+
+2.1 From Taylor Expansion to Geometric Scaling 
+
+GXPO needs a cheap way to estimate how the gradient would change over several nearby steps. The local intuition is simple: if the loss curvature is approximately stable near θ0, then the gradient evolution can be approximated by a predictable local recurrence. Under a coordinate-wise surrogate, this means that each gradient coordinate retains a measurable fraction of its previous value. A Taylor expansion makes this intuition precise. Around θ0,
+
+g(θ0 + ∆) = g(θ0) + H(θ0) ∆ + R2(∆) , ∥R2(∆) ∥ ≤ M3 
+
+> 2
+
+∥∆∥2, (1) where M3 = sup ξ ∥∇ 3L(ξ)∥. Dropping the remainder gives the local quadratic model g(θ0 + ∆) ≈
+
+g0 + H0∆.
+
+Assumption 1 (Local quadratic model) . The Hessian is fixed at H0 within the local extrapolation region. 
+
+This assumption is used only for extrapolation: small learning rates keep probes local, and the final update still uses the true gradient at the repositioned point. In the plain-GD surrogate, for one gradient step θ1 = θ0 − ηg 0, the model gives 
+
+g1 = g0 − η H 0 g0 = ( I − η H 0) g0. (2) Repeating this recurrence yields: 
+
+Theorem 1 (Gradient evolution under the local quadratic model) . Under Assumption 1, the gradient at the n-th gradient descent iterate θn = θn−1 − η g n−1 satisfies 
+
+gn = ( I − η H 0)n g0. (3) See Appendix A.1 for the proof. 
+
+2.2 The Per-Parameter Retention Ratio 
+
+The full local recurrence involves the Hessian, which is impossible to form or multiply at LLM scale. GXPO therefore measures gradient evolution directly from two nearby gradients. For each sufficiently active coordinate, the ratio g1,i /g 0,i estimates how much of that coordinate’s gradient is retained after one local step. This ratio is not treated as an exact Hessian quantity in the implemented optimizer update; it is an empirical signal measured along the realized fast optimizer trajectory. Formally, for active coordinates, GXPO defines 
+
+ri ≡ g1,i 
+
+g0,i 
+
+. (4) In the plain-GD surrogate, where θ1 = θ0 − ηg 0, the local quadratic model gives 
+
+ri = 1 − η [H0g0]i
+
+g0,i 
+
+.
+
+3In finite precision, Algorithm 1 evaluates this ratio only on the active set At = {i : |gt, 0 
+
+> i
+
+| > δ }. For 
+
+i / ∈ A t, no ratio is formed and the observed two-probe displacement is kept. On active coordinates, 
+
+ri measures local gradient retention: ri ≈ 1 is nearly flat, 0 < r i < 1 is contraction, and ri < 0
+
+indicates overshoot. The per-parameter gradient dynamics are approximated by a coordinate-wise geometric sequence: 
+
+gn,i ≈ rni g0,i . (5) In the plain-GD surrogate, this is exact for diagonal Hessians. For general Hessians, Appendix A.3 and Appendix A.5 bound the effects of off-diagonal coupling and Taylor remainder. 
+
+2.3 Scaled K-Step Extrapolation and Repositioning 
+
+The two fast steps give a short observed displacement, but GXPO wants to approximate a longer K-step lookahead without taking all K steps. If a coordinate’s gradient follows the measured retention pattern, then the displacement over K steps is a scaled version of the observed two-step displacement. GXPO uses this geometric scale to predict a longer lookahead point, but moves only partway toward it using α to reduce the effect of extrapolation error. In the GD surrogate, the K-step displacement is 
+
+θK − θ0 = −η
+
+> K−1
+
+X
+
+> n=0
+
+gn.
+
+GXPO uses this identity only to motivate the geometric scaling rule. In the implemented optimizer-state-aware version, GXPO instead observes the actual two-step optimizer displacement θ2 − θ0
+
+and scales this measured displacement. Therefore, the method does not require the implemented optimizer displacement to equal a sum of raw gradients. Using the geometric model in (5), coordinate i moves approximately as 
+
+[θK − θ0]i ≈ − η g 0,i K−1X
+
+> n=0
+
+rni = −η g 0,i 
+
+1 − rKi
+
+1 − ri
+
+(ri̸ = 1) . (6) GXPO already observes the two-step displacement θ2 − θ0. It converts this into a K-step estimate by multiplying each coordinate by the ratio of the K-step geometric sum to the two-step geometric sum: 
+
+scale i = Si(K)
+
+Si(2) , Si(n) = 1 − rni
+
+1 − ri
+
+, (7) which simplifies to (1 − rKi )/(1 − r2 
+
+> i
+
+) for ri̸ = 1 . The predicted K-step point is then 
+
+θK = θ0 + ( θ2 − θ0) ⊙ scale . (8) GXPO then moves only partway toward this prediction: 
+
+˜θ = θ0 + α(θK − θ0). (9) Here α ∈ [0 , 1] controls the reposition strength: α = 0 ignores the prediction entirely, while α = 1 
+
+adopts it fully. The small denominator terms in (7) serve as numerical stabilizers. The theory in §2.4 and Appendix A analyzes the clean version of this rule. Since the extrapolated point is only a prediction, GXPO does not directly trust the extrapolated gradient. Instead, it evaluates the true loss gradient at the repositioned point, gslow = ∇θ L(˜θ). This corrective gradient anchors the update back to the actual objective and reduces the risk of following an inaccurate geometric prediction. The final optimizer step uses gslow rather than the extrapolated prediction. For stateful optimizers such as AdamW, the two fast steps update the optimizer state, GXPO manually repositions the parameters to ˜θ, and the third step is taken using gslow . The analysis below studies the corresponding gradient-descent surrogate. 
+
+Adaptive rule in practice. GXPO uses geometric extrapolation only when the local training behavior appears stable. Since gradient norms naturally change during training, a fixed absolute threshold is unreliable. Instead, GXPO maintains a rolling buffer of recent corrective-gradient 4Algorithm 1 GXPO: Gradient Extrapolation-Based Policy Optimization 
+
+Require: Parameters θ0 ∈ Rd; learning rate η; virtual steps K; blend α; stability δ; trigger threshold 
+
+τ ; 
+
+> 1:
+
+Initialize: rolling buffer B ← ∅ , s ⋆ ← +∞ 
+
+> 2:
+
+for each training step t = 0 , 1, 2, . . . do  
+
+> 3:
+
+gt, 0 ← ∇ θ L(θt) ∈ Rd ▷ Backward pass 1  
+
+> 4:
+
+if t < s ⋆ then ▷ Active phase: coordinate-wise geometric extrapolation  
+
+> 5:
+
+θt, 1 ← OptimStep( θt, g t, 0) ▷ First fast optimizer step  
+
+> 6:
+
+gt, 1 ← ∇ θ L(θt, 1) ∈ Rd ▷ Backward pass 2  
+
+> 7:
+
+θt, 2 ← OptimStep( θt, 1, g t, 1) ▷ Second fast optimizer step  
+
+> 8:
+
+At ← { i ∈ [d] : |gt, 0 
+
+> i
+
+| > δ } ▷ Active coordinates  
+
+> 9:
+
+rti ← gt, 1 
+
+> i
+
+/g t, 0 
+
+> i
+
+, ∀i ∈ A t ▷ Retention ratio  
+
+> 10:
+
+Sti (n) ← 1 − (rti )n
+
+1 − rti
+
+, ∀i ∈ A t ▷ Geometric sum  
+
+> 11:
+
+scale ti ←
+
+
+
+Sti (K)
+
+Sti (2) , i ∈ A t,
+
+1, i / ∈ A t,▷ Extrapolation factor  
+
+> 12:
+
+θt,K ← θt + ( θt, 2 − θt) ⊙ scale t ▷ Extrapolate  
+
+> 13:
+
+eθt ← θt + α(θt,K − θt) ▷ Reposition  
+
+> 14:
+
+gt 
+
+> slow
+
+← ∇ θ L(eθt) ∈ Rd ▷ Backward pass 3  
+
+> 15:
+
+θt+1 ← OptimStep( eθt, g t
+
+> slow
+
+) ▷ Slow correction  
+
+> 16:
+
+if len( B) > 1 then  
+
+> 17:
+
+Compute rolling statistics μt and σt from the current buffer B 
+
+> 18:
+
+Zt ← ∥gt
+
+> slow
+
+∥2 − μt
+
+σt + ϵ ▷ Adaptive rule in §2.3  
+
+> 19:
+
+if Zt ≥ τ then  
+
+> 20:
+
+s⋆ ← t + 1 ▷ Permanently disable extrapolation  
+
+> 21:
+
+end if  
+
+> 22:
+
+end if  
+
+> 23:
+
+Update rolling buffer B with ∥gt
+
+> slow
+
+∥2 
+
+> 24:
+
+else  
+
+> 25:
+
+θt+1 ← OptimStep( θt, g t, 0) ▷ Fallback phase: single-step GRPO  
+
+> 26:
+
+end if  
+
+> 27:
+
+end for 
+
+norms and uses it as a local baseline for the current training stage. If the corrective gradient at the repositioned point becomes unusually large relative to this recent history, GXPO treats the extrapolation as unreliable and disables it; training then continues with the same single-pass GRPO update as the base trainer. Formally, before inserting the current norm into the buffer, let μt and σt be the mean and standard deviation of the past w corrective-gradient norms, and define 
+
+Zt = ∥g(t)slow ∥2 − μt
+
+σt + ϵ , (10) where ϵ > 0. During warm-up, GXPO only fills the buffer. If Zt ≥ τ , it sets s⋆ = t + 1 and reverts to single-backward-pass GRPO for all subsequent steps. Thus, extrapolation is disabled whenever the corrective-gradient norm exhibits a sharp upward shift relative to its recent baseline. Over T steps, the backward-pass budget becomes 3s⋆ + ( T − s⋆) instead of 3T .
+
+2.4 Surrogate Analysis 
+
+The analysis below explains the parameter-space extrapolation used by GXPO through a plain-gradient-descent surrogate. In this surrogate, we can show when the geometric scaling is exact, where its errors come from, and which diagnostics should be checked in practice. The implemented method 5still uses the chosen actor optimizer, AdamW in our experiments, so the surrogate should be read as a model of the extrapolation geometry rather than the full stateful optimizer dynamics of LLM training. We first consider the clean case where the coordinate-wise geometric model is exact. 
+
+Corollary 2 (Diagonal-quadratic GD-surrogate sanity check) . Consider the global diagonal quadratic loss 
+
+L(θ) = 12 θ⊤H0θ, H0 = diag( h1, . . . , h d), hi > 0, ηh i ≤ 1.
+
+Assume all nonzero-gradient coordinates are active, finite-precision stabilizers are omitted, and 
+
+α = 1 . Let 
+
+μ := min  
+
+> i
+
+hi > 0, ρ := (1 − ημ )2 ∈ [0 , 1) .
+
+Then one clean GXPO outer step with three backward passes reaches the same point as K + 1 
+
+plain-GD steps: 
+
+θGXPO  
+
+> new
+
+= θGD 
+
+> K+1
+
+,
+
+and consequently, after B ∈ 3N backward passes, 
+
+L
+
+
+
+θGXPO 
+
+> B/ 3
+
+
+
+≤ ρ(K+1) B/ 3L(θ0),
+
+hence, if 0 < ρ < 1,
+
+BGXPO = O
+
+ 3
+
+K + 1 log 1
+
+ε
+
+
+
+.
+
+This is only an algebraic sanity check: in the easiest case, the extrapolated point lands exactly where multiple GD steps would land. Appendix A.6 proves Corollary 2. 
+
+Real losses are not diagonal quadratics, so the next result bounds the local error of the GD surrogate. 
+
+Theorem 3 (Local displacement-error bound for the GD surrogate) . Suppose K ≥ 2, L ∈ C3,
+
+sup ξ ∥∇ 3L(ξ)∥ ≤ M3, and the true GD trajectory satisfies 
+
+sup 
+
+> 0≤n<K
+
+∥g(θtrue  
+
+> n
+
+)∥ ≤ G. 
+
+Let ρ⋆ ≥ 1 and ρ⋆ ≥ ∥ I − ηH 0∥. Split coordinates into 
+
+A = {i : |g0,i | > δ }, S = Ac.
+
+Consider the clean active-set surrogate that uses empirical ratios on A and the observed two-probe displacement on S. If the active empirical ratios and diagonal surrogate rates are bounded by R,then 
+
+∥θemp  
+
+> K
+
+− θtrue  
+
+> K
+
+∥ ≤ Eoff + Eratio + Enonquad ,
+
+where Eoff comes from off-diagonal Hessian coupling, Eratio from empirical-ratio error and inactive-coordinate fallback, and Enonquad from the Taylor remainder. The explicit constants are given in Theorem 8, Lemma 9, and Corollary 10 in Appendix A.5; together they prove 
+
+Eoff = O K2η2∥Hoff 0 ∥∥ g0∥ρK−2
+
+> ⋆
+
+ ,Eratio = O(η2/δ ) + O(η∥g0,S ∥1) + O η2∥(H0g0)S ∥1
+
+ ,Enonquad = O K3η3M3G2ρK−1
+
+> ⋆
+
+ .
+
+This bound gives simple checks for whether GXPO is operating in its intended local regime. The extrapolated displacement should have small error, the error may grow with K but should remain controlled, interpolation should make ˜θ closer than the full extrapolated point θK , inactive-coordinate fallback should be limited, and the corrective gradient should remain aligned with the initial gradient. Proposition 4 in Appendix A.2 gives the local-quadratic alignment check for the repositioning step. Table 6 and Table 7 show this pattern: median displacement errors stay around 10 −10 –10 −9, ˜θ is consistently closer than θK , and cos( g0, g slow ) stays near 0.97 . These measurements support the local geometric approximation, but Theorem 3 remains a conservative surrogate bound rather than a numerical prediction of the exact training trajectory. 63 Experiments & Results 
+
+3.1 Experimental Settings Models and data. We evaluate GRPO-family reasoning RL on Qwen2.5 and Llama3.2 instruction models (Qwen et al., 2024; Grattafiori et al., 2024; Meta, 2024). Training uses the Hendrycks MATH Level 3–5 split Hendrycks et al. (2021). Evaluation is conducted on Math-500 Hendrycks et al. (2021), AMC23 AoPS (2024), GSM8K Cobbe et al. (2021), Minerva Math Lewkowycz et al. (2022), and OlympiadBench He et al. (2024). 
+
+Training protocol. We use the same prompts, rewards, decoding setup, KL penalty, and GRPO loss for all methods, changing only the policy-update rule. We train Qwen2.5-7B with LoRA attention projections (q, k, v, o ) using lora rank 128 and lora alpha 256 (Hu et al., 2021). All runs use bf16 precision, learning rate 10 −7, gradient clipping at 1.0, PPO clipping ϵ = 0 .2, and KL coefficient 
+
+β = 0 .001 . Each batch contains 128 questions with 5 responses per question, a maximum of 3072 
+
+generated tokens, and a context window of 4096 . We train for 300 steps and evaluate with 16 
+
+responses per prompt on Math500, GSM8K, AMC23, MinervaMath, and OlympiadBench. For GXPO, we use α0 = 0 .5, δ = 10 −8, τ = 0 .5 and trajectory-aware shutoff. For SFPO, we use 
+
+α0 = 0 .5, τ = 2 .0. All experiments were run on 4 NVIDIA H100 GPUs, and wall-clock efficiency was measured under this setup. 
+
+Methods and budgets. We compare GRPO, SFPO, and GXPO under the same training and evaluation budget. SFPO and GXPO are run with K ∈ { 3, 5, 10 }, using α0 = 0 .5 unless varied in ablations. GRPO uses one backward pass per step, SFPO uses K + 1 backward passes, and GXPO uses three backward passes during its active extrapolation phase before falling back to one pass after adaptive shutoff. We report accuracy alongside step efficiency, wall-clock efficiency, and backward-pass efficiency. 
+
+Evaluation metric. Following the pass@k evaluation convention (Chen et al., 2021) and recent reasoning-RL evaluations that report pass@1 from multiple non-greedy samples (DeepSeek-AI, 2025a; Zuo et al., 2025), each benchmark is evaluated multiple times with rollout temperature being 1, and we report the average Pass@1 accuracy by default. 
+
+3.2 Main Results 3.2.1 Math Reasoning Benchmarks 
+
+As shown in Table 1, GXPO consistently outperforms GRPO and SFPO across all four model families from 1.5B to 7B parameters. On Qwen2.5-1.5B and Qwen2.5-3B, GXPO with k ∈ 3, 5, 10 achieves the highest average accuracy by a clear margin over both baselines. On Qwen2.5-7B, the best performance is obtained at k = 5 , and on Llama3.2-3B, GXPO with k = 5 performs best across benchmarks. All gains are achieved without increasing the active-phase backward-pass cost with k.
+
+3.2.2 Training Dynamics 
+
+GXPO improves not only final accuracy but also the efficiency of reaching strong policies. On Llama3.2-3B, GXPO k=10 reaches GRPO’s peak-accuracy threshold in 60 steps and 180 backward passes, compared with 240 steps and 240 backward passes for GRPO, while also attaining the highest peak accuracy among the compared methods (Table 2). The wall-clock and hyperparameter views show the same trend: GXPO improves steadily during its active phase across α and k (Fig. 2) and reaches higher Pass@16 in less time than both GRPO and SFPO (Fig. 3), while keeping the active-phase cost fixed at three backward passes regardless of k. This fixed-cost lookahead gives GXPO a better accuracy–compute trade-off at larger k, and the KL/clip diagnostics indicate that repositioning does not substantially destabilize the policy update (Table 8; Appendices B and C.4). 
+
+Ablation Studies. On Qwen2.5-1.5B, sweeping α ∈ { 0.1, 0.5, 1.0} and k ∈ { 3, 5, 10 } reveals that larger values of both consistently improve Math-500 pass@16, with the advantage persisting under backward-pass normalization, confirming that gains reflect optimization quality rather than added compute. Varying the stability threshold τ shows consistent improvements across all efficiency views 7Table 1: Performance on math reasoning benchmarks after training on the Hendrycks MATH dataset. SFPO and GXPO use the same reposition strength, α = 0 .5, across all reported settings. 
+
+Model Method k BP Math-500 AMC23 GSM8k Minerva Olympiad Avg. 
+
+Qwen2.5-1.5B GRPO – 1 24.18 2.99 43.53 5.49 6.10 16.46 SFPO 3 4 25.71 4.43 45.29 5.91 6.78 17.62 5 6 29.98 4.43 50.43 6.59 7.45 19.78 10 11 30.00 5.08 52.51 6.17 7.15 20.18 GXPO 3 3 30.75 6.38 51.49 6.53 7.64 20.56 5 3 31.80 3.26 52.46 7.50 7.60 20.52 10 3 32.31 5.08 54.45 7.29 8.19 21.46 
+
+Qwen2.5-3B GRPO – 1 56.74 30.13 78.73 16.91 14.91 39.48 SFPO 3 4 56.44 31.07 78.94 17.52 15.25 39.84 5 6 57.02 30.94 79.02 17.23 15.42 39.93 10 11 57.70 30.89 79.46 16.95 15.29 40.06 GXPO 3 3 57.59 30.65 79.47 17.35 15.42 40.10 5 3 58.34 30.89 80.21 17.27 15.39 40.42 10 3 59.36 32.73 80.98 17.39 15.64 41.22 
+
+Qwen2.5-7B GRPO – 1 66.56 48.78 88.43 20.91 19.48 48.83 SFPO 3 4 66.65 49.45 88.52 20.64 19.11 48.87 5 6 71.75 49.87 88.49 23.43 20.57 50.82 GXPO 3 3 71.70 47.60 88.60 23.66 20.76 50.46 5 3 71.80 50.00 88.63 23.58 20.79 50.96 
+
+Llama3.2-3B GRPO – 1 33.46 10.57 67.04 10.98 5.76 25.56 SFPO 3 4 33.51 11.28 66.99 11.12 5.98 25.77 5 6 34.15 11.74 67.44 11.44 5.91 26.14 GXPO 3 3 34.85 11.09 68.14 11.17 6.19 26.29 5 3 36.09 12.92 68.68 12.05 6.31 27.21 
+
+Table 2: Convergence efficiency comparison on Hendrycks MATH. Speedup is relative to GRPO.                                             
+
+> Model Method kPeak Acc. Steps to match GRPO Step ↑
+> Hours to match GRPO Time ↑
+> BPs to match GRPO BP ↑
+> Llama3.2-3B GRPO –0.3410 240 1.00 ×14.14 h 1.00 ×240 1.00 ×
+> SFPO 30.3465 80 3.00 ×9.07 h 1.56 ×320 0.75 ×
+> 10 0.3525 80 3.00 ×18.68 h 0.76 ×870 0.28 ×
+> GXPO 30.3619 65 3.69 ×6.72 h 2.10 ×195 1.23 ×
+> 10 0.3670 60 4.00 ×6.06 h 2.33 ×180 1.33 ×
+
+(Tables 3 and 4). On Llama3.2-3B, iso-backward-pass and iso-wall-clock comparisons confirm that GXPO’s gains over GRPO and SFPO hold under compute-controlled conditions. Full results and surrogate displacement diagnostics supporting the local geometric approximation are provided in Appendix C. 
+
+## 4 Conclusion 
+
+GXPO is a GRPO-compatible policy-update rule that approximates local K-step lookahead using two probe gradients and one corrective gradient, while keeping the active-phase backward-pass count fixed at three. By extrapolating short-horizon gradient changes, GXPO captures useful lookahead 8Figure 2: Pass@16 accuracy versus training steps across α ∈ { 0.1, 0.5, 1.0} and k ∈ { 3, 5, 10 }.Solid lines denote smoothed curves. 
+
+Figure 3: Training efficiency across GRPO, GXPO, and SFPO, with results reported up to 300 training steps. Left: Pass@16 vs. wall-clock time, where GXPO ( k=10 ) leads throughout. Right: peak Pass@16 vs. time-to-peak, where GXPO achieves a better efficiency frontier. information without requiring the backward-pass cost to grow with K. Across Qwen2.5 and Llama3.2 math-reasoning experiments, GXPO improves sampled pass@1 over GRPO and matches or exceeds SFPO with fewer backward passes and faster time-to-target performance. Since GXPO reuses the same rollouts, rewards, advantages, and GRPO loss, it can be added to existing RLVR pipelines with minimal changes. Overall, GXPO offers a practical middle ground between efficient single-step GRPO and more expensive multi-step lookahead methods. 
+
+## 5 Limitations 
+
+Our analysis is a surrogate analysis under clean GD-style assumptions, while the implementation uses AdamW with stateful moments and adaptive preconditioning. Although diagnostics support the intended local regime, a full theory for stateful optimizers remains future work. Our experiments also focus on math RLVR with verifiable rewards, so broader tasks and larger-scale settings should be tested. 
+
+## 6 Broader Impact 
+
+GXPO aims to improve both compute and time efficiency in RLVR training by reducing the backward-pass cost of lookahead-style updates. This can lower training cost and make reasoning-RL research more accessible. However, more efficient training may also accelerate stronger reasoning models, so models trained with GXPO should undergo standard safety, misuse, and reliability evaluations before deployment. 9References 
+
+Chen, M., Tworek, J., Jun, H., Yuan, Q., Pinto, H. P. D. O., Kaplan, J., Edwards, H., Burda, Y., Joseph, N., Brockman, G., et al. Evaluating large language models trained on code. arXiv preprint arXiv:2107.03374 , 2021. Chen, L., Li, S., Yan, J., Wang, H., Gunaratna, K., Yadav, V., Tang, Z., Srinivasan, V., Zhou, T., Huang, H., and Jin, H. AlpaGasus: Training a better Alpaca with fewer data. In ICLR , 2024. Cobbe, K., Kosaraju, V., Bavarian, M., Chen, M., Jun, H., Kaiser, L., Plappert, M., Tworek, J., Hilton, J., Nakano, R., et al. Training verifiers to solve math word problems. arXiv preprint arXiv:2110.14168 , 2021. Cui, G., Zhang, Y., Chen, J., Yuan, L., Wang, Z., Zuo, Y., Li, H., Fan, Y., Chen, H., Chen, W., Liu, Z., Peng, H., Bai, L., Ouyang, W., Cheng, Y., Zhou, B., and Ding, N. The entropy mechanism of reinforcement learning for reasoning language models. arXiv preprint arXiv:2505.22617 , 2025. Dai, M., Liu, S., and Si, Q. Stable reinforcement learning for efficient reasoning. arXiv preprint arXiv:2505.18086 , 2025. Dalal, G., Hallak, A., Thoppe, G., Mannor, S., and Chechik, G. Policy gradient with tree expansion. In ICML , 2025. DeepSeek-AI. DeepSeek-R1: Incentivizing reasoning capability in LLMs via reinforcement learning. 
+
+arXiv preprint arXiv:2501.12948 , 2025. Grattafiori, A., Dubey, A., Jauhri, A., Pandey, A., Kadian, A., Al-Dahle, A., Letman, A., Mathur, A., Schelten, A., Vaughan, A., Yang, A., Fan, A., et al. The Llama 3 herd of models. arXiv preprint arXiv:2407.21783 , 2024. Fatemi, M., Rafiee, B., Tang, M., and Talamadupula, K. Concise reasoning via reinforcement learning. 
+
+arXiv preprint arXiv:2504.05185 , 2025. He, C., Luo, R., Bai, Y., Hu, S., Thai, Z. L., Shen, J., Hu, J., Han, X., Huang, Y., Zhang, Y., et al. OlympiadBench: A challenging benchmark for promoting AGI with olympiad-level bilingual multimodal scientific problems. arXiv preprint arXiv:2402.14008 , 2024. He, J., Li, T., Feng, E., Du, D., Liu, Q., Liu, T., Xia, Y., and Chen, H. History rhymes: Accelerating LLM reinforcement learning with RhymeRL. arXiv preprint arXiv:2508.18588 , 2025. Hendrycks, D., Burns, C., Kadavath, S., Arora, A., Basart, S., Tang, E., Song, D., and Steinhardt, J. Measuring mathematical problem solving with the MATH dataset. In NeurIPS , 2021. Hu, E. J., Shen, Y., Wallis, P., Allen-Zhu, Z., Li, Y., Wang, S., Wang, L., and Chen, W. LoRA: Low-rank adaptation of large language models. arXiv preprint arXiv:2106.09685 , 2021. Kwon, W., Li, Z., Zhuang, S., Sheng, Y., Zheng, L., Yu, C. H., Gonzalez, J. E., Zhang, H., and Stoica, I. Efficient memory management for large language model serving with PagedAttention. In 
+
+Proceedings of the 29th Symposium on Operating Systems Principles (SOSP ’23) , pages 611–626, 2023. doi:10.1145/3600006.3613165. Lewkowycz, A., Andreassen, A., Dohan, D., Dyer, E., Michalewski, H., Ramasesh, V., Slone, A., Anil, C., Schlag, I., Gutman-Solo, T., et al. Solving quantitative reasoning problems with language models. In NeurIPS , 2022. Li, X., Zou, H., and Liu, P. LIMR: Less is more for RL scaling. arXiv preprint arXiv:2502.11886 ,2025. Liu, Z., Chen, C., Li, W., Qi, P., Pang, T., Du, C., Lee, W. S., and Lin, M. Understanding R1-Zero-like training: A critical perspective. arXiv preprint arXiv:2503.20783 , 2025. Loshchilov, I. and Hutter, F. Decoupled weight decay regularization. In ICLR , 2019. Art of Problem Solving. AMC Problems and Solutions. https://artofproblemsolving.com/ wiki/index.php?title=AMC_Problems_and_Solutions , 2024. 10 Meta. Llama 3.2: Revolutionizing edge AI and vision with open, cus-tomizable models. Technical blog, 2024. https://ai.meta.com/blog/ llama-3-2-connect-2024-vision-edge-mobile-devices/ .Mroueh, Y. Reinforcement learning with verifiable rewards: GRPO’s effective loss, dynamics, and success amplification. arXiv preprint arXiv:2503.06639 , 2025. Mroueh, Y., Dupuis, N., Belgodere, B., Nitsure, A., Rigotti, M., Greenewald, K., Navratil, J., Ross, J., and Rios, J. Revisiting group relative policy optimization: Insights into on-policy and off-policy training. arXiv preprint arXiv:2505.22257 , 2025. Muennighoff, N., Yang, Z., Shi, W., Li, X. L., Li, F.-F., Hajishirzi, H., Zettlemoyer, L., Liang, P., Candès, E., and Hashimoto, T. s1: Simple test-time scaling. arXiv preprint arXiv:2501.19393 ,2025. Protopapas, K. and Barakat, A. Policy mirror descent with lookahead. In NeurIPS , 2024. Qwen, Yang, A., Yang, B., Zhang, B., Hui, B., Zheng, B., Yu, B., Li, C., Liu, D., Huang, F., Wei, H., et al. Qwen2.5 technical report. arXiv preprint arXiv:2412.15115 , 2024. Rosenberg, A., Hallak, A., Mannor, S., Chechik, G., and Dalal, G. Planning and learning with adaptive lookahead. In AAAI , 2023. Schulman, J., Wolski, F., Dhariwal, P., Radford, A., and Klimov, O. Proximal policy optimization algorithms. arXiv preprint arXiv:1707.06347 , 2017. Shao, Z., Wang, P., Zhu, Q., et al. DeepSeekMath: Pushing the limits of mathematical reasoning in open language models. arXiv preprint arXiv:2402.03300 , 2024. Shen, S., Shen, P., Zhao, W., and Zhu, D. Mitigating think-answer mismatch in LLM reasoning through noise-aware advantage reweighting. arXiv preprint arXiv:2508.05928 , 2025. Sheng, G., Zhang, C., Ye, Z., Wu, X., Zhang, W., Zhang, R., Peng, Y., Lin, H., and Wu, C. HybridFlow: A flexible and efficient RLHF framework. In Proceedings of the Twentieth European Conference on Computer Systems (EuroSys ’25) , 2025. doi:10.1145/3689031.3696075. Sikchi, H., Zhou, W., and Held, D. Learning off-policy with online planning. In CoRL , 2021. Sutton, R. S., McAllester, D., Singh, S., and Mansour, Y. Policy gradient methods for reinforcement learning with function approximation. In NeurIPS , 1999. Wang, Z., Wang, Z., Fu, J., Qu, X., Cheng, Q., Tang, S., Zhang, M., and Huo, X. Slow-Fast Policy Optimization: Reposition-before-update for LLM reasoning. In ICLR , 2026. Wang, Y., Yang, Q., Zeng, Z., Ren, L., Liu, L., Peng, B., Cheng, H., He, X., Wang, K., Gao, J., et al. Reinforcement learning for reasoning in large language models with one training example. arXiv preprint arXiv:2504.20571 , 2025. Wen, X., Liu, Z., Zheng, S., Ye, S., Wu, Z., Wang, Y., Xu, Z., Liang, X., Li, J., Miao, Z., Bian, J., and Yang, M. Reinforcement learning with verifiable rewards implicitly incentivizes correct reasoning in base LLMs. arXiv preprint arXiv:2506.14245 , 2025. Williams, R. J. Simple statistical gradient-following algorithms for connectionist reinforcement learning. Machine Learning , 8(3–4):229–256, 1992. Xia, M., Malladi, S., Gururangan, S., Arora, S., and Chen, D. LESS: Selecting influential data for targeted instruction tuning. In Proceedings of the 41st International Conference on Machine Learning , PMLR 235:54104–54132, 2024. Xiong, W., Yao, J., Xu, Y., Pang, B., Wang, L., Sahoo, D., Li, J., Jiang, N., Zhang, T., Xiong, C., and Dong, H. A minimalist approach to LLM reasoning: From rejection sampling to reinforce. arXiv preprint arXiv:2504.11343 , 2025. Xu, Y. E., Savani, Y., Fang, F., and Kolter, J. Z. Not all rollouts are useful: Down-sampling rollouts in LLM reinforcement learning. Transactions on Machine Learning Research , 2026. 11 Ye, Y., Huang, Z., Xiao, Y., Chern, E., Xia, S., and Liu, P. LIMO: Less is more for reasoning. In 
+
+COLM , 2025. Yu, Q., Zhang, Z., Zhu, R., et al. DAPO: An open-source LLM reinforcement learning system at scale. In NeurIPS , 2025. Yue, Y., Yuan, Y., Yu, Q., Zuo, X., Zhu, R., Xu, W., Chen, J., Wang, C., Fan, T., Du, Z., Wei, X., Yu, X., Liu, G., Liu, J., Liu, L., Lin, H., Lin, Z., Ma, B., Zhang, C., Zhang, M., Zhang, W., Zhu, H., Zhang, R., Liu, X., Wang, M., Wu, Y., and Yan, L. VAPO: Efficient and reliable reinforcement learning for advanced reasoning tasks. arXiv preprint arXiv:2504.05118 , 2025. Zhang, M., Lucas, J., Ba, J., and Hinton, G. E. Lookahead optimizer: k steps forward, 1 step back. In NeurIPS , 2019. Zhou, P., Yan, H., Yuan, X., Feng, J., and Yan, S. Towards understanding why lookahead generalizes better than SGD and beyond. In NeurIPS , 2021. Zheng, H., Zhou, Y., Bartoldson, B. R., Kailkhura, B., Lai, F., Zhao, J., and Chen, B. Act only when it pays: Efficient reinforcement learning for LLM reasoning via selective rollouts. arXiv preprint arXiv:2506.02177 , 2025. Zuo, Y., Zhang, K., Sheng, L., Qu, S., Cui, G., Zhu, X., Li, H., Zhang, Y., Long, X., Hua, E., Qi, B., Sun, Y., Ma, Z., Yuan, L., Ding, N., and Zhou, B. TTRL: Test-time reinforcement learning. arXiv preprint arXiv:2504.16084 , 2025. 12 A Proofs 
+
+This appendix proves the claims used in §2. The first group of results justifies the local geometric extrapolation used by GXPO; the second group bounds the gap between that surrogate and the true gradient-descent trajectory; the final group gives an idealized backward-pass budget check under a global diagonal quadratic model. Throughout the appendix, the analysis uses plain gradient descent to isolate the extrapolation mechanism from optimizer-state effects. 
+
+A.1 Proof of Theorem 1 
+
+Proof. Let A = I − ηH 0. We prove the claim by induction. 
+
+Step 1: base cases. For n = 0 and n = 1 , respectively, g0 = A0g0 and, by (2) , g1 = ( I − ηH 0)g0 =
+
+Ag 0. Thus the formula holds for the first two iterates. 
+
+Step 2: induction assumption. Assume that the formula holds up to step n, i.e., 
+
+gk = Akg0 for all 0 ≤ k ≤ n. 
+
+We show that it also holds at step n + 1 .
+
+Step 3: write the next gradient using the local quadratic model. Under Assumption 1, the local model and the plain-GD displacement give 
+
+gn+1 = g0 + H0(θn+1 − θ0), θn+1 − θ0 = −η
+
+> n
+
+X
+
+> k=0
+
+gk,
+
+so 
+
+gn+1 = g0 − ηH 0
+
+> n
+
+X
+
+> k=0
+
+gk = g0 − ηH 0
+
+> n
+
+X
+
+> k=0
+
+Akg0,
+
+where the last equality uses the induction assumption. 
+
+Step 4: simplify the geometric sum. Since A = I − ηH 0, we have I − A = ηH 0. Therefore, 
+
+(I − A)
+
+> n
+
+X
+
+> k=0
+
+Ak =
+
+> n
+
+X
+
+> k=0
+
+(Ak − Ak+1 ) = A0 − An+1 = I − An+1 ,
+
+where the middle terms cancel telescopically. This identity does not require A to be invertible. Multiplying by g0 gives 
+
+ηH 0
+
+> n
+
+X
+
+> k=0
+
+Akg0 = ( I − A)
+
+> n
+
+X
+
+> k=0
+
+Akg0 = ( I − An+1 )g0.
+
+Step 5: conclude the induction. Substituting the last identity into the expression for gn+1 yields 
+
+gn+1 = g0 − (I − An+1 )g0 = An+1 g0.
+
+Thus the formula holds at step n + 1 , completing the induction. 
+
+A.2 Gradient alignment under the local quadratic model Proposition 4 (Gradient alignment under the local quadratic model) . Under Assumption 1, let ˜θ be defined by (9) . If 
+
+α ∥H0∥ ∥ θK − θ0∥ < ∥g0∥,
+
+then under the local quadratic model the modelled corrective gradient satisfies ⟨g0, g 0 + H0(˜θ −
+
+θ0)⟩ > 0. This only concerns the gradient predicted by the local quadratic model. Algorithm 1 uses the true gradient gslow = ∇L (˜θ), so the proposition should be read as a local geometric sanity check for the repositioning step rather than as a descent or convergence guarantee. 
+
+13 Proof. By definition, 
+
+˜θ − θ0 = α(θK − θ0), ⟨g0, g 0 + H0(˜θ − θ0)⟩ = ∥g0∥2 + α⟨g0, H 0(θK − θ0)⟩.
+
+By Cauchy–Schwarz and submultiplicativity of the operator norm, 
+
+|⟨ g0, H 0(θK − θ0)⟩| ≤ ∥ g0∥ · ∥ H0(θK − θ0)∥ ≤ ∥ g0∥ · ∥ H0∥ · ∥ θK − θ0∥.
+
+Hence 
+
+⟨g0, g 0 + H0(˜θ − θ0)⟩ ≥ ∥ g0∥ ∥g0∥ − α ∥H0∥ ∥ θK − θ0∥,
+
+which is strictly positive under the stated condition. 
+
+Remark 1 (Connection to diagnostics) . Proposition 4 gives a sufficient local-quadratic condition under which the modelled corrective gradient remains positively aligned with the initial gradient. We do not directly verify this condition because it depends on the local Hessian norm. Instead, we check its observable consequence by measuring the cosine similarity between the initial gradient and the true corrective gradient, cos( g0, g slow ), during the active phase. The diagnostic tables show that this cosine remains close to 0.97 across tested lookahead depths, supporting the intended local-alignment regime after repositioning. 
+
+Remark 2 (Interpretation of the alignment condition) . The condition in Proposition 4 says that the repositioning distance should be small enough that the local quadratic correction does not overturn the original gradient direction. Under the diagonal quadratic GD surrogate, Proposition 7 gives 
+
+|[θK − θ0]i| = η|g0,i | | SK (ri)|.
+
+Thus, if R = max i |ri|, then 
+
+∥θK − θ0∥ ≤ η∥g0∥SK (R).
+
+A sufficient condition for modelled alignment is therefore 
+
+αη ∥H0∥SK (R) < 1.
+
+This condition is only a conservative local check. It does not guarantee alignment of the true gradient 
+
+gslow = ∇L (˜θ), nor does it model the full optimizer dynamics used in implementation. In practice, GXPO monitors the corrective gradient directly through the adaptive shutoff rule. 
+
+A.3 Derivation of the Geometric Decay Approximation 
+
+The analysis throughout this appendix is conducted under plain gradient descent, 
+
+θn+1 = θn − η g n,
+
+as a surrogate for the practical first-order-optimizer implementation in Algorithm 1. This surrogate isolates the extrapolation mechanism from optimizer-specific state, such as momentum and adaptive preconditioning. The results below therefore describe the GD surrogate only; they should be read as an explanation of the extrapolation geometry rather than as a direct model of the full optimizer dynamics used in implementation. By Theorem 1, the exact gradient evolution under Assumption 1 is gn = ( I − ηH 0)ng0. Direct evaluation of this expression requires O(d2) matrix arithmetic, which is infeasible at large model scales. The remainder of this section derives the coordinate-wise geometric approximation that renders the computation tractable. 
+
+Diagonal Hessian case. Suppose first that H0 is diagonal: 
+
+H0 = diag( h11 , h 22 , . . . , h dd ).
+
+Then 
+
+I − ηH 0 = diag(1 − ηh 11 , 1 − ηh 22 , . . . , 1 − ηh dd ),
+
+and therefore 
+
+(I − ηH 0)n = diag  (1 − ηh 11 )n, . . . , (1 − ηh dd )n.
+
+Multiplying by g0 gives, for every coordinate i,
+
+gn,i = (1 − ηh ii )ng0,i . (11) 14 Diagonal surrogate rate. Equation (11) motivates the definition of the diagonal surrogate rate 
+
+¯ri ≡ 1 − ηH 0,ii . (12) When H0 is diagonal, (11) takes the form 
+
+gn,i = ¯ rni g0,i ,
+
+and, in the GD surrogate, the geometric decay model is exact. 
+
+Lemma 5 (Exactness of geometric decay for diagonal H0 in the GD surrogate) . If H0 is diagonal, then for every n ≥ 0 and every coordinate i,
+
+gn,i = ¯ rni g0,i , ¯ri = 1 − ηH 0,ii .
+
+Proof. By Theorem 1, gn = ( I − ηH 0)ng0. When H0 = diag( h11 , . . . , h dd ), the matrix (I − ηH 0)
+
+is also diagonal with i-th entry 1 − ηh ii , so (I − ηH 0)n is diagonal with i-th entry (1 − ηh ii )n.Extracting the i-th coordinate gives 
+
+gn,i = (1 − ηh ii )ng0,i = ¯ rni g0,i ,
+
+where the last equality uses ¯ri = 1 − ηH 0,ii and hii = H0,ii .
+
+Empirical retention ratio. The diagonal surrogate rate ¯ri is not accessible directly. GXPO therefore uses the empirical retention ratio measured from the first two computed gradients: 
+
+ri ≡ g1,i 
+
+g0,i 
+
+, for coordinates with g0,i ̸ = 0 . (13) In the plain-GD surrogate, this quantity coincides with ¯ri when H0 is diagonal, but differs in general. In the implemented method, ri is treated as an empirical coordinate-wise retention ratio measured along the realized fast optimizer trajectory. 
+
+Lemma 6 (Bias of the empirical retention ratio in the GD surrogate) . Under the plain-GD surrogate and the local quadratic model, for every coordinate i with g0,i ̸ = 0 ,
+
+ri = ¯ ri − η X 
+
+> j̸=i
+
+H0,ij 
+
+g0,j 
+
+g0,i 
+
+. (14) 
+
+Equivalently, 
+
+ri − ¯ri = −η X 
+
+> j̸=i
+
+H0,ij 
+
+g0,j 
+
+g0,i 
+
+. (15) 
+
+Proof. Under the plain-GD surrogate, (2) gives 
+
+g1 = ( I − ηH 0)g0,
+
+so the i-th coordinate is 
+
+g1,i = g0,i − η[H0g0]i.
+
+Expand the matrix-vector product: 
+
+[H0g0]i =
+
+> d
+
+X
+
+> j=1
+
+H0,ij g0,j = H0,ii g0,i + X 
+
+> j̸=i
+
+H0,ij g0,j .
+
+Substituting into the expression for g1,i gives 
+
+g1,i = g0,i − ηH 0,ii g0,i − η X 
+
+> j̸=i
+
+H0,ij g0,j .
+
+Divide both sides by g0,i : g1,i 
+
+g0,i 
+
+= 1 − ηH 0,ii − η X 
+
+> j̸=i
+
+H0,ij 
+
+g0,j 
+
+g0,i 
+
+.
+
+Using (12) and (13), 
+
+ri = ¯ ri − η X 
+
+> j̸=i
+
+H0,ij 
+
+g0,j 
+
+g0,i 
+
+,
+
+which is (14). Rearranging gives (15). 15 Sources of approximation error. Within the GD surrogate, Lemma 6 identifies the off-diagonal Hessian coupling as the discrepancy between ri and ¯ri. Two distinct approximation layers therefore arise: 1. replacing the full quadratic dynamics (I − ηH 0)ng0 by the diagonal surrogate (I −
+
+η diag( H0)) ng0;2. replacing the diagonal surrogate rate ¯ri by the empirical estimator ri = g1,i /g 0,i .The same empirical quantity ri is employed in Algorithm 1 because it is computable from two backward passes. Concretely, the per-coordinate bias from Lemma 6 is 
+
+|ri − ¯ri| ≤ η X 
+
+> j̸=i
+
+|H0,ij | · |g0,j ||g0,i | ,
+
+which is O(η) when the off-diagonal Hessian entries and gradient-component ratios are bounded. The error analysis in Appendix A.5 quantifies the displacement consequences of both approximation layers: Theorem 8 bounds the diagonalization and non-quadratic errors, and Lemma 9 bounds the additional cost of using empirical ratios. 
+
+Remark 3 (Ratio safeguards in practice) . The ratio ri = g1,i /g 0,i is undefined at g0,i = 0 and numer-ically ill-conditioned when |g0,i | is small. Both the theory and implementation therefore separate active coordinates, where |g0,i | > δ and the ratio is evaluated, from inactive coordinates, where Algorithm 1 forms no ratio and keeps the directly observed two-probe displacement. Appendix A.5 bounds the active-coordinate ratio error and the inactive-coordinate fallback error separately; the latter depends on the small-gradient mass ∥g0,S ∥1 and the quadratic two-probe term η2∥(H0g0)S ∥1.
+
+A.4 GD-Surrogate Displacement Identity 
+
+Let ρ = ( ρ1, . . . , ρ d) ∈ Rd be an arbitrary coordinate-wise retention-rate vector. Here ρ is a generic rate vector: later we instantiate this identity with ρ = ¯ r for the diagonal surrogate and with ρ = r for the empirical-ratio surrogate. The associated coordinate-wise geometric surrogate gradient is defined by 
+
+ˆg(ρ) 
+
+> n,i
+
+≡ ρni g0,i , n ≥ 0. (16) Let ˆθ(ρ) 
+
+> n
+
+be the plain-GD surrogate trajectory generated by these gradients: 
+
+ˆθ(ρ) 
+
+> n+1
+
+= ˆθ(ρ) 
+
+> n
+
+− η ˆg(ρ) 
+
+> n
+
+, ˆθ(ρ)0 = θ0. (17) 
+
+Proposition 7 (Total displacement under geometric decay) . For every coordinate i, every rate vector 
+
+ρ, and every K ≥ 1,
+
+[ˆθ(ρ) 
+
+> K
+
+− θ0]i = −η g 0,i SK (ρi), (18) 
+
+where 
+
+SK (x) ≡
+
+> K−1
+
+X
+
+> n=0
+
+xn =
+
+
+
+1 − xK
+
+1 − x , x̸ = 1 ,K, x = 1 .
+
+(19) 
+
+Proof. Summing the plain-GD surrogate updates gives 
+
+ˆθ(ρ) 
+
+> K
+
+− θ0 = −η
+
+> K−1
+
+X
+
+> n=0
+
+ˆg(ρ) 
+
+> n
+
+.
+
+Taking coordinate i and substituting ˆg(ρ) 
+
+> n,i
+
+= ρni g0,i yields 
+
+[ˆθ(ρ) 
+
+> K
+
+− θ0]i = −η g 0,i K−1X
+
+> n=0
+
+ρni = −η g 0,i SK (ρi).
+
+16 A.5 Displacement Error Bound for the GD Surrogate 
+
+Three sources of approximation error arise in the derivation: 1. Diagonalization error: replacing the full quadratic dynamics by the diagonal surrogate with rates ¯ri = 1 − ηH 0,ii .2. Ratio-estimation error: replacing the diagonal surrogate rates ¯ri by the empirical ratios 
+
+ri = g1,i /g 0,i .3. Non-quadratic error: replacing the true loss by its local quadratic model around θ0.
+
+Norm conventions. Throughout this subsection, ∥ · ∥ denotes the spectral (operator) norm for matrices and the Euclidean norm for vectors, except where explicitly subscripted (e.g. ∥ · ∥ ∞ for the row-sum norm in Lemma 9). Let 
+
+Hoff 0 = H0 − diag( H0)
+
+denote the off-diagonal part of the Hessian. Define the exact quadratic-model GD trajectory θquad  
+
+> n
+
+by 
+
+θquad  
+
+> n+1
+
+= θquad  
+
+> n
+
+− ηg quad  
+
+> n
+
+, gquad  
+
+> n
+
+= ( I − ηH 0)ng0, θquad 0 = θ0,
+
+where gquad  
+
+> n
+
+is the gradient at θquad  
+
+> n
+
+under the quadratic model (equivalently, the closed form from Theorem 1). Define the true GD trajectory by 
+
+θtrue  
+
+> n+1
+
+= θtrue  
+
+> n
+
+− ηg (θtrue  
+
+> n
+
+), θtrue 0 = θ0.
+
+Define the diagonal-surrogate point by 
+
+θdiag  
+
+> K
+
+≡ ˆθ(¯ r) 
+
+> K
+
+, ¯ri = 1 − ηH 0,ii .
+
+The active-set empirical-ratio surrogate θemp  
+
+> K
+
+is defined in Lemma 9: it uses empirical ratios on active coordinates and the observed two-probe displacement on inactive coordinates. 
+
+Theorem 8 (Error bound for the diagonal surrogate) . Assume K ≥ 2, L ∈ C3, and that there exists a neighborhood U, star-shaped with respect to θ0, containing the trajectories 
+
+{θtrue  
+
+> n
+
+}Kn=0 ∪ { θquad  
+
+> n
+
+}Kn=0 
+
+such that 
+
+sup 
+
+> ξ∈U
+
+∥∇ 3L(ξ)∥ ≤ M3.
+
+Let γ := ∥I − ηH 0∥ and ρmax := max(1 , γ ). Assume the true GD trajectory satisfies the uniform gradient bound 
+
+sup 
+
+> 0≤n<K
+
+∥g(θtrue  
+
+> n
+
+)∥ ≤ G. 
+
+Then the diagonal-surrogate displacement error satisfies 
+
+∥θdiag  
+
+> K
+
+−θtrue  
+
+> K
+
+∥ ≤ K(K − 1) 2 η2 ∥Hoff 0 ∥ ∥ g0∥ ρK−2max 
+
+| {z }
+
+> ϵdiag
+
++ K(K − 1)(2 K − 1) 12 η3 M3 G2 ρK−1max 
+
+| {z }
+
+> ϵnonquad
+
+. (20) 
+
+Remark 4 (When the quadratic map is nonexpansive) . The theorem above does not require ∥I −
+
+ηH 0∥ ≤ 1; growth is carried explicitly by ρmax = max(1 , ∥I − ηH 0∥). When H0 is positive semidefinite with eigenvalues 0 ≤ λ1 ≤ · · · ≤ λd, the eigenvalues of I − ηH 0 are 1 − ηλ i. The nonexpansive case ∥I − ηH 0∥ ≤ 1 is equivalent to the standard quadratic step-size condition 
+
+ηλ max (H0) ≤ 2. If H0 has a negative eigenvalue λ < 0, then 1 − ηλ > 1, so ρmax > 1 and the bound records that local expansion rather than hiding it. In Appendix A.6, the stronger global diagonal quadratic assumption imposes hi > 0 and η max i hi ≤ 1, which ensures ri ∈ [0 , 1] for the idealized budget calculation. 
+
+Proof. Introduce the exact quadratic-model point θquad  
+
+> K
+
+and write 
+
+∥θdiag  
+
+> K
+
+− θtrue  
+
+> K
+
+∥ ≤ ∥ θdiag  
+
+> K
+
+− θquad  
+
+> K
+
+∥
+
+| {z }
+
+> ϵdiag
+
++ ∥θquad  
+
+> K
+
+− θtrue  
+
+> K
+
+∥
+
+| {z }
+
+> ϵnonquad
+
+. (21) 17 Diagonalization error. Let 
+
+A = I − ηH 0, D = I − η diag( H0), E = A − D = −ηH off 0 .
+
+Then 
+
+gquad  
+
+> n
+
+= Ang0, gdiag  
+
+> n
+
+= Dng0.
+
+We first prove the telescoping identity 
+
+An − Dn =
+
+> n−1
+
+X
+
+> k=0
+
+An−1−kED k. (22) Indeed, 
+
+> n−1
+
+X
+
+> k=0
+
+An−1−kED k =
+
+> n−1
+
+X
+
+> k=0
+
+An−1−k(A − D)Dk
+
+=
+
+> n−1
+
+X
+
+> k=0
+
+ An−kDk − An−1−kDk+1 . (23) Writing out the first few and last few terms, 
+
+k = 0 : AnD0 − An−1D1,k = 1 : An−1D1 − An−2D2,
+
+...
+
+k = n − 1 : A1Dn−1 − A0Dn,
+
+all intermediate terms cancel, leaving 
+
+AnD0 − A0Dn = An − Dn.
+
+This proves (22). Taking norms in (22) gives 
+
+∥An − Dn∥ ≤ 
+
+> n−1
+
+X
+
+> k=0
+
+∥A∥n−1−k ∥E∥ ∥ D∥k. (24) Let γ := ∥A∥ and ρmax := max(1 , γ ). Since D is diagonal and shares the diagonal entries of A,
+
+∥D∥ = max i |Aii | ≤ ∥ A∥ = γ ≤ ρmax . Therefore 
+
+∥An − Dn∥ ≤ 
+
+> n−1
+
+X
+
+> k=0
+
+ρ n−1max ∥E∥ = n ρ n−1max ∥E∥ = n η ∥Hoff 0 ∥ ρ n−1max .
+
+Multiplying by ∥g0∥ gives the per-step gradient error: 
+
+∥Ang0 − Dng0∥ ≤ n η ∥Hoff 0 ∥ ∥ g0∥ ρ n−1max . (25) Accumulating the displacement difference over all steps, 
+
+ϵdiag = η
+
+> K−1
+
+X
+
+> n=0
+
+(Ang0 − Dng0)
+
+≤ η
+
+> K−1
+
+X
+
+> n=0
+
+∥Ang0 − Dng0∥≤ η
+
+> K−1
+
+X
+
+> n=1
+
+n η ∥Hoff 0 ∥ ∥ g0∥ ρ n−1max 
+
+≤ η2 ∥Hoff 0 ∥ ∥ g0∥ ρ K−2max 
+
+> K−1
+
+X
+
+> n=0
+
+n ≤ K(K − 1) 2 η2 ∥Hoff 0 ∥ ∥ g0∥ ρ K−2max . (26) 18 Non-quadratic error. Let 
+
+en ≡ g(θtrue  
+
+> n
+
+) −  g0 + H0(θtrue  
+
+> n
+
+− θ0).
+
+By the Taylor remainder bound (1), 
+
+∥en∥ ≤ M3
+
+2 ∥θtrue  
+
+> n
+
+− θ0∥2. (27) The displacement of the true trajectory from θ0 is bounded as follows. Since 
+
+θtrue  
+
+> m+1
+
+− θtrue  
+
+> m
+
+= −η g (θtrue  
+
+> m
+
+),
+
+the triangle inequality yields 
+
+∥θtrue  
+
+> n
+
+− θ0∥ ≤ 
+
+> n−1
+
+X
+
+> m=0
+
+∥θtrue  
+
+> m+1
+
+− θtrue  
+
+> m
+
+∥
+
+= η
+
+> n−1
+
+X
+
+> m=0
+
+∥g(θtrue  
+
+> m
+
+)∥≤ η
+
+> n−1
+
+X
+
+> m=0
+
+G
+
+= n η G. (28) Substituting (28) into (27) gives 
+
+∥en∥ ≤ M3
+
+2 n2 η2 G2. (29) Define the trajectory difference 
+
+ξn ≡ θtrue  
+
+> n
+
+− θquad  
+
+> n
+
+.
+
+Because both trajectories start at θ0, we have ξ0 = 0 . Their update difference satisfies 
+
+ξn+1 = ξn − η
+
+
+
+g(θtrue  
+
+> n
+
+) −  g0 + H0(θquad  
+
+> n
+
+− θ0)
+
+= ξn − η
+
+
+
+g0 + H0(θtrue  
+
+> n
+
+− θ0) + en − g0 − H0(θquad  
+
+> n
+
+− θ0)
+
+
+
+= ξn − ηH 0ξn − ηe n
+
+= ( I − ηH 0)ξn − ηe n
+
+= Aξ n − ηe n. (30) Unrolling the recurrence from ξ0 = 0 gives 
+
+ξK = −η
+
+> K−1
+
+X
+
+> n=0
+
+AK−1−nen. (31) Take norms and use ∥AK−1−n∥ ≤ ρ K−1−n 
+
+> max
+
+:
+
+ϵnonquad = ∥ξK ∥ ≤ η
+
+> K−1
+
+X
+
+> n=0
+
+∥AK−1−n∥ ∥ en∥ ≤ η
+
+> K−1
+
+X
+
+> n=0
+
+ρ K−1−n 
+
+> max
+
+∥en∥ ≤ η ρ K−1max 
+
+> K−1
+
+X
+
+> n=0
+
+∥en∥. (32) Substituting (29), 
+
+ϵnonquad ≤ ηρ K−1max 
+
+> K−1
+
+X
+
+> n=0
+
+M3
+
+2 n2η2G2 ≤ M3η3G2
+
+2 ρK−1max 
+
+> K−1
+
+X
+
+> n=0
+
+n2
+
+≤ M3η3G2
+
+2 ρK−1max · K(K − 1)(2 K − 1) 6 ≤ K(K − 1)(2 K − 1) 12 η3M3G2ρK−1max . (33) Combining (21), (26), and (33) yields (20). 19 Lemma 9 (Additional error from active-set empirical ratios in the GD surrogate) . Under the plain-GD surrogate and the local quadratic model, consider the clean active-set surrogate corresponding to GXPO. Let ∥Hoff 0 ∥∞ ≡ max i
+
+P  
+
+> j̸=i
+
+|H0,ij |. Let δ > 0 be the active-set threshold in Algorithm 1. Partition coordinates into A = {i : |g0,i | > δ } and S = Ac. For i ∈ A , let ri = g1,i /g 0,i be the empirical active-set ratio and assume |ri| ≤ R on A and |¯ri| ≤ R on all coordinates. Define 
+
+CK,R =
+
+> K−1
+
+X
+
+> n=1
+
+nR n−1, DK,R = 2 + 
+
+> K−1
+
+X
+
+> n=0
+
+Rn.
+
+Let θemp  
+
+> K
+
+be the active-set surrogate that applies −ηg 0,i SK (ri) on A and keeps the observed two-probe quadratic displacement −η(g0,i + g1,i ) on S. Then 
+
+∥θemp  
+
+> K
+
+− θdiag  
+
+> K
+
+∥ ≤ η2CK,R 
+
+∥Hoff 0 ∥∞
+
+δ
+
+× ∥ g0∥∞∥g0,A∥
+
++ ηD K,R ∥g0,S ∥1 + η2∥(H0g0)S ∥1,
+
+(34) 
+
+where ∥g0,A∥ is the Euclidean norm on A and ∥g0,S ∥1 = P 
+
+> i∈S
+
+|g0,i |.Proof. For any scalar x, write SK (x) = PK−1 
+
+> n=0
+
+xn. On the active set, the empirical and diagonal surrogate displacements differ coordinate-wise by 
+
+[θemp  
+
+> K
+
+− θdiag  
+
+> K
+
+]i = −ηg 0,i 
+
+ SK (ri) − SK (¯ ri).
+
+The polynomial SK is Lipschitz on [−R, R ] with constant 
+
+sup 
+
+> |x|≤ R
+
+|S′ 
+
+> K
+
+(x)| = sup 
+
+> |x|≤ R
+> K−1
+
+X
+
+> n=1
+
+nx n−1 ≤ CK,R .
+
+Lemma 6 gives, for i ∈ A ,
+
+|ri − ¯ri| ≤ η X 
+
+> j̸=i
+
+|H0,ij | |g0,j ||g0,i | ≤ η ∥Hoff 0 ∥∞∥g0∥∞
+
+δ .
+
+Therefore 
+
+∥(θemp  
+
+> K
+
+− θdiag  
+
+> K
+
+)A∥ ≤ ηC K,R η ∥Hoff 0 ∥∞∥g0∥∞
+
+δ ∥g0,A∥.
+
+For i ∈ S , the clean active-set surrogate corresponding to GXPO forms no ratio and keeps the observed two-probe displacement. Under the quadratic model, g1 = g0 − ηH 0g0, so 
+
+[θemp  
+
+> K
+
+− θdiag  
+
+> K
+
+]i = −η(g0,i + g1,i ) + ηg 0,i SK (¯ ri) = ηg 0,i 
+
+ SK (¯ ri) − 2 + η2[H0g0]i.
+
+Since |¯ri| ≤ R, |SK (¯ ri) − 2| ≤ 2 + PK−1 
+
+> n=0
+
+Rn = DK,R . Thus 
+
+∥(θemp  
+
+> K
+
+− θdiag  
+
+> K
+
+)S ∥ ≤ ηD K,R ∥g0,S ∥1 + η2∥(H0g0)S ∥1.
+
+Adding the two coordinate groups proves the claim. 
+
+Corollary 10 (Combined bound for the empirical-ratio surrogate) . Under Theorem 8 and Lemma 9, 
+
+∥θemp  
+
+> K
+
+− θtrue  
+
+> K
+
+∥ ≤ K(K − 1) 2 η2∥Hoff 0 ∥ ∥ g0∥ρK−2max + η2CK,R 
+
+∥Hoff 0 ∥∞
+
+δ ∥g0∥∞∥g0,A∥
+
++ ηD K,R ∥g0,S ∥1 + η2∥(H0g0)S ∥1 + K(K − 1)(2 K − 1) 12 η3M3G2ρK−1max .
+
+(35) 
+
+Proof. By the triangle inequality, 
+
+∥θemp  
+
+> K
+
+− θtrue  
+
+> K
+
+∥ ≤ ∥ θemp  
+
+> K
+
+− θdiag  
+
+> K
+
+∥ + ∥θdiag  
+
+> K
+
+− θtrue  
+
+> K
+
+∥.
+
+Applying Lemma 9 to the first term and Theorem 8 to the second term gives (35). 20 Remark 5 (Interpretation and scaling of the practical bound) . Theorem 8 is the cleanest bound: it analyzes the diagonal surrogate exactly and separates off-diagonal coupling from the non-quadratic Taylor remainder. Corollary 10 then adds the extra price paid by GXPO for estimating the diagonal surrogate rate using the observable active-set ratio ri = g1,i /g 0,i and for retaining the observed two-probe displacement on inactive coordinates. For fixed δ and bounded ratios, the diagonalization and empirical-ratio terms scale as O(η2), while the non-quadratic term scales as O(η3). The inactive-coordinate contribution is controlled by the total gradient mass below the stabilization threshold, ∥g0,S ∥1, and the quadratic two-probe term 
+
+η2∥(H0g0)S ∥1. For illustration, if K = 3 and η = 10 −7, Corollary 10 becomes 
+
+∥θemp 3 − θtrue 3 ∥ ≤ 3 · 10 −14 ∥Hoff 0 ∥∥ g0∥ρmax 
+
++ 10 −14 C3,R 
+
+∥Hoff 0 ∥∞
+
+δ ∥g0∥∞∥g0,A∥
+
++ 10 −7D3,R ∥g0,S ∥1 + 10 −14 ∥(H0g0)S ∥1
+
++ 2 .5 · 10 −21 M3G2ρ2max .
+
+Here C3,R = 1 + 2 R and D3,R = 3 + R + R2. Thus, for small learning rate and bounded local quantities, the off-diagonal, active-ratio, and non-quadratic terms are strongly suppressed by 10 −14 
+
+or 10 −21 . The only term with linear dependence on η is the inactive-coordinate fallback term, 
+
+10 −7D3,R ∥g0,S ∥1, so the bound predicts small error when the inactive-gradient mass is limited. Consistent with this small-error regime, Table 6 reports K = 3 median displacement errors of 
+
+8.386 ×10 −10 for θK and 5.084 ×10 −10 after interpolation to ˜θ. These empirical values are not implied numerically by the bound; they are observed diagnostics that support the bound’s intended local regime. 
+
+A.6 Idealized Diagonal-Quadratic GD-Surrogate Budget Check 
+
+This subsection gives an algebraic sanity check for the extrapolation rule in the cleanest possible setting. It does not model the full stateful optimizer dynamics used in the implemented method. Instead, it studies a deterministic plain-GD surrogate under a global diagonal quadratic loss, where the coordinate-wise geometric model is exact. Consider 
+
+L(θ) = 12 θ⊤H0θ, H0 = diag( h1, . . . , h d), hi > 0,
+
+and assume the GD step size satisfies ηh i ≤ 1 for all i. Let 
+
+ri = 1 − ηh i.
+
+Under plain GD, 
+
+θn+1 = θn − ηg n, gn = ∇L (θn),
+
+each coordinate evolves independently: 
+
+gn,i = rni g0,i .
+
+By Proposition 7, the K-step GD displacement is 
+
+[θK − θ0]i = −ηg 0,i SK (ri), SK (ri) = 
+
+> K−1
+
+X
+
+> n=0
+
+rni .
+
+In the clean GXPO surrogate, the first two GD probe steps produce 
+
+[θ2 − θ0]i = −ηg 0,i S2(ri).
+
+If finite-precision stabilizers and inactive-coordinate fallback are omitted, GXPO scales this observed two-step displacement by 
+
+SK (ri)
+
+S2(ri) .
+
+21 Hence the extrapolated point satisfies 
+
+[θGXPO  
+
+> K
+
+− θ0]i = [ θ2 − θ0]i
+
+SK (ri)
+
+S2(ri) = −ηg 0,i SK (ri),
+
+which is exactly the K-th plain-GD iterate. With full extrapolation α = 1 , the corrective gradient is then evaluated at this exact K-step point, and the final correction gives 
+
+θGXPO new = θK − ηg K = θGD 
+
+> K+1
+
+.
+
+Thus, in this idealized diagonal-quadratic GD surrogate, one active GXPO outer step using three backward passes lands at the same point as K + 1 plain-GD steps. Let 
+
+μ = min  
+
+> i
+
+hi > 0, ρ = (1 − ημ )2 ∈ [0 , 1) .
+
+Since 0 ≤ ri ≤ 1 − ημ , plain GD satisfies 
+
+L(θGD  
+
+> n
+
+) = 12
+
+X
+
+> i
+
+hir2ni θ20,i ≤ ρnL(θ0).
+
+After m active GXPO outer steps, the surrogate reaches the same point as (K + 1) m GD steps, so 
+
+L(θGXPO  
+
+> m
+
+) ≤ ρ(K+1) mL(θ0).
+
+Since each active GXPO step uses three backward passes, for B = 3 m backward passes, 
+
+L(θGXPO  
+
+> B/ 3
+
+) ≤ ρ(K+1) B/ 3L(θ0).
+
+If 0 < ρ < 1, then to reach L(θ) ≤ ε, this idealized surrogate requires 
+
+B ≥ 3
+
+K + 1 log( L(θ0)/ε )log(1 /ρ ) .
+
+This proves the diagonal-quadratic GD-surrogate sanity check stated in Corollary 2. This result should be read only as a sanity check for the extrapolation formula. The exact identity relies on a global diagonal quadratic loss, deterministic plain GD, full extrapolation α = 1 , exact geometric sums, and no active-set fallback or finite-precision stabilization. The implemented GXPO update uses the chosen actor optimizer and may use partial extrapolation, so the practical experiments should not be interpreted as being governed by this idealized rate. The purpose of the calculation is only to show that, when the coordinate-wise geometric model is exact, the GXPO extrapolation has the intended multi-step GD interpretation. 
+
+## B Geometric Extrapolation Diagnostics 
+
+We analyze GXPO behavior across training dynamics, compute normalization, and hyperparameter settings. Larger k and α yield improved optimization efficiency, as confirmed when measured against backward passes (Fig. 5), rather than reflecting purely increased compute. Peak performance exhibits a trade-off with time-to-peak and a stable high-performing region in the α–k landscape (Fig. 4), while varying τ (for k = 5 ) shows consistent gains across training steps, wall-clock time, and backward passes (Fig. 6). Auxiliary metrics further reveal that larger k and α lead to longer and more variable responses in tokens (Fig. 7), and GXPO diagnostics peak early and collapse after the GXPO-to-GRPO transition (Fig. 8), indicating that GXPO primarily affects early training dynamics. Retention ratios follow a similar pattern, increasing with k and α during the active phase and dropping sharply at shutoff (Fig. 9). 22 Figure 4: GXPO ablations on Math-500 with Qwen2.5-1.5B. Left: peak Pass@16 versus time-to-peak across (k, α ). Right: peak Pass@16 over the α–k grid. 
+
+Figure 5: Pass@16 (EMA) versus backward passes across α ∈ { 0.1, 0.5, 1} and k ∈ { 3, 5, 10 }.Larger k maintains a consistent advantage under compute normalization. 
+
+Figure 6: Pass@16 (EMA) for k = 5 under τ ∈ { 0.7, 1, 1.5, 2} versus training steps (left), wall-clock time (center), and backward passes (right). Larger τ achieves higher accuracy across all views. 23 Figure 7: Mean response length (in tokens) versus training steps for α ∈ { 0.1, 0.5, 1} and k ∈{3, 5, 10 }. Larger values of k and α lead to longer responses and increased variability. 
+
+Figure 8: GXPO diagnostic metrics versus training steps for k ∈ { 3, 5, 10 }. Metrics peak during the GXPO-active phase and collapse after the GXPO-to-GRPO transition. 
+
+Figure 9: Retention ratio versus training steps across α ∈ { 0.1, 0.5, 1} and k ∈ { 3, 5, 10 }. Retention increases during GXPO and drops sharply at shutoff. 24 C Ablation Tables 
+
+This appendix provides compact ablation summaries for two model families. The first two tables use Llama3.2-3B and compare sampled pass@1 accuracy under matched backward-pass and wall-clock budgets. The next tables use Qwen2.5-1.5B on Math-500 and report the α sweep, surrogate-displacement diagnostics, and active-phase GXPO mechanism metrics. The final table reports KL and clipping diagnostics for the Llama3.2-3B runs. 
+
+C.1 Iso-Backward-Pass Benchmark Comparison 
+
+Table 3 compares Llama3.2-3B methods at matched total backward-pass budgets. The selective view reports sampled pass@1 accuracy on Math-500, GSM8K, and Minerva, where higher values indicate better budget-normalized reasoning performance. Table 3: Sampled pass@1 accuracy at matched total backward-pass budgets for Llama3.2-3B. Selective view over Math-500, GSM8K, and Minerva.                                                                   
+
+> Method kBP=108 BP=204 BP=300 Avg. M-500 GSM8K Minerva M-500 GSM8K Minerva M-500 GSM8K Minerva
+> GRPO –32.91 66.84 12.50 33.91 67.06 8.18 33.85 66.84 9.77 36.87 SFPO 332.82 67.13 9.66 32.94 67.21 11.14 32.61 66.99 10.34 36.76 532.24 66.68 11.25 33.05 66.47 11.48 32.90 67.02 10.91 36.89 GXPO 332.48 67.44 12.05 33.85 67.33 10.34 34.76 67.34 12.73 37.59
+> 533.38 67.22 10.80 34.23 67.35 11.25 35.54 67.24 11.02 37.56
+
+C.2 Iso-Wall-Clock Benchmark Comparison 
+
+Table 4 repeats the Llama3.2-3B comparison at matched wall-clock checkpoints. This complements the backward-pass view by accounting for end-to-end runtime differences between GRPO, SFPO, and GXPO. Table 4: Sampled pass@1 accuracy at matched wall-clock times for Llama3.2-3B. Selective view; GRPO ran for 14.5 hours and therefore has no 16-hour evaluation.                                                                   
+
+> Method k4h 8h 12h Avg. M-500 GSM8K Minerva M-500 GSM8K Minerva M-500 GSM8K Minerva
+> GRPO –33.24 66.46 10.91 32.73 67.03 12.16 33.94 67.49 11.02 36.00 SFPO 332.99 67.13 10.80 32.61 66.99 10.34 34.19 67.20 11.93 36.58 532.15 67.09 11.70 33.38 67.12 13.30 33.41 67.00 10.80 36.77 GXPO 333.69 67.22 12.73 34.67 67.50 12.39 35.30 67.48 11.59 38.06
+> 533.71 67.30 10.45 35.00 67.74 11.82 35.25 68.03 11.14 37.72
+
+C.3 Qwen2.5-1.5B on Math-500 Ablations 
+
+Tables 5–7 summarize Qwen2.5-1.5B ablations on Math-500 through step 300. The α table reports the best pass@16 checkpoint for each configuration. The diagnostic tables connect the method to Theorem 3: Table 6 measures the displacement error of the geometric surrogate, and Table 7 checks the active-phase conditions under which the approximation should hold. The results match the theory’s expected regime: larger k increases extrapolation and measured error, but the errors remain small; interpolation lowers the realized error at ˜θ; inactive fallback stays limited; and cos( g0, g slow )
+
+remains close to 0.97 .
+
+C.4 KL and Clip Diagnostics 
+
+Table 8 reports PPO/GRPO clipping and KL diagnostics over 300 Llama3.2-3B training steps. These diagnostics check whether GXPO repositioning causes unusually frequent clipping or large KL activation. 25 Table 5: Math-500 pass@16 sensitivity of GXPO to α on Qwen2.5-1.5B, computed from checkpoints up to step 300. Total BP and total hours are measured at step 300; best-pass columns record the earliest lowest-BP maximizer of pass@16.                                                                        
+
+> kαShutoff step Total BP Total hours Step to best BP to best Hours to best Math-500 pass@16
+> 30.1 100 500 11.89 280 480 11.19 68.40 0.5 123 546 12.43 210 456 9.39 69.80 1.0 106 512 12.24 200 412 8.80 71.40 50.1 100 500 12.01 160 360 7.26 68.40 0.5 92 484 11.89 300 484 11.89 70.00 1.0 123 546 12.71 150 396 7.43 73.80 10 0.1 100 500 11.96 190 390 8.21 69.80 0.5 123 546 12.77 260 506 11.32 73.00 1.0 106 512 13.50 240 452 11.11 78.20
+
+Table 6: Absolute surrogate-displacement diagnostics for GXPO on Qwen2.5-1.5B over checkpoints up to step 300. The first two columns measure the main quantities in Theorem 3: the error of the extrapolated point θK and the error after interpolation to ˜θ. Errors increase with k but remain small, and interpolation consistently reduces the realized error. The displacement-cosine error is a directional diagnostic, not a term in the bound. 
+
+k Med. θK abs. error Med. ˜θ abs. error Med. disp. cosine err. Med. active cos( g0, g slow )
+
+3 8.386e-10 5.084e-10 6.245e-06 0.970 
+
+5 2.124e-09 1.189e-09 1.360e-05 0.970 
+
+10 5.789e-09 2.933e-09 5.610e-05 0.969 
+
+Table 7: Active-phase GXPO diagnostics from the Qwen2.5-1.5B α sweep. Medians are computed only over checkpoints where GXPO extrapolation is enabled. These statistics check whether the approximation assumptions are present in practice: gradient norms stay stable, active-set retention ratios remain bounded, scale grows with k, inactive-coordinate fallback is small, and the backward-pass cost remains fixed at three. 
+
+k Policy passes Med. active     
+
+> ∥g0∥
+> Med. active
+> ∥g1∥
+> Med. active
+> ∥gslow ∥
+> Med.
+> cos( g0,g slow )
+> Retention ratio ∥∆K∥/∥∆2∥Scale mean Inactive frac.
+
+3 3 1.770e-02 1.772e-02 1.761e-02 0.971 0.519 ± 0.687 1.528 1.271 0.028 5 3 1.880e-02 1.886e-02 1.881e-02 0.970 0.535 ± 0.682 2.477 1.696 0.028 10 3 1.702e-02 1.693e-02 1.685e-02 0.971 0.627 ± 0.675 4.540 2.884 0.028 Table 8: KL and clipping diagnostics over 300 Llama3.2-3B training steps. Clip fractions remain close across GRPO, SFPO, and GXPO, indicating that GXPO repositioning does not substantially increase PPO/GRPO clipping. KL penalties are higher for GXPO at larger k but remain small in absolute value. 
+
+Method k Mean clip fraction ↓ Max clip fraction ↓ Mean KL penalty ↓ Max KL penalty ↓
+
+GRPO – 7.02e-4 9.15e-4 2.47e-7 4.63e-7 
+
+SFPO 3 6.93e-4 8.43e-4 1.88e-7 6.10e-7 5 6.89e-4 8.67e-4 2.74e-7 9.03e-7 GXPO 3 6.85e-4 8.73e-4 5.41e-7 2.53e-6 5 6.91e-4 8.74e-4 1.05e-6 4.81e-6 
+
+26

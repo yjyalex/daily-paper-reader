@@ -1,0 +1,1228 @@
+Title: Structured Role-Aware Policy Optimization for Multimodal Reasoning
+
+URL Source: https://arxiv.org/pdf/2605.07274v1
+
+Published Time: Mon, 11 May 2026 00:43:24 GMT
+
+Number of Pages: 32
+
+Markdown Content:
+# Structured Role-Aware Policy Optimization for Multimodal Reasoning 
+
+Bingqing Jiang ∗ Difan Zou †
+
+May 11, 2026 
+
+Abstract 
+
+Reinforcement learning from verifiable rewards (RLVR), especially with Group Relative Policy Optimization (GRPO), has shown strong potential for improving the reasoning capabilities of large vision-language models (LVLMs). However, in multimodal reasoning, final-answer rewards are typically assigned at the sequence level and do not distinguish the functional roles of different tokens, making it difficult to determine whether a correct answer is supported by task-relevant visual evidence. In this paper, we revisit multimodal RLVR from the perspective of role-aware token-level credit assignment, where structured responses are decomposed into perception tokens for extracting visual evidence and reasoning tokens for deriving answers from that evidence. Based on this perspective, we propose Structured Role-aware Policy Optimization ( SRPO ), which refines the sequence-level GRPO advantage into role-aware token-level advantages without changing the reward function. Specifically, SRPO assigns role-specific credit by using self-distilled on-policy contrasts: perception tokens are emphasized according to their visual dependency under original versus corrupted visual inputs, while reasoning tokens are emphasized according to their consistency with the generated perception. These role-specific signals are further unified through a shared trajectory-level baseline, yielding positive token weights that adjust relative update magnitudes while preserving the original GRPO reward and optimization direction, without requiring external reward models or separate teachers. Experiments across diverse multimodal reasoning benchmarks show that SRPO improves evidence-grounded reasoning, highlighting the importance of moving beyond uniform sequence-level credit toward role-aware optimization for reliable multimodal reasoning. 
+
+## 1 Introduction 
+
+Reinforcement learning from verifiable rewards (RLVR) [Guo et al., 2025], particularly with online policy optimization algorithms such as Group Relative Policy Optimization (GRPO) [Shao et al., 2024], has recently emerged as an effective paradigm for improving the reasoning capabilities of large language models. Motivated by its success in text-only settings, a growing body of work has begun to extend RLVR to large vision-language models (LVLMs) for multimodal reasoning [Huang et al., 2026a, Zhang et al., 2025, Yao et al., 2025, Wang et al., 2025, Zha et al., 2026]. Despite encouraging progress, multimodal reasoning remains substantially more challenging than its text-only counterpart: producing a reliable answer requires the model to first identify task-relevant visual evidence and then use that evidence to support subsequent reasoning [Liu et al., 2026a, Wang et al., 2026a, Huang et al., 2026b, Miao et al., 2026]. 
+
+> ∗
+
+School of Computing & Data Science, The University of Hong Kong. Email: bingqingjiang@connect.hku.hk 
+
+> †
+
+School of Computing & Data Science and Institute of Data Science, The University of Hong Kong. Email: dzou@hku.hk 
+
+1
+
+> arXiv:2605.07274v1 [cs.AI] 8 May 2026
+
+Motivating Examples: Correct Answer but Flawed Intermediate Grounding 
+
+Example 1 (Incorrect perception / shortcut-like reasoning)                        
+
+> Selected Example GRPO
+> Perception
+> Reasoning
+> Answer
+> Interprets 2x+11 and 6x−9 as
+> angle expressions. Incorrect
+> perception
+> Unsupported
+> reasoning
+> Prediction: B Correct
+> answer
+> SRPO
+> Perception
+> Reasoning
+> Answer
+> Recognizes that 2x+11 and 6x−9
+> side lengths.
+> Uses the equilateral-triangle prop
+> 2x+11 =6x−9, so x = 5 .
+
+Example 2 (Correct formula but misidentified visual structure)                            
+
+> Selected Example GRPO
+> Perception
+> Reasoning
+> Answer
+> Describes the figure as a
+> rectangular-prism-like 3D
+> shape. Misidentified
+> structure
+> Applies a generic 3D
+> Pythagorean template and
+> derives AF =AB ²+BD ²+DF ².
+> Weakly
+> grounded
+> reasoning
+> Prediction: AB ²+BD ²+DF ²
+> SRPO
+> Perception
+> Reasoning
+> Answer
+> Recognizes a pyramid-like 3D str
+> and the relevant right-triangle rela
+> Uses AD² = AB² + BD² and then A
+> AD² + DF² to obtain the formula.
+> Prediction: AB ² + BD ² + DF ²
+> S e t s t h e m e q u a l t o 60 °,
+> obtains values not in the
+> choices, but still outputs B.
+> Prediction: B
+> Correct
+> answer
+> There is an equilateral triangle, find x.
+> Choices: A:2 B:5 C:6 D:9
+> Find the length of AF in
+> terms of AB, BD, and DF.
+
+Figure 1: MathVerse examples where GRPO reaches correct answers despite flawed intermediate grounding. For evidence-dependent multimodal reasoning, sequence-level answer supervision has a central limitation: it verifies only whether the final response reaches the correct answer, without assessing whether the intermediate tokens are grounded in task-relevant visual evidence [Li et al., 2025, Wang et al., 2026b, Chen et al., 2025]. In practice, LVLMs can produce correct or plausible answers by exploiting language priors, dataset regularities, or shallow textual heuristics, rather than faithfully grounding their responses in the image [Ghosh et al., 2025, Fang et al., 2026]. For example, as illustrated in Fig. 1, our MathVerse [Zhang et al., 2024] evaluation shows that GRPO can reach the correct final answer while exhibiting flawed intermediate grounding. In the first example, the model misinterprets side-length expressions as angle expressions, leading to an incorrect perception step and shortcut-like reasoning. In the second example, the model derives the correct final formula despite misidentifying the underlying 3D visual structure. As a result, these rollouts may still receive positive sequence-level rewards, even though their intermediate perception or reasoning is not fully supported by the visual evidence. Thus, improved answer accuracy under sequence-level supervision does not necessarily imply improved image-grounded reasoning. Recent efforts have begun to address this problem by explicitly separating visual perception from downstream reasoning [Huang et al., 2026b, Miao et al., 2026, Wang et al., 2026b, Zhou et al., 2025]. This direction highlights a basic requirement for grounded multimodal reasoning: the model should first identify task-relevant visual evidence and then answer based on that evidence. Accordingly, a structured response can be organized into two functional stages: a perception stage for extracting question-relevant visual evidence, and a reasoning stage for deriving the final answer from that evidence [Sharma et al., 2026]. Crucially, these two stages serve distinct functional roles and therefore require different credit assignment criteria [Chen et al., 2025, Yu et al., 2026a, Ding et al., 2025]. The perception stage should be credited for faithfully extracting task-relevant visual evidence, whereas the reasoning stage should be credited for deriving a valid answer from that evidence. However, existing optimization methods often treat these stages uniformly, ignoring their role distinction and conflating evidence extraction with evidence-based inference [Huang et al., 2026a, Zhang et al., 2025, Yao et al., 2025, Miao et al., 2026, Wang et al., 2026b]. This motivates a role-aware policy optimization framework that preserves verifiable answer-level supervision while assigning token-level credit according to the functional role of each response segment. 2In this paper, we propose SRPO (Structured Role-aware Policy Optimization), a token-level policy optimization method for multimodal RLVR that accounts for the functional heterogeneity of generated responses. SRPO asks the policy to produce a structured response with a perception 
+
+segment for extracting task-relevant visual evidence and a reasoning segment for deriving the answer from that evidence. Instead of treating the whole response as a homogeneous token sequence, SRPO converts the sequence-level GRPO advantage into role-aware token-level advantages through positive modulation weights . These weights are obtained by a self-distilled credit assignment principle, where the frozen rollout policy rescores the same generated tokens under role-specific information conditions. For perception tokens, SRPO measures visual dependency by contrasting likelihoods under the original and corrupted images; for reasoning tokens, it measures grounding consistency by contrasting perception-conditioned prediction with direct image–question grounding. These role-specific scores are unified through a shared response-level baseline over the entire valid trajectory and mapped to bounded positive multipliers, preserving the original verifiable reward and the reward-induced optimization direction of GRPO while making token update magnitudes role-aware. SRPO therefore requires no external reward model, auxiliary supervision, or separate teacher, but restructures the policy-gradient signal to reflect visual evidence extraction and evidence-grounded reasoning. In summary, our contributions are threefold: 
+
+• Compared with conventional sequence-level optimization that assigns a uniform credit signal to the whole response, we introduce a role-decomposed perspective for multimodal token-level credit assignment. This perspective treats multimodal responses as functionally heterogeneous trajectories, where the perception stage extracts task-relevant visual evidence and the reasoning 
+
+stage derives answers from that evidence. 
+
+• We propose SRPO, which instantiates role-decomposed token-level credit assignment within GRPO. SRPO estimates perception- and reasoning-stage credit through role-specific self-distilled on-policy contrasts, then calibrates these signals with a shared trajectory-level baseline and converts them into bounded positive weights to reweight the sequence-level GRPO advantage. This preserves the original reward and optimization direction without external reward models or teachers. 
+
+• We demonstrate that SRPO improves evidence-grounded multimodal reasoning across multiple benchmarks, with ablations confirming the importance of role-specific credit signals and unified trajectory-level modulation. 
+
+## 2 Related Work 
+
+Multimodal Reinforcement Learning for Reasoning. RLVR, especially with policy opti-mization algorithms such as PPO and GRPO, has become an effective paradigm for improving reasoning in large language models [Guo et al., 2025, Shao et al., 2024]. Motivated by this success, recent work extends RL-style post-training to LVLMs to improve multimodal reasoning beyond supervised imitation Achiam et al. [2023], Bai et al. [2025], Gemini Team et al. [2024], Zhu et al. [2025]. Existing methods explore improved multimodal training data Huang et al. [2026a], Yao et al. [2025], rollout diversification Liu et al. [2026a], Wang et al. [2026a], replay mechanisms Wang et al. [2025], and more stable optimization heuristics Zha et al. [2026], collectively demonstrating that RL-style post-training can substantially enhance multimodal reasoning. 
+
+Perception-Aware and Structured Multimodal Reasoning. Since correct final answers do not necessarily imply visually grounded intermediate reasoning [Ghosh et al., 2025], prior methods 3strengthen visual grounding through perception-aware rewards Xia et al. [2025], Xiao et al. [2025], Wang et al. [2026b], explicit perceptual scaffolds Cao et al. [2025], Sarch et al. [2026], Su et al. [2026], Sun et al. [2026], or RL mechanisms that encourage stronger reliance on image evidence Yu et al. [2026a], Wang et al. [2026c], Liu et al. [2026b]. Another related direction decomposes multimodal generation into structured stages, such as perception, evidence extraction, reasoning, and answer prediction Chen et al. [2025], Li et al. [2026], Miao et al. [2026], Ding et al. [2025], He et al. [2025]. These works highlight the importance of explicit perceptual evidence and perception–reasoning separation. However, such structure is mainly used as a modeling or supervision scaffold, while its role in determining token-level policy updates remains less explored. Our work incorporates explicit perception–reasoning structure into policy optimization and assigns distinct credit signals to the two components. 
+
+Fine-Grained Credit Assignment in Reinforcement Learning. Beyond sequence-level supervision, the granularity of credit assignment has been increasingly recognized as important for reasoning optimization. In text-based settings, prior work studies structured credit allocation over intermediate reasoning processes or informative token subsets Guo et al. [2026], Tran et al. [2025], Wang et al. [2026d], Xu et al. [2025], Zhang et al. [2026], Yang et al. [2026]. Similar trends have emerged in multimodal reasoning, where token-level or perception-aware optimization is used to better align learning signals with visually grounded reasoning behavior Huang et al. [2026b], Lu et al. [2026], Ye et al. [2026]. These studies suggest that fine-grained optimization can reduce the tendency of models to exploit shortcut signals under coarse sequence-level rewards. Our work is closely related, but differs in explicitly handling functional heterogeneity within multimodal responses. Rather than using a shared token-importance criterion, we distinguish perception tokens 
+
+from reasoning tokens and assign credit according to their distinct roles, while keeping the GRPO reward and its reward-aligned optimization direction unchanged. 
+
+## 3 Method 
+
+3.1 Preliminary: Group Relative Policy Optimization 
+
+GRPO is a value-free reinforcement learning algorithm that estimates policy-gradient advantages by comparing multiple responses sampled from the same prompt [Shao et al., 2024]. Given an image–question pair ( I, q ), the behavior policy πθold samples a group of G responses, 
+
+{yi}Gi=1 , yi = ( yi, 1, . . . , y i,T i ) ∼ πθold (· | I, q ).
+
+A verifier assigns each complete response a scalar reward that combines format compliance and answer correctness: 
+
+Ri = λfmt Rfmt  
+
+> i
+
++ λacc Racc  
+
+> i
+
+,
+
+where Rfmt  
+
+> i
+
+measures whether the response follows the required output format, and Racc  
+
+> i
+
+=
+
+1{eq ( ˆai, a )} measures whether the extracted answer ˆai matches the ground-truth answer a under an equivalence checker eq (·, ·). GRPO estimates the advantage of each response by normalizing rewards within the group: ˆAi = Ri − μR
+
+σR + ϵnorm 
+
+, μR = 1
+
+G
+
+> G
+
+X
+
+> j=1
+
+Rj , σR =
+
+vuut 1
+
+G
+
+> G
+
+X
+
+> j=1
+
+(Rj − μR)2,
+
+4Table 1: Diagnostic evaluation on LogicVista [Xiao et al., 2024] under controlled visual conditions. Numbers in parentheses denote the accuracy change relative to the original-image setting.             
+
+> Model Original image Masked image Mismatched image Text only
+> Qwen2.5-VL-3B 40.49 33.55 ( ↓6.94) 39.71 ( ↓0.78) 23.93 ( ↓16.56) Qwen2.5-VL-7B 42.95 37.80 ( ↓5.15) 41.75 ( ↓1.20) 29.08 ( ↓13.87)
+
+where ϵnorm is a small constant for numerical stability. The policy is then optimized with a PPO-style clipped surrogate objective: 
+
+JGRPO (θ) = E
+
+"
+
+1
+
+G
+
+> G
+
+X
+
+> i=1
+
+1
+
+TiTiX
+
+> t=1
+
+min 
+
+
+
+ρi,t (θ) ˆAi, clip  ρi,t (θ), 1 − ϵ, 1 + ϵ ˆAi
+
+#
+
+,
+
+where ρi,t (θ) = πθ (yi,t |I,q,y i,<t )  
+
+> πθold (yi,t |I,q,y i,<t )
+
+. In practice, a KL penalty to a reference policy πref can be added to constrain policy drift. Despite its effectiveness, GRPO performs credit assignment at the sequence level: the same scalar advantage ˆAi is applied uniformly to all valid tokens in a response. This coarse-grained design ignores the functional heterogeneity of multimodal reasoning trajectories. In particular, perception tokens should be encouraged according to their dependence on visual evidence, whereas reasoning tokens should be evaluated by whether the subsequent inference remains supported by the perceived content. A uniform sequence-level advantage cannot distinguish these roles. This motivates a structured token-level modulation mechanism that preserves the global optimization direction provided by the outcome reward, while redistributing update magnitudes across tokens. 
+
+3.2 Structured Role-aware Policy Optimization 
+
+We now introduce SRPO, which refines the sequence-level GRPO signal into role-aware token-level advantages without changing the reward function or introducing an external teacher. In multimodal reasoning, however, final-answer correctness provides only an outcome-level supervision signal and does not by itself specify whether the response is supported by the matched visual evidence. To illustrate this limitation, we conduct a diagnostic evaluation on LogicVista using Qwen2.5-VL-3B and Qwen2.5-VL-7B under four visual conditions: the original image, a masked image, a randomly mismatched image, and a text-only input [Bai et al., 2025, Xiao et al., 2024]. As shown in Table 1, accuracy decreases noticeably when the image is degraded by masking, indicating that visual information contributes to task performance. In contrast, replacing the image with a randomly mismatched one yields little to no degradation relative to the original-image setting [Favero et al., 2024, Luo et al., 2025, Li et al., 2024]. This observation suggests that final-answer accuracy is not always tightly coupled with image–text consistency, and that outcome-level rewards may assign positive credit to responses that bypass or only weakly exploit the relevant visual evidence. Recent token-level or perception-aware optimization methods suggest that fine-grained learning signals can mitigate shortcut behavior under coarse sequence-level rewards [Huang et al., 2026b, Wang et al., 2026b, Lu et al., 2026, Ye et al., 2026]. SRPO shares this fine-grained optimization view, but differs by explicitly decomposing multimodal responses into perception and reasoning stages rather than using a shared token-importance criterion. This role decomposition allows visual grounding and subsequent inference to receive distinct credit, which SRPO converts into self-distilled token-level signals while preserving the original GRPO outcome reward and reward-induced optimization direction. For each on-policy rollout batch, SRPO rescores the generated tokens with the behavior policy 
+
+πθold under controlled changes of visual or textual context. These rescoring computations are 5treated as stop-gradient signals and are used only for credit modulation. For each sampled response 
+
+yi = ( yi, 1, . . . , y i,T i ), we assume a structured format that can be parsed into two contiguous spans: 
+
+yi = ( yperc  
+
+> i
+
+, y reas  
+
+> i
+
+),
+
+where yperc  
+
+> i
+
+denotes perception tokens that describe or extract task-relevant visual evidence, and 
+
+yreas  
+
+> i
+
+denotes reasoning tokens that use the perceived content to derive the final answer. SRPO then derives role-specific token scores for the two spans and converts them into token-level modulation weights for the GRPO advantage. 
+
+Self-distilled visual dependency for perception tokens. For perception tokens, we estimate visual reliance by comparing the behavior policy under two visual conditions. The first uses the original image I, and the second uses a corrupted image Imask obtained by masking a subset of image patches. Model parameters are identical across the two evaluations; only the visual input is changed. For each perception-token position t ∈ P i, we first compute the stop-gradient log-likelihood contrast 
+
+δperc  
+
+> i,t
+
+= sg 
+
+h
+
+log πθold (yi,t | I, q, y i,<t ) − log πθold (yi,t | Imask , q, y i,<t )
+
+i
+
+. (3.1) A larger positive δperc  
+
+> i,t
+
+indicates stronger dependence on the original visual input, while a small or negative value indicates weak visual dependence. Under proportional perception-credit allocation, SRPO converts this contrast into positive perception scores: 
+
+rperc  
+
+> i,t
+
+= exp 
+
+
+
+sign( ˆAi) · δperc 
+
+> i,t
+
+
+
+, t ∈ P i. (3.2) When ˆAi > 0, visually dependent perception tokens receive larger modulation scores and are therefore reinforced more strongly. When ˆAi < 0, the sign reversal assigns smaller scores to visually dependent perception tokens and larger scores to weakly visual-dependent ones, so failed trajectories mainly suppress perception tokens that are insufficiently tied to the image. The stop-gradient operation ensures that these self-distilled signals are used only for credit modulation and do not introduce an auxiliary optimization objective. 
+
+Self-distilled grounding consistency for reasoning tokens. For reasoning tokens, the desired property is not direct visual sensitivity, but whether the generated perception provides useful support for subsequent inference. We therefore compare the behavior policy under two on-policy conditioning contexts. The first is the full rollout context, which contains the image, question, generated perception, and previous reasoning tokens. The second is a perception-ablated rescoring context, which removes the generated perception and rescoring is performed on the same rollout tail tokens. This comparison estimates how much the perception segment supports each reasoning token beyond what is already explained by the image–question pair and the preceding reasoning context. For each reasoning token position t ∈ R i, we define 
+
+δreas  
+
+> i,t
+
+= sg log πθold 
+
+ yi,t | I, q, y perc  
+
+> i
+
+, y reas 
+
+> i,<t
+
+ − log πθold 
+
+ yi,t | I, q, y reas 
+
+> i,<t
+
+ , (3.3) where yreas  
+
+> i,<t
+
+denotes the reasoning-prefix tokens before position t. This residual measures the perception-induced change in the likelihood of the current reasoning token. A positive δreas  
+
+> i,t
+
+indicates that conditioning on the generated perception makes the reasoning token more likely under the same image–question input and reasoning prefix, suggesting perception-supported inference. Asmall or negative value suggests that the reasoning token is weakly supported, or even suppressed, by the generated perception. As in perception-token modulation, we use this self-distilled residual 6SRCA: Structured Role-based Credit Assignment 
+
+> Self-distilled token-level credit modulation for multimodal GRPO
+
+Input & On-Policy Rollout Sequence-level 
+
+Supervision Self-distilled Role-specific Credit Unified Trajectory-level 
+
+Modulation   
+
+> Image I
+> Rollout Policy
+> Sample G responses
+> Perception branch:
+> visual dependency
+> Reasoning branch:
+> grounding consistency
+> Original
+> image
+> Mask ed
+> image
+> Perception score Reasoning score
+
+Update     
+
+> Correct Incorrect
+> With
+> perception
+> • • •
+> 1.0
+> 1��
+> token index t
+> Entropy
+> regularization
+> Structured response
+> Perception
+> tokens
+> Reasoning
+> tokens
+> …
+> …
+> Verifier /
+> Exact Match
+> Same reward
+> definition,
+> role-aware token
+> reweighting
+> Question q
+> …
+> Without
+> perception
+> Sequence-level
+> direction
+> Self-distilled token scores +
+> Shared baseline over
+> all valid tokens
+> Bounded positive
+> multipliers
+
+Policy Optimization 
+
+-   
+
+> Token-level
+> reweighting
+> Logprob Logprob Logprob Logprob ‒‒
+
+Figure 2: Overview of SRPO . SRPO decomposes each on-policy response into perception and reasoning tokens, obtains a sequence-level advantage from verifier rewards, and converts it into role-aware token-level advantages. Perception tokens are scored by visual dependency, while reasoning tokens are scored by perception-supported grounding consistency. The resulting scores produce bounded positive modulation weights for token-level reweighting, and policy optimization further includes a response-token entropy regularizer for stability. in an outcome-aware manner by interpreting it under the sign of the trajectory-level advantage and mapping it to a positive modulation factor: 
+
+rreas 
+
+i,t = exp 
+
+
+
+sign( ˆAi) · δreas 
+
+i,t 
+
+
+
+, t ∈ R i. (3.4) When ˆAi > 0, perception-supported reasoning tokens with larger δreas 
+
+i,t receive larger modulation factors, thereby reinforcing successful inference patterns that are grounded in the generated percep-tion. When ˆAi < 0, the sign reversal makes perception-supported reasoning tokens receive smaller modulation factors, preventing unsuccessful perception-supported patterns from being strengthened. 
+
+Unified trajectory-level modulation. We combine the role-specific raw scores into a single valid-token sequence: 
+
+ri,t =
+
+(
+
+rperc 
+
+i,t , t ∈ P i,rreas 
+
+i,t , t ∈ R i,
+
+where Pi and Ri denote the perception and reasoning token-position sets of response yi, respectively. Let V(yi) denote the set of all valid token positions. SRPO computes one response-level baseline over the entire valid trajectory: ¯ri = 1
+
+|V (yi)|
+
+X
+
+t∈V (yi)
+
+ri,t .
+
+This baseline is shared by perception and reasoning tokens, rather than computed separately for each span. The centered raw scores are then converted into bounded positive multipliers: 
+
+wi,t = clip (1 + λmod (ri,t − ¯ri) , m min , m max ) , t ∈ V (yi), (3.5) where λmod is a modulation-strength hyperparameter and [ mmin , m max ] keeps the multipliers bounded and positive. The centering step makes each multiplier depend on the token’s relative credit within 7the same response, and the clipping range is chosen such that wi,t > 0. The token-level advantage is then defined as ˜Ai,t = ˆAiwi,t .
+
+Since wi,t is strictly positive, SRPO preserves the reward-induced direction of GRPO while affecting only the token-wise update magnitude. 
+
+3.3 Optimization Objective 
+
+SRPO keeps the GRPO clipped surrogate unchanged, but replaces the uniform sequence-level advantage with the token-level advantage ˜Ai,t = ˆAiwi,t :
+
+JSRPO (θ) = E
+
+"
+
+1
+
+G
+
+> G
+
+X
+
+> i=1
+
+1
+
+TiTiX
+
+> t=1
+
+min 
+
+
+
+ρi,t (θ) ˜Ai,t , clip  ρi,t (θ), 1 − ϵ, 1 + ϵ ˜Ai,t 
+
+#
+
+,
+
+where ρi,t (θ) is the PPO importance ratio defined in Section 3.1. The modulation weights wi,t are computed from stop-gradient contrasts under πθold and are fixed during the policy update. Therefore, SRPO preserves the GRPO optimization form while introducing role-aware token-level reweighting. However, redistributing update magnitudes across response tokens may amplify updates on unstable or low-confidence tokens in multimodal reasoning trajectories, increasing rollout uncertainty and degrading training stability. To mitigate this issue, we introduce a lightweight response-token uncertainty penalty along the sampled trajectory. This term is used only in the final optimization objective and does not affect the stop-gradient credit scores or the modulation weights. Concretely, for each sampled response, we define the response-token uncertainty surrogate as 
+
+Jresp (θ) = E
+
+ 1
+
+G
+
+> G
+
+X
+
+> i=1
+
+1
+
+|V (yi)|
+
+X
+
+> t∈V (yi)
+
+− log πθ (yi,t | I, q, y i,<t )
+
+ .
+
+The final regularized objective is defined as 
+
+Jtotal (θ) = JSRPO (θ) − η Jresp (θ), (3.6) where η controls the strength of the uncertainty penalty. We maximize Jtotal (θ) during policy optimization. See Appendix A for the full training procedure. 
+
+## 4 Experiments 
+
+4.1 Experimental Setup 
+
+Models, Data, and Baselines. We evaluate our method on Qwen2.5-VL-3B and Qwen2.5-VL-7B [Bai et al., 2025]. Both models are trained on ViRL39K [Wang et al., 2026a], a collection of approximately 39K verifiable multimodal reasoning problems covering diverse visual inputs such as diagrams, charts, and natural images. We compare against recent open-source multimodal reasoning models at comparable scales, including Vision-SR1 [Li et al., 2026], ThinkLite-VL, PAPO [Wang et al., 2026b], Perception-R1 [Xiao et al., 2025], Vision-Matters [Li et al., 2025], VL-Rethinker [Wang et al., 2026a], VPPO [Huang et al., 2026b], and PRCO [Miao et al., 2026]. For controlled comparisons, we also train GRPO [Shao et al., 2024] and DAPO [Yu et al., 2026b] baselines using the same backbones, data, reward function, and rollout configuration. 80 50 100 150 200     
+
+> Training Step
+> 0.25
+> 0.30
+> 0.35
+> 0.40
+> 0.45
+> 0.50
+> 0.55
+> 0.60
+> 0.65
+> Training accuracy
+> GRPO 3B
+> DAPO 3B
+> SRPO 3B
+> 050 100 150 200
+> Training Step
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> GRPO 7B
+> DAPO 7B
+> SRPO 7B
+
+Figure 3: Comparison of training dynamics on the accuracy reward. Solid lines indicate running averages with a stepping window size of 20. 
+
+Training Details. All models are trained with the EasyR1 [Zheng et al., 2025] codebase using AdamW [Loshchilov and Hutter, 2017] with a learning rate of 1 × 10 −6. We train each model for two epochs on ViRL39K [Wang et al., 2026a] with a rollout batch size of 384 and sample 8 responses per prompt for group-relative advantage estimation. All controlled baselines and ablation variants use the same backbone, data, rollout budget, and optimizer settings unless otherwise specified. Detailed SRPO hyperparameters, including visual masking, modulation clipping, and regularization settings, are provided in Appendix B.1. 
+
+Evaluation Benchmarks. We evaluate on nine multimodal reasoning benchmarks covering math-related and general multimodal reasoning tasks. The math-related benchmarks include MathVista [Lu et al., 2024], MathVision [Wang et al., 2024], We-Math [Qiao et al., 2024], Math-Verse [Zhang et al., 2024], and DynaMath [Zou et al., 2025]. The general-task benchmarks include MMMU-Pro [Yue et al., 2024], MM-Vet [Yu et al., 2024], LogicVista [Xiao et al., 2024], and NaturalBench [Li et al., 2024]. All models are evaluated with VLMEvalKit [Duan et al., 2024] using a fixed greedy decoding configuration with temperature 0 and top-p 1.0. We report single-sample performance under each benchmark’s official VLMEvalKit metric, referred to as accuracy for sim-plicity. When a benchmark requires LLM-as-a-judge evaluation, we use GPT-4o-mini as the judge model. Additional details are provided in Appendix B.2. 
+
+4.2 Main Results 
+
+Figure 3 and Table 2 jointly demonstrate the effectiveness of SRPO from optimization and down-stream evaluation perspectives. During training, SRPO achieves consistently higher accuracy rewards than GRPO and DAPO on both the 3B and 7B backbones, maintaining a clear advantage after the early optimization stage until convergence. This indicates that role-aware token-level credit assignment provides a more effective learning signal than broadcasting the same sequence-level reward to all tokens. By assigning targeted credits to perception and reasoning tokens according to their functional roles, SRPO offers denser and more informative supervision for policy optimization. This optimization advantage translates into consistent downstream gains: across Qwen2.5-VL-3B and Qwen2.5-VL-7B, SRPO improves over the base models and standard RL baselines, while also achieving the best overall average among recent multimodal reasoning methods. The gains hold across math-related and general-task categories, suggesting that SRPO improves multimodal reasoning broadly rather than specializing to a narrow class of benchmarks. 9Table 2: Main results on nine multimodal reasoning benchmarks with Qwen2.5-VL-3B and Qwen2.5-VL-7B backbones. We report benchmark scores on math-related benchmarks, general-task bench-marks, and their overall average. The best and second-best results within each backbone are highlighted in bold and underlined, respectively. 
+
+Model Math-Related General Task Avg. MathVista MathVision We-Math MathVerse DynaMath MMMU-Pro MM-Vet LogicVista NaturalBench 
+
+Based on Qwen2.5-VL-3B 
+
+Vision-SR1-3B 62.20 24.56 28.67 34.01 45.34 28.61 51.92 40.26 73.83 43.27 PAPO-G-3B 64.70 25.01 30.19 33.88 44.89 27.68 53.16 43.62 74.76 44.21 PAPO-D-3B 65.80 25.98 33.24 37.18 45.16 27.91 52.98 42.95 74.45 45.07 PRCO-3B 67.90 25.32 35.14 35.53 46.31 27.80 49.95 43.62 74.31 45.10 Qwen2.5-VL-3B 63.30 20.47 24.01 30.32 43.15 26.06 49.49 40.49 72.27 41.06 + GRPO 64.90 22.69 25.14 33.24 45.06 27.45 51.51 41.16 74.11 42.81 + DAPO 67.60 25.65 32.76 35.41 44.53 28.15 51.69 46.08 74.61 45.16 
+
++ SRPO 67.80 29.27 36.76 39.72 48.54 29.65 54.17 46.53 74.83 47.47 
+
+Based on Qwen2.5-VL-7B 
+
+Vision-SR1-7B 71.80 26.23 33.52 39.46 52.71 34.33 57.98 46.53 77.65 48.91 ThinkLite-VL-7B 73.10 25.98 36.10 37.22 51.79 31.33 54.71 45.86 78.09 48.24 PAPO-G-7B 71.50 28.28 38.48 41.24 53.11 35.37 57.93 45.63 77.92 49.94 PAPO-D-7B 73.30 29.93 43.52 38.70 56.54 35.20 57.66 46.97 78.11 51.10 Perception-R1-7B 73.10 26.97 43.90 40.35 55.36 34.73 57.24 47.42 77.96 50.78 Vision-Matters-7B 73.10 29.27 40.19 42.79 55.09 34.91 57.43 46.53 78.01 50.81 VL-Rethinker-7B 72.60 30.59 40.38 45.68 55.14 33.35 56.23 46.76 78.17 50.99 VPPO-7B 73.60 30.26 42.10 43.02 56.88 35.89 56.01 46.30 77.94 51.33 PRCO-7B 74.10 30.92 43.52 40.86 59.36 36.94 55.78 47.65 77.83 51.88 Qwen2.5-VL-7B 69.80 27.30 35.14 33.37 51.29 30.73 55.37 42.95 77.67 47.07 + GRPO 72.30 30.92 38.10 38.71 55.09 32.65 56.81 43.84 77.92 49.59 + DAPO 74.50 29.27 37.71 41.62 55.46 35.20 58.02 47.42 78.05 50.81 
+
++ SRPO 76.30 34.54 46.86 44.92 58.22 38.09 60.57 50.56 78.62 54.30 1 2 4 8         
+
+> Number of Responses Sampled (k)
+> 30
+> 40
+> 50
+> 60
+> Accuracy (%)
+> (a) MathVision
+> DAPO-3B
+> PRCO-3B
+> PAPO-3B
+> SRPO-3B
+> 1248
+> Number of Responses Sampled (k)
+> (b) MMMU-Pro
+> DAPO-3B
+> PRCO-3B
+> PAPO-3B
+> SRPO-3B
+> 1248
+> Number of Responses Sampled (k)
+> (c) MathVision
+> DAPO-7B
+> VPPO-7B
+> PRCO-7B
+> PAPO-7B
+> SRPO-7B
+> 1248
+> Number of Responses Sampled (k)
+> (d) MMMU-Pro
+> DAPO-7B
+> VPPO-7B
+> PRCO-7B
+> PAPO-7B
+> SRPO-7B
+
+Figure 4: Pass@k performance comparison on MathVision and MMMU-Pro for 3B and 7B models. 
+
+4.3 Pass@k Evaluation 
+
+We further evaluate pass@k performance on MathVision [Wang et al., 2024] and MMMU-Pro [Yue et al., 2024] to assess whether the model can benefit from increased sampling budgets. As shown in Figure 4, SRPO consistently achieves strong pass@k performance across both benchmarks and model scales. The advantage is especially clear for the 3B models, where SRPO outperforms competing methods across different values of k. For the 7B models, SRPO remains competitive on MathVision and shows consistent gains on MMMU-Pro. These results indicate that SRPO improves not only single-sample accuracy but also the likelihood of sampling correct reasoning trajectories, suggesting stronger reasoning robustness under multiple attempts. 
+
+4.4 Ablation Study 
+
+Ablation Study on SRPO Components. We first evaluate the contribution of the three core components in SRPO: self-distilled visual dependency for perception tokens, self-distilled grounding consistency for reasoning tokens, and unified trajectory-level modulation. As shown 10 Table 3: Ablation studies on Qwen2.5-VL-7B. The base model is included for reference, followed by ablations on design components and entropy coefficient. The full SRPO setting is highlighted in blue.                                                                                          
+
+> Setting Math-Related General Task MathVista MathVision We-Math MathVerse DynaMath MMMU-Pro MM-Vet LogicVista NaturalBench
+> Qwen2.5-VL-7B 69.80 27.30 35.14 33.37 51.29 30.73 55.37 42.95 77.67
+> Component Ablation
+> + SRPO w/o perception credit 73.60 30.26 40.86 42.76 56.41 37.64 57.29 47.65 78.18 + SRPO w/o reasoning credit 73.10 29.27 39.90 43.02 55.94 35.72 57.34 45.19 78.07 + SRPO w/o unified modulation 72.00 26.64 39.81 40.73 54.53 34.79 55.82 44.52 78.05 + SRPO 76.30 34.54 46.86 44.92 58.22 38.09 60.57 50.56 78.62
+> Entropy-Coefficient Ablation
+> η= 0 73.30 27.30 29.33 37.18 56.31 34.51 57.29 44.07 78.02
+> η= 0 .174.90 31.25 40.38 43.40 56.52 35.78 57.71 47.42 78.14
+> η= 0 .03 76.30 34.54 46.86 44.92 58.22 38.09 60.57 50.56 78.62 050 100 150 200
+
+Training Step     
+
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> Training accuracy
+> SRPO
+> w/o Perception Credit
+> w/o Reasoning Credit
+> w/o Unified Modulation
+> 050 100 150 200
+
+Training Step 
+
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> =0.03
+> =0
+> =0.1
+
+Figure 5: Training dynamics of SRPO ablations on Qwen2.5-VL-7B. The left panel compares component ablations, and the right panel compares entropy-coefficient variants. SRPO with all components and η = 0 .03 achieves the strongest and most stable training trajectory. The 3B ablation results are presented in Appendix C. in the upper block of Table 3, removing any component degrades performance on Qwen2.5-VL-7B, while the full SRPO variant achieves the best results across all reported benchmarks. This indicates that SRPO’s gains are not driven by a single isolated signal, but by the coordinated use of role-aware credit assignment and unified token-level modulation. Removing perception-specific credit weakens the visual-dependency signal used to identify visually grounded perception tokens, leading to lower performance across both math-related and general-task benchmarks. Removing reasoning-specific credit also reduces performance, suggesting that measuring whether reasoning tokens are supported by the generated perception is important for perception-conditioned inference. The largest degradation is observed when unified modulation is removed, indicating that role-specific scores should be centered at the trajectory level and converted into bounded positive weights to preserve the reward-induced update direction while adjusting token-wise update magnitudes. The left panel of Figure 5 provides consistent optimization evidence: the full SRPO variant maintains a stronger training accuracy trajectory than its component-ablated variants. Further ablations on the 3B backbone are presented in Appendix C. 
+
+Effect of Response-Token Uncertainty Penalty. We further study the coefficient of the response-token uncertainty penalty in the lower block of Table 3. Without this regularization, i.e., 11 Case Study of SRPO 
+
+Perception evidence Reasoning inference 
+
+(a) Geometry reasoning ( DynaMath )
+
+Reasoning 
+
+(b) Chart reasoning (MathVista) 
+
+Perception Reasoning 
+
+SRPO extracts question-relevant chart evidence and uses it for condition checking. 
+
+Answer: 8. 0 
+
+Perception 
+
+SRPO first extracts the key geometric facts, then derives the answer from them 。
+
+Answer: 2 
+
+Q: How many items sold less than 5 
+
+units in at least one store? 
+
+Q: As shown in the figure, AO is the 
+
+height of the cone, the bottom radius 
+
+of the cone OB = 5, the length of AB 
+
+is 9.434, then the length of AO is ()? The image shows a cone with \( AO \) 
+
+as the height, \( OB \) as the radius 
+
+of the base, and \( AB \) as the slant 
+
+height. The radius \( OB = 5 \) and 
+
+the slant height \( AB = 9.434 \). 
+
+The image shows the sales statistics 
+
+for items in different stores. The x-
+
+axis represents the items: very, mill, 
+
+cop, and dot. The y-axis represents 
+
+the number of units sold, ranging from 
+
+0 to 10. There are two stores: candy 
+
+(blue bars) and cook (orange bars). 
+
+The heights of the bars indicate the 
+
+number of units sold for each item in 
+
+each store. 
+
+- For "very," both candy and cook sold 
+
+3 units. 
+
+- For "mill," candy sold 6 units and 
+
+cook sold 3 units. 
+
+- For "cop," candy sold 9 units and 
+
+cook sold 5 units. 
+
+- For "dot," candy sold 5 units and 
+
+cook sold 7 units. 
+
+To find the height \( AO \) of the cone, we can use the 
+
+Pythagorean theorem in the right triangle \( AOB \). In 
+
+this triangle, \( AO \) is the height, \( OB \) is the 
+
+radius, and \( AB \) is the slant height. The Pythagorean 
+
+theorem states: \[AB^2 = AO^2 + OB^2\] 
+
+Substituting the given values: \[9.434^2 = AO^2 + 5^2\] 
+
+\[89.000 = AO^2 + 25\] 
+
+\[AO^2 = 64\] 
+
+\[AO = \sqrt{64} = 8\] 
+
+Thus, the length of \( AO \) is 8. 
+
+To determine how many items sold less than 5 units in at 
+
+least one store, we analyze each item: 
+
+- For "very," both candy and cook sold 3 units, which is 
+
+less than 5. 
+
+- For "mill," candy sold 6 units (not less than 5), and cook 
+
+sold 3 units, which is less than 5. 
+
+- For "cop," candy sold 9 units (not less than 5), and cook 
+
+sold 5 units, which is not less than 5. 
+
+- For "dot," candy sold 5 units (not less than 5), and cook 
+
+sold 7 units (not less than 5). 
+
+The items "very" and "mill" sold less than 5 units in at 
+
+least one store. Figure 6: Qualitative case study of SRPO on representative multimodal reasoning examples. Purple highlights indicate perception evidence tokens, while orange highlights indicate perception-supported reasoning tokens. SRPO first extracts task-relevant visual evidence in the perception segment and then uses it to support the subsequent reasoning process. 
+
+η = 0, SRPO still improves over the base model but underperforms the regularized variants on most benchmarks, suggesting that role-aware token reweighting benefits from an additional stability constraint on sampled response tokens. This is consistent with our objective design: token-level modulation redistributes update magnitudes across long multimodal reasoning trajectories, and the uncertainty penalty helps prevent unstable or low-confidence tokens from being overly amplified during policy optimization. However, using a larger coefficient, η = 0 .1, is also inferior to the default setting η = 0 .03. This indicates that an overly strong uncertainty penalty can over-constrain the policy update and weaken reward-directed adaptation. A moderate coefficient therefore provides a better balance between stable token-level optimization and effective reward maximization. The right panel of Figure 5 further supports this conclusion: η = 0 .03 follows a stronger and more stable training trajectory than both the unregularized variant and the variant with an overly large penalty. Additional ablation results on the 3B backbone are presented in Appendix C. 
+
+4.5 Case Study 
+
+Figure 6 presents two qualitative examples illustrating the role-aware credit assignment behavior of SRPO. Purple highlights denote perception tokens that extract task-relevant visual evidence, while orange highlights denote reasoning tokens that operate on the perceived evidence. In case (a), SRPO first identifies the geometric roles in the cone diagram, including the height AO , the 12 base radius OB = 5, and the slant height AB = 9 .434. These perceived facts are then used to form the right triangle AOB and apply the Pythagorean theorem, leading to the correct height 
+
+AO = 8. In case (b), SRPO extracts the question-relevant chart evidence, including item names, store categories, and bar values for each item. The reasoning segment then applies the condition “less than 5 units in at least one store” to each item and counts the satisfying items. These examples show that SRPO assigns larger credit to tokens that form an evidence-grounded reasoning chain, rather than uniformly reinforcing all tokens from a successful response. More qualitative analyses are provided in Appendix F. 
+
+## 5 Conclusion 
+
+In this paper, we present SRPO, a role-aware policy optimization method for multimodal RLVR. SRPO decomposes responses into perception and reasoning stages, derives self-distilled token-level credit for each role, and reweights the GRPO advantage through bounded positive modulation. This preserves the verifiable reward and optimization direction without external reward models or separate teachers. Experiments across diverse multimodal reasoning benchmarks show that SRPO improves training dynamics and downstream performance, with ablations validating its role-aware design. 
+
+## References 
+
+Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Peiyi Wang, Qihao Zhu, Runxin Xu, Ruoyu Zhang, Shirong Ma, Xiao Bi, et al. Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement learning. arXiv preprint arXiv:2501.12948 , 2025. 1, 3 Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Mingchuan Zhang, Y.K. Li, Y. Wu, and Daya Guo. Deepseekmath: Pushing the limits of mathematical reasoning in open language models, 2024. 1, 3, 4, 8 Wenxuan Huang, Bohan Jia, Shaosheng Cao, Zheyu Ye, Fei zhao, Zhe Xu, Yao Hu, and Shaohui Lin. Vision-r1: Incentivizing reasoning capability in multimodal large language models. In The Fourteenth International Conference on Learning Representations , 2026a. 1, 2, 3 Jingyi Zhang, Jiaxing Huang, Huanjin Yao, Shunyu Liu, Xikun Zhang, Shijian Lu, and Dacheng Tao. R1-vl: Learning to reason with multimodal large language models via step-wise group relative policy optimization. arXiv preprint arXiv:2503.12937 , 2025. 1, 2 Huanjin Yao, Qixiang Yin, Jingyi Zhang, Min Yang, Yibo Wang, Wenhao Wu, Fei Su, Li Shen, Minghui Qiu, Dacheng Tao, et al. R1-sharevl: Incentivizing reasoning capabilities of multi-modal large language models via share-grpo. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. 1, 2, 3 Peiyu Wang, Yichen Wei, Yi Peng, Xiaokun Wang, Weijie Qiu, Wei Shen, Tianyidan Xie, Jiangbo Pei, Jianhao Zhang, Yunzhuo Hao, et al. Skywork r1v2: Multimodal hybrid reinforcement learning for reasoning. arXiv preprint arXiv:2504.16656 , 2025. 1, 3 Yuheng Zha, Kun Zhou, Yujia Wu, Yushu Wang, Jie Feng, Zhi Xu, Shibo Hao, Zhengzhong Liu, Eric P Xing, and Zhiting Hu. Vision-g1: Towards general reasoning vision-language models via reinforcement learning. In Proceedings of the AAAI Conference on Artificial Intelligence , 2026. 1, 313 Xiangyan Liu, Jinjie Ni, Zijian Wu, Chao Du, Longxu Dou, Haonan Wang, Tianyu Pang, and Michael Qizhe Shieh. Noisyrollout: Reinforcing visual reasoning with data augmentation. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2026a. 1, 3 Haozhe Wang, Chao Qu, Zuming Huang, Wei Chu, Fangzhen Lin, and Wenhu Chen. VL-rethinker: Incentivizing self-reflection of vision-language models with reinforcement learning. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2026a. 1, 3, 8, 9, 19 Siyuan Huang, Xiaoye Qu, Yafu Li, Yun Luo, Zefeng He, Daizong Liu, and Yu Cheng. Spotlight on token perception for multimodal reinforcement learning. In The Fourteenth International Conference on Learning Representations , 2026b. 1, 2, 4, 5, 8 Ziqi Miao, Haonan Jia, Lijun Li, Chen Qian, Yuan Xiong, Wenting Yan, and Jing Shao. Seeing with you: Perception-reasoning coevolution for multimodal reasoning. arXiv preprint arXiv:2603.28618 ,2026. 1, 2, 4, 8 Yuting Li, Lai Wei, Kaipeng Zheng, Jingyuan Huang, Linghe Kong, Lichao Sun, and Weiran Huang. Vision matters: Simple visual perturbations can boost multimodal math reasoning. arXiv preprint arXiv:2506.09736 , 2025. 2, 8 Zhenhailong Wang, Xuehang Guo, Sofia Stoica, Haiyang Xu, Hongru WANG, Hyeonjeong Ha, Xiusi Chen, Yangyi Chen, Ming Yan, Fei Huang, and Heng Ji. Perception-aware policy optimization for multimodal reasoning. In The Fourteenth International Conference on Learning Representations ,2026b. 2, 4, 5, 8, 19 Yan Chen, Long Li, Teng Xi, Long Zeng, and Jingdong Wang. Perception before reasoning: Two-stage reinforcement learning for visual reasoning in vision-language models. arXiv preprint arXiv:2509.13031 , 2025. 2, 4 Sreyan Ghosh, Chandra Kiran Reddy Evuru, Sonal Kumar, Utkarsh Tyagi, Oriol Nieto, Zeyu Jin, and Dinesh Manocha. Visual description grounding reduces hallucinations and boosts reasoning in LVLMs. In The Thirteenth International Conference on Learning Representations , 2025. 2, 3 Hao Fang, Changle Zhou, Jiawei Kong, Kuofeng Gao, Bin Chen, Tao Liang, Guojun Ma, and Shu-Tao Xia. Grounding language with vision: A conditional mutual information calibrated decoding strategy for reducing hallucinations in LVLMs. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2026. 2 Renrui Zhang, Dongzhi Jiang, Yichi Zhang, Haokun Lin, Ziyu Guo, Pengshuo Qiu, Aojun Zhou, Pan Lu, Kai-Wei Chang, Peng Gao, et al. Mathverse: Does your multi-modal llm truly see the diagrams in visual math problems? arXiv preprint arXiv:2403.14624 , 2024. 2, 9, 21 Jingqi Zhou, Sheng Wang, Jingwei Dong, Kai Liu, Lei Li, Jiahui Gao, Jiyue Jiang, Lingpeng Kong, and Chuan Wu. Proreason: Multi-modal proactive reasoning with decoupled eyesight and wisdom. In Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing ,2025. 2 Sourabh Sharma, Sonam Gupta, and Sadbhawna Sadbhawna. See, think, learn: A self-taught multimodal reasoner. In Proceedings of the IEEE/CVF Winter Conference on Applications of Computer Vision , 2026. 2 En Yu, Kangheng Lin, Liang Zhao, jisheng yin, Yana Wei, Yuang Peng, Haoran Wei, Jianjian Sun, Chunrui Han, Zheng Ge, Xiangyu Zhang, Daxin Jiang, Jingyu Wang, and Wenbing Tao. 14 Perception-r1: Pioneering perception policy with reinforcement learning. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2026a. 2, 4 Yizhuo Ding, Mingkang Chen, Zhibang Feng, Tong Xiao, Wanying Qu, Wenqi Shao, and Yanwei Fu. Vtperception-r1: Enhancing multimodal reasoning via explicit visual and textual perceptual grounding. arXiv preprint arXiv:2509.24776 , 2025. 2, 4 Josh Achiam, Steven Adler, Sandhini Agarwal, Lama Ahmad, Ilge Akkaya, Florencia Leoni Aleman, Diogo Almeida, Janko Altenschmidt, Sam Altman, Shyamal Anadkat, et al. Gpt-4 technical report. arXiv preprint arXiv:2303.08774 , 2023. 3 Shuai Bai, Keqin Chen, Xuejing Liu, Jialin Wang, Wenbin Ge, Sibo Song, Kai Dang, Peng Wang, Shijie Wang, Jun Tang, Humen Zhong, Yuanzhi Zhu, Mingkun Yang, Zhaohai Li, Jianqiang Wan, Pengfei Wang, Wei Ding, Zheren Fu, Yiheng Xu, Jiabo Ye, Xi Zhang, Tianbao Xie, Zesen Cheng, Hang Zhang, Zhibo Yang, Haiyang Xu, and Junyang Lin. Qwen2.5-vl technical report. arXiv preprint arXiv:2502.13923 , 2025. 3, 5, 8, 19 Gemini Team, Petko Georgiev, Ving Ian Lei, Ryan Burnell, Libin Bai, et al. Gemini 1.5: Un-locking multimodal understanding across millions of tokens of context. arXiv e-prints , art. arXiv:2403.05530, 2024. 3 Jinguo Zhu, Weiyun Wang, Zhe Chen, Zhaoyang Liu, Shenglong Ye, Lixin Gu, Hao Tian, Yuchen Duan, Weijie Su, Jie Shao, et al. Internvl3: Exploring advanced training and test-time recipes for open-source multimodal models. arXiv preprint arXiv:2504.10479 , 2025. 3 Jiaer Xia, Yuhang Zang, Peng Gao, Sharon Li, and Kaiyang Zhou. Visionary-r1: Mitigating shortcuts in visual reasoning with reinforcement learning. arXiv preprint arXiv:2505.14677 , 2025. 4Tong Xiao, Xin Xu, Zhenya Huang, Hongyu Gao, Quan Liu, Qi Liu, and Enhong Chen. Perception-r1: Advancing multimodal reasoning capabilities of mllms via visual perception reward. arXiv preprint arXiv:2506.07218 , 2025. 4, 8 Meng Cao, Haoze Zhao, Can Zhang, Xiaojun Chang, Ian Reid, and Xiaodan Liang. Ground-r1: In-centivizing grounded visual reasoning via reinforcement learning. arXiv preprint arXiv:2505.20272 ,2025. 4 Gabriel Herbert Sarch, Snigdha Saha, Naitik Khandelwal, Ayush Jain, Michael J. Tarr, Aviral Kumar, and Katerina Fragkiadaki. Grounded reinforcement learning for visual reasoning. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2026. 4 Alex Su, Haozhe Wang, Weiming Ren, Fangzhen Lin, and Wenhu Chen. Pixel reasoner: Incentivizing pixel space reasoning via curiosity-driven reinforcement learning. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2026. 4 Wenfang Sun, Hao Chen, Yingjun Du, Yefeng Zheng, and Cees G. M. Snoek. Regionreasoner: Region-grounded multi-round visual reasoning. In The Fourteenth International Conference on Learning Representations , 2026. 4 Zengbin Wang, Feng Xiong, Liang Lin, Xuecai Hu, Yong Wang, Yanlin Wang, Man Zhang, and Xiangxiang Chu. Visually-guided policy optimization for multimodal reasoning. arXiv preprint arXiv:2604.09349 , 2026c. 4 15 Yuqi Liu, Tianyuan Qu, Zhisheng Zhong, Bohao PENG, Shu Liu, Bei Yu, and Jiaya Jia. Vi-sionreasoner: Unified reasoning-integrated visual perception via reinforcement learning. In The Fourteenth International Conference on Learning Representations , 2026b. 4 Zongxia Li, Wenhao Yu, Chengsong Huang, Zhenwen Liang, Rui Liu, Fuxiao Liu, Jingxi Chen, Dian Yu, Jordan Lee Boyd-Graber, Haitao Mi, and Dong Yu. Vision-SR1: Self-rewarding vision-language model via reasoning decomposition and multi-reward policy optimization. In The Fourteenth International Conference on Learning Representations , 2026. 4, 8 Yicheng He, Chengsong Huang, Zongxia Li, Jiaxin Huang, and Yonghui Yang. Visplay: Self-evolving vision-language models from images. arXiv preprint arXiv:2511.15661 , 2025. 4 Yiran Guo, Lijie Xu, Jie Liu, Ye Dan, and Shuang Qiu. Segment policy optimization: Effective segment-level credit assignment in RL for large language models. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2026. 4 Hieu Tran, Zonghai Yao, and Hong Yu. Exploiting tree structure for credit assignment in rl training of llms. arXiv preprint arXiv:2509.18314 , 2025. 4 Shenzhi Wang, Le Yu, Chang Gao, Chujie Zheng, Shixuan Liu, Rui Lu, Kai Dang, Xiong-Hui Chen, Jianxin Yang, Zhenru Zhang, Yuqiong Liu, An Yang, Andrew Zhao, Yang Yue, Shiji Song, Bowen Yu, Gao Huang, and Junyang Lin. Beyond the 80/20 rule: High-entropy minority tokens drive effective reinforcement learning for LLM reasoning. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2026d. 4 Hongling Xu, Qi Zhu, Heyuan Deng, Jinpeng Li, Lu Hou, Yasheng Wang, Lifeng Shang, Ruifeng Xu, and Fei Mi. Kdrl: Post-training reasoning llms via unified knowledge distillation and reinforcement learning. arXiv preprint arXiv:2506.02208 , 2025. 4 Zhaoyang Zhang, Shuli Jiang, Yantao Shen, Yuting Zhang, Dhananjay Ram, Shuo Yang, Zhuowen Tu, Wei Xia, and Stefano Soatto. Reinforcement-aware knowledge distillation for llm reasoning. 
+
+arXiv preprint arXiv:2602.22495 , 2026. 4 Chenxu Yang, Chuanyu Qin, Qingyi Si, Minghui Chen, Naibin Gu, Dingyu Yao, Zheng Lin, Weiping Wang, Jiaqi Wang, and Nan Duan. Self-distilled rlvr. arXiv preprint arXiv:2604.03128 , 2026. 4 Jinda Lu, Junkang Wu, Jinghan Li, Kexin Huang, Shuo Yang, Guoyin Wang, Jiancan Wu, Xiang Wang, and Xiangnan He. Bridging perception and reasoning: Token reweighting for rlvr in multimodal llms. arXiv preprint arXiv:2603.25077 , 2026. 4, 5 Zekai Ye, Qiming Li, Xiaocheng Feng, Ruihan Chen, Ziming Li, Haoyu Ren, Kun Chen, Dandan Tu, and Bing Qin. Not all tokens see equally: Perception-grounded policy optimization for large vision-language models. arXiv preprint arXiv:2604.01840 , 2026. 4, 5 Yijia Xiao, Edward Sun, Tianyu Liu, and Wei Wang. Logicvista: Multimodal llm logical reasoning benchmark in visual contexts, 2024. 5, 9, 22 Alessandro Favero, Luca Zancato, Matthew Trager, Siddharth Choudhary, Pramuditha Perera, Alessandro Achille, Ashwin Swaminathan, and Stefano Soatto. Multi-modal hallucination control by visual information grounding. In Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition , 2024. 5 16 Tiange Luo, Ang Cao, Gunhee Lee, Justin Johnson, and Honglak Lee. Probing visual language priors in VLMs. In Forty-second International Conference on Machine Learning , 2025. URL 
+
+https://openreview.net/forum?id=bhTBirS0qi . 5 Baiqi Li, Zhiqiu Lin, Wenxuan Peng, Jean de Dieu Nyandwi, Daniel Jiang, Zixian Ma, Simran Khanuja, Ranjay Krishna, Graham Neubig, and Deva Ramanan. Naturalbench: Evaluating vision-language models on natural adversarial samples. In The Thirty-eight Conference on Neural Information Processing Systems Datasets and Benchmarks Track , 2024. 5, 9, 22 Qiying Yu, Zheng Zhang, Ruofei Zhu, Yufeng Yuan, Xiaochen Zuo, YuYue, Weinan Dai, Tiantian Fan, Gaohong Liu, Juncai Liu, LingJun Liu, Xin Liu, Haibin Lin, Zhiqi Lin, Bole Ma, Guangming Sheng, Yuxuan Tong, Chi Zhang, Mofan Zhang, Ru Zhang, Wang Zhang, Hang Zhu, Jinhua Zhu, Jiaze Chen, Jiangjie Chen, Chengyi Wang, Hongli Yu, Yuxuan Song, Xiangpeng Wei, Hao Zhou, Jingjing Liu, Wei-Ying Ma, Ya-Qin Zhang, Lin Yan, Yonghui Wu, and Mingxuan Wang. DAPO: An open-source LLM reinforcement learning system at scale. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2026b. 8 Yaowei Zheng, Junting Lu, Shenzhi Wang, Zhangchi Feng, Dongdong Kuang, Yuwen Xiong, and Richong Zhang. Easyr1: An efficient, scalable, multi-modality rl training framework, 2025. 9, 19 Ilya Loshchilov and Frank Hutter. Decoupled weight decay regularization. arXiv preprint arXiv:1711.05101 , 2017. 9 Pan Lu, Hritik Bansal, Tony Xia, Jiacheng Liu, Chunyuan Li, Hannaneh Hajishirzi, Hao Cheng, Kai-Wei Chang, Michel Galley, and Jianfeng Gao. Mathvista: Evaluating mathematical reasoning of foundation models in visual contexts. In International Conference on Learning Representations (ICLR) , 2024. 9, 21 Ke Wang, Junting Pan, Weikang Shi, Zimu Lu, Houxing Ren, Aojun Zhou, Mingjie Zhan, and Hongsheng Li. Measuring multimodal mathematical reasoning with math-vision dataset. In The Thirty-eight Conference on Neural Information Processing Systems Datasets and Benchmarks Track , 2024. 9, 10, 21 Runqi Qiao, Qiuna Tan, Guanting Dong, Minhui Wu, Chong Sun, Xiaoshuai Song, Zhuoma GongQue, Shanglin Lei, Zhe Wei, Miaoxuan Zhang, et al. We-math: Does your large multimodal model achieve human-like mathematical reasoning? arXiv preprint arXiv:2407.01284 , 2024. 9, 21 Chengke Zou, Xingang Guo, Rui Yang, Junyu Zhang, Bin Hu, and Huan Zhang. Dynamath: A dynamic visual benchmark for evaluating mathematical reasoning robustness of vision language models. In The Thirteenth International Conference on Learning Representations , 2025. 9, 22 Xiang Yue, Tianyu Zheng, Yuansheng Ni, Yubo Wang, Kai Zhang, Shengbang Tong, Yuxuan Sun, Botao Yu, Ge Zhang, Huan Sun, Yu Su, Wenhu Chen, and Graham Neubig. MMMU-Pro: A More Robust Multi-discipline Multimodal Understanding Benchmark. art. arXiv:2409.02813, 2024. 9, 10, 22 Weihao Yu, Zhengyuan Yang, Linjie Li, Jianfeng Wang, Kevin Lin, Zicheng Liu, Xinchao Wang, and Lijuan Wang. Mm-vet: Evaluating large multimodal models for integrated capabilities. In 
+
+International conference on machine learning . PMLR, 2024. 9, 22 Haodong Duan, Junming Yang, Yuxuan Qiao, Xinyu Fang, Lin Chen, Yuan Liu, Xiaoyi Dong, Yuhang Zang, Pan Zhang, Jiaqi Wang, et al. Vlmevalkit: An open-source toolkit for evaluating large multi-modality models. In Proceedings of the 32nd ACM International Conference on Multimedia , pages 11198–11201, 2024. 9, 21 17 Appendix 
+
+Appendix Contents 18 A Training Procedure 19 B Implementation and Evaluation Details 19 
+
+B.1 Implementation Details . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 19 B.2 Evaluation Details . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 21 B.3 Prompt Templates . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 22 
+
+C Ablation Results on Qwen2.5-VL-3B 23 D Broader Impacts 24 E Limitations 24 F Additional Case Study 25 
+
+18 A Training Procedure 
+
+For clarity and reproducibility, we provide a step-by-step description of the SRPO training procedure in Algorithm 1. The algorithm elaborates on the role-aware credit assignment mechanism introduced in Section 3.2. Each training iteration consists of four main stages. First, the behavior policy generates a group of on-policy responses for each image–question pair under the structured perception– reasoning template. Second, a verifier assigns outcome-level rewards based on format compliance and final-answer correctness, from which group-normalized GRPO advantages are computed. Third, SRPO parses each response into perception and reasoning spans and performs stop-gradient rescoring with the behavior policy under controlled context changes: perception tokens are rescored under the original and masked images to estimate visual dependency, while reasoning tokens are rescored with and without the generated perception to estimate perception-supported grounding consistency. Finally, the role-specific scores are centered within each trajectory, converted into bounded positive token-level modulation weights, and used to form token-level advantages for the PPO-style policy update. The response-token entropy surrogate is added only in the final optimization objective and does not affect the stop-gradient credit scores or modulation weights. 
+
+## B Implementation and Evaluation Details 
+
+B.1 Implementation Details 
+
+Overall setup. Our implementation is built on the EasyR1 framework [Zheng et al., 2025]. We conduct experiments with Qwen2.5-VL-3B and Qwen2.5-VL-7B as base models. Unless otherwise specified, both model scales use the same training recipe. All main experiments are trained on 8 NVIDIA H100 GPUs, and the vision tower is unfrozen during training. 
+
+RL training configuration. We train all models for two epochs on ViRL39K [Wang et al., 2026a]. For each prompt, the policy samples 8 responses, and the group-relative advantage is computed from verifiable outcome rewards. The verifier reward combines format compliance and answer correctness. In our implementation, answer correctness is a binary signal: a response receives accuracy reward 1 if its final answer matches the ground-truth answer under the equivalence checker, and 0 otherwise. The rollout batch size is 384, the actor global batch size is 128, and the validation batch size is 512. The maximum response length is set to 2048 for both Qwen2.5-VL-3B and Qwen2.5-VL-7B [Bai et al., 2025]. During rollout, we use top-p sampling with p = 0 .99. For policy optimization, we adopt asymmetric PPO clipping with lower and upper clipping ratios of 0.2 and 0.28, respectively. Online filtering is enabled, and no explicit reference-policy KL loss is used. 
+
+Self-distilled credit assignment. For perception-token credit assignment, SRPO constructs a weak visual branch by masking the image. Specifically, we use random patch blackening: the image is divided into non-overlapping 14 × 14 patches, and each patch is independently masked with probability 0.5 [Wang et al., 2026b]. The perception-token credit is computed from the log-probability contrast between the original-image branch and the masked-image branch. The resulting perception scores are then passed to the unified trajectory-level modulation step together with the reasoning-token scores. For reasoning-token credit assignment, SRPO compares each reasoning token under two textual conditioning contexts. The first is the full rollout context, which includes the image, question, generated perception, and previous reasoning tokens. The second is a perception-ablated context, which removes the generated perception while retaining the image, question, and reasoning prefix. This contrast estimates how much the generated perception supports each reasoning token beyond 19 what is already explained by the image–question pair and the reasoning prefix. The perception-ablated scoring branch uses the template qi only reasoning answer.jinja . The resulting residual is modulated by the sign of the trajectory-level advantage and mapped to a positive token-level factor through an exponential transformation. In the unified trajectory-level modulation, we set 
+
+λmod = 0 .5 and clip the final token weights to [0 .8, 1.2]. 
+
+Algorithm 1 SRPO: Structured Role-aware Policy Optimization 
+
+Require: Policy πθ, dataset D, group size G, masking operator M.
+
+Ensure: Updated policy πθ. 
+
+> 1:
+
+for each training iteration do  
+
+> 2:
+
+Set the behavior policy πθold ← πθ. 
+
+> 3:
+
+Sample a batch of training instances ( I, q, a ) ∼ D . 
+
+> 4:
+
+▷ Phase 1: On-policy Rollout Generation  
+
+> 5:
+
+for each ( I, q, a ) do  
+
+> 6:
+
+Sample G structured rollouts {yi = ( yperc  
+
+> i
+
+, y reas  
+
+> i
+
+)}Gi=1 ∼ πθold (· | I, q ).  
+
+> 7:
+
+Compute verifier rewards Ri and group-relative advantages ˆAi. 
+
+> 8:
+
+end for  
+
+> 9:
+
+▷ Phase 2: Role-specific Stop-gradient Rescoring  
+
+> 10:
+
+for each trajectory yi do  
+
+> 11:
+
+Parse perception positions Pi, reasoning positions Ri, and valid positions V(yi).  
+
+> 12:
+
+Construct a masked image Imask = M(I).  
+
+> 13:
+
+for each t ∈ V (yi) do  
+
+> 14:
+
+if t ∈ P i then  
+
+> 15:
+
+Compute δperc  
+
+> i,t
+
+by Eq. (3.1) using πθold . 
+
+> 16:
+
+Compute rperc  
+
+> i,t
+
+by Eq. (3.2).  
+
+> 17:
+
+Set ri,t ← rperc  
+
+> i,t
+
+. 
+
+> 18:
+
+else if t ∈ R i then  
+
+> 19:
+
+Compute δreas  
+
+> i,t
+
+by Eq. (3.3) using πθold . 
+
+> 20:
+
+Compute rreas  
+
+> i,t
+
+by Eq. (3.4).  
+
+> 21:
+
+Set ri,t ← rreas  
+
+> i,t
+
+. 
+
+> 22:
+
+end if  
+
+> 23:
+
+end for  
+
+> 24:
+
+end for  
+
+> 25:
+
+▷ Phase 3: Unified Trajectory-level Modulation  
+
+> 26:
+
+for each trajectory yi do  
+
+> 27:
+
+Compute the response-level baseline ¯ ri = |V (yi)|−1 P 
+
+> t∈V (yi)
+
+ri,t . 
+
+> 28:
+
+for each t ∈ V (yi) do  
+
+> 29:
+
+Compute wi,t by Eq. (3.5).  
+
+> 30:
+
+Form the token-level advantage ˜Ai,t = ˆAiwi,t . 
+
+> 31:
+
+end for  
+
+> 32:
+
+end for  
+
+> 33:
+
+▷ Phase 4: Policy Optimization  
+
+> 34:
+
+Update θ by maximizing the total objective in Eq. (3.6).  
+
+> 35:
+
+end for Additional actor regularization. To improve the stability of actor optimization, we include a lightweight sampled-token negative-log-probability regularizer in the actor loss: 
+
+Lreg = η E(st,a t) [− log πθ(at | st)] , (B.1) 20 Table 4: Vision-language benchmarks evaluated in VLMEvalKit.                     
+
+> Benchmark #Samples Metric
+> MathVista MINI 1000 Overall MathVision MINI 304 Overall WeMath 1740 Score (Strict) MathVerse MINI Vision Only 788 Overall DynaMath 5010 Overall (Average) MMMU Pro V 1730 Overall MMVet 218 Overall LogicVista 447 Overall NaturalBench 1900 Overall
+
+where the expectation is taken over valid response tokens sampled during rollout, and η = 0 .03. This term regularizes the current policy along the sampled response trajectory and is applied only during actor optimization. It is not used to compute the self-distilled token scores or the modulation weights. We note that this term is a sampled-token entropy surrogate rather than a full-vocabulary Shannon entropy. 
+
+B.2 Evaluation Details 
+
+Evaluation framework. We evaluate all models using VLMEvalKit [Duan et al., 2024], which provides standardized benchmark loading, prompting, answer extraction, and metric computation. For each benchmark, we follow its official VLMEvalKit evaluation protocol and report the cor-responding official metric. For simplicity, we refer to the reported benchmark score as accuracy throughout the paper. 
+
+Benchmarks. Our evaluation covers nine vision-language benchmarks using VLMEvalKit [Duan et al., 2024], spanning math-centric reasoning, multidisciplinary multimodal understanding, logical reasoning, integrated visual reasoning, and robustness evaluation. Table 4 summarizes the dataset sizes and reported metrics, and we briefly describe the evaluation focus of each benchmark below. 
+
+• MathVista [Lu et al., 2024] is a comprehensive benchmark for visual mathematical reasoning. It covers diverse visual contexts such as geometry diagrams, charts, tables, and scientific figures, making it suitable for evaluating whether models can solve mathematical problems grounded in visual information. 
+
+• MathVision [Wang et al., 2024] focuses on challenging multimodal mathematical reasoning problems. Its examples require models to interpret visual content and perform multi-step mathematical inference, providing a strong testbed for advanced visual-symbolic reasoning. 
+
+• We-Math [Qiao et al., 2024] provides a diagnostic evaluation for multimodal mathematical reasoning. By organizing problems around mathematical knowledge concepts and reasoning steps, it enables fine-grained analysis of a model’s strengths and weaknesses beyond aggregate accuracy. 
+
+• MathVerse [Zhang et al., 2024] is designed to examine whether multimodal models genuinely rely on diagrams in visual math problems. It presents problems under different visual-textual information distributions, allowing evaluation of a model’s dependence on visual evidence rather than textual shortcuts. 21 • DynaMath [Zou et al., 2025] evaluates the robustness and generalization of multimodal mathe-matical reasoning. It introduces dynamic variations of visual math problems, testing whether models can maintain consistent reasoning under controlled changes in problem instances. 
+
+• MMMU-Pro [Yue et al., 2024] is a challenging benchmark for multidisciplinary multimodal understanding. It reduces shortcut solutions from textual clues and requires models to integrate visual and textual information across diverse academic subjects. 
+
+• MM-Vet [Yu et al., 2024] evaluates integrated multimodal capabilities through open-ended visual question answering. It tests whether models can jointly use perception, knowledge, reasoning, and answer generation to solve visually grounded tasks. 
+
+• LogicVista [Xiao et al., 2024] focuses on logical reasoning in visual contexts. It evaluates whether models can perform structured reasoning over diagrams and other visual inputs, covering capabilities beyond purely mathematical problem solving. 
+
+• NaturalBench [Li et al., 2024] evaluates multimodal robustness under natural adversarial examples. It is particularly relevant for testing whether models rely on genuine visual evidence rather than language priors or superficial image-text correlations. 
+
+Decoding configuration. Unless otherwise specified, all models are evaluated with single-sample greedy decoding. We set the temperature to 0, top-p to 1.0, and the maximum number of generated tokens to 2048. The same decoding configuration is applied to all compared models to avoid confounding benchmark performance with sampling variance or test-time compute. 
+
+Prompting protocol. We use the official VLMEvalKit prompts and answer extraction rules whenever available. For each benchmark, the same prompt template and evaluation pipeline are used for all models. This ensures that performance differences are attributable to the trained policies rather than benchmark-specific prompt engineering or post-processing choices. 
+
+Metrics and LLM-as-a-judge evaluation. For benchmarks with deterministic answer matching, we use the official answer extraction and exact-match evaluation implemented in VLMEvalKit. For benchmarks or instances that require model-based semantic judgment, we use GPT-4o-mini as the LLM judge with temperature set to 0. The judge receives the question, model prediction, and ground-truth answer, and determines whether the prediction is semantically equivalent to the reference answer. All judged evaluations use the same fixed judging pipeline across methods. 
+
+B.3 Prompt Templates 
+
+We use a shared structured response template for the main RLVR rollout generation and evaluation. The template requires the model to explicitly decompose its response into a perception stage, a reasoning stage, and a final answer. For fair comparison, the same main rollout template is used for GRPO, DAPO, and SRPO. The GRPO and DAPO baselines are optimized with their original objectives under this shared response format, whereas SRPO further parses the generated perception and reasoning spans for role-aware token-level credit modulation. No ground-truth rationales or intermediate perception annotations are used. 22 Prompt for Main Rollout and Inference         
+
+> {Question }
+> Analyze the image/video and solve the problem with an explicit decomposition. First, write a concise but self-contained perception block that captures only the visual facts needed for solving the problem, wrapped in <perception> and </perception> tags. Second, write the reasoning process grounded in the image/video and the perception block, wrapped in
+> <reasoning> and </reasoning> tags. Finally, give the answer in \boxed {} .
+> Required format:
+> <perception> visual evidence here </perception> <reasoning> grounded reasoning here </reasoning>
+> \boxed {FINAL ANSWER }
+
+In addition to the main rollout template, SRPO uses an auxiliary question–image rescoring template to compute the reasoning-token support signal. This auxiliary template removes the perception block and keeps only the reasoning span and final-answer format. It is used only for stop-gradient rescoring in the rollout-versus-question-image comparison, and is not used as the primary rollout or evaluation prompt. 
+
+Prompt for Question–Image Rescoring      
+
+> {Question }
+> Analyze the image/video and solve the problem. Write the reasoning process grounded in the image/video, wrapped in <reasoning> and </reasoning> tags. Finally, give the answer in \boxed {} .
+> Required format:
+> <reasoning> grounded reasoning here </reasoning>
+> \boxed {FINAL ANSWER }
+
+All auxiliary rescoring computations are used only as stop-gradient signals for credit modula-tion. They do not provide additional ground-truth rationales, do not use intermediate perception annotations, and do not introduce an auxiliary supervised loss. 
+
+## C Ablation Results on Qwen2.5-VL-3B 
+
+Table 5 reports the 3B-scale ablation results. The upper block shows that removing any role-aware design component leads to consistent performance degradation compared with the full SRPO variant. In particular, removing perception credit weakens visual-evidence modeling, removing reasoning credit reduces perception-supported inference, and removing unified modulation produces the largest overall degradation, confirming the importance of trajectory-level token reweighting. The lower block further evaluates the entropy coefficient η. Compared with η = 0 and η = 0 .1, the default setting η = 0 .03 achieves the best performance across all reported benchmarks, suggesting that a moderate regularization strength provides a better balance between stable optimization and reward-driven improvement. Figure 7 shows consistent training dynamics: the full SRPO configuration maintains a stronger accuracy trajectory than its component-ablated variants, while 
+
+η = 0 .03 remains competitive and stable throughout training. 23 0 50 100 150 200 
+
+Training Step     
+
+> 0.25
+> 0.30
+> 0.35
+> 0.40
+> 0.45
+> 0.50
+> 0.55
+> 0.60
+> 0.65
+> Training accuracy
+> SRPO
+> w/o Perception Credit
+> w/o Reasoning Credit
+> w/o Unified Modulation
+> 050 100 150 200
+
+Training Step 
+
+> 0.25
+> 0.30
+> 0.35
+> 0.40
+> 0.45
+> 0.50
+> 0.55
+> 0.60
+> 0.65
+> =0.03
+> =0
+> =0.1
+
+Figure 7: Training dynamics of SRPO ablations on Qwen2.5-VL-3B. The left panel compares component ablations, and the right panel compares entropy-coefficient variants. Solid lines indicate running averages with a stepping window size of 20. Table 5: Ablation studies on Qwen2.5-VL-3B. The upper block studies role-aware design components, and the lower block studies the entropy coefficient η. The full SRPO setting is highlighted in blue.                                                                                               
+
+> Setting Math-Related General Task MathVista MathVision We-Math MathVerse DynaMath MMMU-Pro MM-Vet LogicVista NaturalBench
+> Component Ablation
+> Qwen2.5-VL-3B 63.30 20.47 24.01 30.32 43.15 26.06 49.49 40.49 72.27 + SRPO w/o perception credit 67.40 26.31 33.90 35.65 44.89 27.91 52.01 45.19 74.43 + SRPO w/o reasoning credit 66.40 26.64 31.71 36.16 44.61 27.74 50.13 42.51 74.63 + SRPO w/o unified modulation 65.60 25.98 30.76 33.62 44.19 27.16 48.57 38.03 74.17 + SRPO 67.80 29.27 36.76 39.72 48.54 29.65 54.17 46.53 74.83
+> Entropy-Coefficient Ablation
+> Qwen2.5-VL-3B 63.30 20.47 24.01 30.32 43.15 26.06 49.49 40.49 72.27
+> η= 0 65.40 24.67 29.05 34.39 44.23 27.80 49.91 42.28 74.32
+> η= 0 .166.20 26.97 35.14 37.18 46.31 28.26 52.61 44.51 74.78
+> η= 0 .03 67.80 29.27 36.76 39.72 48.54 29.65 54.17 46.53 74.83
+
+## D Broader Impacts 
+
+SRPO studies reinforcement-learning-based post-training for improving visually grounded mul-timodal reasoning. It does not introduce external reward models, separate teacher models, or additional supervision, but instead refines how existing verifier rewards are assigned to different response tokens. By separating perception and reasoning roles, SRPO encourages models to extract task-relevant visual evidence before performing subsequent inference. This may benefit applications such as educational problem solving, chart understanding, diagram reasoning, and other settings where final answers should be supported by image evidence. More broadly, SRPO provides an interpretable optimization perspective for multimodal RLVR. Rather than treating all tokens in a response as equally responsible for the final outcome, it distinguishes visual evidence extraction from perception-supported reasoning. This can help diagnose whether improvements in multimodal reasoning come from genuine visual grounding or from shortcuts based on language priors. However, SRPO is not a standalone guarantee of factual correctness or safety, and applications in high-stakes domains would still require careful validation and human oversight. 
+
+## E Limitations 
+
+SRPO introduces additional computation during training. For each on-policy rollout, the method performs behavior-policy rescoring under controlled changes of visual or textual context. These 24 stop-gradient rescoring passes are lightweight compared with training separate teachers or reward models, but they still increase the cost relative to vanilla GRPO. This overhead may become more significant for larger models, longer responses, or larger rollout groups. Our empirical evaluation focuses on a set of multimodal reasoning benchmarks involving math-ematics, charts, diagrams, logic, and general visual reasoning. Although these benchmarks cover diverse reasoning patterns, they do not exhaust all real-world multimodal scenarios. Future work could evaluate SRPO on longer-horizon multimodal tasks, interactive visual reasoning, video under-standing, and domains where intermediate evidence can be more directly supervised or verified. 
+
+## F Additional Case Study 
+
+We provide additional qualitative examples across different benchmarks to illustrate how SRPO supports visually grounded reasoning. Each case includes the original visual question, the ground-truth answer, and the complete model response. We highlight perception evidence and reasoning inference spans to show how the model first extracts task-relevant visual information and then uses it for subsequent reasoning. These examples complement the quantitative results by showing the perception-to-reasoning structure encouraged by SRPO. Across geometry, chart, table, logic, OCR, and natural-image tasks, the model typically grounds its final answer in explicitly identified visual evidence rather than relying only on language priors. 25 Generated Sample by SRPO on MMMU-Pro-V 
+
+Question: Which structure in this picture is responsible for synthesizing proteins (assembling proteins)? 
+
+Options: A. I; B. II; C. IV; D. III 
+
+Ground truth: C 
+
+<perception > The image shows a cell with labeled structures: - I appears to be the nucleus. - II appears to be the endoplasmic reticulum. - III appears to be the Golgi apparatus. - IV appears to be the ribosomes. 
+
+The question asks which structure is responsible for synthesizing proteins (assembling proteins). 
+
+</perception ><reasoning > In a cell, proteins are synthesized on ribosomes . Ribosomes are labeled as IV 
+
+in the image. The nucleus (I) is responsible for storing genetic information, the endoplasmic reticulum (II) is involved in protein transport and modification, and the Golgi apparatus (III) is involved in packaging and transporting proteins. Therefore, the structure responsible for synthesizing proteins is the ribosomes. </reasoning >
+
+C
+
+Figure 8: MMMU-Pro-V case study. SRPO identifies the labeled cell organelles and grounds the answer in biological knowledge that ribosomes synthesize proteins. 26 Generated Sample by SRPO on WeMath 
+
+Question: As shown in the figure, there is an isosceles trapezoid made of wire. This wire can also be used to form a right-angled cube frame, and the volume of the cube frame is shown in the figure. What is the length of the legs of the isosceles trapezoid in cm? 
+
+Options: A. 4; B. 5; C. 2; D. No correct answer 
+
+Ground truth: C 
+
+<perception > The image shows an isosceles trapezoid and a right-angled cube . The trapezoid has bases of 3 cm and 5 cm , and the cube has a volume of 1 cm 3, which means each side of the cube is 1 cm . </perception ><reasoning > First, we determine the side length of the cube. Since the volume of the cube is 1 cm 3, each side of the cube is 1 cm. The wire used to form the isosceles trapezoid is the same as the wire used to form the cube. The cube has 12 edges , each of length 1 cm, so the total length of the wire is 12 cm .The isosceles trapezoid has two legs of equal length, say x, and the bases are 3 cm and 5 cm. The perimeter of the trapezoid is the sum of all its sides: 2x + 3 + 5 = 2 x + 8 Since the wire length is 12 cm, we have: 2x + 8 = 12 
+
+2x = 4 
+
+x = 2 So, the length of the legs of the isosceles trapezoid is 2 cm. </reasoning >
+
+C
+
+Figure 9: WeMath case study. SRPO connects visual quantities from two geometric objects and converts them into a perimeter constraint. 27 Generated Sample by SRPO on MathVision MINI 
+
+Question: A circle K is inscribed in a quarter circle with radius 6 as shown in the figure. What is the radius of circle K?
+
+Choices: (A) 6−√22 ; (B) 3√22 ; (C) 2.5; (D) 3; (E) 6( √2 − 1). 
+
+Ground truth: E 
+
+<perception > The image shows a quarter circle with a radius of 6 , and a circle K
+
+is inscribed within this quarter circle . We need to determine the radius of circle K.
+
+</perception ><reasoning > To solve for the radius of circle K, we can use the fact that the circle K is inscribed in the quarter circle. Let the radius of circle K be r. The center of circle K is at a distance r from the right and bottom edges of the quarter circle. The distance from the center of the quarter circle to the center of circle K is 6 − r. This distance is also the hypotenuse of a right triangle with legs of length r each. Therefore, we can write the equation: (6 − r)2 = r2 + r2 = 2 r2
+
+Expanding and solving the equation: 36 − 12 r + r2 = 2 r2
+
+36 − 12 r = r2
+
+r2 + 12 r − 36 = 0 This is a quadratic equation in the form r2 + 12 r − 36 = 0. We can solve it using the quadratic formula r = −b±√b2−4ac  
+
+> 2a
+
+, where a = 1, b = 12, and c = −36: 
+
+r = −12 ± p12 2 − 4 · 1 · (−36) 2 · 1 = −12 ± √144 + 144 2= −12 ± √288 2 = −12 ± 12 √22 = −6 ± 6√2.
+
+Since r must be positive, we have: 
+
+r = −6 + 6 √2 = 6( √2 − 1) 
+
+</reasoning >
+
+E
+
+Figure 10: MathVision case study. SRPO identifies the tangency structure of the inscribed circle and derives the radius through a geometric constraint. 28 Generated Sample by SRPO on MathVerse MINI Vision-Only 
+
+Question: According to the question shown in the image, please directly answer the question and provide the correct option letter, e.g., A, B, C, D. 
+
+Ground truth: C 
+
+<perception > The image shows triangle ABC with ∠A = 50 ◦. The point D is the intersec-tion of the angle bisectors BD and CD of △ABC . We are asked to determine the measure of 
+
+∠D. </perception ><reasoning > To solve for ∠D, we start by determining the measures of ∠ABC and ∠ACB .Since the sum of the angles in a triangle is 180 ◦,
+
+∠ABC + ∠ACB + ∠A = 180 ◦
+
+∠ABC + ∠ACB + 50 ◦ = 180 ◦
+
+∠ABC + ∠ACB = 130 ◦
+
+Since D is the intersection of the angle bisectors BD and CD , ∠ABD = 12 ∠ABC and 
+
+∠ACD = 12 ∠ACB .The angle ∠D in △BDC can be found using the fact that the sum of the angles in a triangle is 180 ◦:
+
+∠D + ∠ABD + ∠ACD = 180 ◦
+
+∠D + 12 ∠ABC + 12 ∠ACB = 180 ◦
+
+∠D + 12 (130 ◦) = 180 ◦
+
+∠D + 65 ◦ = 180 ◦
+
+∠D = 115 ◦
+
+</reasoning >
+
+C
+
+Figure 11: MathVerse case study. SRPO extracts the angle-bisector structure and uses it to derive the target angle. 29 Generated Sample by SRPO on NaturalBench 
+
+Question: Is there a person walking through the illuminated underground cavern? 
+
+Ground truth: Yes 
+
+<perception > The image shows an illuminated underground cavern with large, sculpted rock formations. There is a person visible in the background , walking through the cavern. The person is small in comparison to the vastness of the cavern, emphasizing the scale of the environment. </perception ><reasoning > The image depicts an underground cavern with significant rock formations. The presence of a person in the background provides a scale reference. The person is walking through the cavern , moving along a path that is illuminated. The size of the person relative to the cavern confirms that they are indeed walking through the cavern. </reasoning >
+
+Yes 
+
+Figure 12: NaturalBench case study. SRPO grounds the yes/no answer in a visually localized object and its relation to the scene. 30 Generated Sample by SRPO on MMVet 
+
+Question: Which room is bigger, the double garage or the living room? 
+
+Ground truth: double garage 
+
+<perception > The image shows the floor plan with the following dimensions: Double garage: 19 × 21 .25; Living room: 21 .5 × 18 .5. </perception ><reasoning > To determine which room is bigger, we need to calculate the area of each room. The area of the double garage is: 19 × 21 .25 = 403 .75 square feet. The area of the living room is: 21 .5 × 18 .5 = 398 .25 square feet. Comparing the two areas, 403.75 square feet for the double garage is greater than 398.25 square feet for the living room. Therefore, the double garage is bigger. </reasoning >
+
+double garage 
+
+Figure 13: MMVet case study. SRPO reads room dimensions from a floor plan and compares the corresponding areas to answer a spatial-mathematical question. 31 Generated Sample by SRPO on LogicVista 
+
+Question: The Small Silver Watch displays the time as 16:00. Select from A, B and C. 
+
+Choices: (A) True (B) False (C) Insufficient Information 
+
+Ground truth: B 
+
+<perception > The image provides the following information: 1. The Large Silver Watch states the time as 15:50 .2. The Small Silver Watch displays the same time as the Gold Watch .3. The Bronze Watch is small in size. 4. The Gold Watch is ten minutes slower than the Large Silver Watch .5. The Bronze Watch is five minutes faster than the Small Silver Watch .We are asked to determine if the Small Silver Watch displays the time as 16:00 . </percep-tion ><reasoning > First, we determine the time on the Gold Watch: - The Large Silver Watch shows 15:50. - The Gold Watch is ten minutes slower than the Large Silver Watch. - Therefore, the Gold Watch shows 15:50 − 10 minutes = 15:40 .Next, we determine the time on the Small Silver Watch: - The Small Silver Watch displays the same time as the Gold Watch. - Therefore, the Small Silver Watch shows 15:40 .
+
+However, we are asked if the Small Silver Watch displays 16:00. - The Small Silver Watch shows 15:40, not 16:00 .Therefore, the statement that the Small Silver Watch displays 16:00 is false. </reasoning >
+
+B
+
+Figure 14: LogicVista case study. SRPO extracts textual relations from the visual prompt and uses them for deductive reasoning over watch times. 32
