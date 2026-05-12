@@ -1,0 +1,1093 @@
+Title: The Cancellation Hypothesis in Critic-Free RL: From Outcome Rewards to Token Credits
+
+URL Source: https://arxiv.org/pdf/2605.08666v1
+
+Published Time: Tue, 12 May 2026 01:03:50 GMT
+
+Number of Pages: 18
+
+Markdown Content:
+# The Cancellation Hypothesis in Critic-Free RL: From Outcome Rewards to Token Credits 
+
+Tianhao Cheng 1,2 ∗ Zeyu Huang 3∗ Zihan Qiu 6
+
+Yu Cheng 2,4 Edoardo Ponti 3 Yinghui Xu 1 Ivan Titov 3,7 Zenglin Xu 1,5 
+
+> 1
+
+Fudan University 2Shanghai Innovation Institute 3The University of Edinburgh 
+
+> 4
+
+The Chinese University of Hong Kong 5Shanghai Academy of AI for Science 
+
+> 6
+
+Qwen Team, Alibaba Group 7University of Amsterdam 
+
+## Abstract 
+
+A commonly accepted explanation of critic-free RL (e.g., GRPO) for LLMs, based on sequence-level rewards, is that it reinforces successful rollouts with a positive advantage while penalizing failed ones. In contrast, we study critic-free RL from a token-level perspective, revealing the token-flipping phenomenon: positive and negative rollouts exhibit remarkably similar proportions of tokens whose probabili-ties are boosted or suppressed during RL training. To explain this phenomenon, we further show that a token’s change in probability is not fully determined by its own advantage; coupled gradient interactions with other tokens also play a non-negligible role. Specifically, these token coupling effects occur primarily between identical tokens that are both predicted with low confidence. Building upon this analysis, we propose the cancellation hypothesis : as a result of coupling, opposing signals cancel out for tokens shared by positive and negative rollouts, while tokens more specific to successful rollouts receive stronger reinforcement, thereby inducing hidden token-level credit assignment from rollout-level rewards. We support this hypothesis with complementary empirical evidence. (1) Compared with training on only positive rollouts, critic-free RL shifts updates from template and formatting tokens toward reasoning tokens; (2) Tokens boosted by critic-free RL consistently demonstrate higher value than suppressed tokens, regardless of whether they originate from positive or negative rollouts. Guided by this view, we implement two batching interventions to encourage or preserve cancellation in critic-free RL training: query-preserved mini-batching, which keeps rollouts from the same prompt together to encourage token coupling, and reward-balanced batching, which ensures that positive and negative rollouts are balanced in each update. Despite their simplicity, these interventions improve RLVR training across multiple model scales, supporting cancellation as both an explanatory principle and a practical design criterion for critic-free RL training. 
+
+## 1 Introduction 
+
+Reinforcement learning with verifiable rewards (RLVR) has become one of the standard recipes for post-training large language models (LLMs) [Guo et al., 2025, Jaech et al., 2024, Team et al., 2025]. Among RLVR methods, critic-free approaches such as Group Relative Policy Optimization (GRPO) [Shao et al., 2024] and its variants [Yu et al., 2025, Liu et al., 2025] are widely adopted for their simplicity. They remove the value network [Schulman et al., 2017] and instead assign a single, shared advantage to every token within a rollout. Despite such coarse, rollout-level supervision, these methods achieve strong results across reasoning and broader agentic domains [Guo et al., 2025].                                     
+
+> ∗Equal contribution. Preprint.
+> arXiv:2605.08666v1 [cs.LG] 9 May 2026 0100 200 300 400 500
+> 0
+> 20
+> 40
+> 60
+> Token ratio (%)
+> (a) Positive rollouts ( A> 0 )
+> 0100 200 300 400 500
+> 0
+> 20
+> 40
+> 60
+> (b) Negative rollouts ( A< 0 )
+> 0100 200 300 400 500
+> −0.04
+> 0.04
+> (c) Magnitude of Δlog p
+> Pos: Boosted
+> Neg: Suppressed
+> Pos: Suppressed
+> Neg: Boosted
+> −0.15 −0.10 −0.05 0.00 0.05 0.10 0.15 0.20 0.25
+> (d) Distribution of Δlog p
+> Positive Only
+> GRPO
+> Boosted ( Δlog p>ε)Suppressed ( Δlog p< − ε)Stable
+
+Figure 1: Token-level updates do not simply follow rollout-level advantage signs. Tokens could be categorized into three groups according to their change in log probability: boosted, suppressed, and stable. Figures (a) and (b) show that positive and negative rollouts exhibit remarkably similar boosted/suppressed/stable token ratios during training. Figure (c) shows that the update magnitudes are also similar. Figure (d) further confirms that the flipping pattern greatly decreases when training with only positive rollouts, highlighting the coupling effect between positive and negative rollouts. This success motivated growing interest in understanding how critic-free RL optimizes and reshapes model behavior. A common view is that RL reinforces successful rollouts and suppresses failed ones, thereby shifting the model distribution toward higher-reward responses [Mroueh, 2025, Wu et al., 2025b]. Recent work complicates this view by analyzing the different contributions of positive and negative rollouts to optimization dynamics [Zhu et al., 2025a, Tang et al., 2025, Deng et al., 2025b,c,a, Simoni et al., 2025, Deng et al., 2025a, Xue et al., 2025]. However, a fundamental disconnect remains in the current discourse: most existing analyses focus on rollout-level likelihoods or outcomes, while treating the token-level dynamics as a black box. Though the model improves, it still lacks a mechanistic to understand how a shared rollout-level advantage distributes credit or blame across tokens. Under the de-facto sequence-level intuition, tokens in successful rollouts should be mostly reinforced, and vice versa. In this work, we bridge this gap by shifting the analytical lens from rollouts to tokens. We measure the shift in log-probability for every token before and after individual GRPO training step, as shown in Fig. 1(a,b). Our findings reveal a clear departure from conventional intuition: tokens in successful rollouts are not mostly reinforced, nor are tokens in failed rollouts mostly suppressed. Instead, nearly half of the tokens move in the direction opposite to what their rollout-level advantage sign suggests. More surprisingly, positive and negative rollouts exhibit remarkably similar ratios of boosted and suppressed tokens during training, even the magnitudes of these token-level changes are also similar (Fig. 1(c)). We term this mismatch Token Flipping , which suggests that the rollout-level advantage sign is a poor predictor for token-level updates, implying that the learning mechanism in critic-free RL is more granular than the standard sequence-level view suggests. Furthermore, this pattern largely disappears under positive-rollout-only training, where negative rollouts are masked (Fig. 1(d)), indicating that token flipping arises from interactions between positive and negative rollouts. The Token Flipping phenomenon suggests that a token’s update cannot be explained by its advantage alone. To understand where the additional force arises, we revisit GRPO’s training objective at the token level. A first-order expansion shows that the log-probability change of token j can be decomposed into a self-term and a within-batch coupling term. The former depends on its own advantage, while the latter aggregates interactions with all other tokens within the batch. We then ask when such coupling is large enough to affect the update. By approximating the full gradient with an output-layer proxy, we obtain an interpretable factorization of the coupling kernel into a representation term and a distributional term. This factorization reveals a sparse structure: non-negligible coupling occurs primarily between identical tokens that are both predicted with low confidence. This helps 2explain why token-level updates could deviate from their own advantage signs, and suggests that the joint composition of an RL batch plays a central role in shaping the effective learning signal. Building on this sparse coupling structure, we propose the cancellation hypothesis : tokens that appear in both positive and negative rollouts receive opposing coupled signals that cancel in the net update, while tokens more specific to successful rollouts retain stronger reinforcement. In this way, batch-level token coupling can induce hidden token-level credit assignment from rollout-level rewards, even without an explicit critic: (1) compared with training on only positive rollouts, GRPO greatly weakens updates on template and formatting tokens and shifts emphasis toward reasoning tokens (Fig. 4). (2) we estimate token value by Monte Carlo rollouts and find that GRPO-boosted tokens consistently have higher estimated value than suppressed tokens, regardless of whether they originate from positive or negative rollouts (Fig. 5(a)). This value gap further peaks in an intermediate-entropy region, connecting cancellation to entropy-based token selection [Wang et al., 2025]. Finally, the cancellation view leads us to implement two simple yet effective interventions for RL training. (1) query-preserved mini-batching , which keeps rollouts from the same query together to ensure related positive and negative samples are within the same optimizer step. (2) reward-balanced batching , which avoids batches that are overwhelmed by positive or negative rollouts to preserve the cancellation structure. Across multiple model scales and math benchmarks, these interventions improve RLVR training, demonstrating the practical value of preserving the cancellation hypothesis. 
+
+## 2 Token Coupling Effect 
+
+The Token Flipping suggests that a token’s update direction may be shaped by other tokens in the same batch, rather than by its own advantage alone. In this section, we formalize this batch-level token coupling for a single RL update. Unless stated otherwise, we consider GRPO with binary rewards: for each prompt q, a group of G responses {oi}Gi=1 is sampled from the old policy πθold , and each response is assigned a rollout-level advantage ˆAi after verification. We study the change in the token’s log-probability before and after an update step. For the t-th token in response i, denoted oi,t ,
+
+∆ log pi,t ≜ log πθ′ (oi,t | q, o i,<t ) − log πθold (oi,t | q, o i,<t ) . (1) For this analysis, we rewrite the GRPO update as a weighted token log-likelihood: 
+
+J (θ) ≜ 1
+
+N
+
+> G
+
+X
+
+> i=1
+> |oi|
+
+X
+
+> t=1
+
+Ai log πθ (oi,t | q, o i,<t ), N ≜
+
+> G
+
+X
+
+> i=1
+
+|oi|. (2) 
+
+Ai denotes the update weight obtained from the original rollout advantage ˆAi. As the importance-sampling ratio and clipping term only rescale or mask the gradient, we absorb them into Ai. Under a first-order approximation, a single gradient step on J (θ) with step size η yields 
+
+θ′ = θ + η∇θ J (θ) = θ + ηN
+
+> G
+
+X
+
+> i=1
+> |oi|
+
+X
+
+> t=1
+
+Ai ∇θ log πθ (oi,t | q, o i,<t ). (3) We now analyze the ∆ log pi,t under the one-step update: let gi,t ≜ ∇θ log πθ (oi,t | q, o i,<t ) denote the score function with respect to full parameters θ, a first-order Taylor expansion gives 
+
+∆ log pi,t ≈ ∇ θ log πθ (oi,t | q, o i,<t )⊤(θ′ − θ) = g⊤
+
+> i,t
+
+(θ′ − θ). (4) Substituting Eq. (3) into Eq. (4) and flattening tokens in the batch into indices j, k ∈ { 1, . . . , N }:
+
+∆ log pj ≈ ηN
+
+> N
+
+X
+
+> k=1
+
+Ak⟨gj , g k⟩ = ηN
+
+Aj ∥gj ∥22 + X 
+
+> k̸=j
+
+Ak⟨gj , g k⟩
+
+ (5) where Ak denotes the effective weight inherited from the rollout of token k. Eq. 5 clearly reveals that the update of token j is not only driven by the advantage Aj , but also the coupling term 
+
+P  
+
+> k̸=j
+
+Ak⟨gj , g k⟩. We define the coupling kernel Kj,k ≜ ⟨gj , g k⟩, which determines whether the couping effect between the token i and token j could be non-negligible? or not. Computing this kernel 3−1.0 −0.5 0.0 0.5 1.0           
+
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> 2.0
+> 2.5
+> Density
+> Same token
+> Different token
+> 0.0 0.5 1.0
+> 10 −3
+> 10 −2
+> 10 −1
+> 10 0
+> 10 1
+> 10 2
+> log-scale
+> Same token
+> Different token
+> 0246
+> Entropy k
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> Entropy  j
+> 0.2
+> 0.4
+> 0.6
+> (a) ⟨ hj,hk⟩(b) ϕ(c) Ak⟨hj,hk⟩ϕj,k
+
+Figure 2: Coupling concentrates on same-token, low-confidence pairs. (a) Hidden-representation similarities ⟨hj , h k⟩ are generally positive across token pairs, with same-token pairs showing stronger alignment than different-token pairs. (b) The output-distribution factor ϕj,k is non-negligible primarily for same-token pairs. (c) The full coupling contribution Ak⟨hj , h k⟩ϕj,k is strongest when both tokens have high entropy, corresponding to low-confidence predictions. in the full parameter space is expensive, since it requires inner products between full-model gradients. We therefore follow Deng et al. [2025b] and adopt the output-layer proxy , which approximates gj
+
+using only the gradient with respect to the final unembedding matrix, denoted g(W ) 
+
+> j
+
+. Appendix D.1 shows that this proxy closely tracks the full-parameter update in practice. Let zθ (s) = W h θ (s)
+
+denote the logits, where hθ (s) is the final hidden state, the gradient with respect to W becomes 
+
+g(W ) 
+
+> j
+
+≜ ∇W log πθ (oj | sj ) = ( ∇z log πθ (oj | sj )) 
+
+| {z } 
+
+> error term rj
+
+h⊤
+
+> j
+
+|{z} 
+
+> input
+
+= rj h⊤ 
+
+> j
+
+, (6) where sj is the prefix state of token j, hj = hθ (sj ), and rj ≜ eoj − πθ (· | sj ) ∈ R|V| . Substituting Eq. (6) into the kernel definition and using the Frobenius inner product property ⟨uv ⊤, xy ⊤⟩F =
+
+⟨u, x ⟩⟨ v, y ⟩, we obtain the output-layer proxy factorization: 
+
+Kj,k ≈ ⟨ g(W ) 
+
+> j
+
+, g (W ) 
+
+> k
+
+⟩F = ⟨rj h⊤ 
+
+> j
+
+, r kh⊤ 
+
+> k
+
+⟩F = ⟨hj , h k⟩
+
+| {z }
+
+> Representation
+
+· ⟨ rj , r k⟩
+
+| {z }
+
+> Distribution
+
+. (7) Thus, non-negligible coupling requires both aligned hidden representations and high similarity between the output distributions. We denote the second factor by ϕj,k ≜ ⟨rj , r k⟩ and expand it: 
+
+ϕj,k = ( eoj − πj )⊤(eok − πk) = I[oj = ok] − πj (ok) − πk(oj ) + ⟨πj , π k⟩. (8) Substituting this factorized kernel back into Eq. 5, we obtain the proxy delta: 
+
+δj ≈ ηN
+
+> N
+
+X
+
+> k=1
+
+Ak⟨hj , h k⟩ϕj,k = ηN
+
+Aj ⟨hj , h j ⟩ϕj,j + X 
+
+> k̸=j
+
+Ak⟨hj , h k⟩ϕj,k 
+
+ . (9) We now inspect ϕj,k in two cases: 
+
+ϕj,k =
+
+(−πj (ok) − πk(oj ) + ⟨πj , π k⟩, oj̸ = ok,
+
+(1 − πj (o))(1 − πk(o)) , oj = ok = o. (10) For distinct output tokens oj̸ = ok, the cross-token probabilities πj (ok) and πk(oj ) are usually small, and the overlap term ⟨πj , π k⟩ is also small when the two output distributions have weak overlap. Thus, different-token pairs typically contribute little through ϕj,k . For same-token pairs oj = ok = o,however, ϕj,k = (1 −πj (o))(1 −πk(o)) is positive and becomes large when both tokens are predicted with low confidence. Therefore, the similarity between output distributions makes coupling sparse: non-negligible coupling occurs primarily between identical, low-confidence tokens. 
+
+Empirical Verification We first look into the similarity of hidden representation and output distribution between sampled tokens in Eq. 7 and the sparsity pattern predicted by Eq. 10. As shown in Fig. 2(a), hidden-representation similarities are generally positive across token pairs, and same tokens tend to be aligned more strongly than different-token pairs. Fig. 2(b) further shows that non-negligible ϕj,k values are primarily on the same-token pairs, though most of them are zero. Finally, Fig. 2(c) shows that the full coupling contribution is strongest when both tokens have high entropy, 4−0.02 0.00 0.02 0.04 0.06           
+
+> Masking Effect δ(c)
+> coupled
+> random
+> 0.5 0.6 0.7 0.8 0.9
+> Masked token cosine similarity
+> 40
+> 50
+> 60
+> 70
+> 80
+> 90
+> 100
+> Boost Rate (%)
+> Unemb-only
+> Full model
+> 1510 20
+> Masked token number
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> 30
+> 35
+> Mean Boost (×10 −3 ) Mean Boost
+> Boost Rate
+> 40
+> 50
+> 60
+> 70
+> 80
+> Boost Rate
+> (a) Masking Effect Distribution (b) Similarity Scaling (c) Number Scaling
+
+Figure 3: Empirical verification via masked updates. (a) Coupled tokens produce a right-shifted Masking Effect distribution compared with random tokens. (b) Boost Rate increases with coupling strength and is consistent between the output-layer proxy and the full-parameter update. (c) Masking more coupled tokens increases both Mean Boost and Boost Rate. corresponding to low-confidence predictions. Together, these observations support our factorization: 
+
+non-negligible coupling is sparse and occurs primarily between identical, low-confidence tokens. 
+
+For further verification, we test whether tokens selected by this coupling structure measurably affect actual updates. Specifically, we compare the normal update with a masked update, where a selected token set M(c) is removed from the loss. We define the Masking Effect as 
+
+δM(c) = log πθ(c|sc) − log π−M  
+
+> θ
+
+(c | sc),
+
+where log π−M  
+
+> θ
+
+(c | sc) is the log probability with the masked update. A positive value of δ
+
+indicates that the removed tokens would have increased the candidate token’s log-probability under the unmasked update. We summarize this effect with two statistics: Boost Rate , the fraction of candidates for which the selected tokens boost the candidate token’s log-probability, and Mean Boost ,the average Masking Effect: 
+
+Boost Rate = 1
+
+|C| 
+
+X
+
+> c∈C
+
+1{δM(c)(c) > 0}, Mean Boost = 1
+
+|C| 
+
+X
+
+> c∈C
+
+δM(c)(c).
+
+Table 1: Masked updates verify the effect of coupled tokens. Tokens satisfying both same-token and low-confidence conditions yield higher Boost Rate and larger Mean Boost than random tokens under both the output-layer proxy and full-parameter update.                    
+
+> Masked Tokens LM-head Full Same LowConf. Boost Rate Mean Boost Boost Rate Mean Boost 50.60 −.0039 50.21 +.0048
+> ✓66.20 +.0224 66.41 +.0241
+> ✓44.20 −.0004 43.04 −.0012
+> ✓✓74.12 +.0301 75.00 +.0306
+
+As shown in Table 1, masking random tokens yields a random Boost Rate ( ≈50%) and a near-zero Mean Boost. In contrast, masking tokens that satisfy both conditions, same token identity and low confidence, raises Boost Rate to approximately 75% and produces clearly positive Mean Boost under both the output-layer proxy and the full-parameter update. This ver-ifies that the sparse coupling structure identified by Eq. 10 selects tokens with a consistent and measur-able influence on the candidate update. The close agreement between output-layer and full-parameter update further suggests that the proxy approximates the full-parameter training dynamics well. Fig. 3 pro-vides a complementary view, showing that Masking Effect scales with predicted coupling strength and is not driven by a few outlier pairs. 
+
+## 3 Coupling Effect Induces Cancellation 
+
+The previous section indicates that token updates are not isolated: same-token, low-confidence, and representation-aligned tokens can exert coupled influence on one another within the same batch. In a group-relative batch, such coupled directions often appear in both successful and failed rollouts from the same query. Because these rollouts carry opposite-signed group-normalized advantages, shared directions are suppressed in the aggregate update, while directions that are more correlated with successful rollouts are reinforced. We term this mechanism the cancellation hypothesis . It has two consequences: it could reduce variance along shared directions, and it turns the group-relative update into an advantage-weighted filter that induces hidden token-level credit assignment. 50 10 20 30 40 50  
+
+> Proportion (%)
+> Math
+> Template
+> Semantic
+> Conjunction
+> Positive-only
+> GRPO
+> (a) Distribution of boosted ratios (b) Top boosted tokens in GRPO
+> (c) Top boosted tokens in Positive-only
+
+Figure 4: (a) Tokens are grouped by NLTK POS tagging into Math (Number, Latex), Template (Symbol, Determiner, Conj), Semantic (Noun, Verb), and Conjunction (Conjunction); Each bar shows the fraction of total log-prob boost contributed by that group. Positive-only updates concentrate on Template, whereas GRPO update toward Semantic and Conjunction. (b/c) At the token level, Positive-only boosts formatting tokens, GRPO boosts reasoning conjunctions. 
+
+3.1 Cancellation as Advantage-Weighted Filter and Variance Reducer 
+
+Consider a query q with G sampled rollouts and group-normalized rollout advantages { ˆAi}Gi=1 
+
+satisfying PGi=1 ˆAi = 0 . Let di = P 
+
+> t
+
+gi,t denote the response-level score direction for rollout 
+
+i, where gi,t = ∇θ log πθ (oi,t | q, o i,<t ). The group-relative part of the query-level update is 
+
+∆θq ∝ PGi=1 ˆAidi. The squared norm of the query-level update could be expanded: 
+
+> G
+
+X
+
+> i=1
+
+ˆAigi
+
+> 2
+
+=
+
+> G
+
+X
+
+> i=1
+
+ˆA2 
+
+> i
+
+∥gi∥2 + X
+
+> i̸=j
+
+ˆAi ˆAj ⟨gi, g j ⟩. (11) As rollouts from the same query contain identical tokens and similar hidden states, their response-level gradients have more positive overlap. In the idealized case where the common within-query overlap is approximately a positive constant cq , the cross term becomes 
+
+X
+
+> i̸=j
+
+ˆAi ˆAj ⟨gi, g j ⟩ ≈ cq
+
+X
+
+> i̸=j
+
+ˆAi ˆAj = −cqGX
+
+> i=1
+
+ˆA2 
+
+> i
+
+< 0, (12) where the last equality uses P 
+
+> i
+
+ˆAi = 0 . Thus, positive gradient overlap is multiplied by negative advantage cross-products, reducing the update norm relative to the self-term P 
+
+> i
+
+ˆA2 
+
+> i
+
+∥gi∥2. Since gradient variance is controlled by the second moment of the update, this norm reduction gives the variance-reduction role of cancellation. The same algebra also gives a filtering interpretation. For any token or feature direction u, let 
+
+mi,u = ⟨gi, u ⟩ measure how strongly rollout i loads on that direction. The surviving signal along u is 
+
+Su =
+
+> G
+
+X
+
+> i=1
+
+ˆAimi,u =
+
+> G
+
+X
+
+> i=1
+
+ˆAi (mi,u − ¯mu) , ¯mu = 1
+
+G
+
+> G
+
+X
+
+> i=1
+
+mi,u . (13) 
+
+Su is the covariance between advantage and the presence of direction u. Directions that appear equally in positive and negative rollouts are filtered out, while ones enriched in higher-advantage rollouts survive. This advantage-weighted filtering is the source of hidden token-level credit assignment in the cancellation view that favours RL training. 
+
+3.2 Cancellation Acts as Hidden Credit Assignment 
+
+Variance reduction and filtering alone does not imply better learning: a smaller update could simply be a weaker update. The key question is whether cancellation is objective-driven, i.e., whether the residual left after cancellation secretly retains tokens that contribute to the training task. We compare GRPO with two complementary probes: positive-only keeps only positive-reward rollouts, 
+
+negative-only keeps only negative-reward rollouts. Full experimental details are in the Appendix. 
+
+Cancellation decreases learning on template and formatting tokens. Under the positive-only update, formatting and template tokens dominate the boosted directions, indicating that positive 635 40 45 50 55 60 65  
+
+> Training Step
+> 0.00025
+> 0.00050
+> 0.00075
+> 0.00100
+> 0.00125
+> 0.00150
+> 0.00175
+> 0.00200
+> Mean Value
+> Boosted Token
+> Suppressed Token
+> Top 20%
+> (H>1.34)
+> Top 40%
+> (H>1.02)
+> Top 60%
+> (H>0.78)
+> Top 80%
+> (H>0.66)
+> Top 100%
+> (H>0.00)
+> Entropy Percentile
+> 0.000
+> 0.002
+> 0.004
+> 0.006
+> 0.008
+> 0.010
+> Mean Value Gap
+> (a) Boosted Tokens Have Higher Value (b) Value Gap Peaks at Intermediate Entropy
+
+Figure 5: Cancellation acts as hidden token-level credit assignment. (a) Boosted tokens have higher Monte Carlo estimated value than suppressed tokens. (b) The value gap first increases and then decreases with entropy, suggesting that low-entropy tokens dilute the learning signal. rollouts alone strongly reinforce surface patterns. By contrast, the joint GRPO update suppresses many of these shared directions and shifts boosted mass toward more reasoning-bearing tokens. This is the qualitative signature of the filter in Eq. 13: directions common across rollout polarities are removed, while directions more correlated with success remain. 
+
+Cancellation favors tokens with higher value. We further ask whether the tokens that survive cancellation are more critical. We thus estimate token value with Monte Carlo rollouts. We randomly sample equal numbers of boosted and suppressed tokens from positive or negative rollouts, and for each sampled token with state st = ( q, o <t ) and action at = ot, we estimate the marginal contribution of at by rolling out M continuations from both st ⊕ at and st:
+
+ˆAM (st, a t) = 1
+
+M
+
+> M
+
+X
+
+> m=1
+
+r
+
+
+
+τ (m) | st ⊕ at
+
+
+
+− 1
+
+M
+
+> M
+
+X
+
+> m=1
+
+r
+
+
+
+˜τ (m) | st
+
+
+
+,
+
+where r ∈ { 0, 1} is the binary reward. As shown in the Fig. 5(a), boosted tokens consistently have higher Monte Carlo estimated value than suppressed tokens, indicating that cancellation does not merely remove surface noise. 
+
+The value gap peaks at intermediate entropy. To examine where cancellation carries the most informative signal, we sort all tokens by entropy and compute the mean value gap on the top-k%
+
+highest-entropy subset for varying k. As shown in Fig. 5(b), the gap peaks at about top-40%. The trend reflects that high entropy could amplify the value gap. And low-entropy tokens, anchored by pretraining priors, resist displacement and contribute little net signal, diluting the average gap. The observation connects to recent high-entropy token update strategies [Wang et al., 2025, Zheng et al., 2025, Wu et al., 2025a]. At the same time, the rise-then-fall pattern suggests that entropy is not a monotonic proxy for token value; the strongest hidden credit signal appears before low-entropy tokens are included, rather than simply at the maximum-entropy extreme. 16 32 64 96      
+
+> −10
+> 0
+> 10
+> (a) Batch size
+> 1248
+> 0
+> 20
+> (b) Rollout-n
+> All Top 50% Top 25%
+
+Figure 6: Cancellation strengthens with the sampling budget. The value gap ( 10 −3) grows as batch size increases from 16 to 96 (a) and rollout-n from 1 to 8 (b), with the effect most pronounced for higher-value token subsets. 
+
+Larger sampling budget strengthens cancella-tion. Cancellation relies on the co-occurrence of positive and negative rollouts within each update. When the sampling budget is small, many query groups lack sufficient rollout diversity, and the op-posing coupled signals that drive cancellation can-not fully form. We verify this by independently varying batch size and rollout-n, while keeping other hyperparameters fixed. As shown in Fig. 6, the results are consistent across both axes: the hid-den value discovery grows with larger sampling budget. Notably, this amplification is most pro-nounced for the top-25% highest-value subset. This confirms that larger batches yield more complete coupling groups, strengthening cancellation and amplifying the value signal they expose. 74 Repairing Broken Cancellation in RLVR 
+
+The previous section suggests that cancellation is not merely an analytical artifact: it reduces shared update directions and exposes a more selective token-level learning signal. We are then motivated to investigate whether common practices in RL frameworks inadvertently break this mechanism and whether repairing it yields consistent performance improvements. 
+
+Query-preserved mini-batching To improve training throughput, most RL frameworks often split rollout batches randomly into smaller mini-batches, typically by token count [Sheng et al., 2024, Zhu et al., 2025b]. This implementation detail could scatter rollouts from the same query across different optimizer steps. From the cancellation view, this could be harmful, as the positive and negative rollouts of a query are better updated together to reflect their shared directions for cancellation. (1) The first issue is local imbalance. Consider a query group with group-normalized advantages 
+
+{ ˆAi}Gi=1 and P 
+
+> i
+
+ˆAi = 0 . If only a subset B appears in a mini-batch, its local advantage sum 
+
+SB = P 
+
+> i∈B
+
+ˆAi is generally nonzero. Consequently, the local cross-advantage term becomes 
+
+X
+
+> i̸=j∈B
+
+ˆAi ˆAj = S2 
+
+> B
+
+− X
+
+> i∈B
+
+ˆA2 
+
+> i
+
+, (14) rather than the negative zero-sum form in the grouped update. Thus, the negative cross terms that reduce variance in Sec. 3.1 are weakened or even lost, making the local update noisier. (2) The second issue is optimization drift. One might expect later mini-batches to provide the missing counterparts, but PPO/GRPO updates the policy after every mini-batch. Therefore, later rollouts use shifted score directions and different importance-sampling ratios. The sequential mini-batch trajectory is not equivalent to the simultaneous grouped update, so cancellation missing in an early mini-batch cannot be exactly restored later. We thereby implement query-preserved mini-batching, ensuring that rollouts for the same query are grouped into a single mini-batch and updated together. 0 100 200 300       
+
+> Training Step
+> 0.03
+> 0.07
+> 0.11
+> 0.15
+> 0.19
+> 0.23
+> Reward
+> (a) Training Performance
+> Break Cancellation
+> Baseline
+> 1/8 2/8 3/8 4/8 5/8 6/8 7/8
+> Reward
+> 0.0004
+> 0.0002
+> 0.0000
+> 0.0002
+> 0.0004
+> 0.0006
+> 0.0008
+> 0.0010
+> Mean Value Gap
+> (b) Value Analysis
+
+Figure 7: (a) Partitioning mini-batches by reward sign maxi-mally breaks cancellation, causing substantial performance drops. (b) Value gap between boosted and suppressed tokens across reward distributions: Gap diminishes when reward is sparse or saturated 
+
+Reward-balanced batching As an-alyzed in section 3.1, the cancel-lation mechanism relies on the co-occurrence of positive and negative advantage within the same update. When batch reward is sparse or sat-urated, the batch may lack sufficient cross-sign counterparts, and the cou-pled signals that drive cancellation cannot fully form. We verify this fail-ure mode through two complementary experiments: (1) We partition each sampling batch by advantage sign, placing positive and negative rollouts into separate mini-batches. This re-moves cross-sign gradient coupling, deliberately breaking cancellation and the training performance degrades. (2) We measure the value gap between boosted and suppressed tokens, varying the reward-sign composition within the same query groups. As shown in 7, under reward-sparse or saturated conditions, the value gap diminishes or even becomes negative. These observations motivate a simple remedy: preserve reward-sign balance during batch construction. Therefore, we accumulate rollouts until a reward-balanced subset can be selected for update. Specifi-cally, we accumulate rollouts and defer updates until both reward signs are sufficiently represented. We then select an update batch B satisfying 
+
+min {N+(B), N −(B)} ≥ τ |B| ,
+
+where N+(B) and N−(B) denote the numbers of positive and negative rollouts in B, and τ controls the minimum fraction of either sign. 80 200 400 600 800                 
+
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> 0.5 (a) Reward
+> 0200 400 600 800
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> (b) Entropy
+> 0200 400 600 800
+> 1000
+> 1500
+> 2000
+> (c) Response Length
+> 0200 400 600 800
+> 0.350
+> 0.375
+> 0.400
+> 0.425
+> (d) Benchmark Performance
+> Baseline QB RB QB+RB
+
+Figure 8: Query-preserved mini-batching (QB) and reward-balanced batching (RB) stabilize GRPO training on Qwen2.5-Math-7B. The baseline suffers severe training collapse, while QB and RB individually mitigate instability. Their combination (QB+RB) achieves the most stable training dynamics and the strongest final performance across all evaluation benchmarks. Table 2: Evaluation results across math reasoning benchmarks under different method combinations (%). QB: query-preserved mini batching RB: reward-balanced batching 
+
+Model Methods Benchmarks QB RB AIME24 AIME25 AMC Olympiad Minerva Math Avg 
+
+Qwen2.5-Math-7B 
+
+21 .3 11 .3 54 .9 37 .8 29 .4 72 .6 37 .8
+
+✓ 20 .7 10 .8 61 .2 42 .6 36.7 81 .6 42 .3
+
+✓ 25 .4 13 .3 60 .1 39 .0 32 .4 73 .0 42 .4
+
+✓ ✓ 27.8 15.9 63.9 44.5 36 .0 82.2 45.0 
+
+Qwen3-1.7B -Base 
+
+12 .4 9.4 37 .0 34 .5 28 .3 69 .8 31 .9
+
+✓ 11 .6 7.9 40 .2 37 .6 33 .8 71 .0 33 .7
+
+✓ 16 .2 11.8 42 .6 37 .3 30 .9 74.2 35 .5
+
+✓ ✓ 16.5 9.0 43.5 38.2 35.7 74 .0 36.1 
+
+Qwen3-4B -Base 
+
+28 .3 24.2 58 .0 53 .2 44 .5 86 .2 49 .1
+
+✓ 29 .2 22 .8 64.4 53 .6 44 .9 86 .4 50 .2
+
+✓ 27 .9 22 .4 61 .5 54 .8 46.0 88 .0 50 .1
+
+✓ ✓ 30.7 23 .0 64 .0 55.4 43 .4 88.4 50.8 
+
+Experiment results Full experiment details can be found in Appendix B. Table 2 presents the evaluation results across all model scales and benchmarks. Our proposed interventions achieve consistent improvements, with particularly notable results on the AMC and Olympiad Bench. This phenomenon is most pronounced for Qwen2.5-Math-7B, which exhibits the most unstable training when RL is from base models. As shown in Figure 8, the baseline configuration suffers from severe collapse, whereas batching strategies stabilize the training and improve final performance. 
+
+## 5 Related Work 
+
+A common sequence-level intuition for LLM RL training is that it reinforces successful rollouts and suppresses failed ones, shifting the model distribution toward higher-reward responses [Mroueh, 2025, Wu et al., 2025b]. However, recent studies suggest that this explanation could be incomplete. The Lazy Likelihood phenomenon shows that positively supervised responses are not necessarily upweighted during training [Razin et al., 2024, Pal et al., 2024, Ren and Sutherland, 2024, Deng et al., 2025b,c]. Related positive-suppressed phenomena have also been reported across diverse settings of LLM post-training, including reasoning with format-reward [Simoni et al., 2025], search-integrated RL [Deng et al., 2025a], and multi-turn tool-integrated reasoning [Xue et al., 2025]. Existing studies primarily focused on domain-specific remedies for particular instability modes the Lazy Likelihood 
+
+may cause, or on rollout-level analyses of likelihood dynamics, while leaving the in-depth analysis of how individual tokens are updated in critic-free RL remains underexplored. 
+
+## 6 Conclusion 
+
+In this work, we revisit critic-free RL for LLMs from the perspective of token-level probability shifts. We identified token flipping , showing that positive and negative rollouts exhibit remarkably similar proportions of boosted and suppressed tokens, despite receiving opposite signs of advantage. To explain this mismatch, we derived a first-order decomposition of GRPO updates, showing that a token’s log-probability change is shaped by a coupling kernel that concentrates on same-token and 9low-confidence token pairs. Building on this view, we propose the cancellation hypothesis : opposing coupled signals cancel out for tokens shared across rollouts, while tokens more specific to successful ones receive stronger reinforcement, thereby inducing hidden token-level credit assignment from outcome-level supervision. Guided by this view, we further introduce two batching interventions for RL training and validate their performance. We hope this work offers a new perspective on the learning dynamics of critic-free RL for LLMs and will pave the way for more principled approaches to batch design and credit assignment in LLM post-training. 
+
+## References 
+
+Arash Ahmadian, Chris Cremer, Matthias Gallé, Marzieh Fadaee, Julia Kreutzer, Olivier Pietquin, Ahmet Üstün, and Sara Hooker. Back to basics: Revisiting reinforce style optimization for learning from human feedback in llms. arXiv preprint arXiv:2402.14740 , 2024. Sumit Chopra, Raia Hadsell, and Yann LeCun. Learning a similarity metric discriminatively, with application to face verification. In 2005 IEEE computer society conference on computer vision and pattern recognition (CVPR’05) , volume 1, pages 539–546. IEEE, 2005. Ganqu Cui, Yuchen Zhang, Jiacheng Chen, Lifan Yuan, Zhi Wang, Yuxin Zuo, Haozhan Li, Yuchen Fan, Huayu Chen, Weize Chen, et al. The entropy mechanism of reinforcement learning for reasoning language models. arXiv preprint arXiv:2505.22617 , 2025. Wenlong Deng, Yushu Li, Boying Gong, Yi Ren, Christos Thrampoulidis, and Xiaoxiao Li. On grpo collapse in search-r1: The lazy likelihood-displacement death spiral. arXiv preprint arXiv:2512.04220 , 2025a. Wenlong Deng, Yi Ren, Muchen Li, Danica J Sutherland, Xiaoxiao Li, and Christos Thrampoulidis. On the effect of negative gradient in group relative deep reinforcement optimization. arXiv preprint arXiv:2505.18830 , 2025b. Wenlong Deng, Yi Ren, Yushu Li, Boying Gong, Danica J Sutherland, Xiaoxiao Li, and Christos Thrampoulidis. Token hidden reward: Steering exploration-exploitation in group relative deep reinforcement learning. arXiv preprint arXiv:2510.03669 , 2025c. Nicholas Frosst, Nicolas Papernot, and Geoffrey Hinton. Analyzing and improving representations with the soft nearest neighbor loss. In International conference on machine learning , pages 2012–2020. PMLR, 2019. Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Ruoyu Zhang, Runxin Xu, Qihao Zhu, Shirong Ma, Peiyi Wang, Xiao Bi, et al. Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement learning. arXiv preprint arXiv:2501.12948 , 2025. Jingcheng Hu, Yinmin Zhang, Qi Han, Daxin Jiang, Xiangyu Zhang, and Heung-Yeung Shum. Open-reasoner-zero: An open source approach to scaling up reinforcement learning on the base model. arXiv preprint arXiv:2503.24290 , 2025. Ailin Huang, Ang Li, Aobo Kong, Bin Wang, Binxing Jiao, Bo Dong, Bojun Wang, Boyu Chen, Brian Li, Buyun Ma, et al. Step 3.5 flash: Open frontier-level intelligence with 11b active parameters. 
+
+arXiv preprint arXiv:2602.10604 , 2026. Zeyu Huang, Tianhao Cheng, Zihan Qiu, Zili Wang, Yinghui Xu, Edoardo M Ponti, and Ivan Titov. Blending supervised and reinforcement fine-tuning with prefix sampling. arXiv preprint arXiv:2507.01679 , 2025. Aaron Jaech, Adam Kalai, Adam Lerer, Adam Richardson, Ahmed El-Kishky, Aiden Low, Alec Helyar, Aleksander Madry, Alex Beutel, Alex Carney, et al. Openai o1 system card. arXiv preprint arXiv:2412.16720 , 2024. Bowen Jin, Hansi Zeng, Zhenrui Yue, Jinsung Yoon, Sercan Arik, Dong Wang, Hamed Zamani, and Jiawei Han. Search-r1: Training llms to reason and leverage search engines with reinforcement learning. arXiv preprint arXiv:2503.09516 , 2025. 10 Amirhossein Kazemnejad, Milad Aghajohari, Eva Portelance, Alessandro Sordoni, Siva Reddy, Aaron Courville, and Nicolas Le Roux. Vineppo: Unlocking rl potential for llm reasoning through refined credit assignment. 2024. Yuxiang Lai, Jike Zhong, Ming Li, Shitian Zhao, Yuheng Li, Konstantinos Psounis, and Xiaofeng Yang. Med-r1: Reinforcement learning for generalizable medical reasoning in vision-language models. IEEE Transactions on Medical Imaging , 2026. Ziniu Li, Tian Xu, Yushun Zhang, Zhihang Lin, Yang Yu, Ruoyu Sun, and Zhi-Quan Luo. Remax: A simple, effective, and efficient reinforcement learning method for aligning large language models. 
+
+arXiv preprint arXiv:2310.10505 , 2023. Zichen Liu, Changyu Chen, Wenjun Li, Penghui Qi, Tianyu Pang, Chao Du, Wee Sun Lee, and Min Lin. Understanding r1-zero-like training: A critical perspective. arXiv preprint arXiv:2503.20783 ,2025. Youssef Mroueh. Reinforcement learning with verifiable rewards: Grpo’s effective loss, dynamics, and success amplification. arXiv preprint arXiv:2503.06639 , 2025. Sagnik Mukherjee, Lifan Yuan, Pavan Jayasinha, Dilek Hakkani-Tür, and Hao Peng. Do we need adam? surprisingly strong and sparse reinforcement learning with sgd in llms. arXiv preprint arXiv:2602.07729 , 2026. Arka Pal, Deep Karkhanis, Samuel Dooley, Manley Roberts, Siddartha Naidu, and Colin White. Smaug: Fixing failure modes of preference optimisation with dpo-positive. arXiv preprint arXiv:2402.13228 , 2024. Rafael Rafailov, Archit Sharma, Eric Mitchell, Christopher D Manning, Stefano Ermon, and Chelsea Finn. Direct preference optimization: Your language model is secretly a reward model. Advances in neural information processing systems , 36:53728–53741, 2023. Noam Razin, Sadhika Malladi, Adithya Bhaskar, Danqi Chen, Sanjeev Arora, and Boris Hanin. Unintentional unalignment: Likelihood displacement in direct preference optimization. arXiv preprint arXiv:2410.08847 , 2024. Yi Ren and Danica J Sutherland. Learning dynamics of llm finetuning. arXiv preprint arXiv:2407.10490 , 2024. Steffen Rendle, Christoph Freudenthaler, Zeno Gantner, and Lars Schmidt-Thieme. Bpr: Bayesian personalized ranking from implicit feedback. arXiv preprint arXiv:1205.2618 , 2012. John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. Proximal policy optimization algorithms. arXiv preprint arXiv:1707.06347 , 2017. Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan Zhang, YK Li, Yang Wu, et al. Deepseekmath: Pushing the limits of mathemat-ical reasoning in open language models. arXiv preprint arXiv:2402.03300 , 2024. Guangming Sheng, Chi Zhang, Zilingfeng Ye, Xibin Wu, Wang Zhang, Ru Zhang, Yanghua Peng, Haibin Lin, and Chuan Wu. Hybridflow: A flexible and efficient rlhf framework. arXiv preprint arXiv: 2409.19256 , 2024. Marco Simoni, Aleksandar Fontana, Giulio Rossolini, Andrea Saracino, and Paolo Mori. Gtpo: Stabilizing group relative policy optimization via gradient and entropy control. arXiv preprint arXiv:2508.03772 , 2025. Xinyu Tang, Yuliang Zhan, Zhixun Li, Wayne Xin Zhao, Zhenduo Zhang, Zujie Wen, Zhiqiang Zhang, and Jun Zhou. Rethinking sample polarity in reinforcement learning with verifiable rewards. 
+
+arXiv preprint arXiv:2512.21625 , 2025. Kimi Team, Yifan Bai, Yiping Bao, Y Charles, Cheng Chen, Guanduo Chen, Haiting Chen, Huarong Chen, Jiahao Chen, Ningxin Chen, et al. Kimi k2: Open agentic intelligence. arXiv preprint arXiv:2507.20534 , 2025. 11 Shenzhi Wang, Le Yu, Chang Gao, Chujie Zheng, Shixuan Liu, Rui Lu, Kai Dang, Xionghui Chen, Jianxin Yang, Zhenru Zhang, et al. Beyond the 80/20 rule: High-entropy minority tokens drive effective reinforcement learning for llm reasoning. arXiv preprint arXiv:2506.01939 , 2025. Jianghao Wu, Yasmeen George, Jin Ye, Yicheng Wu, Daniel F Schmidt, and Jianfei Cai. Spine: Token-selective test-time reinforcement learning with entropy-band regularization. arXiv preprint arXiv:2511.17938 , 2025a. Yihong Wu, Liheng Ma, Lei Ding, Muzhi Li, Xinyu Wang, Kejia Chen, Zhan Su, Zhanguang Zhang, Chenyang Huang, Yingxue Zhang, et al. It takes two: Your grpo is secretly dpo. arXiv preprint arXiv:2510.00977 , 2025b. Xuan Xie, Xuan Wang, Wenjie Wang, Shuai Chen, and Wei Lin. Dagrpo: Rectifying gradient conflict in reasoning via distinctiveness-aware group relative policy optimization. arXiv preprint arXiv:2512.06337 , 2025. Zhenghai Xue, Longtao Zheng, Qian Liu, Yingru Li, Xiaosen Zheng, Zejun Ma, and Bo An. Sim-pletir: End-to-end reinforcement learning for multi-turn tool-integrated reasoning. arXiv preprint arXiv:2509.02479 , 2025. Qiying Yu, Zheng Zhang, Ruofei Zhu, Yufeng Yuan, Xiaochen Zuo, Yu Yue, Weinan Dai, Tiantian Fan, Gaohong Liu, Lingjun Liu, et al. Dapo: An open-source llm reinforcement learning system at scale. arXiv preprint arXiv:2503.14476 , 2025. Yu Yue, Yufeng Yuan, Qiying Yu, Xiaochen Zuo, Ruofei Zhu, Wenyuan Xu, Jiaze Chen, Chengyi Wang, TianTian Fan, Zhengyin Du, et al. Vapo: Efficient and reliable reinforcement learning for advanced reasoning tasks. arXiv preprint arXiv:2504.05118 , 2025. Weihao Zeng, Yuzhen Huang, Qian Liu, Wei Liu, Keqing He, Zejun Ma, and Junxian He. Simplerl-zoo: Investigating and taming zero reinforcement learning for open base models in the wild. arXiv preprint arXiv:2503.18892 , 2025. Xiaoying Zhang, Hao Sun, Yipeng Zhang, Kaituo Feng, Chaochao Lu, Chao Yang, and Helen Meng. Critique-grpo: Advancing llm reasoning with natural language and numerical feedback. arXiv preprint arXiv:2506.03106 , 2025. Tianyu Zheng, Tianshun Xing, Qingshui Gu, Taoran Liang, Xingwei Qu, Xin Zhou, Yizhi Li, Zhoufutu Wen, Chenghua Lin, Wenhao Huang, et al. First return, entropy-eliciting explore. arXiv preprint arXiv:2507.07017 , 2025. Xinyu Zhu, Mengzhou Xia, Zhepei Wei, Wei-Lin Chen, Danqi Chen, and Yu Meng. The surprising effectiveness of negative reinforcement in llm reasoning. arXiv preprint arXiv:2506.01347 , 2025a. Zilin Zhu, Chengxing Xie, Xin Lv, and slime Contributors. slime: An llm post-training framework for rl scaling. https://github.com/THUDM/slime , 2025b. GitHub repository. Corresponding author: Xin Lv. 
+
+## Acknowledgments and Disclosure of Funding 
+
+IT acknowledges support from Dutch National Science Foundation (NWO Vici grant VI.C.212.053). 
+
+## A Limitations 
+
+Our coupling analysis relies on an output-layer proxy that approximates the full-model gradient with its last-layer counterpart, so we validate the reasonableness of this proxy and provide corresponding empirical justifications: Appendix D.1 shows that the proxy and full-parameter updates exhibit stable token-flip sign consistency throughout training, while Table 1 shows that the same-token, low-confidence coupling pattern identified by the proxy produces comparable masking effects under full-parameter updates. Our two interventions are evaluated on mathematical reasoning with binary rewards. Extending them and validating them in more diverse settings and broader domains 12 remains future work. Reward-balanced batching may reduce sample utilization because some rollouts are discarded to meet the target reward composition. However, our design naturally fits modern asynchronous RL frameworks: it can be implemented simply as an additional update condition on the rollout buffer. 
+
+## B Experiment Details 
+
+Experiment Settings We employ math reasoning problems as a playground to test the proposed method, for math problems usually have reliable and cheap verifiers. Our training set is the publicly released DAPO-17K-dataset. Each training batch consists of 128 prompts with 8 responses sampled per prompt, yielding a total of 1024 samples. In our configuration, updates are performed with a mini-batch of 256 samples, resulting in 4 gradient updates per sampling iteration. We evaluate our analysis on three backbone models spanning both math-specialized and general-purpose LLMs: QWEN 2.5-M ATH -7B, Q WEN 3-1.7B-B ASE , and Q WEN 3-4B-B ASE . This model suite allows us to examine whether the observed token-level dynamics remain consistent across different model families and scales. We use a maximum response length of 8192 for all models. We use the DAPO dataset throughout our experiments and adopt M ATH -V ERIFY as the verifier. 
+
+Implementation We implement all RL experiments in the VERL framework and use GRPO as our critic-free RL algorithm. Following DAPO [Yu et al., 2025], we adopt the token-level policy gradient loss and enable clip-higher . However, we do not use Dynamic Sampling due to limited computational budget. In all experiments, we set clip_low = 0 .2 and clip_high = 0 .28 , remove the KL regularization term by setting β = 0 , and set the entropy loss coefficient to 0. We use Math-Verify as our reward function and include no format or length reward, our training algorithm minimizes: 
+
+Eq∼D ,{oi}Gi=1 ∼πθold 
+
+ 1
+
+PGi=1 |oi|
+
+> G
+
+X
+
+> i=1
+> |oi|
+
+X
+
+> t=1
+
+min ( ρi,t (θ)Ai, clip (ρi,t (θ), 1 − ϵ, 1 + ϵ)Ai)
+
+ (15) where ϵ is the clipping parameter and ρi,t (θ) = πθ (oi,t |q,o i,<t )  
+
+> πθold (oi,t |q,o i,<t )
+
+is the importance ratio. Table 3 summarizes the default training configurations. Table 3: Training hyperparameters across different models. 
+
+Hyperparameters Qwen2.5-Math-7B Qwen3-1.7B-Base Qwen3-4B-Base 
+
+max_prompt_length 1024 1024 1024 
+
+max_response_length 8192 8192 8192 
+
+train_batch_size 128 128 128 
+
+mini_batch_size 32 32 32 
+
+optim.lr 1e −6 1e −6 1e −6
+
+rollout.temperature 1.0 1.0 1.0 
+
+rollout.n 8 8 8
+
+Implementation Details for proposed batching tricks We implement all experiments within the VERL framework, a widely adopted open-source RL training framework. By default, VERL 
+
+partitions mini-batches by token count to balance computational load across data-parallel nodes. For 
+
+query-preserved mini-batching , we ensure all rollouts from the same query are assigned to the same mini-batch. For reward-balanced batching , we accumulate rollouts in a buffer and trigger gradient updates only when the collected batch meets the target reward composition. We set τ = 0 .5 for QWEN 2.5-M ATH -7B and Q WEN 3-4B-B ASE , and τ = 0 .25 for Q WEN 3-1.7B-B ASE .
+
+Evaluation For evaluation, we mainly focus on six widely used math reasoning benchmarks, including AIME2024, AIME2025, AMC, Minerva, OlympiadBench and Math-500. For AIME2024, AIME2025, and AMC, we report avg@32 because the test set is relatively small; for the other 13 three benchmarks, we report pass@1. To determine the evaluation hyperparameters, we test four common sampling configurations on both the base and aligned models, as shown in Table 4. We adopt temperature = 0 .6 and top-p = 0 .95 for all evaluations, as this setting yields the highest average performance on the aligned model while maintaining competitive results on base model. Table 4: Evaluation results under different temperature and top-p settings.                                                                                  
+
+> Model Temp. Top-pAIME24 AIME25 AMC Math Olymp. Minerva Avg. qwen3-4b-base 1.0 0.7 10.6 6.7 36.4 62.8 33.4 24.2 29.0 qwen3-4b-base 0.6 0.7 10.0 8.5 41.7 73.6 36.7 26.1 32.8
+> qwen3-4b-base 1.0 0.95 6.6 3.6 27.1 49.0 23.8 17.6 21.3 qwen3-4b-base 0.6 0.95 10.2 6.6 39.9 64.8 34.5 27.9 30.7 hf-4b-step100 1.0 0.7 16.0 14.1 49.5 82.6 46.2 37.5 41.0 hf-4b-step100 0.6 0.7 14.2 12.3 49.9 81.0 46.9 37.1 40.2 hf-4b-step100 1.0 0.95 16.8 13.9 49.4 79.8 44.4 37.5 40.3 hf-4b-step100 0.6 0.95 15.8 14.8 50.6 82.4 46.9 36.7 41.2
+
+## C Token Flipping 
+
+Measuring token-level log-probability shift. We measure how a single GRPO update changes token probabilities on a fixed rollout batch. In typical RL training pipelines, responses are sampled by a fast inference engine as VLLM, which also return rollout-time log-probabilities. However, these values can differ slightly from those produced by the FSDP training forward pass, even for the same model state, due to numerical differences between the inference and training stacks. To ensure an exact comparison, we compute both the pre-update and post-update log-probabilities via dedicated FSDP forward passes on the training model over the same rollout batch. Concretely, before the GRPO update we obtain log πθ (oi,t | q, o i,<t ), and after the update we obtain log πθ′ (oi,t | q, o i,<t ) through a second FSDP forward pass. The per-token shift and its classification are: 
+
+∆ log pi,t = log πθ′ (oi,t | q, o i,<t ) − log πθ (oi,t | q, o i,<t ), (16) 
+
+boosted : ∆ log pi,t > ϵ, suppressed : ∆ log pi,t < −ϵ, stable : |∆ log pi,t | ≤ ϵ, 
+
+with ϵ = 10 −6. We report the ratio of boosted and suppressed tokens separately for positive-advantage and negative-advantage rollouts. The full procedure is summarized in Algorithm 1. 
+
+Algorithm 1 Computing token-level ∆ log p after one GRPO step. 
+
+Require: Batch of prompts {q}, current policy πθ , number of rollouts G
+
+Rollout & Scoring  
+
+> 1:
+
+For each prompt q, sample G responses {oi}Gi=1 ∼ πθ (· | q) via vLLM 2: Compute ℓold  
+
+> i,t
+
+← log πθ (oi,t | q, o i,<t ) for all response tokens via FSDP forward 3: Verify each response; compute group-normalized advantage Ai
+
+Policy Update  
+
+> 4:
+
+θ′ ← GRPO-U PDATE (θ, {oi, A i})
+
+Measure Token Displacement  
+
+> 5:
+
+Compute ℓnew  
+
+> i,t
+
+← log πθ′ (oi,t | q, o i,<t ) for all response tokens via FSDP forward 6: ∆ log pi,t ← ℓnew  
+
+> i,t
+
+− ℓold 
+
+> i,t
+
+Additional empirical evidence for token flipping. Figure 9 shows that Token Flipping is a stable phenomenon across different models. We report the proportions of boosted, suppressed, and stable tokens, defined by ∆ log p, for positive rollouts ( A > 0), negative rollouts ( A < 0), and the full rollout batch. Across different models, Positive and negative rollouts display highly similar token-displacement profiles throughout generation, even though their advantages have opposite signs. 14 0 100 200 300 400                                                   
+
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Positive Rollouts ( A> 0 )
+> 0100 200 300 400
+> Negative Rollouts ( A< 0 )
+> 0100 200 300 400
+> Overall Token Displacement
+> 0200 400 600 800 1000
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> 0200 400 600 800 1000 0200 400 600 800 1000
+> 0200 400 600 800 1000
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> 0200 400 600 800 1000 0200 400 600 800 1000
+> (a) Qwen2.5-Math-7B
+> (b) Qwen3-1B7-Base
+> (c) Qwen3-4B-Base
+> Token ratio (%)
+> log p>log p<|log p|
+
+Figure 9: Reversed update persists across backbone models. Each row corresponds to a backbone model, and the three columns report the proportions of boosted ( ∆ log p > ϵ ), suppressed ( ∆ log p < 
+
+−ϵ), and stable ( |∆ log p| ≤ ϵ) tokens in positive rollouts ( A > 0), negative rollouts ( A < 0), and the full rollout batch. Despite opposite advantage signs, positive and negative rollouts exhibit remarkably similar token-displacement profiles across models. 
+
+## D Coupling Analysis 
+
+D.1 Empirical Justification for the Output-Layer Proxy 
+
+The coupling kernel in Eq. (5) is defined in the full parameter space, making it expensive to compute and difficult to interpret. This motivates a simpler proxy based on the output layer. We provide empirical evidence that this proxy remains faithful to the full-parameter update in practice. To validate the proxy, we compare the per-token displacement ∆ log p produced by a standard full-parameter GRPO step with the displacement produced by updating only the unembedding matrix 
+
+W , using the same rollout batch. For each token we record whether its ∆ log p under the two update paradigms shares the same sign. As shown in Figure 10, the sign-consistent proportion remains stable throughout training, plateauing near 0.7.Beyond sign consistency, the proxy also faithfully recovers the structural predictions of the coupling analysis. Specifically, the factorisation in Eq. 10 predicts that non-negligible coupling concentrates on same-token, low-confidence pairs—a conclusion derived entirely under the output-layer approx-imation. Table 1 provides a direct causal test of this prediction: masking tokens that satisfy both conditions yields comparable Boost Rate and Mean Boost under the LM-head-only and full-parameter updates ( ∼74–75% and ∼0.030, respectively), whereas relaxing either condition substantially weak-ens the effect. The close agreement between the two update paradigms confirms that the sparse coupling structure identified by the proxy is not an artifact of the approximation but reflects a property of the full-parameter training dynamics. 15 0 100 200 300 400 
+
+> Global Steps
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Proportion of Consistent Tokens
+> Overall Consistency
+> Random Chance (0.5)
+
+(a) Sign Consistency 
+
+Figure 10: Agreement between full-parameter and unembedding-layer updates. The proportion of tokens where the token displacement ( ∆ log p) shares the same sign under both update paradigms. The consistency remains highly stable across training steps, plateauing near 0.7, providing empirical support for the output-layer proxy adopted in Section 3. 
+
+D.2 Empirical Verification Details for Token coupling and Additional Results 
+
+For the masked-update experiments reported in Table 1 and Figure 3, we deliberately use SGD with a learning rate of 1e −1 and no momentum rather than Adam. The reason is that Adam’s first parameter update reduces to an approximate sign-descent step (see Appendix D.3 for a formal derivation), which normalizes away the relative magnitude differences across tokens and would obscure the per-token causal signal our analysis aims to detect. Following Mukherjee et al. [2026], we adopt SGD for RL updates with a learning rate of 1e −1, which preserves the true gradient magnitudes and therefore faithfully reflects the contribution of each masked token set to the candidate update. As shown in Figure 3, the masked-update results provide three complementary pieces of evidence. (1) Masking coupled tokens (same-token, low-confidence) produces a clearly right-shifted Masking Effect distribution relative to random tokens (panel a), indicating that these tokens exert a consistently positive influence on the candidate’s log-probability under the unmasked update. (2) Boost Rate increases monotonically with coupling strength as measured by the proxy cosine similarity, and the trend is closely matched between the LM-head-only and full-parameter updates (panel b), further validating the output-layer proxy. (3) Progressively masking more top-coupled tokens amplifies both Mean Boost and Boost Rate (panel c). Together, these results corroborate the prediction of Eq. 10: non-negligible coupling is sparse and concentrates on identical, low-confidence token pairs. 
+
+D.3 Why SGD Instead of Adam for Causal Analysis 
+
+In our causal experiments we deliberately use SGD rather than Adam. The reason is that Adam’s first update is governed almost entirely by the sign of the gradient, not its magnitude, which would obscure the token-level causal signal we aim to measure. Concretely, Adam maintains a first-moment estimate mt = β1mt−1 + (1 − β1)gt and a second-moment estimate vt = β2vt−1 + (1 − β2)g2 
+
+> t
+
+. At the very first step ( t = 1 ), with m0 = v0 = 0 , these reduce to 
+
+m1 = (1 − β1) g1, v1 = (1 − β2) g21 . (17) After bias correction ( ˆm1 = m1/(1 − β1), ˆv1 = v1/(1 − β2)), the parameter update becomes 
+
+θ1 = θ0 − α · ˆm1
+
+√ˆv1 + ϵ = θ0 − α · g1
+
+pg21 + ϵ = θ0 − α · g1
+
+|g1| + ϵ . (18) When |g1| ≫ ϵ (which holds for the vast majority of parameters), this simplifies to 
+
+θ1 ≈ θ0 − α · sign( g1). (19) 16 This “sign-descent” behavior means that the relative contribution of individual tokens to the update is washed out at the first step. SGD preserves the true gradient magnitudes and therefore faithfully reflects the per-token causal effect, making it the appropriate choice for our analysis. 
+
+## E Cancellation Hypothesis 
+
+E.1 Decomposing Updates by Reward Sign: Positive-Only and GRPO 
+
+To isolate how positive rollouts contribute to token-level displacement, we construct a controlled comparison in which the rollout batch is fixed and only the polarity composition of the update is changed. Given a rollout batch B with binary rewards ri ∈ { 0, 1} and group-normalized advantages 
+
+Ai, we instantiate two update variants by reweighting the rollout-level advantage: • Positive-only: A+ 
+
+> i
+
+= Ai · I[ri = 1] 
+
+• GRPO (Joint): use the original Ai.Both variants start from the same saved checkpoint θ0 and operate on the same rollout batch B. This design removes variation from sampling and initialization, so any difference in the resulting token displacement can be attributed to the polarity composition of the update itself. Importantly, after each update, we measure token displacement on the full original batch B rather than on the masked subset used to form the loss. This shared evaluation protocol makes the displacement maps from Positive-only and GRPO directly comparable. The full procedure is summarized in Algorithm 2. 
+
+Algorithm 2 Controlled measurement of token displacement under single-polarity and joint updates. 
+
+Require: Dataset D, current policy πθ , number of rollouts G
+
+Rollout & Scoring  
+
+> 1:
+
+Sample a batch of prompts {q} from D 
+
+> 2:
+
+For each prompt q, sample G responses {oi}Gi=1 ∼ πθ (· | q) 
+
+> 3:
+
+Verify each rollout to obtain reward ri ∈ { 0, 1}; compute group-normalized advantage Ai 
+
+> 4:
+
+Collect rollout batch B = {(q, o i, r i, A i)}
+
+Shared Preparation  
+
+> 5:
+
+Compute ℓold  
+
+> i,t
+
+← log πθ (oi,t | q, o i,<t ) for all tokens in B 
+
+> 6:
+
+Save checkpoint θ0 ← θ
+
+Positive-Only Update  
+
+> 7:
+
+Define A+ 
+
+> i
+
+= Ai · I[ri = 1] for all rollouts  
+
+> 8:
+
+θ+ ← GRPO-U PDATE (θ0, B, {A+ 
+
+> i
+
+}) 
+
+> 9:
+
+∆ log pPOS  
+
+> i,t
+
+← log πθ+ (oi,t | q, o i,<t ) − ℓold   
+
+> i,t measured on full B
+
+GRPO: Joint Update  
+
+> 10:
+
+Load checkpoint θ ← θ0 
+
+> 11:
+
+θ′ ← GRPO-U PDATE (θ0, B, {Ai}) 
+
+> 12:
+
+∆ log pGRPO  
+
+> i,t
+
+← log πθ′ (oi,t | q, o i,<t ) − ℓold   
+
+> i,t measured on full B
+
+E.2 Experiment Details for Value Estimation 
+
+In standard RL, the value function is defined for a state rather than for an action: 
+
+V π (st) = Er | st, π .
+
+A token ot is an action taken at the language-model state st = ( q, o <t ), so it does not have a context-free value by itself. The standard action-related quantity is instead the state-action Q fuction: 
+
+Qπ (st, o t) = Er | st ⊕ ot, π ,
+
+which measures the expected reward after forcing ot and then following policy π.Our analysis focuses on a different quantity: at the same state st, how much better is taking token 
+
+ot than not taking it and instead sampling an alternative token from the policy? We define this 
+
+counterfactual token value as 
+
+∆π (ot | st) = Qπ (st, o t) − Qπ 
+
+> ¬ot
+
+(st),
+
+17 where 
+
+Qπ 
+
+> ¬ot
+
+(st) = Ea∼π(·| st), a ̸=ot Qπ (st, a )
+
+is the expected value of the counterfactual alternatives. Let pt = π(ot | st). The state value mixes the forced-token branch and the alternatives: 
+
+V π (st) = ptQπ (st, o t) + (1 − pt)Qπ 
+
+> ¬ot
+
+(st),
+
+Therefore, 
+
+Qπ (st, o t) − V π (st) = (1 − pt)  Qπ (st, o t) − Qπ 
+
+> ¬ot
+
+(st) ,
+
+and hence 
+
+∆π (ot | st) = Qπ (st, o t) − V π (st)1 − pt
+
+.
+
+Monte Carlo estimation. For each candidate token ot at state st = ( q, o <t ), we estimate the two terms above with Monte Carlo rollouts. We sample M =256 complete continuations from st ⊕ ot and denote the mean reward by avg[0] . We also sample M =256 complete continuations directly from st
+
+and denote the mean reward by avg[ −1] . Since rollouts from st already choose ot with probability 
+
+p(ot), the naive difference avg[0] − avg[ −1] is attenuated by this self-inclusion. We therefore use the estimator 
+
+ˆ∆( ot | st) = avg[0] − avg[ −1] 1 − p(ot) . (20) This estimator measures the reward gain of taking token ot over sampling a counterfactual alternative from the policy. We refer to this quantity as the counterfactual token value, or token value for short. 
+
+Repeated Updates widen value gap We apply repeated GRPO updates on the same fixed batch and track the mean value gap between boosted and suppressed tokens across update steps. As shown in Figure 11, the value gap grows monotonically with the number of updates, indicating that each gradient step further separates high-value boosted tokens from low-value suppressed ones. This accumulation suggests that the hidden credit assignment embedded in cancellation is not a one-step coincidence but a stable structural property of critic-free RL: successive updates consistently surface and amplify the implicit value signal latent in the rollout batch. 0 10 20 30 40 50 
+
+> Gradient Step
+> 0.000
+> 0.002
+> 0.004
+> 0.006
+> 0.008
+> Mean Value Gap
+> early mean = 0.0008
+> late mean = 0.0058
+> 0.0082 (c) Value Gap Increases Under Repeated Updates
+
+Figure 11: Repeated updates on a fixed batch progressively widen the value gap between boosted and suppressed tokens. 18

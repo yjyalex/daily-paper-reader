@@ -1,0 +1,742 @@
+Title: EvoMAS: Learning Execution-Time Workflows for Multi-Agent Systems
+
+URL Source: https://arxiv.org/pdf/2605.08769v1
+
+Published Time: Tue, 12 May 2026 00:53:17 GMT
+
+Number of Pages: 22
+
+Markdown Content:
+# EvoMAS : Learning Execution-Time Workflows for Multi-Agent Systems 
+
+Chengdong Xu ⋆ Kaiqiang Ke ⋆ Ziheng Liu ♢ Jiaqi Wei ♠
+
+Zibo Shao ♡ Weile Guo ⋆ Chao Yu ⋆✉
+
+> ⋆
+
+Sun Yat-Sen University ♠Zhejiang University 
+
+> ♢
+
+ShanghaiTech University 
+
+> ♡
+
+Institute of Automation, Chinese Academy of Sciences 
+
+xuchd6@mail2.sysu.edu.cn 
+
+## Abstract 
+
+Large language model (LLM)-based multi-agent systems have shown strong po-tential on complex tasks through agent specialization, tool use, and collaborative reasoning. However, most automated multi-agent system design methods still follow a one-shot paradigm: a workflow is optimized or selected before execution and then reused unchanged throughout the task. This static coordination strategy is ill-suited for long-horizon tasks whose subgoals, intermediate evidence, and information needs evolve over multiple execution stages. We propose EvoMAS , a framework for execution-time multi-agent workflow construction . EvoMAS for-mulates workflow construction as a meta-level sequential decision problem along a single task trajectory. At each stage, it constructs an explicit task state through a Planner–Evaluator–Updater pipeline and uses a learned Workflow Adapter to instantiate a stage-specific layered workflow from a fixed pool of candidate agents. The adapter is trained with policy gradients using sparse, verifiable terminal task success as the main supervision signal, while evaluator-based process reward is analyzed separately under very-hard sparse-reward settings. Experiments on GAIA, HLE, and DeepResearcher show that EvoMAS outperforms single-agent baselines and recent automated multi-agent workflow design methods. Our analyses further show that explicit task-state construction and learned workflow adaptation provide complementary benefits. Additional results indicate that process reward is most useful when terminal success is extremely sparse, and qualitative case studies illustrate that EvoMAS adapts agent coordination as the task state evolves. 
+
+## 1 Introduction 
+
+Large language model (LLM)-based agents [ 23 , 16 , 9] extend pure language generation with capabil-ities such as tool use [ 34 , 24 , 25 , 20 , 22 , 14 , 27 ], planning [ 30 , 33 ], and contextual reasoning [ 12 ], enabling strong empirical performance across tasks including question answering, data analysis, code generation, and web interaction [ 17 , 18 , 2 , 43 , 5]. Building on single-agent systems, multi-agent frameworks further improve performance through specialization, parallel reasoning, and mutual verification among agents [ 32 , 9, 13 , 6, 3], offering a promising approach for solving complex tasks that exceed the capacity of monolithic prompting or single-pass inference. Early LLM-based multi-agent systems, such as AutoGen [ 32 ], MetaGPT [ 9], and CAMEL [ 13 ], demonstrated the benefits of agent collaboration but relied on manually specified prompts, roles, and communication pipelines [ 29 ]. Subsequent work has sought to automate these design choices, including optimizing prompts, agent profiles, coordination structures, and execution work-flows [ 44 , 39 , 38 , 10 , 35 – 37 , 4 , 1]. Despite these advances, most existing approaches adopt a one-shot  
+
+> ✉Corresponding author. Preprint.
+> arXiv:2605.08769v1 [cs.AI] 9 May 2026
+
+Figure 1: Meta-level MDP formulation of execution-time multi-agent workflow construction. 
+
+A workflow Gt is selected based on the meta-state smt , inducing base-level multi-agent execution and an aggregated outcome ξt. Orange arrows denote meta-level transitions, and blue arrows denote base-level agent execution. 
+
+initialization paradigm: the multi-agent workflow is designed prior to execution and then reused without modification throughout the task [44, 39, 38, 36, 37]. This paradigm becomes increasingly inadequate for complex, multi-step, and long-horizon tasks ,which typically require multiple execution stages with shifting subgoals, intermediate artifacts, and changing information requirements [ 15 , 43 , 21 , 42 , 31 ]. In such settings, relying on a single workflow with a fixed coordination strategy is inherently suboptimal [ 15 , 29 ]. To support execution on such complex tasks, a multi-agent system must make stage-wise coordination decisions during execution, rather than committing to a single workflow upfront. Achieving this paradigm requires addressing two fundamental challenges. 
+
+Challenge 1 (Constructing an Explicit Execution-Time Task State). Long-horizon tasks evolve over multiple execution stages, involving changing subgoals, accumulating intermediate results, and potential failures that require revision or refinement [ 15 , 43 , 5]. To make principled coordination decisions at execution time, a system must maintain an explicit task state that summarizes execution progress and solution quality [ 29 ]. Without such a state representation, workflow decisions lack a concrete basis for adapting to the current execution context. 
+
+Challenge 2 (Adapting Workflows to Evolving Task States). Even with an explicit task state, effective coordination requires the ability to adapt the multi-agent workflow as execution progresses. Different execution stages impose heterogeneous coordination requirements: workflows suited for early exploration may be inefficient or counterproductive during refinement and verification [ 15 , 43 ]. Thus, a system must dynamically construct stage-specific workflows conditioned on the current task state, rather than relying on a single static design [44, 39, 38, 36, 37]. To address these challenges, we propose EvoMAS , a framework for execution-time multi-agent workflow construction that treats workflow selection as a sequential decision-making problem along a single task trajectory. Unlike methods that optimize or instantiate a single workflow before execution, EvoMAS makes workflow decisions during execution, conditioned on the evolving task state. At each execution stage, EvoMAS constructs an explicit task state that summarizes execution progress and quality, and dynamically selects a stage-specific multi-agent workflow conditioned on this state. The workflow construction policy is learned via reinforcement learning, enabling execution-aware adaptation of agent coordination structures rather than static, initialization-time designs. Our contributions are summarized as follows: 
+
+❶ Paradigm Reformulation : We reformulate automated multi-agent workflow construction as a sequential decision-making problem during task execution, moving beyond one-shot, initialization-time designs. 
+
+❷ Execution-Time Framework : We propose EvoMAS, which combines explicit task state construc-tion with a learned, state-conditioned workflow adapter to dynamically reorganize multi-agent workflows during execution. 
+
+❸ Empirical Validation : Through experiments on complex, multi-step, and long-horizon tasks, we compare EvoMAS with single-agent baselines and recent automated multi-agent workflow design 2methods, and provide ablations on task state, workflow learning, reward signals, and backbone capability. 
+
+## 2 Formalization 
+
+We formulate execution-time workflow construction as a meta-level Markov decision process, as illustrated in Figure 1. Let τ denote a task instance and P = {a1, . . . , a N } denote a fixed pool of candidate agents. At each meta-step t, the system maintains a meta-state smt , which summarizes the current task progress, intermediate artifacts, and execution feedback. The system then selects a meta-action amt , which corresponds to a concrete multi-agent workflow 
+
+amt ≡ G t = ( Vt, Et) ∈ W , Vt ⊆ P , (1) where Vt is the selected agent set, Et specifies the information flow, and W denotes the feasible space of layered DAG workflows over the agent pool. In our implementation, Vt is organized into Lt
+
+workflow layers (with Lt ≤ L for a fixed maximum depth), Vt = SLt 
+
+> ℓ=1
+
+V(ℓ) 
+
+> t
+
+, and Et connects agents across consecutive layers. Formally, the meta-level process is defined as 
+
+M = ( Sm, Am, T m, Rm), (2) where Sm is the meta-state space and the meta-action space is the workflow space, i.e., Am ≡ W . A workflow policy selects 
+
+amt ∼ πwf (· | τ, s mt ). (3) Executing the selected workflow Gt induces base-level multi-agent dynamics and produces an aggregated outcome ξt, including agent messages, tool observations, and evaluator feedback. The meta-state transition is then 
+
+smt+1 ∼ T m(· | τ, s mt , a mt , ξ t), (4) and the corresponding meta-level reward is 
+
+rmt = Rm(τ, s mt , a mt , ξ t). (5) In the main experiments, we use sparse terminal task success as the trajectory utility; evaluator-based process reward is analyzed separately in Section 4.4. The objective is to learn a state-conditioned workflow policy that maximizes expected cumulative meta-level reward: 
+
+max  
+
+> θ
+
+Eπwf ,θ 
+
+" TX
+
+> t=1
+
+rmt
+
+#
+
+. (6) 
+
+## 3 EvoMAS 
+
+EvoMAS instantiates the Meta-MDP in Section 2 with three components: task-state construction, state-conditioned workflow construction, and workflow-policy optimization. Given a task τ , EvoMAS proceeds over meta-steps: it constructs a structured task state ˜st and then selects a stage-specific workflow Gt from a fixed candidate agent pool. The workflow policy is learned with reinforcement learning so that coordination adapts as the task state evolves (Figure 2). 
+
+3.1 Task State Construction 
+
+EvoMAS represents the meta-state smt as a structured textual task state ˜st. This state summarizes the current execution progress and serves two purposes: it conditions workflow selection and provides execution-time working context. At each stage, ˜st is constructed by a Planner–Evaluator–Updater pipeline. The Planner maintains the current subtask plan and identifies the active subtask. If the previous execution succeeds, the Planner advances to the next pending subtask; if evidence is missing or execution fails, it may keep the current subtask and attach the failure context for refinement. This supports both task decomposition and iterative correction. 3Figure 2: Overview of EvoMAS. The system alternates between execution-time task state construc-tion and state-conditioned workflow adaptation, enabling multi-agent coordination to evolve along a single task trajectory. The Evaluator assesses the previous execution outcome ξt−1 with respect to the active subtask. It produces stage-level assessment signals such as a success/refinement verdict, confidence, and natural-language feedback, which are part of the aggregated execution record ξt−1. In the main training setting, these signals are used for state construction rather than as direct optimization objectives; evaluator-based process reward is studied separately in Section 4.4. The Updater implements the meta-state transition by integrating the previous task state, the executed workflow, and the aggregated execution record: 
+
+˜st = μ(τ, ˜st−1, Gt−1, ξ t−1). (7) The resulting state contains the overall task objective, the active subtask, completed subtasks with salient intermediate artifacts, and feedback useful for subsequent decisions. EvoMAS uses a compact serialization of ˜st to condition the Workflow Adapter, while the full structured state is provided to agents as execution-time context. Thus, μ implements the meta-level transition T m in Section 2. 
+
+3.2 Execution-Time Workflow Construction 
+
+Given the task state ˜st, EvoMAS constructs a stage-specific multi-agent workflow rather than reusing a fixed workflow throughout the task. The Workflow Adapter operates over a fixed candidate agent pool P = {a1, . . . , a N } and instantiates a layered workflow 
+
+Gt = ( Vt, Et), Vt =
+
+> Lt
+
+[
+
+> ℓ=1
+
+V(ℓ) 
+
+> t
+
+, (8) where V(ℓ) 
+
+> t
+
+⊆ P denotes the agents selected at layer ℓ. Consecutive layers are connected by fully connected bipartite edges: 
+
+Et = {(ai, a j ) | ai ∈ V (ℓ) 
+
+> t
+
+, a j ∈ V (ℓ+1)  
+
+> t
+
+, ℓ = 1 , . . . , L t − 1}. (9) Each downstream agent receives an aggregated message from all agents in the previous layer. The sampling procedure is applied separately at each layer, so the same agent may appear in multiple layers and across different meta-steps. To condition workflow construction on the current execution context, EvoMAS encodes a compact serialization of ˜st into token representations Xt ∈ RM ×d. Each candidate agent ai is represented by an embedding ei ∈ Rd derived from its role, capabilities, and tool interface. At layer ℓ, the Workflow Adapter uses cross-attention between the task-state representation and agent embeddings to produce a layer-specific query vector h(ℓ) 
+
+> t
+
+, scoring agents by 
+
+α(ℓ) 
+
+> t,i
+
+= cos( h(ℓ) 
+
+> t
+
+, ei). (10) 4We convert scores into a categorical distribution and soft-sample with a cumulative probability threshold: 
+
+p(ℓ) 
+
+> t
+
+= softmax 
+
+
+
+α(ℓ) 
+
+> t
+
+/λ 
+
+
+
+, p(ℓ) 
+
+> t,i
+
+= exp( α(ℓ) 
+
+> t,i
+
+/λ )
+
+PNj=1 exp( α(ℓ) 
+
+> t,j
+
+/λ ) , (11) where λ is a temperature parameter. We then sample agents without replacement from p(ℓ) 
+
+> t
+
+until the cumulative probability mass of the selected set reaches a threshold ρ ∈ (0 , 1] . Denoting the resulting random index set by S(ℓ) 
+
+> t
+
+, we define 
+
+V(ℓ) 
+
+> t
+
+= {ai | i ∈ S(ℓ) 
+
+> t
+
+}. (12) Repeating this procedure for ℓ = 1 , . . . , L t yields the workflow Gt executed at meta-step t.
+
+3.3 Workflow Policy Optimization 
+
+EvoMAS optimizes the Workflow Adapter parameters Θ using sparse verifiable terminal reward. For a task τ , execution produces a final answer ˆa(τ ), and the task utility U (τ ) is computed by the benchmark evaluation protocol. We use terminal reward in the main experiments because it is verifiable and avoids directly optimizing against evaluator judgments; evaluator-based process reward is studied separately in Section 4.4. At each meta-step, the Workflow Adapter samples 
+
+Gt ∼ πwf (· | ˜st; Θ) . (13) The workflow log-probability is defined as the log-probability of the sampled agent selections under the workflow policy. Let i(ℓ) 
+
+> t
+
+denote the (ordered) index sequence produced by the layer-ℓ sampling procedure. We define 
+
+log PΘ(Gt | ˜st) = 
+
+> Lt
+
+X
+
+> ℓ=1
+
+log PΘ
+
+
+
+i(ℓ) 
+
+> t
+
+| ˜st
+
+
+
+, (14) where PΘ(i(ℓ) 
+
+> t
+
+| ˜st) is induced by our cumulative-mass soft-sampling rule (Appendix D.1). Although the executed workflow depends only on the selected set V(ℓ) 
+
+> t
+
+, we record the sampled order i(ℓ) 
+
+> t
+
+and use its probability for policy-gradient training. The objective is 
+
+J (Θ) = Eτ ∼Q E{G t}∼ πwf [U (τ )] . (15) We optimize it with REINFORCE: 
+
+∇ΘJ (Θ) ≈ E
+
+" TX
+
+> t=1
+
+U (τ )∇Θ log PΘ(Gt | ˜st)
+
+#
+
+. (16) This trains the adapter to prefer workflows that improve terminal task success under sparse supervi-sion. 
+
+## 4 Experiments 
+
+4.1 Experimental Setup Benchmarks. We evaluate EvoMAS on GAIA, HLE, and DeepResearcher, covering multi-step tool use, knowledge-intensive reasoning, and research-style problem solving. We also use GAIA Level 3 and BrowserComp as very-hard diagnostic settings for analyzing sparse-reward regimes. Unless otherwise specified, results are reported on held-out evaluation splits; detailed sampling and split information is provided in Appendix E. 
+
+Agent Pools and Workflow Configuration. EvoMAS constructs 3-layer workflows from a fixed candidate agent pool. We use two pool sizes: EvoMAS-4 contains I/O, Early-exit, Web-search, and Ensemble agents, while EvoMAS-7 further adds Multi-generate, Self-refine, and Web-browser agents. This comparison isolates whether execution-time workflow adaptation benefits from richer candidate coordination choices. 5Table 1: Main results on multi-step agent benchmarks. EvoMAS uses 3 workflow layers and is trained with sparse terminal reward only. EvoMAS-4 and EvoMAS-7 denote the 4-agent and 7-agent candidate pools, respectively.                                              
+
+> Method GAIA Level1 GAIA Level2 HLE DeepResearcher Average
+> Single-agent baselines
+> GPT-4o-mini 22.2 7.1 10.0 50.0 22.3 GPT-4o 22.2 7.1 30.0 60.0 29.8
+> Automated MAS baselines
+> GPTSwarm 33.3 0.0 20.0 20.0 18.3 AFlow 11.1 7.1 20.0 50.0 22.1 G-Designer 22.2 7.1 50.0 60.0 34.8 MaAS 22.2 7.1 50.0 60.0 34.8
+> Ours
+> EvoMAS-4 55.6 14.2 40.0 70.0 45.0
+> EvoMAS-7 66.7 42.9 60.0 90.0 65.0
+
+Baselines. We compare against two baseline groups. GPT-4o-mini and GPT-4o serve as strong single-agent references. GPTSwarm [ 44 ], AFlow [ 39 ], G-Designer [ 36 ], and MaAS [ 37 ] represent recent automated MAS design methods, making them the most direct comparisons for workflow-level coordination. We focus on these baselines to test whether execution-time, state-conditioned workflow construction improves over static or initialization-time automated MAS designs, while avoiding confounds from hand-crafted, benchmark-specific agent pipelines. 
+
+Training and Evaluation. The main EvoMAS results are trained with sparse terminal reward only, without process reward. Task success rate is used as the primary metric. All methods are evaluated under the same maximum number of execution stages and tool-call budget whenever applicable. Detailed prompts, model identifiers, benchmark splits, and cost-statistics templates are provided in the appendix. 
+
+4.2 Main Results 
+
+Table 1 reports the main results. EvoMAS-7 achieves the best average success rate of 65.0, outper-forming the strongest automated MAS baseline, G-Designer/MaAS, by 30.2 points and the strongest single-agent baseline, GPT-4o, by 35.2 points. The gains are broad rather than benchmark-specific: EvoMAS-7 obtains the best result on all four evaluated benchmarks, including GAIA Level 1, GAIA Level 2, HLE, and DeepResearcher. The comparison between EvoMAS-4 and EvoMAS-7 further shows the effect of candidate-pool richness under the same execution-time workflow adaptation framework. Expanding the pool from 4 to 7 agents improves the average score from 45.0 to 65.0, with especially large gains on GAIA Level 2 (+28.7), HLE (+20.0), and DeepResearcher (+20.0). This suggests that harder and more diverse tasks benefit more from richer execution-time coordination choices. Notably, the automated MAS baselines do not consistently outperform strong single-agent baselines across all benchmarks, suggesting that optimizing or designing a static workflow before execution is insufficient for heterogeneous long-horizon tasks. EvoMAS differs by adapting the workflow at execution time based on the evolving task state, allowing the system to shift between information acquisition, refinement, aggregation, and early termination as needed. 
+
+4.3 Task-State Construction and Workflow Learning Does Execution-Time Task State Matter? We first ask whether explicitly maintaining an 
+
+execution-time task state helps long-horizon performance when coordination is otherwise held fixed. Concretely, we keep the multi-agent workflow identical across conditions and toggle only the Planner–Evaluator–Updater pipeline that serializes plans, outcomes, and evaluator feedback into the next structured state. On GAIA, we use a fixed I/O → Web-search → Ensemble workflow 6(a) Effect of execution-time task state construction under a fixed workflow. 
+
+> (b) Training dynamics of the Workflow Adapter on GAIA.
+
+Figure 3: Task-state construction and workflow learning. (a) Explicit execution-time task-state construction improves success rates under fixed workflows across GAIA and HLE. (b) The Workflow Adapter learns steadily from sparse terminal reward on GAIA Level 1 and Level 2. 
+
+Figure 4: Effect of process reward across task difficulty. For standard GAIA tasks, bar height reports validation success rate. For very-hard tasks, bar height reports the best number of correct held-out validation tasks out of four; BT denotes the first training step with non-zero validation success. PRM is used in both training and inference. instantiated with GPT-4.1 agents. On HLE, we use a fixed Multi-generate-CoT → Ensemble 
+
+reasoning chain and repeat the comparison under GPT-4o and Gemini-2.5-Pro to test backbone robustness. Figure 3a shows that enabling task-state construction consistently improves success rates on both benchmarks while leaving routing and agent roles unchanged. On GAIA, gains tend to be more pronounced on harder levels in the plotted split, which aligns with the intuition that longer tasks benefit more from structured bookkeeping of intermediate artifacts, partial failures, and subgoal revisions. On HLE, absolute accuracies remain challenging, but the lift from task-state tracking is consistent across the two backbones, indicating that the effect is not an artifact of a single model family. Overall, these results isolate state construction as a standalone ingredient: EvoMAS improves not only from learned workflow selection, but also from reliable execution-time state tracking. 
+
+Can the Workflow Adapter Learn from Sparse Terminal Reward? We next ask whether the Workflow Adapter can be optimized when supervision is restricted to sparse, task-level terminal feedback. We keep the 7-agent candidate pool and a 3-layer workflow template fixed, and train only the adapter parameters with the REINFORCE-style objective described in Section 3.3; agent scoring follows the cross-attention mechanism in Section 3.2. Figure 3b tracks held-out validation success on GAIA Level 1 and Level 2 using GPT-4o-mini as the shared backbone. Validation accuracy rises steadily on Level 1 and also improves on Level 2 throughout training, suggesting that terminal successes assign useful credit to stage-wise workflow choices and that the learned policy transfers beyond the easiest level used for early optimization. Taken together, the curve supports using verifiable terminal reward as the default training signal on moderate-difficulty regimes: even without dense process supervision, the adapter learns a non-trivial state-conditioned workflow policy rather than oscillating near initialization. 
+
+4.4 Additional Analyses When Is Process Reward Necessary? We next study the role of evaluator-based process reward (PRM). The main experiments use verifiable terminal reward only, since it is less dependent on evaluator judgments. However, in very-hard settings, terminal reward can be too sparse: if all sampled trajectories in a batch fail, policy-gradient updates receive no positive learning signal. 7Figure 5: Workflow Adapter behavior under different execution-time task states. For the same agent pool, the adapter assigns different layer-wise selection probabilities and instantiates different workflows as the task state evolves. Figure 4 shows that PRM is not universally required, but becomes useful under sparse-reward regimes. On standard GAIA tasks, PRM leaves GAIA Level 1 unchanged and improves GAIA Level 2 from 14.2 to 28.6. On very-hard tasks, PRM enables the first non-zero validation breakthrough on GAIA Level 3 and BrowserComp, while terminal-only training remains in the zero-success regime. Thus, PRM is best viewed as a credit-assignment aid for extremely sparse terminal-reward settings rather than as the default training signal. 
+
+Sensitivity to Backbone Capability. We also test whether stronger Planner, Evaluator, and execution agents improve EvoMAS while keeping the same workflow-adaptation framework. Replacing GPT-4o-mini with GPT-4o improves GAIA Level 1 by 22.2 points and GAIA Level 2 by 7.2 points. This suggests that EvoMAS is not tied to a specific lightweight backbone; under the same workflow-adaptation framework, stronger underlying models can further improve execution-time coordination. Table 2: Backbone sensitivity on GAIA benchmarks.         
+
+> Backbone L1 L2 GPT-4o-mini 55.6 14.2 GPT-4o 77.8 21.4
+> ∆+22.2 +7.2
+
+Overall, these analyses suggest that EvoMAS has different training-signal requirements across diffi-culty regimes. Sparse terminal reward is sufficient for standard GAIA tasks, while evaluator-based process reward becomes useful when terminal success is too rare to provide learning signal. Mean-while, stronger backbones further improve performance, indicating that EvoMAS is complementary to improvements in the underlying LLMs. 
+
+4.5 Case Study: Workflow Adaptation Across Task States State-dependent workflow choices. We first visualize what the Workflow Adapter learns across different execution-time task states. Figure 5 shows the layer-wise selection probabilities under four task states from the same trajectory. The candidate agent pool remains fixed, while each ring denotes a workflow layer and each colored sector denotes an agent type. As the task progresses, the adapter shifts probability mass toward different agents: early states emphasize information acquisition and exploration, verification states increase the preference for Web-search and Ensemble agents, and the final state assigns high probability to Early-exit once sufficient evidence has been accumulated. 8Figure 6: End-to-end execution trace of EvoMAS on a GAIA task. EvoMAS updates the task state across execution stages and constructs stage-specific workflows conditioned on the evolving state. 
+
+End-to-end execution trace. Figure 6 further illustrates how task-state construction and workflow adaptation interact during execution. On a GAIA task about computing how long it would take Eliud Kipchoge to run the closest Earth–Moon distance at his marathon pace, EvoMAS decomposes the task into subtasks, executes a stage-specific workflow, evaluates the intermediate result, and updates the task state. The updated state then conditions the next workflow, enabling EvoMAS to switch from retrieving Kipchoge’s pace, to finding the Earth–Moon perigee distance, to computing the final answer. This case shows that EvoMAS adapts coordination structures throughout the task rather than applying a single static workflow. 
+
+## 5 Related Work 
+
+LLM-Agents and Agentic Systems. Recent work has explored equipping large language models with tools, memory, and iterative reasoning mechanisms to build autonomous agents capable of closed-loop task execution [ 34 , 24 – 26 , 19 , 28 ]. Beyond single-agent settings, multi-agent systems (MAS) further improve performance through role specialization, debate or critique mechanisms, and structured coordination, as demonstrated in frameworks such as AutoGen, LLM-Debate, and AgentVerse [ 32 , 6 , 3]. While these agentic systems substantially extend the capabilities of individ-ual models, their coordination structures and interaction patterns are typically manually specified, resulting in fixed agent roles and static workflows [ 32 , 9 , 13 , 29 ]. Such hand-crafted designs limit the flexibility of agentic systems when applied to complex tasks requiring sustained interaction and iterative refinement. 
+
+Automating Multi-Agent Systems. Recent work has sought to automate the design of multi-agent systems by reducing manual specification of prompts, roles, and coordination structures. Representative approaches include prompt and module optimization, automated role or profile construction, and learning or searching over inter-agent communication patterns and workflows [ 7,11 , 8, 35 , 38 , 44 , 39 , 41 , 36 , 37 , 40 , 10 ]. These methods demonstrate that automated system design can outperform hand-crafted agent configurations on a range of tasks [44, 39, 36, 38, 37]. However, most existing approaches still follow a one-shot paradigm, optimizing a single agentic system or workflow prior to execution and reusing it unchanged throughout the task, resulting in static workflows without execution-time adaptation [44, 39, 36–38]. 
+
+## 6 Conclusion 
+
+This paper introduces EvoMAS, a framework for execution-time multi-agent workflow construction that combines structured task-state tracking with state-conditioned layered workflow adaptation. On GAIA, HLE, and DeepResearcher, EvoMAS outperforms strong single-agent baselines and recent automated MAS methods. Our analyses show complementary gains from explicit task-state construction and learned workflow adaptation, and identify when process reward and stronger backbones are most useful. EvoMAS still assumes a fixed candidate pool and maximum workflow depth. Scaling to larger pools, open-ended agent creation, runtime depth adaptation, and richer credit assignment remain important future directions. 9References 
+
+[1] Amulya Bhattaram, Janani Ramamoorthy, Ranit Gupta, Diana Marculescu, and Dimitrios Stamoulis. Automated multi-agent workflows for rtl design. arXiv preprint arXiv:2509.20182 ,2025. [2] Mark Chen, Jerry Tworek, Heewoo Jun, Qiming Yuan, Henrique Ponde de Oliveira Pinto, Jared Kaplan, Harri Edwards, Yuri Burda, Nicholas Joseph, Greg Brockman, et al. Evaluating large language models trained on code. arXiv preprint arXiv:2107.03374 , 2021. [3] Weize Chen, Yusheng Su, Jingwei Zuo, Cheng Yang, Chenfei Yuan, Chen Qian, Chi-Min Chan, Yujia Qin, Yaxi Lu, Ruobing Xie, Zhiyuan Liu, Maosong Sun, and Jie Zhou. Agentverse: Facilitating multi-agent collaboration and exploring emergent behaviors in agents, 2023. [4] Yufan Dang, Chen Qian, Xueheng Luo, Jingru Fan, Zihao Xie, Ruijie Shi, Weize Chen, Cheng Yang, Xiaoyin Che, Ye Tian, Xuantang Xiong, Lei Han, Zhiyuan Liu, and Maosong Sun. Multi-agent collaboration via evolving orchestration. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. URL https://openreview.net/forum?id= L0xZPXT3le .[5] Xiang Deng, Yu Gu, Boyuan Zheng, Shijie Chen, Samuel Stevens, Boshi Wang, Huan Sun, and Yu Su. Mind2web: Towards a generalist agent for the web. In Advances in Neural Information Processing Systems (NeurIPS), Datasets and Benchmarks Track , 2023. [6] Yilun Du, Shuang Li, Antonio Torralba, Joshua B. Tenenbaum, and Igor Mordatch. Improving factuality and reasoning in language models through multiagent debate. CoRR , abs/2305.14325, 2023. [7] Chrisantha Fernando, Dylan Banarse, Henryk Michalewski, Simon Osindero, and Tim Rock-täschel. Promptbreeder: Self-referential self-improvement via prompt evolution. arXiv preprint arXiv:2309.16797 , 2023. [8] Qingyan Guo, Rui Wang, Junliang Guo, Bei Li, Kaitao Song, Xu Tan, Guoqing Liu, Jiang Bian, and Yujiu Yang. Connecting large language models with evolutionary algorithms yields powerful prompt optimizers. arXiv preprint arXiv:2309.08532 , 2023. [9] Sirui Hong, Mingchen Zhuge, Jiaqi Chen, Xiawu Zheng, Yuheng Cheng, Ceyao Zhang, Jinlin Wang, Zili Wang, Steven Ka Shing Yau, Zijuan Lin, Liyang Zhou, Chenyu Ran, Lingfeng Xiao, Chenglin Wu, and Jürgen Schmidhuber. Metagpt: Meta programming for a multi-agent collaborative framework, 2024. [10] Yue Hu, Yuzhu Cai, Yaxin Du, Xinyu Zhu, Xiangrui Liu, Zijie Yu, Yuchen Hou, Shuo Tang, and Siheng Chen. Self-evolving multi-agent collaboration networks for software development. 
+
+arXiv preprint arXiv:2410.16946 , 2024. [11] Omar Khattab, Arnav Singhvi, Paridhi Maheshwari, Zhiyuan Zhang, Keshav Santhanam, Sri Vardhamanan, Saiful Haq, Ashutosh Sharma, Thomas T Joshi, Hanna Moazam, et al. Dspy: Compiling declarative language model calls into self-improving pipelines. arXiv preprint arXiv:2310.03714 , 2023. [12] Takeshi Kojima, Shixiang (Shane) Gu, Machel Reid, Yutaka Matsuo, and Yusuke Iwasawa. Large language models are zero-shot reasoners. In Advances in Neural Information Processing Systems (NeurIPS) , 2022. [13] Guohao Li, Hasan Hammoud, Hani Itani, Dmitrii Khizbullin, and Bernard Ghanem. CAMEL: communicative agents for "mind" exploration of large language model society. In NeurIPS ,2023. [14] Minghao Li, Yingxiu Zhao, Bowen Yu, Feifan Song, Hangyu Li, Haiyang Yu, Zhoujun Li, Fei Huang, and Yongbin Li. API-bank: A comprehensive benchmark for tool-augmented LLMs. In Houda Bouamor, Juan Pino, and Kalika Bali, editors, Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing , pages 3102–3116, Singapore, December 2023. Association for Computational Linguistics. doi: 10.18653/v1/2023.emnlp-main.187. URL https://aclanthology.org/2023.emnlp-main.187/ .10 [15] Grégoire Mialon, Clémentine Fourrier, Craig Swift, Thomas Wolf, Yann LeCun, and Thomas Scialom. Gaia: a benchmark for general ai assistants. arXiv preprint arXiv:2311.12983 , 2023. [16] Yohei Nakajima. Babyagi. https://github.com/yoheinakajima/babyagi , 2023. [17] Reiichiro Nakano, Anya Hilgard, Suchir Krishna, Miles Song, Nathan Lambert, Ryan Carroll, John Liu, Niharika Madhusudhan, Daniel Bishop, Yujia Weng, Eric Zelikman, Maxwell Nye, Long Ouyang Zhou, Jong Huang, Claire Kure, and John Schulman. WebGPT: Browser-assisted question-answering with human feedback. arXiv preprint arXiv:2112.09332 , 2021. [18] OpenAI. Gpt-4 technical report, 2023. [19] Charles Packer, Sarah Wooders, Kevin Lin, Vivian Fang, Shishir G Patil, Ion Stoica, and Joseph E Gonzalez. Memgpt: Towards llms as operating systems. arXiv preprint arXiv:2310.08560 , 2023. [20] Shishir G. Patil, Tianjun Zhang, Xin Wang, and Joseph E. Gonzalez. Gorilla: Large language model connected with massive APIs. arXiv preprint arXiv:2305.15334 , 2023. [21] Long Phan et al. Humanity’s last exam. arXiv preprint arXiv:2501.14249 , 2025. [22] Yujia Qin, Shihao Liang, Yining Ye, Kunlun Zhu, Lan Yan, Yaxi Lu, Yankai Lin, Xin Cong, Xiangru Tang, Bill Qian, Sihan Zhao, Lauren Hong, Runchu Tian, Ruobing Xie, Jie Zhou, Mark Gerstein, Dahai Li, Zhiyuan Liu, and Maosong Sun. ToolLLM: Facilitating large language models to master 16000+ real-world APIs. arXiv preprint arXiv:2307.16789 , 2023. [23] Toran Bruce Richards and et al. Auto-gpt: An autonomous gpt-4 experiment. https:// github.com/Significant-Gravitas/Auto-GPT , 2023. [24] Timo Schick, Jane Dwivedi-Yu, Roberto Dessì, Roberta Raileanu, Maria Lomeli, Eric Hambro, Luke Zettlemoyer, Nicola Cancedda, and Thomas Scialom. Toolformer: Language models can teach themselves to use tools. Advances in Neural Information Processing Systems , 36, 2023. [25] Yongliang Shen, Kaitao Song, Xu Tan, Dongsheng Li, Weiming Lu, and Yueting Zhuang. Hugginggpt: Solving ai tasks with chatgpt and its friends in hugging face. Advances in Neural Information Processing Systems , 36, 2023. [26] Noah Shinn, Beck Labash, and Ashwin Gopinath. Reflexion: an autonomous agent with dynamic memory and self-reflection. arXiv preprint , abs/2303.11366, 2023. doi: 10.48550/ arXiv.2303.11366. URL https://doi.org/10.48550/arXiv.2303.11366 .[27] Yifan Song, Weimin Xiong, Dawei Zhu, Wenhao Wu, Han Qian, Mingbo Song, Hailiang Huang, Cheng Li, Ke Wang, Rong Yao, Ye Tian, and Sujian Li. RESTGPT: Connecting large language models with real-world applications via RESTful APIs. arXiv preprint arXiv:2306.06624 , 2023. [28] Guanzhi Wang, Yuqi Xie, Yunfan Jiang, Ajay Mandlekar, Chaowei Xiao, Yuke Zhu, Linxi Fan, and Anima Anandkumar. Voyager: An Open-Ended Embodied Agent with Large Language Models. arXiv e-prints , art. arXiv:2305.16291, May 2023. [29] Lei Wang, Chen Ma, Xueyang Feng, Zeyu Zhang, Hao Yang, Jingsen Zhang, Zhiyuan Chen, Jiakai Tang, Xu Chen, Yankai Lin, Wayne Xin Zhao, Zhewei Wei, and Ji-Rong Wen. A survey on large language model based autonomous agents. arXiv preprint arXiv:2308.11432 , 2023. [30] Lei Wang, Chen Ma, Xueyang Feng, Zeyu Zhang, Hao Yang, Jingsen Zhang, Jiakai Tang, Xu Chen, Wayne Xin Zhao, and Ji-Rong Wen. Plan-and-solve prompting: Improving zero-shot chain-of-thought reasoning by large language models. In Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (ACL) , 2023. [31] Jason Wei, Zhiqing Sun, Spencer Papay, Scott McKinney, Jeffrey Han, Isabella Ful-ford, Hyung Won Chung, Alexandre Tachard Passos, William Fedus, and Amelia Glaese. BrowseComp: A simple yet challenging benchmark for browsing agents. arXiv preprint arXiv:2504.12516 , 2025. URL https://arxiv.org/abs/2504.12516 .11 [32] Qingyun Wu, Gagan Bansal, Jieyu Zhang, Yiran Wu, Shaokun Zhang, Erkang Zhu, Beibin Li, Li Jiang, Xiaoyun Zhang, and Chi Wang. Autogen: Enabling next-gen llm applications via multi-agent conversation framework, August 01, 2023 2023. [33] Shunyu Yao, Dian Yu, Jeffrey Zhao, Izhak Shafran, Thomas L. Griffiths, Yuan Cao, and Karthik Narasimhan. Tree of thoughts: Deliberate problem solving with large language models, May 01, 2023 2023. [34] Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak Shafran, Karthik R Narasimhan, and Yuan Cao. React: Synergizing reasoning and acting in language models. In The Eleventh International Conference on Learning Representations , 2023. [35] Siyu Yuan, Kaitao Song, Jiangjie Chen, Xu Tan, Dongsheng Li, and Deqing Yang. Evoa-gent: Towards automatic multi-agent generation via evolutionary algorithms. arXiv preprint arXiv:2406.14228 , 2024. [36] Guibin Zhang, Yanwei Yue, Xiangguo Sun, Guancheng Wan, Miao Yu, Junfeng Fang, Kun Wang, Tianlong Chen, and Dawei Cheng. G-designer: Architecting multi-agent communication topologies via graph neural networks. arXiv preprint arXiv:2410.11782 , 2024. [37] Guibin Zhang, Luyang Niu, Junfeng Fang, Kun Wang, Lei Bai, and Xiang Wang. Multi-agent architecture search via agentic supernet. arXiv preprint arXiv:2502.04180 , 2025. [38] Guibin Zhang, Yanwei Yue, Zhixun Li, Sukwon Yun, Guancheng Wan, Kun Wang, Dawei Cheng, Jeffrey Xu Yu, and Tianlong Chen. Cut the crap: An economical communication pipeline for LLM-based multi-agent systems. In The Thirteenth International Conference on Learning Representations , 2025. URL https://openreview.net/forum?id=LkzuPorQ5L .[39] Jiayi Zhang, Jinyu Xiang, Zhaoyang Yu, Fengwei Teng, Xionghui Chen, Jiaqi Chen, Mingchen Zhuge, Xin Cheng, Sirui Hong, Jinlin Wang, et al. Aflow: Automating agentic workflow generation. arXiv preprint arXiv:2410.10762 , 2024. [40] Yaolun Zhang, Xiaogeng Liu, and Chaowei Xiao. Metaagent: Automatically constructing multi-agent systems based on finite state machines. arXiv preprint arXiv:2507.22606 , 2025. [41] Mingming Zhao, Xiaokang Wei, Yuanqi Shao, Kaiwen Zhou, Lin Yang, Siwei Rao, Junhui Zhan, and Zhitang Chen. a2f low : Automating agentic workflow generation via self-adaptive abstraction operators. arXiv preprint arXiv:2511.20693 , 2025. [42] Yuxiang Zheng, Dayuan Fu, Xiangkun Hu, Xiaojie Cai, Lyumanshan Ye, Pengrui Lu, and Pengfei Liu. DeepResearcher: Scaling deep research via reinforcement learning in real-world environments. In Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing , 2025. URL https://aclanthology.org/2025.emnlp-main.22/ .[43] Shuyan Zhou, Frank F. Xu, Hao Zhu, Xuhui Zhou, Robert Lo, Abishek Sridhar, Xianyi Cheng, Tianyue Ou, Yonatan Bisk, Daniel Fried, Uri Alon, and Graham Neubig. Webarena: A realistic web environment for building autonomous agents. In International Conference on Learning Representations (ICLR) , 2024. [44] Mingchen Zhuge, Wenyi Wang, Louis Kirsch, Francesco Faccio, Dmitrii Khizbullin, and Jürgen Schmidhuber. Gptswarm: Language agents as optimizable graphs. In Forty-first International Conference on Machine Learning , 2024. 
+
+## A Algorithmic Summary of EvoMAS 
+
+This section provides a high-level pseudocode description of EvoMAS, summarizing the interaction between execution-time task-state construction, state-conditioned workflow adaptation, and policy optimization. Algorithm 1 corresponds to the meta-level formulation in Section 2 and the method description in Section 3. During training, the terminal utility is used as the trajectory-level return. The policy-gradient update is 
+
+∇ΘJ (Θ) ≈ U (τ ) X
+
+> (˜ s, G)∈D
+
+∇Θ log PΘ(G | ˜s). (17) 12 Algorithm 1 EvoMAS: Execution-Time Workflow Construction and Learning 
+
+Require: Task instance τ ; fixed agent pool P; workflow policy πwf (· | ˜s; Θ) ; maximum meta-steps T
+
+Ensure: Final answer ˆa(τ ); updated policy parameters Θ if training  
+
+> 1:
+
+Initialize structured task state ˜s0 from τ ▷ initial plan and active subtask 2: Initialize trajectory buffer D ← ∅ ▷ stores sampled decisions 3: for t = 1 to T do  
+
+> 4:
+
+// Construct a stage-specific workflow  
+
+> 5:
+
+Sample workflow Gt ∼ πwf (· | ˜st−1; Θ) ▷ state-conditioned adaptation 6: Store (˜ st−1, Gt) in D ▷ for policy-gradient update 7: // Execute the workflow  
+
+> 8:
+
+Execute Gt conditioned on ˜st−1 
+
+> 9:
+
+Obtain aggregated execution record ξt ▷ outcomes, messages, tool observations, artifacts 10: // Evaluate and update the task state  
+
+> 11:
+
+et ← Evaluator( τ, ˜st−1, ξ t) ▷ verdict, confidence, feedback 12: ξt ← (ξt, e t) ▷ include assessment signals in ξt 
+
+> 13:
+
+˜st ← μ(τ, ˜st−1, Gt, ξ t) ▷ Planner–Evaluator–Updater transition 14: if task is completed or Early-exit is selected then  
+
+> 15:
+
+break  
+
+> 16:
+
+end if  
+
+> 17:
+
+end for  
+
+> 18:
+
+Extract final answer ˆa(τ ) from ˜st and/or ξt 
+
+> 19:
+
+if training then  
+
+> 20:
+
+Compute terminal utility U (τ ) using the benchmark evaluator ▷ verifiable terminal reward 21: Update Θ using REINFORCE with trajectory buffer D ▷ trajectory-level return 22: end if  
+
+> 23:
+
+return ˆa(τ )
+
+## B Task State Construction Details 
+
+B.1 Planner Details 
+
+The Planner maintains an ordered subtask plan 
+
+Pτ = ⟨u1, . . . , u H ⟩, (18) where each subtask uh is associated with a status 
+
+σ(uh) ∈ { pending , completed , failed }. (19) At each meta-step, the Planner updates the active subtask according to the previous execution outcome and evaluator feedback. If the active subtask is successfully solved, it is marked as completed and the next pending subtask becomes active. If execution fails or evidence is insufficient, the Planner may keep the same subtask and attach failure context for refinement. When repeated failures or unexpected constraints are observed, the Planner may revise the subtask plan by adding, removing, or reordering subtasks. 
+
+B.2 Evaluator Details 
+
+Given the previous task state ˜st−1 and execution outcome ξt−1, the Evaluator produces a structured assessment 
+
+et−1 = (verdict t−1, c t−1, f t−1), (20) where verdict t−1 ∈ { success , fail , refine } indicates whether the active subtask is solved, failed, or requires further refinement, ct−1 ∈ [0 , 1] is a confidence score, and ft−1 is natural-language feedback describing detected issues, missing evidence, or suggested corrections. These signals are used by the Updater to construct the next task state, and are included in the aggregated execution record ξt−1 in the Meta-MDP notation. 
+
+B.3 Updater and State Serialization 
+
+The Updater implements the meta-level transition by integrating the previous task state, the execution outcome, and evaluator feedback. The serialized task state contains the following fields: • overall task objective; 13 • current active subtask; • completed subtasks and their intermediate artifacts; • evaluator verdict, confidence, and feedback; • failure or refinement context when available; • compact execution history relevant to future workflow decisions. This serialization is used in two ways. A compact version centered on the active subtask is used to condition the Workflow Adapter, while the full structured state is injected into instantiated agents as execution-time working context. 
+
+## C Prompt Templates 
+
+Implementation mapping. In our implementation, the Planner is realized by the PlanningAgent together with the planning tool, the Evaluator is implemented by the JudgeAgent, and the Updater is implemented as deterministic state aggregation and serialization logic inside the executor tool. Thus, the Updater in the paper denotes the state-construction module that integrates the plan state, execution outcome, and evaluator feedback, rather than a separate LLM agent. 
+
+C.1 Planner Prompt 
+
+The Planner updates the subtask plan based on the previous task state, the latest execution out-come, and evaluator feedback. In the implementation, this role is realized by the PlanningAgent (plan_agent/prompts/planning_agent.yaml ) and the planning tool ( tools/planning.py ). The following template summarizes the prompt protocol used by the Planner: 
+
+Prompt 1. P LANNER template for execution-time subtask planning. 
+
+> You are the Planner in an execution-time multi-agent system. Your job is to update the subtask plan based on the previous task state, the latest execution outcome, and the evaluator feedback. [INPUT] Overall task: {{overall_task}} Previous task state: {{prev_task_state}} Latest execution outcome: {{execution_outcome}} Evaluator assessment: {{evaluator_feedback}} [OUTPUT] 1) Updated subtask list with status tags: [TODO / DONE / FAILED / NEED-REFINE] 2) Next active subtask: one sentence 3) Updated completed-subtasks summary: concise and reusable in later stages [RULES] - Mark a subtask DONE only when evaluator feedback indicates success. - If execution failed or evidence is missing, propose a repair/refinement subtask. - Keep the plan minimal and focused on the next execution stage.
+
+C.2 Evaluator Prompt 
+
+The Evaluator is implemented as a tool-augmented JudgeAgent that verifies whether the current active subtask has been successfully completed. Our implementation (judge_agent/prompts/judge_agent.yaml ) equips the Evaluator with powerful verification tools including deep research capabilities and systematic analysis tools, enabling it to conduct thorough validation beyond simple pattern matching. The JudgeAgent has access to: • final_judge_answer_tool : Returns structured feedback and binary reward • deep_researcher_tool : Conducts extensive web searches for fact verification 14 • deep_analyzer_tool : Performs systematic, step-by-step analysis This tool-augmented design allows the Evaluator to actively verify claims, cross-check facts, and perform deep analysis when assessing execution outcomes, rather than relying solely on surface-level heuristics. The final output includes natural-language feedback and a binary reward. For consistency with the paper-level abstraction, we map reward 1 to a successful verdict and reward 0 to a failed or refinement-needed verdict, depending on the feedback. 
+
+Prompt 2. E VALUATOR template for step verification. 
+
+You are the Evaluator. Determine whether the CURRENT subtask is completed given the execution outcome. You have access to powerful verification tools: - deep_researcher_tool: conduct web searches to verify facts and claims - deep_analyzer_tool: perform systematic analysis to validate reasoning and completeness - final_judge_answer_tool: provide structured feedback and binary reward [INPUT] Overall task: {{overall_task}} Current active subtask: {{current_step_description}} Execution outcome: {{execution_result}} [OUTPUT] Use final_judge_answer_tool to provide: - feedback: detailed diagnosis of what was accomplished, what is missing, or what is incorrect - reward: binary score (0 for failure, 1 for success) [RULES] - Evaluate ONLY the current active subtask, not the entire overall task. - Use verification tools actively when claims need fact-checking or when reasoning needs validation. - If the outcome is partially correct but incomplete, provide reward=0 with constructive feedback. - If the outcome sufficiently solves the current subtask, provide reward=1. 
+
+C.3 Updater State Serialization 
+
+The Updater integrates the plan state, evaluator assessment, execution outcome, and compact execu-tion history into the next structured task state. In the implementation, this step is performed by deter-ministic aggregation and serialization logic inside the executor tool ( tools/executor_tool.py )rather than by a separate LLM agent. 
+
+Prompt 3. U PDATER state-serialization template. 
+
+You are the Updater. Integrate planning state, evaluator assessment, and execution outcome into the next structured task state. [INPUT] Plan state: {{plan_state}} Evaluator assessment: {{evaluator_assessment}} Execution outcome: {{execution_outcome}} Compact execution history: {{history}} [OUTPUT: STRUCTURED TASK STATE] - overall_objective: ... - active_subtask: ... - completed_subtasks: bullet list with key artifacts/results - issues_and_feedback: ... - next_stage_hint: what information, tools, or agents may be needed next [RULES] - Preserve useful intermediate artifacts. - Keep the state compact enough for workflow selection. - Include failure or refinement context when evaluator feedback indicates it. 
+
+15 Table 3: Core candidate-agent prompt template paths. 
+
+Agent Role Implementation prompt file 
+
+I/O Direct solving atomic_agents/io_agent/prompts/io_agent.yaml 
+
+Multi-generate Diverse generation 
+
+atomic_agents/multi_generate_agent/prompts/multi_ generate_agent.yaml 
+
+Self-refine Refinement atomic_agents/self_refine_agent/prompts/self_refine_ agent.yaml 
+
+Web-search Web retrieval atomic_agents/web_search_agent/prompts/web_search_ agent.yaml 
+
+Web-browser Web browsing atomic_agents/web_browser_agent/prompts/web_browser_ agent.yaml 
+
+Early-exit Termination atomic_agents/early_exit_agent/prompts/early_exit_ agent.yaml 
+
+Ensemble Aggregation atomic_agents/sc_ensemble_agent/prompts/sc_ensemble_ agent.yaml 
+
+C.4 Candidate Agent Prompt Templates 
+
+For readability, we present lightly normalized prompt templates that preserve the role, input fields, and output constraints used in the implementation. Table 3 lists the core prompt files for the candidate agents in our pools. Paths follow the released codebase layout ( atomic_agents/ is the implementation module name); agent names match the main text. The implementation also includes auxiliary agents for query generation, file reading, code execution, and generic tool use. These are implementation helpers and are not part of the default 4-agent or 7-agent pools reported in the main experiments. 
+
+C.4.1 I/O Agent 
+
+The I/O agent directly solves the current subtask using internal knowledge. 
+
+I/O Agent prompt template. 
+
+> You are a knowledge-based assistant that answers questions using your internal knowledge. [TASK] {{problem}} [INSTRUCTION] Please answer this question using your internal knowledge. You may use the provided task context if helpful. At the end of your response, you must add a clarification statement indicating that the answer comes from the model’s internal knowledge base.
+
+C.4.2 Multi-generate Agent 
+
+The Multi-generate agent produces diverse candidate solutions for the current task. 
+
+Multi-generate Agent prompt template. 
+
+> You are a knowledge-based assistant that answers questions using your internal knowledge. [TASK] {{task}} [INSTRUCTION] Please answer this question using your internal knowledge. You may refer to the solution above if helpful.
+
+16 Important Guidelines: - If the current task contains explicit keywords related to "verification" or "validation", you should compare all possible answers to verify whether previous answers are correct - do not blindly trust the answers 
+
+C.4.3 Self-refine Agent 
+
+The Self-refine agent analyzes solutions against task requirements, identifies errors, and provides refined versions. 
+
+Self-refine Agent prompt template. 
+
+You are a solution refinement assistant. Your role is to analyze solutions against the given task, identify errors and missing details, and provide a corrected and improved version. [PROBLEM] {{problem}} [CURRENT SOLUTION] {{solution}} [INSTRUCTION] Your Process: 1. Analyze: Carefully examine the current solution in the context of the task requirements. 2. Evaluate: Identify factual errors, missing information, incomplete aspects, logical inconsistencies. 3. Refine: Correct all identified errors and supplement missing details. Important Guidelines: - If the task has multiple possible solutions, carefully evaluate whether the provided current solution is correct - do not blindly trust it - Base your analysis strictly on the task requirements - Correct factual errors and logical mistakes - Add missing details necessary to fully answer the task 
+
+C.4.4 Web-search Agent 
+
+The Web-search agent searches the web for relevant information and provides answers with source citations. 
+
+Web-search Agent prompt template. 
+
+You are a web search specialist assistant. Your role is to answer questions by searching the web for relevant information, then providing clear and accurate answers. You have access to web_searcher_tool to search for information relevant to the task. Once you have enough information, use final_answer_tool to provide your answer. [TASK] Search the web to find information and answer the following question: {{task}} [RULES] 1. ALWAYS call a tool - use web_searcher_tool to search or final_answer_tool to answer 2. Use clear and specific search queries to get relevant results 3. Never repeat the same search query 4. Always provide your final answer using final_answer_tool 5. Include source URLs in your final answer - add 
+
+17 a "Sources:" section with URLs from the search results you used 
+
+C.4.5 Web-browser Agent 
+
+The Web-browser agent interacts with web pages, extracts information, and answers questions by browsing websites. 
+
+Web-browser Agent prompt template. 
+
+You are a web browser automation specialist assistant. Your role is to interact with web pages, extract information, and answer questions by browsing websites and performing various browser actions. You have access to custom_browser_tool to interact with web pages - navigate to URLs, click elements, input text, scroll, extract content, etc. [TASK] Browse the web and interact with web pages to answer the following question: {{task}} [RULES] 1. ALWAYS call a tool - use custom_browser_tool to browse and interact with web pages or final_answer_tool to answer 2. Navigate to relevant websites first, then browse and interact with web pages or final_answer_tool to answer 2. Navigate to relevant websites first, then interact with elements (click, input, scroll) as needed 3. Use extract_content action to get specific information from the current page 4. Always provide your final answer using final_answer_tool 5. Include source URLs in your final answer - add a "Sources:" section with URLs from the web pages you visited 
+
+C.4.6 Early-exit Agent 
+
+The Early-exit agent serves as a signal to terminate the multi-layer agent coordination process early. 
+
+Early-exit Agent prompt template. 
+
+You are an early exit signal agent. When selected by the Coordinator, you indicate that the current task execution should stop immediately. This agent is used as a signal to terminate the multi-layer agent coordination process early. You do not need to perform any actual task execution. 
+
+C.4.7 Ensemble Agent 
+
+The Ensemble agent evaluates multiple solutions and identifies the most consistent answer across them. 
+
+Ensemble Agent prompt template. 
+
+You are a solution evaluation specialist. Your role is to carefully evaluate multiple solutions for the CURRENT TASK (not the overall task) and identify the answer that appears most frequently across them. This consistency in answers is crucial for determining the most reliable solution. [PROBLEM] Given the question described as follows: {{problem}} 
+
+18 [SOLUTIONS] Several solutions have been generated to address the CURRENT TASK above. They are as follows: {{solutions}} [INSTRUCTION] Your role is to evaluate these solutions for the CURRENT TASK and identify the answer that appears most frequently across them. This consistency in answers is crucial for determining the most reliable solution for the current task. In the "thought" field, provide a detailed explanation of your thought process, focusing on which solution best addresses the current task. In the "solution_letter" field, output only the single letter ID (A, B, C, etc.) corresponding to the most consistent solution for the current task. Do not include any additional text or explanation in the "solution_letter" field. 
+
+## D Implementation Details 
+
+D.1 Workflow Adapter Details 
+
+Each candidate agent is represented by an embedding derived from its textual role specification, capabilities, and tool bindings. We stack agent embeddings as 
+
+E = [ e1; . . . ; eN ] ∈ RN ×d. (21) The compact task-state representation is encoded as Xt ∈ RM ×d. To incorporate cross-layer context, we summarize previously selected agent embeddings at layer ℓ as 
+
+c(ℓ) 
+
+> t
+
+= Pool  {ei | ai ∈ V (<ℓ ) 
+
+> t
+
+}, (22) where mean pooling is used in our implementation and c(1)  
+
+> t
+
+= 0. This context vector is appended to the task state representation: 
+
+˜X(ℓ) 
+
+> t
+
+= [ Xt; c(ℓ) 
+
+> t
+
+]. (23) The Workflow Adapter applies cross-attention between task-state tokens and agent embeddings: 
+
+Q(ℓ) 
+
+> t
+
+= ˜X(ℓ) 
+
+> t
+
+WQ, K = EW K , V = EW V , (24) and obtains 
+
+H(ℓ) 
+
+> t
+
+= Attn( Q(ℓ) 
+
+> t
+
+, K, V). (25) The layer-specific query vector is obtained by mean pooling: 
+
+h(ℓ) 
+
+> t
+
+= Pool( H(ℓ) 
+
+> t
+
+). (26) The main text then uses h(ℓ) 
+
+> t
+
+to score candidate agents and sample a layer-wise agent subset. 
+
+Cumulative-mass soft sampling log-probability. For completeness, we detail the log-probability term used by REINFORCE under our implementation of cumulative-mass soft sampling (Algorithm 1, line 1). At layer ℓ, we form a categorical distribution over agents, 
+
+p(ℓ) 
+
+> t
+
+= softmax 
+
+
+
+α(ℓ) 
+
+> t
+
+/λ 
+
+
+
+, p(ℓ) 
+
+> t,i
+
+= exp( α(ℓ) 
+
+> t,i
+
+/λ )
+
+PNj=1 exp( α(ℓ) 
+
+> t,j
+
+/λ ) , (27) and then sample without replacement until the cumulative selected probability mass reaches the threshold ρ. Let i(ℓ) 
+
+> t
+
+= ( i(ℓ)
+
+> t, 1
+
+, . . . , i (ℓ) 
+
+> t,K ℓ
+
+) denote the sampled index sequence at layer ℓ, where Kℓ is the (random) stopping time induced by ρ. The resulting ordered-sequence probability is 
+
+PΘ(i(ℓ) 
+
+> t
+
+| ˜st) = 
+
+> Kℓ
+
+Y
+
+> r=1
+
+p(ℓ)
+
+> t,i (ℓ)
+> t,r
+
+1 − P 
+
+> q<r
+
+p(ℓ)
+
+> t,i (ℓ)
+> t,q
+
+, (28) 19 with the stopping condition 
+
+> Kℓ−1
+
+X
+
+> r=1
+
+p(ℓ)
+
+> t,i (ℓ)
+> t,r
+
+< ρ, 
+
+> Kℓ
+
+X
+
+> r=1
+
+p(ℓ)
+
+> t,i (ℓ)
+> t,r
+
+≥ ρ. (29) Our implementation further applies a fallback to selecting the highest-probability agent when no agent is selected due to numerical or degenerate edge cases. 
+
+D.2 Agent Pool Specification 
+
+Table 4 lists the candidate agent pools used by EvoMAS. The 4-agent pool provides basic capa-bilities for information retrieval and aggregation, while the 7-agent pool adds multi-generation, self-refinement, and web-browsing capabilities. Table 4: Candidate agent pools used by EvoMAS.    
+
+> Pool Agents 4-agent I/O, Early-exit, Web-search, Ensemble 7-agent I/O, Multi-generate, Self-refine, Web-search, Web-browser, Early-exit, Ensemble
+
+D.3 Workflow Space and Edge Construction 
+
+Given the selected agent sets {V (ℓ) 
+
+> t
+
+}Lt
+
+> ℓ=1
+
+, we construct inter-layer communication edges as fully connected bipartite connections. The sampling procedure is applied separately at each layer, so the same agent may appear in multiple layers; this allows repeated refinement. Across meta-steps, agents may also be selected repeatedly. Each downstream agent receives an aggregated message containing all upstream outputs, and agent-specific prompts determine how the aggregated input is consumed. 
+
+## E Experimental Details 
+
+E.1 Dataset Sampling and Splits 
+
+Table 5 summarizes how each benchmark defines its task pool and the train versus held-out evaluation partitions. Unless otherwise specified, reported metrics follow the evaluation partition listed here. For GAIA Level 1 and Level 2, we use the full released task set at each level and apply a random 8:2 train–validation split (no additional subsampling). For HLE and DeepResearcher, we draw 50 instances and split them 8:2. GAIA Level 3 and BrowserComp are used only for very-hard sparse-reward analysis, each with 20 sampled instances and a 16/4 train–validation split. 
+
+E.2 Model Backbones 
+
+Table 6 lists the model identifiers used for different components in our experiments. 
+
+E.3 Baseline Implementation Details 
+
+GPTSwarm, AFlow, G-Designer, and MaAS are implemented following their original papers. All baselines use the same backbone models and execution budgets as EvoMAS for fair comparison. 
+
+## F Additional Workflow Adapter Visualizations 
+
+Validation-time adapter behavior. To further inspect what the Workflow Adapter learns during training, we visualize its layer-wise selection probabilities on representative validation trajectories from the early, middle, and late stages of training. Figure 7 shows the adapter probabilities at the first, middle, and last meta-steps of each trajectory. Each donut chart contains three concentric rings corresponding to the three workflow layers, and each sector denotes one candidate agent. 20 Table 5: Dataset sampling and splits.                      
+
+> Benchmark Task pool Train Evaluation
+> GAIA Level 1 Benchmark subset Train split Held-out evaluation split GAIA Level 2 Benchmark subset Train split Held-out evaluation split GAIA Level 3 20 sampled instances 16 4HLE 50 sampled instances 40 10 DeepResearcher 50 sampled instances 40 10 BrowserComp 20 sampled instances 16 4
+
+Table 6: Model identifiers used in our experiments.       
+
+> Component Model Identifier Planner GPT-4o-mini / GPT-4o Evaluator GPT-4o-mini / GPT-4o Updater Deterministic executor-tool serialization Execution agents GPT-4o-mini / GPT-4o Baselines GPT-4o-mini / GPT-4o
+
+The black outline marks the highest-probability agent in each layer. The visualization provides qualitative evidence that the adapter develops more structured and state-dependent selection patterns over training, while still maintaining a soft distribution over candidate agents. 
+
+## G Limitations 
+
+EvoMAS studies execution-time workflow construction over a fixed candidate agent pool and a fixed maximum workflow depth. This controlled setting enables fair comparison with automated MAS design baselines, but does not yet cover open-ended agent creation, dynamic expansion of the agent pool, or adaptive runtime depth selection. Scaling EvoMAS to larger pools and variable-depth workflows is an important future direction. The main training objective uses sparse, verifiable terminal task success. While this avoids directly optimizing against potentially biased evaluator judgments, terminal reward can be too sparse in very-hard regimes. Our PRM analysis shows that evaluator-based process reward can help in such cases, but richer credit-assignment methods, value baselines, and calibrated process rewards remain open problems. Our evaluation covers GAIA, HLE, DeepResearcher, and BrowserComp, but some high-cost bench-marks are evaluated on limited held-out subsets. Future work should test larger benchmark splits, longer execution horizons, and more diverse tool-use environments. In addition, EvoMAS inher-its limitations of LLM-based agent systems, including sensitivity to backbone capability, prompt templates, tool interfaces, and evaluator reliability. 21 Figure 7: Validation-time evolution of Workflow Adapter selection probabilities. Columns correspond to representative validation trajectories from the early, middle, and late stages of training. The three rows show the first, middle, and last meta-steps of each trajectory. Each donut chart contains three concentric rings corresponding to workflow layers, and each sector denotes one candidate agent. Black outlines mark the highest-probability agent in each layer. 22
