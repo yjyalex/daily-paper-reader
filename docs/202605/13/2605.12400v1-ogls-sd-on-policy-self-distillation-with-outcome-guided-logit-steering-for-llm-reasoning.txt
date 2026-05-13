@@ -1,0 +1,591 @@
+Title: OGLS-SD: On-Policy Self-Distillation with Outcome-Guided Logit Steering for LLM Reasoning
+
+URL Source: https://arxiv.org/pdf/2605.12400v1
+
+Published Time: Wed, 13 May 2026 01:41:26 GMT
+
+Number of Pages: 12
+
+Markdown Content:
+# OGLS-SD: On-Policy Self-Distillation with Outcome-Guided Logit Steering for LLM Reasoning 
+
+Yuxiao Yang 
+
+UNC Chapel Hill 
+
+yxyang@unc.edu 
+
+Xiaoyun Wang 
+
+NVIDIA 
+
+xiaoyunw@nvidia.com 
+
+Weitong Zhang 
+
+UNC Chapel Hill 
+
+weitongz@unc.edu 
+
+Abstract 
+
+We study on-policy self-distillation (OPSD), where a language model improves its reason-ing ability by distilling privileged teacher dis-tributions along its own on-policy trajectories. Despite the performance gains of OPSD, we identify a common but often overlooked mis-match between teacher and student responses: self-reflected teacher responses can be shifted by reflection-induced bias and response tem-plates, leading to miscalibrated token-level su-pervision. To mitigate this issue, we propose OGLS-SD, an outcome-guided logit-steering framework that leverages verifiable outcome rewards to contrast successful and failed on-policy trajectories and calibrate teacher logits. By combining outcome-level correctness with dense token-level guidance through logit steer-ing, OGLS-SD stabilizes self-distillation and improves reasoning performance over standard OPSD and other variants across diverse bench-marks. 
+
+1 Introduction 
+
+With the rapid progress of large language models (LLMs), reinforcement learning with verifiable re-wards (RLVR; Shao et al. 2024; Zhu et al. 2025; Zheng et al. 2025) has become a central paradigm for improving reasoning ability during LLM post-training. However, many RLVR methods provide only sparse, sequence-level supervision, where all tokens in a sampled trajectory are optimized accord-ing to the same outcome reward. This coarse su-pervision makes fine-grained token-level credit as-signment difficult and can lead to inefficient learn-ing (Zhao et al., 2026). To address this limitation, on-policy distillation 
+
+(OPD; Agarwal et al. 2024) has recently emerged as a promising alternative paradigm, in which the student model leverages its own on-policy genera-tions to obtain dense token-level guidance. Com-pared with RLVR, OPD can often achieve faster and stronger improvements (Agarwal et al., 2024; Lu and Lab, 2025; Gu et al., 2024; Ko et al., 2025; Li et al., 2026b), and has been adopted or ex-plored in industrial post-training pipelines such as MiMo (Team et al., 2026), Qwen3 (Yang et al., 2025), GLM5 (GLM-5-Team et al., 2026), and DeepSeek-V4 (DeepSeek-AI, 2026). Motivated by the success of OPD, a growing line of work has leveraged LLMs’ self-reflection (Shinn et al., 2023) and self-judgment (Zheng et al., 2023) abilities to enable self-improvement without rely-ing on a larger teacher model. This setting, re-ferred to as on-policy self-distillation (OPSD), re-moves external teacher guidance and thus enables a more direct comparison with RLVR. In OPSD, the student model itself serves as the teacher, typ-ically by conditioning on external privileged in-formation during training to provide dense token-level guidance without requiring a separate stronger model (Zhao et al., 2026; Hübotter et al., 2026). Although such methods can improve both perfor-mance and training efficiency, recent studies have reported that vanilla OPSD may suffer from train-ing collapse and instability (Yang et al., 2026a; Li et al., 2026a; Kim et al., 2026). These observations have motivated hybrid approaches that integrate OPSD with RLVR. However, the mechanism un-derlying this collapse remains underexplored. As a result, existing hybrid methods largely amount to a straightforward combination of the OPSD loss and the GRPO loss, and therefore fail to fully ex-ploit the fine-grained token-level signals provided by OPSD. This naturally raises the following ques-tion: 
+
+What causes the training collapse of OPSD? 
+
+In this paper, we hypothesize that OPSD collapse arises from a distributional mismatch between the “teacher” and “student” responses, even though both are from the same language model. We iden-tify two key sources of this mismatch. First, when 1 
+
+> arXiv:2605.12400v1 [cs.LG] 12 May 2026 Dataset S= { }
+> Student
+
+# -
+
+# +    
+
+> Minimize Divergence
+> ...
+> steering direction
+> Steered teacher distribution
+> Student distribution
+> On policy sampling
+> Teacher logits from successful rollouts
+> Avg
+> Teacher logits from failed rollouts
+> Avg
+> Anchor teacher logits Steered teacher logits
+> 1.On-policy Rollout 2.Teacher Logit Polling 3. Steering Direction 4. Distillation Target
+
+Figure 1: Illustration of OGLS-SD. The student model first generates K on-policy rollouts for each input, which are then verified and partitioned into correct and incorrect pools. We compute the average teacher logits conditioned on each pool, construct the steering direction ∆ by contrasting the two averaged logits, and add it to the anchor teacher logits to obtain the steered teacher distribution for token-level guidance. 
+
+the teacher constructs its response by self-reflecting on a single output from a specific reasoning path, the resulting supervision may become concentrated around a narrow output distribution, potentially eroding the student’s original capabilities (Yang et al., 2026a). Second, privileged conditioning can make the teacher distribution overly confident and introduce systematic artifacts during self-reflection, causing the student to imitate miscalibrated token-level targets (Kim et al., 2026). Inspired by this hypothesis, we mitigate the distributional mismatch and stabilize the self-distillation process by proposing OGLS-SD: Outcome-Guided Logit Steering for Self-Distillation . As illustrated in fig. 1, OGLS-SD provides a simple framework that systematically incorporates outcome-based rewards into on-policy self-distillation. Specifically, OGLS-SD samples a group of on-policy trajectories, verifies their cor-rectness using reward signals, and then constructs an outcome-guided logit-steering direction by con-trasting teacher logits induced by successful and failed rollouts. This steering guidance is used to cal-ibrate token-level supervision for self-distillation. In summary, our contributions are threefold: • We investigate a commonly overlooked teacher– student mismatch in on-policy self-distillation, focusing on solution-specific bias and privileged-information-induced overconfidence. We find that this mismatch may contribute to training collapse in vanilla OPSD. • To mitigate this mismatch, we propose OGLS-SD, a framework that effectively integrates RLVR with self-distillation and constructs an outcome-guided logit-steering direction to cal-ibrate overconfident teacher guidance. • Empirically, we show that OGLS-SD improves both stability and performance over standard OPSD and naive integrations of RLVR objec-tives. By mitigating the distributional mis-match, OGLS-SD enables more efficient self-improvement of language models. 
+
+2 Related Works 
+
+2.1 On-policy Distillation 
+
+On-policy distillation (OPD) samples rollouts from the student policy and aligns the student’s token-level distributions with teacher logits along these on-policy trajectories. Compared with offline dis-tillation, OPD provides dense supervision on the states actually visited by the student, and often leads to faster and more effective performance im-provement (Agarwal et al., 2024; Lu and Lab, 2025; Gu et al., 2024; Xu et al., 2025; Kim and Baek, 2026). It has also been widely adopted in indus-trial post-training pipelines, where it can reduce the reliance on, or even partially replace, RLVR-based post-training (Yang et al., 2025; Team et al., 2026). Recent OPD variants further explore black-box teacher guidance (Ye et al., 2026), multi-model 2distillation (Chen et al., 2026), and agent-level pol-icy distillation (Jülg et al., 2025). 
+
+2.2 LLM Self-Distillation 
+
+Despite its promise, OPD typically requires a more capable teacher model, often a larger model, which may be expensive or unavailable in practice. On-policy self-distillation (OPSD) addresses this limi-tation by using the model itself as the teacher, while providing it with external privileged information such as a reference solution or final answer (Zhao et al., 2026; Hübotter et al., 2026). However, vanilla OPSD has been reported to suffer from unstable training and degradation in reasoning performance (Kim et al., 2026; Yang et al., 2026a). Prior work attributes this behav-ior to different forms of teacher-student mismatch. Kim et al. (2026) observes that self-distillation can suppress epistemic verbalization, leading to more compressed and overconfident reasoning pat-terns. From an information-theoretic perspective, Yang et al. (2026a) shows that matching a teacher conditioned on a single privileged solution is ill-posed for a student that cannot access this solution, and that the population optimum corresponds to a marginal privileged teacher. Combining self-distillation with RLVR has re-cently emerged as a promising direction (Yang et al., 2026a; Li et al., 2026a; He et al., 2026; Yan et al., 2025; Zhang et al., 2025). For example, prior work uses self-distillation to provide denser credit assignment for GRPO (Yang et al., 2026a), or com-bines GRPO-style policy optimization with self-distillation objectives (Li et al., 2026a; Ding, 2026). Our work follows this line but focuses on the pat-tern mismatch induced by privileged prompting, and proposes outcome-contrasted logit steering to reduce outcome-agnostic artifacts in the privileged teacher signal. 
+
+2.3 Steering the LLM generation 
+
+Inspired by the observation that semantic and be-havioral attributes can often be represented as ap-proximately linear directions in model represen-tations (Mikolov et al., 2013), steering methods have been widely studied as lightweight mecha-nisms for controlling LLM behavior (Rimsky et al., 2024; Turner et al., 2024; Zhao et al., 2025). Exist-ing methods typically construct steering directions from contrastive examples or learned representa-tions, and apply them to hidden states or output distributions to guide generation toward desired be-haviors. Most prior work focuses on controllable generation, persona editing, safety alignment, re-fusal control, and hallucination mitigation (Zhao et al., 2025; Parekh et al., 2025; Arditi et al., 2024). In contrast, using steering as dense training-time guidance for self-distillation remains rela-tively underexplored, particularly in reasoning-oriented post-training. The most related work is EXOPD (Yang et al., 2026b), which introduces a reference policy πref and rewrites the OPD objec-tive to strengthen the teacher signal. However, EX-OPD focuses on the standard OPD setting, where the teacher is not induced by privileged prompting. Our work instead studies the OPSD setting, where the teacher is constructed by conditioning the same model on privileged information. In this setting, steering is not only used to amplify the teacher signal, but also to mitigate the pattern mismatch introduced by privileged guidance. 
+
+3 Preliminaries 
+
+We first introduce the notation used throughout this paper. Let x = ( x1, . . . , x m) denote a question prompt, and let y = ( y1, . . . , y T ) denote a response generated by the student policy. We use y+ and 
+
+y− to denote correct and incorrect rollouts, respec-tively, as determined by a verifiable reward signal. In OPSD, each prompt is additionally associated with an expert solution s, which serves as privi-leged information for the teacher. Thus, the train-ing dataset can be written as D = {(xi, s i)}Ni=1 ,while the student rollouts yi are sampled on policy during training. 
+
+3.1 On-Policy Self-Distillation 
+
+In OPSD, for each question xi, the student model first generates an on-policy response yi ∼ πθ(· | 
+
+xi). The same model, or a closely related copy of it, is then used as a teacher by conditioning on ad-ditional privileged information si. Here, si denotes information that is unavailable at test time, such as a ground-truth solution or an expert reasoning path. The teacher parameters θ′ can be instanti-ated in several ways, such as the base model before training, the current student parameters, or an expo-nential moving average of the student for improved stability (Zhao et al., 2026; Hübotter et al., 2026). 3The OPSD training objective is 
+
+LOPSD (θ) = 
+
+> T
+
+X
+
+> t=1
+
+KL 
+
+
+
+πθ(· | xi, y i,<t )
+
+sg πθ′ (· | xi, s i, y i,<t )
+
+.
+
+(1) where sg[ ·] denotes the stop-gradient operation. Intuitively, OPSD assumes that, when provided with privileged information, the same model can act as a more capable teacher and provide fine-grained token-level guidance for improving the stu-dent model. In this way, OPSD replaces sparse sequence-level rewards with dense distributional supervision along the student’s on-policy trajec-tory. However, because the student policy πθ(· |
+
+x, y <t ) cannot access the privileged solution s at test time, directly forcing it to match the privileged teacher 
+
+πθ′ (· | x, s, y <t )
+
+is ill-posed. As pointed out by (Yang et al., 2026a), in the non-privileged student function class, the population optimum is the marginal privileged teacher distribution 
+
+¯PT (· | x, y <t ) = Es∼P (s|x,y <t ) [πθ′ (· | x, s, y <t )] .
+
+(2) Therefore, directly applying the OPSD loss to each privileged instance incurs an irreducible information-asymmetry term I(Yt; S | X, Y <t ).0 Accuracy / correctness capability           
+
+> Overconfidence /
+> unjustified certainty
+> T⁻ = π(· | x, y⁻) T⁺ = π(· | x, y⁺)
+> Δ=T⁺ − T⁻
+> λΔS = π(· | x) Sₛₜ ₑₑᵣ = S + λ (T⁺ − T⁻)
+> Harmful overconfidence region
+> π!Guide
+
+Figure 2: Illustration of how the steering direction guides the student model toward improved correctness while avoiding increased overconfidence. 
+
+However, marginalizing over privileged solu-tions does not by itself guarantee that the result-ing teacher matches the behavior of a model solv-ing the problem from scratch. Each component in ¯PT is still produced by a teacher that has al-ready observed a solution before predicting the next token. If this privileged conditioning induces a solution-agnostic confidence shift, such as sharper next-token distributions or reduced probability on epistemic and exploratory tokens (Kim et al., 2026), then this shift can survive marginalization and be inherited by the student through distillation. At test time, where the ground-truth solution is un-available, such inherited overconfidence may harm reasoning robustness and final-answer accuracy. As illustrated in fig. 2, directly distilling from positive privileged contexts can increase both correctness-related confidence and outcome-agnostic overcon-fidence. We further illustrate this prompt-induced marginalization mismatch with a simple toy exam-ple in section A. 
+
+3.2 Guidance in Large Language Models 
+
+Let ct = ( x, y <t ) denote the generation context and 
+
+v denote a candidate next token. Steering can be viewed as modifying a base next-token distribution with a contrastive likelihood ratio: 
+
+pγ (v | ct) ∝ p0(v | ct)
+
+ p+(v | ct)
+
+p−(v | ct)
+
+γ
+
+, (3) where p0 is the base distribution, p+ and p− cor-respond to positive and negative conditions, and 
+
+γ ≥ 0 controls the steering strength. Taking the logarithm shows that steering adds the contrastive direction log p+(v | ct)−log p−(v | ct) to the base log-probability, up to a normalizing constant. Since LLMs parameterize next-token distribu-tions through logits, this operation is commonly implemented in logit space. Let z0 
+
+> t
+
+, z+ 
+
+> t
+
+, and z−
+
+> t
+
+denote the base, positive-conditioned, and negative-conditioned logits at context ct. The steered logits are 
+
+zTt = z0 
+
+> t
+
++ γ(z+ 
+
+> t
+
+− z− 
+
+> t
+
+),pγ (· | ct) = softmax( zTt ).
+
+In OGLS-SD, we instantiate this contrastive direc-tion using outcome-conditioned teacher logits from correct and incorrect on-policy rollouts. 
+
+4 Method 
+
+In OGLS-SD, we integrate RLVR with OPSD fol-lowing prior work (Yang et al., 2026a; Li et al., 2026a; Ding, 2026). For each input xi, we sample 
+
+G rollouts from the current policy, 
+
+{yj }Gj=1 ∼ πθ(· | xi), (4) 4and verify each rollout using the ground-truth label or a rule-based verifier provided by the dataset. This gives an outcome-labeled set 
+
+Y(xi) = {(yj , r j )}Gj=1 , (5) where rj ∈ { 0, 1} indicates whether yj is correct. We then partition the rollouts into positive and neg-ative sets: 
+
+Y+(xi) = {yj | rj = 1 , j ∈ [G]},
+
+Y−(xi) = {yj | rj = 0 , j ∈ [G]}. (6) Here, Y+(xi) contains verified correct rollouts, while Y−(xi) contains incorrect rollouts. When clear from context, we omit the dependence on xi.
+
+4.1 Maintaining Mixed Guidance Logits 
+
+Motivated by the marginal teacher in eq. (2), we aggregate privileged guidance over multiple correct solution contexts rather than distilling from a single privileged solution. Instead of explicitly forming a probability-space mixture, we use a logit-space aggregation surrogate, which is easy to maintain with running accumulators and directly compatible with our steering operation. 
+
+Es∼πE (·| xi,y j,<t ) [zθ′ (· | xi, s, y j,<t )] , (7) where πE (· | xi, y j,<t ) denotes an oracle poste-rior over correct solutions given the current prefix. Since this posterior is inaccessible, we approximate it using verified correct rollouts from Y+(xi).For the current rollout yj , we define the positive guidance pool as 
+
+P+ 
+
+> j
+
+(xi) = Y+(xi) ∪ { si}. (8) If no dataset-provided solution is available, the term {si} is omitted. Similarly, we define the neg-ative guidance pool as 
+
+P− 
+
+> j
+
+(xi) = Y−(xi). (9) For brevity, we write P± 
+
+> j
+
+= P± 
+
+> j
+
+(xi). The mixed positive and negative guidance logits are defined as 
+
+¯z± 
+
+> j,t
+
+= 1
+
+|P ± 
+
+> j
+
+|
+
+X
+
+> g∈P ±
+> j
+
+zθ′ (· | xi, g, y j,<t ). (10) Averaging positive logits reduces the dependence on any single solution path and provides a more ro-bust approximation to the oracle positive guidance. In contrast, averaging negative logits captures the common teacher behavior induced by incorrect roll-outs, which we use to estimate failure-related or overconfident guidance directions. In practice, the averaged logits are maintained by a running accumulator over the guidance pool. This avoids storing all individual teacher logits and only requires memory for the running accumulator. 
+
+4.2 Outcome-Guided Logit Steering 
+
+Given the mixed guidance logits ¯z+ 
+
+> j,t
+
+and ¯z−
+
+> j,t
+
+, we construct an outcome-guided steering direction by contrasting positive and negative guidance: 
+
+∆j,t = ¯ z+ 
+
+> j,t
+
+− ¯z−
+
+> j,t
+
+. (11) As illustrated in fig. 2, we hypothesize that pos-itive and negative guidance share some privi-leged prompt induced overconfidence components but differ in their outcome discriminative compo-nents. Contrasting them is therefore intended to attenuate shared overconfidence while preserving correctness-improving signals. Let 
+
+z0 
+
+> j,t
+
+= zθ′ (· | xi, y j,<t ) (12) denote the base teacher logits without privileged rollout guidance. We define the steered teacher logits as 
+
+zTj,t = z0 
+
+> j,t
+
++ λ∆j,t , (13) where λ ≥ 0 controls the steering strength. The steered teacher distribution is then 
+
+πT (· | xi, y j,<t ) = softmax  zTj,t 
+
+. (14) For each rollout yj , we define the sequence-level steering loss as 
+
+Lsteer  
+
+> j
+
+(θ) = 
+
+> Tj
+
+X
+
+> t=1
+
+KL 
+
+
+
+πθ(· | xi, y j,<t )
+
+∥ sg πT (· | xi, y j,<t )
+
+.
+
+(15) The overall loss is then 
+
+Lsteer (θ) = 
+
+> G
+
+X
+
+> j=1
+
+1{rj = 0 }Lsteer  
+
+> j
+
+(θ). (16) Since the contrastive direction is intended to atten-uate the shared overconfidence component while retaining the correctness improving component, we can use λ > 1 to amplify the useful steering sig-nal. For rollouts that are already correct, additional steering may unnecessarily perturb the model away from its correct behavior and harm its existing ca-pability. The overall procedure is summarized in algorithm 1. 5Algorithm 1: OGLS-SD: Outcome-Guided Logit Steering 
+
+Input: Training dataset D, policy πθ, teacher πθ′ , verifier R, rollout number G, steering strength λ,training steps N .
+
+Output: Updated policy πθ.
+
+for i = 1 , . . . , N do 
+
+Sample (xi, s i) from D; // Omit si if no oracle solution is available 
+
+Sample rollouts {yj }Gj=1 ∼ πθ(· | xi);Verify each rollout by rj ← R(xi, y j ) for j = 1 , . . . , G ;
+
+for j = 1 , . . . , G do if rj = 1 then continue ; // Only steer incorrect rollouts 
+
+Set P+ 
+
+> j
+
+← { yk : rk = 1 , k ∈ [G]} ∪ { si} and P− 
+
+> j
+
+← { yk : rk = 0 , k ∈ [G]};
+
+if P+ 
+
+> j
+
+= ∅ or P− 
+
+> j
+
+= ∅ then continue ; // Contrastive direction is undefined 
+
+Compute mixed guidance logits {¯z+
+
+> j,t
+
+, ¯z−
+
+> j,t
+
+}Tj 
+
+> t=1
+
+over the sequence using eq. (10); Construct the steered teacher distribution πT (· | xi, y j,<t ) using eq. (14); Compute rollout steering loss Lsteer  
+
+> j
+
+using eq. (15); Gather rollout losses {Lsteer  
+
+> j
+
+} into Lsteer ;Update πθ by minimizing Lsteer ;Update or synchronize πθ′ ; // According to the chosen teacher scheme 
+
+5 Experiments 
+
+5.1 Setup 
+
+We evaluate OGLS-SD on Qwen3-1.7B and Qwen3-4B (Yang et al., 2025), following the origi-nal OPSD setting (Zhao et al., 2026). We train on OpenThought (Guha et al., 2025) and evaluate on AIME 2024 and AIME 2025 (Zhang and Math-AI, 2024, 2025), two challenging mathematical reason-ing benchmarks. For OGLS-SD, we sample 8 roll-outs for each question, apply symmetric per-token pointwise divergence clipping, and use a ramp-up schedule for the steering coefficient λ, with a max-imum value of 3. Unless otherwise specified, we set the maximum generation length to 8,192 tokens during training and 38,912 tokens during evalua-tion. All methods are trained with LoRA using the same backbone model and training configuration to ensure a fair comparison with OPSD. 
+
+5.2 Baselines 
+
+We compare against three baselines. SFT di-rectly imitates expert trajectories from the dataset. 
+
+GRPO (Shao et al., 2024) optimizes the policy us-ing outcome-level rewards from verified rollouts. 
+
+OPSD (Zhao et al., 2026) performs on-policy self-distillation with privileged teacher guidance.                                  
+
+> Method AIME24 AIME25 Avg.
+> Qwen3-1.7B
+> Base 51.5 36.7 44.1 + SFT 48.4 36.3 42.4 + GRPO 51.1 38.3 44.7 + OPSD 56.3 40.8 48.5 + OGLS-SD 59.2 45.0 52.1
+> Qwen3-4B
+> Base 74.9 66.4 70.1 + SFT 70.2 62.3 66.3 + GRPO 75.6 68.1 71.9 + OPSD 76.3 67.9 72.1 + OGLS-SD 77.9 68.8 73.4
+
+Table 1: Results on AIME benchmarks using Qwen3-1.7B and Qwen3-4B. Results are reported as mean@8. 
+
+5.3 Main Results 
+
+As shown in table 1, OGLS-SD consistently outper-forms all baselines on both AIME 2024 and AIME 2025. These results suggest that outcome-guided logit steering can provide more effective token-level supervision than directly distilling from privi-leged teacher guidance. In particular, by contrast-ing successful and failed rollouts, OGLS-SD mit-igates overconfident guidance while preserving correctness-improving signals, leading to more sta-ble self-distillation. To better understand the output patterns of OPSD 6Problem: Subtraction game with moves {1, 4}. Alice moves  fi rst. Count n ≤ 2024 where Bob can force a win. 
+
+> Correct pattern, wrong role mapping
+
+# OPSD   
+
+> ...losing positions are numbers where n ≡ 0 or 2 mod 5. Therefore total losing positions: 404 + 405 = 809
+
+1. Finds the correct pattern and count 
+
+> Thus, there are 809 positions where Bob cannot guarantee a win.
+
+2. Wrong role mapping 
+
+3. Overconfident commitment 
+
+> Therefore answer is 2024 - 809 = 1215 ... Thus I think the answer is 1215. Final Answer: \boxed{1215}
+
+# Ours 
+
+> Reflection fixes the role
+> mapping
+
+1. Reflection at the role mismatch 
+
+> Bob needs to have a strategy that can make the game start from a losing position? Wait, no.Wait, if Alice is first, then if the starting position is a losing position, then Bob cannot win? Wait, no...
+
+2. Correct role mapping 
+
+> If the original number n satisfies this modular congruence, the
+> starting player is in a losing state, and thus Bob can ensure a win
+> Total numbers divisible by 5 in 1-2024: 404.
+> Total numbers ≡2 mod5: 405.
+> Total numbers: 404 + 405=809.
+
+3. Correct answer Final Answer: \boxed{809} Figure 3: Case study comparing OPSD and OGLS-SD. Both methods identify the correct modular pattern and compute the correct intermediate count, but OPSD overconfidently maps the losing-position count to the wrong player and outputs the incorrect complement. In contrast, OGLS-SD revisits the Alice/Bob role assignment and preserves the correct answer. 
+
+and OGLS-SD, we count the occurrence frequency of seven epistemic reflection markers, as listed in table 3. As shown in fig. 5, the marker frequency of OPSD first decreases during the early stage of train-ing and then gradually increases after around 100 steps, but remains consistently below that of the untrained model. In contrast, OGLS-SD generally increases the frequency of these markers through-out training. This suggests that OGLS-SD may better preserve explicit epistemic reflection behav-iors, whereas OPSD tends to suppress them in the early stage. We further provide a qualitative case study in fig. 3. Both OPSD and OGLS-SD iden-tify the correct intermediate structure, but OPSD overconfidently maps the result to the wrong target, while OGLS-SD revisits the key role assignment and avoids the mistake. 
+
+5.4 Ablation Study 
+
+To understand the effectiveness of OGLS-SD, we conduct ablation experiments on Qwen3-1.7B us-ing AIME 2024, as shown in table 2 and fig. 6. We aim to answer two questions: (1) does the improve-
+
+Figure 4: Avg@8 performance of Qwen3-1.7B on AIME24 across training checkpoints. OPSD reaches its peak performance around 100 steps and then degrades, suggesting instability caused by teacher–student pattern mismatch. In contrast, OGLS-SD yields a more stable training curve and achieves better overall performance. 
+
+ment of OGLS-SD mainly come from constructing a less biased mean teacher distribution from mul-tiple positive solutions? and (2) does the improve-ment simply come from using a steering coefficient 
+
+λ > 1 to amplify the positive guidance signal? To answer the first question, we consider Pos. Mean 
+
+7Figure 5: Frequency of explicit epistemic reflection markers in reasoning traces generated by Qwen3-1.7B on AIME 2024. 
+
+Teacher , which replaces the single privileged so-lution in OPSD with an averaged positive teacher distribution. Specifically, we apply an OPSD-like objective 
+
+LPMT (θ) = 
+
+> T
+
+X
+
+> t=1
+
+KL 
+
+
+
+πθ,t sg 
+
+h
+
+¯π+
+
+> θ′,t
+
+i 
+
+,
+
+where πθ,t = πθ(· | xi, y i,<t ) and ¯π+ 
+
+> θ′,t
+
+= ¯ π+ 
+
+> θ′
+
+(· | 
+
+xi, y i,<t ) constructed from the reference solution and correct on-policy rollouts. As shown in ta-ble 2, this variant slightly improves over OPSD and produces a relatively stable test curve in fig. 6, but it still underperforms OGLS-SD. This suggests that simply averaging multiple positive guidance distributions is helpful but insufficient. To answer the second question, we consider 
+
+Positive-Only Steering , which amplifies the pos-itive guidance direction without using the negative rollouts. The teacher logits are constructed as 
+
+zTj,t = z0 
+
+> j,t
+
++ λ
+
+
+
+z+ 
+
+> j,t
+
+− z0
+
+> j,t
+
+
+
+,
+
+where z0 
+
+> j,t
+
+denotes the base teacher logits and z+
+
+> j,t
+
+denotes the positive teacher logits. This variant strengthens the positive guidance signal, in a form close in spirit to EXOPD (Yang et al., 2026b), but does not explicitly cancel the shared pattern mis-match between positive and negative privileged teachers. As shown in fig. 6, Positive-Only Steer-ing reaches its peak performance at the beginning of training and then gradually degrades, indicat-ing that simply amplifying positive guidance does not yield stable improvement. Overall, these ab-lations show that the gain of OGLS-SD does not only come from using a less biased mean teacher or a larger steering coefficient. Instead, explicitly 
+
+Table 2: Ablation results on AIME 2024 using Qwen3-1.7B. Results are reported as mean@8.       
+
+> Method AIME 2024
+> Qwen3-1.7B
+> Base (Instruct) 51.5 + OPSD 56.3 + Pos. Mean Teacher 57.1 + Positive-Only Steering 55.4 + OGLS-SD 59.2
+
+Figure 6: Test performance curves of ablation variants on AIME 2024. 
+
+contrasting positive and negative rollout-induced teacher patterns is important for improving both performance and stability. 
+
+6 Conclusion 
+
+In this paper, we propose OGLS-SD, an on-policy self-distillation framework that constructs outcome-guided logit steering from successful and failed rollouts. Instead of directly distilling from a sin-gle privileged teacher distribution, OGLS-SD aver-ages teacher logits over outcome-conditioned roll-out pools and contrasts them to reduce solution-specific bias and privileged-information-induced overconfidence. Experiments on mathematical rea-soning benchmarks show that OGLS-SD improves over standard OPSD and leads to more stable self-distillation. 
+
+References 
+
+Rishabh Agarwal, Nino Vieillard, Yongchao Zhou, Pi-otr Stanczyk, Sabela Ramos Garea, Matthieu Geist, and Olivier Bachem. 2024. On-policy distillation of language models: Learning from self-generated mistakes. In The Twelfth International Conference on Learning Representations .Andy Arditi, Oscar Obeso, Aaquib Syed, Daniel Paleka, Nina Panickssery, Wes Gurnee, and Neel Nanda. 2024. Refusal in language models is mediated by a single direction. Preprint , arXiv:2406.11717. 
+
+8Hansheng Chen, Kai Zhang, Hao Tan, Leonidas Guibas, Gordon Wetzstein, and Sai Bi. 2026. pi-flow: Policy-based few-step generation via imitation distil-lation. In The Fourteenth International Conference on Learning Representations .DeepSeek-AI. 2026. Deepseek-v4: Towards highly efficient million-token context intelligence. Ken Ding. 2026. Hdpo: Hybrid distillation policy op-timization via privileged self-distillation. Preprint ,arXiv:2603.23871. GLM-5-Team, :, Aohan Zeng, Xin Lv, Zhenyu Hou, Zhengxiao Du, Qinkai Zheng, Bin Chen, Da Yin, Chendi Ge, Chenghua Huang, Chengxing Xie, Chenzheng Zhu, Congfeng Yin, Cunxiang Wang, Gengzheng Pan, Hao Zeng, Haoke Zhang, Hao-ran Wang, and 168 others. 2026. Glm-5: from vibe coding to agentic engineering. Preprint ,arXiv:2602.15763. Yuxian Gu, Li Dong, Furu Wei, and Minlie Huang. 2024. MiniLLM: Knowledge distillation of large language models. In The Twelfth International Conference on Learning Representations .Etash Kumar Guha, Ryan Marten, Sedrick Keh, Ne-gin Raoof, Georgios Smyrnis, Hritik Bansal, Mar-ianna Nezhurina, Jean Mercat, Trung Vu, Za-yne Rea Sprague, Ashima Suvarna, Benjamin Feuer, Leon Liangyu Chen, Zaid Khan, Eric Frankel, Sachin Grover, Caroline Choi, Niklas Muennighoff, Shiye Su, and 31 others. 2025. Openthoughts: Data recipes for reasoning models. In First Workshop on Founda-tions of Reasoning in Language Models .Yinghui He, Simran Kaur, Adithya Bhaskar, Yongjin Yang, Jiarui Liu, Narutatsu Ri, Liam Fowl, Ab-hishek Panigrahi, Danqi Chen, and Sanjeev Arora. 2026. Self-distillation zero: Self-revision turns binary rewards into dense supervision. Preprint ,arXiv:2604.12002. Edward J. Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Lu Wang, and Weizhu Chen. 2021. Lora: Low-rank adaptation of large language models. Preprint , arXiv:2106.09685. Jonas Hübotter, Frederike Lübeck, Lejs Behric, An-ton Baumann, Marco Bagatella, Daniel Marta, Ido Hakimi, Idan Shenfeld, Thomas Kleine Buening, Carlos Guestrin, and Andreas Krause. 2026. Re-inforcement learning via self-distillation. Preprint ,arXiv:2601.20802. Tobias Jülg, Wolfram Burgard, and Florian Walter. 2025. Refined Policy Distillation: From VLA generalists to RL experts. In Proc. of the IEEE/RSJ Int. Conf. on Intelligent Robots and Systems (IROS) .Jeonghye Kim, Xufang Luo, Minbeom Kim, Sang-mook Lee, Dohyung Kim, Jiwon Jeon, Dongsheng Li, and Yuqing Yang. 2026. Why does self-distillation (sometimes) degrade the reasoning capability of llms? 
+
+Preprint , arXiv:2603.24472. Minsang Kim and Seung Jun Baek. 2026. Explain in your own words: Improving reasoning via token-selective dual knowledge distillation. In The Four-teenth International Conference on Learning Repre-sentations .Jongwoo Ko, Tianyi Chen, Sungnyun Kim, Tianyu Ding, Luming Liang, Ilya Zharkov, and Se-Young Yun. 2025. DistiLLM-2: A contrastive approach boosts the distillation of LLMs. In Forty-second Interna-tional Conference on Machine Learning .Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph E. Gonzalez, Hao Zhang, and Ion Stoica. 2023. Ef-ficient memory management for large language model serving with pagedattention. Preprint ,arXiv:2309.06180. Gengsheng Li, Tianyu Yang, Junfeng Fang, Mingyang Song, Mao Zheng, Haiyun Guo, Dan Zhang, Jinqiao Wang, and Tat-Seng Chua. 2026a. Unifying group-relative and self-distillation policy optimization via sample routing. Preprint , arXiv:2604.02288. Yaxuan Li, Yuxin Zuo, Bingxiang He, Jinqian Zhang, Chaojun Xiao, Cheng Qian, Tianyu Yu, Huan ang Gao, Wenkai Yang, Zhiyuan Liu, and Ning Ding. 2026b. Rethinking on-policy distillation of large language models: Phenomenology, mechanism, and recipe. Preprint , arXiv:2604.13016. Kevin Lu and Thinking Machines Lab. 2025. On-policy distillation. Thinking Machines Lab: Con-nectionism . Https://thinkingmachines.ai/blog/on-policy-distillation. Tomas Mikolov, Kai Chen, Gregory S. Corrado, and Jeffrey Dean. 2013. Efficient estimation of word representations in vector space. In International Con-ference on Learning Representations .Jayneel Parekh, Pegah KHAYATAN, Mustafa Shukor, Arnaud Dapogny, Alasdair Newson, and Matthieu Cord. 2025. Learning to steer: Input-dependent steer-ing for multimodal llms. In Advances in Neural Information Processing Systems , volume 38, pages 159799–159834. Curran Associates, Inc. Nina Rimsky, Nick Gabrieli, Julian Schulz, Meg Tong, Evan Hubinger, and Alexander Turner. 2024. Steer-ing llama 2 via contrastive activation addition. In 
+
+Proceedings of the 62nd Annual Meeting of the As-sociation for Computational Linguistics (Volume 1: Long Papers) , pages 15504–15522, Bangkok, Thai-land. Association for Computational Linguistics. Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan Zhang, Y. K. Li, Y. Wu, and Daya Guo. 2024. Deepseekmath: Pushing the limits of mathemati-cal reasoning in open language models. Preprint ,arXiv:2402.03300. 
+
+9Noah Shinn, Federico Cassano, Ashwin Gopinath, Karthik Narasimhan, and Shunyu Yao. 2023. Re-flexion: language agents with verbal reinforcement learning. In Advances in Neural Information Process-ing Systems , volume 36, pages 8634–8652. Curran Associates, Inc. Core Team, Bangjun Xiao, Bingquan Xia, Bo Yang, Bofei Gao, Bowen Shen, Chen Zhang, Chenhong He, Chiheng Lou, Fuli Luo, Gang Wang, Gang Xie, Hailin Zhang, Hanglong Lv, Hanyu Li, Heyu Chen, Hongshen Xu, Houbin Zhang, Huaqiu Liu, and 107 others. 2026. Mimo-v2-flash technical re-port. Preprint , arXiv:2601.02780. Alexander Matt Turner, Lisa Thiergart, Gavin Leech, David Udell, Juan J. Vazquez, Ulisse Mini, and Monte MacDiarmid. 2024. Steering language models with activation engineering. Preprint ,arXiv:2308.10248. Leandro von Werra, Younes Belkada, Lewis Tunstall, Edward Beeching, Tristan Thrush, Nathan Lambert, Shengyi Huang, Kashif Rasul, and Quentin Gal-louédec. 2020. TRL: Transformers Reinforcement Learning. Wenda Xu, Rujun Han, Zifeng Wang, Long Le, Dhruv Madeka, Lei Li, William Yang Wang, Rishabh Agar-wal, Chen-Yu Lee, and Tomas Pfister. 2025. Specu-lative knowledge distillation: Bridging the teacher-student gap through interleaved sampling. In The Thirteenth International Conference on Learning Representations .Jianhao Yan, Yafu Li, Zican Hu, Zhi Wang, Ganqu Cui, Xiaoye Qu, Yu Cheng, and Yue Zhang. 2025. Learning to reason under off-policy guidance. In Ad-vances in Neural Information Processing Systems ,volume 38, pages 117157–117186. Curran Asso-ciates, Inc. An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, Chujie Zheng, Day-iheng Liu, Fan Zhou, Fei Huang, Feng Hu, Hao Ge, Haoran Wei, Huan Lin, Jialong Tang, and 41 others. 2025. Qwen3 technical report. Preprint ,arXiv:2505.09388. Chenxu Yang, Chuanyu Qin, Qingyi Si, Minghui Chen, Naibin Gu, Dingyu Yao, Zheng Lin, Weiping Wang, Jiaqi Wang, and Nan Duan. 2026a. Self-distilled rlvr. 
+
+Preprint , arXiv:2604.03128. Wenkai Yang, Weijie Liu, Ruobing Xie, Kai Yang, Saiy-ong Yang, and Yankai Lin. 2026b. Learning beyond teacher: Generalized on-policy distillation with re-ward extrapolation. Preprint , arXiv:2602.12125. Tianzhu Ye, Li Dong, Zewen Chi, Xun Wu, Shao-han Huang, and Furu Wei. 2026. Black-box on-policy distillation of large language models. Preprint ,arXiv:2511.10643. Songming Zhang, Xue Zhang, Tong Zhang, Bojie Hu, Yufeng Chen, and Jinan Xu. 2025. AlignDistil: Token-level language model alignment as adaptive policy distillation. In Proceedings of the 63rd An-nual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 19791– 19807, Vienna, Austria. Association for Computa-tional Linguistics. Yifan Zhang and Team Math-AI. 2024. American invi-tational mathematics examination (aime) 2024. Yifan Zhang and Team Math-AI. 2025. American invi-tational mathematics examination (aime) 2025. Linxi Zhao, Yihe Deng, Weitong Zhang, and Quanquan Gu. 2025. Mitigating object hallucination in large vision-language models via image-grounded guid-ance. In Forty-second International Conference on Machine Learning .Siyan Zhao, Zhihui Xie, Mengchen Liu, Jing Huang, Guan Pang, Feiyu Chen, and Aditya Grover. 2026. Self-distilled reasoner: On-policy self-distillation for large language models. Preprint , arXiv:2601.18734. Chujie Zheng, Shixuan Liu, Mingze Li, Xiong-Hui Chen, Bowen Yu, Chang Gao, Kai Dang, Yuqiong Liu, Rui Men, An Yang, Jingren Zhou, and Jun-yang Lin. 2025. Group sequence policy optimization. 
+
+Preprint , arXiv:2507.18071. Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan Zhuang, Zhanghao Wu, Yonghao Zhuang, Zi Lin, Zhuohan Li, Dacheng Li, Eric Xing, Hao Zhang, Joseph Gonzalez, and Ion Stoica. 2023. Judging llm-as-a-judge with mt-bench and chatbot arena. In 
+
+Advances in Neural Information Processing Systems ,volume 36, pages 46595–46623. Curran Associates, Inc. Xuekai Zhu, Daixuan Cheng, Dinghuai Zhang, Hengli Li, Kaiyan Zhang, Che Jiang, Youbang Sun, Ermo Hua, Yuxin Zuo, Xingtai Lv, Qizheng Zhang, Lin Chen, Fanghao Shao, Bo Xue, Yunchong Song, Zhen-jie Yang, Ganqu Cui, Ning Ding, Jianfeng Gao, and 4 others. 2025. Flowrl: Matching reward distributions for llm reasoning. Preprint , arXiv:2509.15207. 
+
+10 A A Tiny Example of Prompt-Induced Mismatch 
+
+Prior work (Yang et al., 2026a) shows that, under the information-asymmetry formulation, the optimal non-privileged student target is the marginal privileged teacher 
+
+¯PT (· | x, y <t ) = Es∼P (s|x,y <t ) [πθ′ (· | x, s, y <t )] . (17) This follows from the law of total probability when the conditional distributions are induced by a common joint process. However, in LLM-based OPSD, πθ′ (· | x, s, y <t ) is implemented by changing the prompt to include the privileged solution s. Thus, it is a prompt-induced kernel rather than necessarily a statistical conditional of the non-privileged generation process. We illustrate this distinction with a simple toy example. We use Qwen3-1.7B and ask the model to generate an integer from 0 to 9. For the non-privileged prompt, we compute the model’s next-token probabilities over the digits 0, . . . , 9, denoted by 
+
+p0(y) = πθ(y | ϕ0),
+
+where ϕ0 is the prompt asking the model to generate an integer. We then construct a privileged prompt by prepending “The target integer is x.” to the same request. This gives a prompt-conditioned distribution 
+
+ppriv (y | x) = πθ(y | ϕpriv (x)) .
+
+Given an externally chosen distribution q(x), we form the prompt mixture 
+
+ˆpq(y) = X
+
+> x
+
+q(x) ppriv (y | x). (18) Unlike ordinary statistical marginalization, ˆpq is a mixture over prompt interventions and is not guaranteed to recover the non-privileged distribution p0.As shown in fig. 7, the resulting prompt mixtures can be far from the non-privileged distribution. Across different choices of q, we observe DTV (p0, ˆpq) > 0.5. This toy example does not contradict the probabilistic identity used in prior analyses; rather, it highlights a modeling gap when applying that identity to LLM prompting. In particular, revealing s through the prompt can change the model’s generation mode, so averaging over prompted privileged distributions may still leave a prompt-induced pattern mismatch.          
+
+> Figure 7: Toy demonstration that prompt-based marginalization need not recover the non-privileged generation distribution. We compare the digit distribution under a non-privileged prompt p0with prompt mixtures ˆpq(y) = P
+> xq(x)ppriv (y|x)induced by different external distributions q.
+
+11 Table 3: Keyword set for measuring explicit self-reflection frequency. 
+
+Keywords 
+
+wait , hold on , oops , not quite ,
+
+let me rethink , let me reconsider , let me check 
+
+B Experiments Details 
+
+B.1 Implementation Details 
+
+We first describe the implementation details of OGLS-SD. We generally follow the official OPSD codebase (Zhao et al., 2026) and build our method on top of it. We use LoRA (Hu et al., 2021) for post-training, with learning rate 5 × 10 −6, LoRA rank r = 64 , and LoRA scaling factor α = 128 .To generate on-policy sequences, we use vLLM (Kwon et al., 2023) for efficient sampling with temperature 1.1, and implement the training pipeline with TRL (von Werra et al., 2020). For each prompt, we sample 8 rollouts with a maximum generation length of 8,192 tokens to obtain final answers. During the distillation phase, we only use the first 1,024 tokens of each trajectory, following OPSD. For clipping, we apply symmetric pointwise divergence clipping with threshold 0.05 . To maintain stable guidance throughout training, we keep the teacher model fixed as the original base model. During evaluation, we set the maximum generation budget to 38,912 tokens. All experiments are conducted on 4 NVIDIA A100 GPUs with 80GB memory. 
+
+B.2 Prompt Details 
+
+We first present the prompt format used for the privileged teacher. Prompts for teacher model <|im_start|>user Problem: {problem} Here is a reference solution to this problem: === Reference Solution Begin === {solution} === Reference Solution End === After reading the reference solution above, make sure you truly understand the reasoning behind each step—do not copy or paraphrase it. Now, using your own words and independent reasoning, derive the same final answer to the problem above. Think step by step, explore different approaches, and do not be afraid to backtrack or reconsider if something does not work out: Please reason step by step, and put your final answer within \boxed{}. <|im_end|> We then present the prompts used in the toy experiment in section A. Prompts for section A 
+
+Non-privileged: Generate one integer from 0 to 9. Return only the integer. 
+
+Privileged: The target integer is {x}. Generate one integer from 0 to 9. Return only the integer. We also list the keywords used to measure explicit self-reflection frequency in table 3. 12

@@ -1,0 +1,864 @@
+Title: Star Elastic: Many-in-One Reasoning LLMs with Efficient Budget Control
+
+URL Source: https://arxiv.org/pdf/2605.07182v1
+
+Published Time: Mon, 11 May 2026 00:36:38 GMT
+
+Number of Pages: 23
+
+Markdown Content:
+> 2026-5-11
+
+# Star Elastic: Many-in-One Reasoning LLMs with Efficient Budget Control 
+
+Ali Taghibakhshi*, Ruisi Cai* †, Saurav Muralidharan*, Sharath Turuvekere Sreenivas*, Aditya Vavre*, Ameya Sunil Mahabaleshwarkar, Bilal Kartal, Sheldon Liang, Marcin Chochowski, Zijia Chen, Akhiad Bercovich, Ran Zilberstein, Ran El-Yaniv, Yonatan Geifman, Daniel Korzekwa, Yoshi Suhara, Oluwatobi Olabiyi, Ashwath Aithal, Nima Tajbakhsh, Pavlo Molchanov 
+
+Abstract: Training a family of large language models (LLMs), either from scratch or via iterative compression, is prohibitively expensive and inefficient, requiring separate training runs for each model in the family. In this paper, we introduce Star Elastic , a novel LLM post-training method that adds 𝑁 nested submodels to a given parent reasoning model using the compute of one run ( 𝑁 × savings) via a single post-training job. Beyond reducing training costs, Star Elastic also addresses a fundamental limitation of efficient reasoning: the rigidity of static architectures, which forces the allocation of constant resources regardless of token difficulty. By unlocking elastic budget control, Star Elastic enables a novel inference scheme that uses different submodels for each reasoning phase (thinking and answering). Star Elastic supports (1) nesting along the SSM, embedding channel, MoE, and FFN axes, (2) learning nested submodels via an end-to-end trainable router, and (3) curriculum-based knowledge distillation. Building on the Nemotron Elastic framework [ 1], we apply Star Elastic to the NVIDIA Nemotron Nano models, with a particular focus on hybrid Mixture-of-Experts (MoE) architectures: from Nemotron Nano v3 (30B/3.6A) [ 2], we generate 23B (2.8A) and 12B (2.0A) variants with 160B training tokens. All nested models match or outperform independently trained baselines of comparable size and achieve a 360 × reduction versus pretraining from scratch and a 7× reduction over state-of-the-art compression. Crucially, elastic budget control advances the accuracy–latency Pareto frontier, achieving up to 16% higher accuracy and 1.9× lower latency via dynamic per-phase model selection. We further extend Star Elastic to quantized regimes via Quantization-Aware Distillation (QAD), producing nested NVFP4 and FP8 elastic checkpoints that preserve zero-shot slicing while delivering substantially smaller deployment footprints. 
+
+> Elastic Models on Hugging Face
+
+BF16 FP8 NVFP4 
+
+# Introduction 
+
+Large Language Model (LLM) families typically con-sist of a set of fixed-size models, offering users discrete accuracy–cost trade-offs across diverse deployment settings [ 3, 4 ]. However, each model in the family is typically trained independently and stored as a separate set of parameters, making this approach prohibitively expensive in terms of compute/storage resources, and deployment overhead. For example, the Llama-3.1 family spans 8B, 70B, and 405B pa-rameters [ 5 ], with each variant trained from scratch on tens of trillions of tokens, multiplying training and storage costs, and restricting users to a small set of predefined model sizes. Recent model compression methods mitigate the cost of training LLM families through structured pruning and knowledge distilla-tion, training only the largest model from scratch and deriving smaller variants through compression [ 6, 7]. While effective, these approaches still require hun-dreds of billions of training tokens per compressed model, keeping overall training costs high. Elastic 
+
+nested models, on the other hand, embed multiple nested sub-models within a single parent model, en-abling zero-shot extraction of multiple model sizes from one training run and facilitating efficient multi-size deployment [ 8 , 9]. Recently, Nemotron Elastic [ 1]demonstrated that this paradigm can be effectively applied to hybrid Mamba–Attention reasoning LLMs, deriving 9B and 6B variants from the Nemotron Nano v2 12B parent with only 110B training tokens. In parallel, hybrid LLMs combining attention, State Space Models (SSMs, such as Mamba), MLPs, and Mixture-of-Experts (MoE) have become popu-lar [ 10 , 11 , 12 , 13 , 14 ], offering improved efficiency through reduced KV cache, linear-time sequence pro-cessing, and conditional expert computation, while maintaining strong accuracy. Unfortunately, no cur-rent framework supports elasticity (nesting) across the full hybrid Mamba–Attention–MoE design space;    
+
+> * Equal contribution. †Work done during an internship at NVIDIA.
+> ©2026 NVIDIA. All rights reserved.
+> arXiv:2605.07182v1 [cs.LG] 8 May 2026 Star Elastic: Many-in-One Reasoning LLMs with Efficient Budget Control
+
+Figure 1 | Left : Average accuracy of Star Elastic (Nano v3 Elastic) compared to parent and Qwen models across key reasoning benchmarks (AIME-2025, IFBench, GPQA, LiveCodeBench v5, and MMLU-Pro). Right :Hybrid elastic budget control versus standard Nemotron Nano v3 reasoning budget control; Star Elastic improves the accuracy–speed Pareto frontier. Time is measured using vLLM. the limited efforts targeting compression of such mod-els [ 15 ] that we know of do not support heterogeneous expert or FFN channel selection, and Nemotron Elas-tic [ 1] considers only Mamba–Attention parents with-out MoE. In this paper, we introduce Star Elastic , a post-training approach for hybrid Mamba–Transformer– MoE LLMs that produces multiple nested sub-networks at different parameter budgets from a single training run, and supports elastic budget control dur-ing inference. Our approach combines (1) importance-based ranking of embedding channels, attention and SSM heads, MoE experts, and FFN channels, (2) a learnable router that automatically determines nested submodels and employs knowledge distillation for joint sub-network optimization, (3) a two-stage train-ing curriculum for optimal reasoning performance, (4) elastic budget control allowing dynamic per-phase model allocation, and (5) Quantization-Aware Distil-lation (QAD) for elastic checkpoints, yielding NVFP4 and FP8 elastic models that preserve zero-shot slicing. We apply Star Elastic primarily to Nemotron Nano v3 MoE (30B/3.6A) [ 2], producing 23B (2.8A) and 12B (2.0A) variants with ∼160B training tokens. All nested models match or outperform independently trained baselines, while enabling a 360 × token re-duction compared to training from scratch and a 7×
+
+reduction over state-of-the-art compression [ 1 ]. Cru-cially, elastic budget control enabled by Star Elastic advances the Pareto frontier, achieving up to 16% higher accuracy and 1.9× lower latency via dynamic per-phase model selection as shown in Figure 1. For Nemotron Nano v2 results (a 9B and 6B nested fam-ily from the 12B parent obtained with ∼110B to-kens), as well as the corresponding training-token and deployment-memory scaling analysis, we refer the reader to the original Nemotron Elastic paper [ 1]. 
+
+Key contributions: 
+
+• Star Elastic introduces the first elastic post-training method for reasoning LLMs with hy-brid Mamba–Attention–MoE architectures, extending Nemotron Elastic [ 1] from Mamba– Attention to MoE-based hybrid models. 
+
+• Demonstrates elastic budget control , dynami-cally allocating submodels across reasoning and answer generation phases, achieving up to 16% higher accuracy and 1.9× lower latency. 
+
+• Introduces a learnable router that automati-cally determines nested submodel architectures, optimized through knowledge distillation from the parent model, and supports heterogeneous 
+
+per-layer FFN/expert selection. 
+
+• Achieves significant training cost reductions 
+
+for model families: up to 7× over prior compres-sion methods and 360 × over pretraining from scratch. 
+
+• Extends elastification to quantized regimes 
+
+via Quantization-Aware Distillation, producing nested NVFP4 and FP8 elastic checkpoints that preserve zero-shot slicing while substantially re-ducing deployment memory. 
+
+# Elastic Model Construction 
+
+In this section, we describe how Star Elastic con-verts an existing LLM into an elastic model. The pipeline consists of three stages: (1) importance es-timation to rank model components (embedding di-mensions, attention and SSM heads, MoE experts, 
+
+> 2Star Elastic: Many-in-One Reasoning LLMs with Efficient Budget Control
+
+Figure 2 | Overview of the Star Elastic training and deployment pipeline. Training: For each training sample, data flows to both teacher and student models. A budget (e.g., parameter count, memory, or latency target) is selected and passed to the router, which generates differentiable masks for the student model. Knowledge distillation from the model prior to elastification enables simultaneous optimization across all budget variants. Deployment: After training, all models are extracted zero-shot from a single elastic checkpoint: the full model and nested sub-networks are immediately available without additional training (Appendix contains deployment details). and FFN channels), (2) using an elastic formulation to enable nesting along both width and depth axes, and (3) elastic training using a two-stage curricu-lum with a learnable router. Figure 2 showcases the Star Elastic pipeline. Several core ingredients of this pipeline—in particular, importance estima-tion, group-aware Mamba ranking, and the two-stage curriculum—directly build on Nemotron Elastic [ 1]and we refer the reader to that work for additional de-tails, including ablations on Mamba–Attention–only parents. 
+
+Importance Estimation and Model Prepara-tion 
+
+The first stage of elastification involves computing the importance score for each model component, such as attention heads, FFN channels, layers, etc. Com-ponents are then sorted in decreasing order of impor-tance, yielding ranking permutations 𝜎 (𝑤 ) that reflect their contribution to model accuracy. These rankings guide the router’s architecture selection during elastic training. 
+
+Width. We extend activation-based importance scoring [ 6, 16 , 1] to hybrid Mamba–Attention–MoE ar-chitectures, and compute importance scores for MoE experts, embedding channels, Mamba heads and head channels, attention heads and FFNs. 
+
+Embedding channels: We aggregate normalized input activations across sequence ( 𝐿 ) and batch ( 𝐵 )dimensions to compute the importance score for each embedding channel 𝑖 as F emb  
+
+> 𝑖
+
+=∑︀ 𝐵,𝐿 |LN (𝑋 )|𝑖 .
+
+FFN and MoE channels: Importance score for channel 𝑖 is computed from the activations of the first up-projection layer, summed over batch and sequence length as F ffn  
+
+> 𝑖
+
+=∑︀ 𝐵,𝐿 |𝑋 (𝑊 𝑢𝑝 )𝑇 |𝑖 .
+
+Mamba heads and channels: Following the group-aware constraints that preserve SSM structure intro-duced in [ 16 ] and used in Nemotron Elastic [ 1], we compute head channel scores based on the Mamba input projection layer activations as 𝐹 ℎ𝑒𝑎𝑑 _𝑐ℎ𝑎𝑛𝑛𝑒𝑙 𝑑 =⃦⃦⃦∑︀  
+
+> 𝐵,𝐿
+
+𝑠 :,𝑑 ⃦⃦⃦ 2
+
+, where 𝑠 = LN (𝑋 )( 𝑊 𝑑 )𝑇 . These scores are then aggregated across all heads. Individual head scores are computed using top-ranked chan-nel activations ( 𝒟 top ), as 𝐹 ℎ𝑒𝑎𝑑 ℎ = ‖𝑠 ℎ, 𝒟 top ‖2, where 
+
+ℎ ∈ {1, . . . , 𝑚 ℎ} and 𝑚 ℎ denotes the number of mamba heads. 
+
+Attention heads: Importance for each head is computed from the attention scores aggregated across batch and sequence length as Fattn  
+
+> ℎ
+
+=∑︀  
+
+> 𝐵,𝐿
+
+‖𝐴𝑡𝑡𝑛 (𝑋𝑊 𝑄 ℎ , 𝑋𝑊 𝐾 ℎ , 𝑋𝑊 𝑉 ℎ )‖2.
+
+> 3Star Elastic: Many-in-One Reasoning LLMs with Efficient Budget Control
+
+MoE expert importance (REAP): For MoE layers with conditional expert activation, we adopt Router-Weighted Expert Activation Pruning (REAP) [ 17 ], which measures each expert’s direct contribution to the layer output magnitude. The saliency score for expert 𝑓 𝑗 is computed as 𝑆 𝑗 = 
+
+> 1
+> |𝒳 𝑗 |
+
+∑︀ 𝑥 ∈𝒳 𝑗 𝑔 𝑗 (𝑥 ) · ‖ 𝑓 𝑗 (𝑥 )‖2, where 𝒳 𝑗 is the set of inputs where 𝑔 𝑗 (𝑥 ) ∈ TopK (𝑔 (𝑥 )) , and 𝑔 𝑗 (𝑥 ) is the router gate-value for expert 𝑗 . This criterion approx-imates expert importance by averaging the product of routing weights and expert output magnitudes over tokens where the expert is active. Unlike naive frequency-based pruning, REAP considers both rout-ing frequency and functional contribution, enabling principled expert selection for heterogeneous MoE elastification. 
+
+Depth. Layer importance is estimated iteratively using normalized mean squared error (MSE) between the full model’s logits and those obtained with indi-vidual layers removed. At each iteration, for every re-maining layer 𝑗 , we compute 𝑠 𝑗 =∑︀ 𝐵,𝐿 (ℳfull −ℳ −𝑗 )2∑︀  
+
+> 𝐵,𝐿 ℳ2
+> full
+
+,where ℳfull denotes logits from the full model and 
+
+ℳ−𝑗 denotes logits with layer 𝑗 removed in addition to previously pruned layers. The iterative procedure accounts for changes in layer importance conditioned on previously pruned layers [ 6 , 16 , 1]. Normalization ensures that scores are comparable across calibration datasets. 
+
+Elastic Formulation 
+
+We describe our nested, weight-shared architecture, which allows a single hybrid Mamba–Attention–MoE LLM to adapt dynamically to varying resource con-straints. The model can be resized along both width and depth, enabling instant extraction of sub-networks with different parameter budgets and active expert counts without additional fine-tuning. 
+
+Elastic Width. We define elastic choices for each axis and sub-network 𝒮 : embedding dimension 𝑑 𝒮  
+
+> 𝑒
+
+,attention heads 𝑛 𝒮  
+
+> ℎ
+
+, Mamba heads 𝑚 𝒮  
+
+> ℎ
+
+and head chan-nels 𝑚 𝒮  
+
+> 𝑑
+
+, MoE expert count 𝑒 𝒮 (ℓ), and FFN interme-diate dimension 𝑓 𝒮 (𝛿 ). Sub-networks are constructed by selecting values from these axes according to a tar-get budget. The FFN and MoE components use layer-specific indices, with 1 ≤ 𝛿 ≤ 𝑁 F and 1 ≤ ℓ ≤ 𝑁 MoE ,since their widths can be chosen independently per layer to support heterogeneous configurations, where 
+
+𝑁 𝐹 and 𝑁 MoE denote the number of FFN and MoE layers, respectively. In all cases, elastic choices form nested hierarchies: for each axis, we select a subset of components ranked by importance, such that smaller-budget sub-networks 𝒮 always use the most salient contiguous components retained by larger-budget vari-ants. 
+
+Elastic Depth. For the depth axis, elasticity is controlled by a binary selection vector 𝛾 𝒮 =[𝛾 𝒮  
+
+> 0
+
+, 𝛾 𝒮  
+
+> 1
+
+, . . . , 𝛾 𝒮  
+
+> 𝑁 −1
+
+], where 𝛾 𝒮  
+
+> 𝑖
+
+∈ {0, 1} indicates whether layer 𝑖 is active in sub-network 𝒮 . The choice of which layer to disable is determined by its im-portance score, with less important layers removed first. 
+
+Implementation. Full implementation details, in-cluding elastification of each axis, masking, and zero-shot slicing, are provided in Appendix . 
+
+Elastic Training Router architecture and design: We train ded-icated routers to learn the optimal model-specific mapping between the user-provided budget and the corresponding value for each nested axis. Each router consists of two fully connected layers with leaky ReLU activation applied between them. The input to the router, for each axis, is a one-hot encoded vector representing the target compression level (budget specification): 𝑢 (axis ) = 𝜁 𝑙 ∈ R𝑛 targets ,where axis ∈ (𝑑 𝑒 , 𝑚 ℎ, 𝑚 𝑑 , 𝑛 ℎ, 𝑒, 𝑓 ), 𝜁 𝑙 is the 𝑙 -th stan-dard basis vector, and 𝑛 targets is the number of target model configurations. For example, with three bud-gets (100%, 70%, 50%) as illustrated in Figure 2, the inputs are 𝑢 = [1 , 0, 0] , [0 , 1, 0] , and [0 , 0, 1] respec-tively. Each router is parameterized as: ℎ(axis ) =
+
+LeakyReLU (𝑊 (axis )1 𝑢 (axis ) + 𝑏 (axis )1 ) followed by 
+
+𝑧 (axis ) = 𝑊 (axis )2 ℎ(axis ) + 𝑏 (axis )2 where 𝑊 (axis )1 ∈
+
+R𝑑 router ×𝑛 targets and 𝑊 (axis )2 ∈ R𝑛 (axis )  
+
+> out ×𝑑 router
+
+are learn-able parameters. For heterogeneous configurations, the router outputs target size per layer: 𝑛 (moe_expert, het ) 
+
+> out
+
+= |ℰ| × 𝑁 MoE ;
+
+𝑛 (ffn, het ) 
+
+> out
+
+= |ℱ| × 𝑁 𝐹 , where |ℰ| and |ℱ| denote the cardinality of target expert counts and FFN dimension sets. 
+
+Loss formulation: The router outputs are passed through Gumbel-Softmax with temperature 𝜏 to produce soft probability distributions 𝑃 (axis ) 
+
+> 𝑖
+
+=
+
+> exp
+
+(︂ 𝜅 log 𝜋 (axis ) 
+
+> 𝑖 +𝑔 𝑖 𝜏
+
+)︂∑︀  
+
+> 𝑗 exp
+
+(︂ 𝜅 log 𝜋 (axis ) 
+
+> 𝑗 +𝑔 𝑗 𝜏
+
+)︂ 
+
+over configuration choices for 
+
+> 4Star Elastic: Many-in-One Reasoning LLMs with Efficient Budget Control
+
+each elastic axis, where 𝑔 𝑖 ∼ Gumbel (0 , 1) ; 𝜅 is the scaling factor to balance the relative magnitude of logits; 𝜏 is a temperature parameter that controls the smoothness of the approximation, and as 𝜏 → 0, the 
+
+𝑃 (axis ) distribution approaches a one-hot vector. At each training iteration, we sample from these dis-tributions to obtain relaxed discrete selections that enable gradient flow to the router parameters. The router is trained to optimize a resource-aware objec-tive that maps selected configurations to hardware and computational constraints: ℒrouter = ‖𝒞 − ^𝒞‖ ,where 𝒞 is the resource cost of configuration (param-eter count, memory usage, latency, or throughput) chosen by the router and ^𝒞 is the target resource cost. 
+
+Knowledge distillation and multi-budget op-timization: Following Minitron [ 6 ], Star Elastic leverages knowledge distillation [ 18 ] exclusively dur-ing elastic training, using the non-elastified parent model as the teacher to guide both architecture choice and accuracy optimization through teacher-aligned signals. We compute ℒKD = 𝐷 KL (𝑝 𝜙 (𝑥 ; 𝜏 )‖𝑝 𝜃 (𝑥 ; 𝜏 )) ,where 𝑝 𝜙 (𝑥 ; 𝜏 ) denotes the teacher’s softmax output at temperature 𝜏 , and 𝑝 𝜃 (𝑥 ; 𝜏 ) denotes the student elastic model’s corresponding distribution. The final objective combines ℒKD with a router based loss: ℒtotal = ℒKD (𝜃 )+ 𝜆 ·ℒ router (𝜓 ), where 𝜓 denotes router parameters, and 𝜆 > 0 balances model accuracy against resource constraints. This end-to-end optimization enables the router to make architecture choices directly from the actual training signal, rather than relying on zero-shot proxy metrics evaluated post-hoc—a key distinction from prior methods that decouple architecture configura-tion from training objectives. Our approach priori-tizes sub-networks with strong capacity for continued learning under knowledge distillation, rather than those that simply minimize loss at initialization. 
+
+Two-stage training with curriculum-based sam-pling: Multi-budget elastic training (i.e., jointly training multiple nested models) requires carefully orchestrated data allocation across budget targets to prevent training imbalance and maintain accuracy across all sub-networks. Empirically, naïve uniform sampling in extended-context regimes causes the full-budget model to degrade while smaller budgets im-prove, indicating gradient competition and motivating our curriculum-based sampling strategy [ 1 ] (see also Appendix ). Hence, we introduce a two-stage training pipeline that adapts the sampling strategy to context length: 
+
+Stage 1: Uniform Budget Sampling (Short Con-text). During the initial short-context phase (sequence length 𝐿 1 ≈ 8192 , total tokens 𝑇 1), we employ uni-form budget sampling. For 𝑛 𝑏 target budgets, each training batch receives equal allocation with probabil-ity 1 
+
+> 𝑛 𝑏
+
+. Uniform sampling ensures the router receives balanced training signals from all sub-networks, allow-ing architecture exploration without budget-specific bias. 
+
+Stage 2: Curriculum-Based Non-Uniform Sampling (Extended Context). During extended-context train-ing (sequence length 𝐿 2 = 49152 , total tokens 𝑇 2), we transition to non-uniform sampling that prioritizes full-budget models: 𝑝 2(𝑏 ) = 𝛼 𝑏 , ∀𝑏 ∈ { 1, . . . , 𝑛 𝑏 },where ∑︀ 𝑛 𝑏  
+
+> 𝑖 =1
+
+𝛼 𝑖 = 1 and weights are typically skewed toward larger budgets. 
+
+The role of extended-context training for rea-soning: Reasoning tasks require extended token budgets for multi-step inference, making short-context elastic training insufficient for developing true rea-soning capability. Training with 49K-token contexts exposes elastic variants to long reasoning chains, mo-tivating our two-stage curriculum that first recovers accuracy for smaller models in the family and then incorporates reasoning-specific abilities (refer to Ap-pendix for details, and to [ 1 ] for analogous Nano v2 ablations). 
+
+# Elastic Budget Control 
+
+Existing budget control methods, such as the ones used in the NVIDIA Nemotron Nano models [ 19 , 2], work in two phases: (1) thinking phase : generation starts by prompting the model to produce reasoning text via a pre-pended <think> token. The number of generated thinking tokens is monitored and the phase is terminated once the predefined budget (e.g., 2𝑘 
+
+tokens) is reached; (2) answering phase : the model is then forced to generate the final answer conditioned on the (potentially incomplete) reasoning text. Unfortunately, existing budget control frameworks are forced to rely on static model architectures; i.e., they use the exact same model across prefill, thinking and answering. This results in computational ineffi-ciencies when uniform capacity is applied to phases of heterogeneous complexity. In practice, reasoning and answer synthesis often exhibit disparate compu-tational demands. This discrepancy motivates elastic budget control : a mechanism to dynamically calibrate model capacity for each inference phase, aligning re-source allocation with task requirements to achieve the optimal performance–efficiency trade-off. Specifically, using two model variants of differing 
+
+> 5Star Elastic: Many-in-One Reasoning LLMs with Efficient Budget Control
+
+sizes—denoted as ℳ𝐿 (Large) and ℳ𝑆 (Small)—we evaluate four experimental scenarios: 
+
+• ℳ𝐿 → ℳ 𝐿 : ℳ𝐿 used for both phases. 
+
+• ℳ𝑆 → ℳ 𝑆 : ℳ𝑆 used for both phases. 
+
+• ℳ𝐿 → ℳ 𝑆 : ℳ𝐿 for thinking, ℳ𝑆 for answer-ing. 
+
+• ℳ𝑆 → ℳ 𝐿 : ℳ𝑆 for thinking, ℳ𝐿 for answer-ing. Guided by the empirical findings detailed in Section , we identify ℳ𝑆 → ℳ 𝐿 as the optimal configuration for elastic budget control. This design choice is rooted in the asymmetric computational requirements of the two phases: (1) high-volume reasoning : the think-ing phase benefits from a larger token budget to ex-plore complex reasoning paths. By utilizing ℳ𝑆 , we can generate extensive reasoning traces with minimal computational overhead; (2) high-fidelity synthe-sis : the answering phase requires superior instruction-following and internal consistency to transform the reasoning trace into a correct final response. ℳ𝐿 
+
+provides the necessary cognitive capacity to ensure this synthesis is robust. 
+
+Cache state sharing: In our elastic budget control experiments, we align with the standard inference practice of recomputing cache states when switch-ing between nested models. This strategy is consis-tent with recent approaches adopted in the Nemotron Nano models [ 19 , 2] and Qwen3 [ 20 ], reflecting the current constraints of inference frameworks like vLLM and TensorRT-LLM. While naive budget control (using a single fixed model) naturally allows for cache reuse, switching between a smaller “thinking” model and a larger “answering” model typically breaks cache compatibility. Star Elas-tic mitigates this issue by preserving the structure of Mamba and attention layers during elastification, maintaining cache compatibility across nested mod-els. Empirically, we find cache states to be highly consistent across nested models, indicating that cache states can be safely transplanted between nested mod-els (see Tables 12 and 13 in Appendix ). As a result, although our reported wall-clock times currently in-clude cache recomputation overhead, our architecture enables seamless cache reuse once framework support becomes available. Consequently, our reported per-formance should be viewed as a conservative lower bound, with further gains expected as cache reuse is enabled. 
+
+# Experiments and Results 
+
+We apply our Star Elastic method to Nemotron Nano v3 30B/3.6A [ 2], a hybrid Mamba–Transformer– MoE reasoning model. Analogous experiments on the Mamba–Attention-only Nemotron Nano v2 12B parent (yielding 9B and 6B nested variants from a 110B-token elastic run) are reported in the original Nemotron Elastic paper [ 1 ]; we therefore refer the reader to that work for Nano v2 results, and focus the experiments here on the new MoE setting. 
+
+Experimental Setup Nested compression: For Nano v3, we simulta-neously train three nested models from a single par-ent architecture using multi-budget elastic compres-sion: this includes the original parent model, and two smaller models. The router optimizes for target active parameter budgets of 3.6B, 2.8B, and 2.0B, deriving 23B (2.8A) and 12B (2.0A) nested variants from the 30B (3.6A) parent. The frozen version of the parent model (prior to elastification) serves as the teacher for knowledge distillation. Detailed architecture spec-ifications for the router-selected configurations are provided in Appendix . 
+
+Dataset: For importance estimation and knowledge distillation, we use the open-source data used to train the Nano v3 parent model [ 2]. Ablation studies on data blends are provided in Appendix . 
+
+Evaluation benchmarks: We evaluate across a comprehensive suite of reasoning and knowledge benchmarks: MMLU-Pro [ 21 ] (college-level multiple-choice reasoning), GPQA [ 22 ] (graduate-level science questions), AIME-2024 and AIME-2025 [ 23 ] (invita-tional mathematics), LiveCodeBench v5 [ 24 ] (code generation), IFBench [ 25 ] (instruction following), and Tau Bench [ 26 ] (industry-specific reasoning across airline, retail, and telecom domains). 
+
+Hyperparameters and training setup: For im-portance estimation, we use 1024 calibration samples with sequences of length 8192. Knowledge distillation is performed in two phases: Star Elastic on Nano v3 is trained for ∼100B tokens (batch 6144, sequence length 8k), followed by ∼60B tokens (batch 1024, se-quence length 49k), totaling 160B tokens. The full elastic training pipeline is integrated into NVIDIA Megatron-LM 1 and run on the same training stack used for the parent Nano v3 model, which makes scal-
+
+> 1https://github.com/NVIDIA/Megatron-LM 6Star Elastic: Many-in-One Reasoning LLMs with Efficient Budget Control
+
+ing Star Elastic to larger parents and longer contexts straightforward. 
+
+Optimizer settings: Model parameters are trained with a learning rate of 10 −4, while the router uses 
+
+10 −2. A 60-step linear warmup is applied to all pa-rameters. The Gumbel-Softmax temperature 𝜏 is annealed from 1.0 to 0.05. The router loss coefficient 
+
+𝜆 is set to 1.0, and 𝜅 , the linear scaling coefficient for router logits, is scaled linearly from 1.0 to 10.0. The router intermediate hidden dimension ( 𝑑 router ) is set to 256. 
+
+Budget sampling strategy: During the short-context phase, we employ uniform budget sampling with 𝑝 (budget ) = 1 /3 for each model variant. In the extended-context phase, we transition to weighted non-uniform sampling: 𝑝 (30B ) = 0 .5, 𝑝 (23B ) = 0 .3,
+
+𝑝 (12B ) = 0 .2. This prevents accuracy degradation with the full model during extended-context training. Ablations and details on the budget sampling strat-egy follow [ 1], with additional Nano v3 specifics in Appendix . 
+
+Main Results 
+
+Detailed accuracy results for the elastic Nano v3 vari-ants are shown in Table 1, with average scores in Figure 1 (Left). Star Elastic Elastic-30B matches the accuracy of its parent model, while smaller nested variants remain highly competitive against similarly-sized community models. Two-stage training with adjusted budget sampling prevents accuracy degrada-tion in larger models (see [ 1] and Appendix ). Overall, Star Elastic scales effectively to MoE-based hybrid architectures, producing elastic models comparable to or surpassing independently trained counterparts with a fraction of the training budget. 
+
+Elastic Budget Control Results 
+
+As described in Section , Star Elastic enables the use of different nested models during distinct reason-ing stages such as thinking and answer generation. Figure 1 (right) shows the results for our proposed elastic budget control method and compares it to the default Nano v3 budget control. We notice from the figure that our approach achieves accuracy improve-ments up to 16% and latency reductions of up to 1.9 ×. Figure 3 summarizes the elastic budget control configurations underlying the accuracy–speed Pareto improvements in Figure 1 (right). We compare hy-brid thinking–answering allocations across models and observe that the ℳ𝑆 → ℳ 𝐿 strategy (small thinking, large answering), specifically in the case of 23 B → 30 B, provides the best accuracy–latency 
+
+Figure 3 | Elastic budget control configurations across computational budgets for Nemotron Nano v3. The ℳ𝑆 → ℳ 𝐿 strategy generally offers the best accuracy–latency tradeoffs ( 23 B → 30 B), while 
+
+30 B → 23 B is preferred at the highest latency regime. 
+
+12 B → 30 B / 30 B → 12 B provide low-latency options at the smallest budgets (refer to Appendix for more details). tradeoffs over a wide range of budgets, since it con-centrates capacity on the final answer while keeping the reasoning phase cheaper. For applications that require the highest absolute accuracy and can afford more inference time, the 30 B → 23 B configuration is preferred, slightly outperforming other settings at the high-latency end of the frontier. At the lowest budgets, either 12 B → 30 B or 30 B → 12 B can be used to minimize latency while still benefiting from asymmetric thinking–answering allocations. To mea-sure inference latency, we utilized the NeMo-Skills library 2 with vLLM as the backend, employing BF16 precision. We set the batch sizes to 40, 30, and 16 for the 12B, 23B, and 30B models, respectively. Detailed per-benchmark Pareto curves and configuration-level analyses, including a corresponding scatter plot for all combinations of thinking and answering, are provided in Appendix . 
+
+Runtime Speedups 
+
+Table 2 shows the throughput improvements that Star Elastic (Nano v3 Elastic) models achieve at an input and output sequence length of 8192 and 16384, re-spectively; we use the maximum batch size that fits each model on an H100 GPU at bfloat16 precision. We notice that Star Elastic nested models achieve significant speedups (up to 2.4 × in this case) while also enabling inference at much higher batch sizes on the same GPU. Across-precision and across-GPU throughput numbers (BF16/FP8/NVFP4 on RTX 5080/5090/Pro 6000) are reported in Section (Fig-ure 4). 
+
+> 2https://github.com/NVIDIA-NeMo/Skills 7Star Elastic: Many-in-One Reasoning LLMs with Efficient Budget Control
+
+Table 1 | Detailed Star Elastic (Nano v3) results. All three Elastic variants are obtained from a single 160B-token training run. * Indicates the teacher model used for distillation.                                                       
+
+> Benchmark NanoV3 Elastic-12B NanoV3 Elastic-23B NanoV3 Elastic-30B NanoV3-30B* Qwen3-30B-A3B (2.0A) (2.8A) (3.6A) (3.6A) (3.3A)
+> AIME-2025 78.54 85.63 88.54 87.92 80.00 GPQA 57.39 69.82 72.10 73.11 70.83 LiveCodeBench v5 55.24 67.30 72.70 71.75 68.25 MMLU-Pro 68.28 76.07 78.63 78.86 81.11
+> IFBench (prompt) 64.03 67.43 70.58 70.82 43.28 IFBench (instruct) 67.39 70.75 73.96 73.19 46.57 Tau-Airline 24.67 38.67 43.33 44.67 52.67
+> Tau-Retail 49.12 55.56 59.36 53.51 56.43 Tau-Telecom 29.33 30.99 33.33 30.99 28.36
+
+Table 2 | Throughput improvements for Star Elastic (Nano v3) models. Throughput is measured with vLLM at bfloat16 on an H100 GPU.             
+
+> Elastic Variant ISL/OSL Max Batch Speedup
+> Nano v3 30BA3.6A 8192/16384 36 1×
+> Nano v3 23BA2.8A 8192/16384 108 1.8 ×
+> Nano v3 12BA2A 8192/16384 224 2.4 ×
+
+Cost Efficiency Analysis Training efficiency: A key advantage of Star Elas-tic (and Nemotron Elastic more broadly [ 1 ]) is that it eliminates the exploratory training runs required by prior methods such as Minitron [ 6 ] and Minitron-SSM [ 16 ], which prune and distill multiple candidate architectures to select the best for final knowledge distillation, incurring token costs that scale linearly with the number of models. In contrast, Star Elastic performs end-to-end, router-guided architecture selec-tion in a single elastic training run, simultaneously optimizing all target budgets. Nested training further provides regularization from the full model, reducing the token requirement even for the final distillation stage. Quantitative token-budget comparisons for deriving 6B/9B variants from the Nano v2 12B par-ent, as well as the corresponding training-token and deployment-memory scaling analyses, are reported in [ 1]; for Nano v3, our 160B-token elastic run anal-ogously delivers all three nested variants in a single pass, in contrast to 𝑛 · (Tokens explore + Tokens KD )
+
+scaling for prior compression methods. 
+
+Deployment memory efficiency: Elastic models with nested weight-sharing offer substantial mem-ory savings: all variants share a single parameter space, with only lightweight routing metadata distin-guishing them. Once training is complete, architec-ture selection can be hard-coded, enabling zero-shot slicing with no runtime overhead. Deploying mul-tiple nested models requires memory equal to the largest model, Memory Nested (𝑛 ) = Size (Model max ),Table 3 | Deployment memory comparison for Nemotron Nano v3. Elastic models host multiple budgets in a single nested checkpoint, using less than half the memory of storing separate checkpoints for each variant 3.
+
+Config Models Mem (BF16) 
+
+Elastic (V3) 12B+23B+30B 58.9 GB 
+
+NanoV3 12B+23B+30B 126.1 GB compared to linear scaling for separate checkpoints, Memory Separate (𝑛 ) = ∑︀ 𝑛 𝑖 =1 Size (Model 𝑖 ). For exam-ple, elastic Nano v3 (12B, 23B, 30B) fits in 58.9 GB BF16 versus 126.1 GB for separate variants, high-lighting the memory efficiency of Star Elastic’s nested models (Table 3). The analogous Nano v2 comparison (24 GB vs. 54 GB) is reported in [1]. 
+
+# Quantized Elastic Models 
+
+A practical bottleneck for deploying large reasoning models is the memory and bandwidth cost of carry-ing high-precision weights, even after elastification. While BF16 Star Elastic checkpoints already provide a 
+
+∼2.2 × memory reduction over storing 30B/23B/12B variants separately, modern GPUs can additionally exploit narrower precisions such as FP8 (E4M3) and NVFP4 to further compress weights and activations. A naive route would be to quantize each elastic vari-ant independently after slicing; however, this would (i) require a separate quantization run per variant, (ii) break the nested weight-sharing property—since post-hoc per-variant quantization no longer preserves a single shared parameter space across budgets—and (iii) prevent zero-shot extraction of smaller variants from a single quantized checkpoint. Instead, we preserve a single nested checkpoint un-der quantization. We release two quantized elastic 
+
+> 3Nano v3 23B2.8A and Nano v3 12B2A in Table 3 are estimated based on scaling laws and have not been trained as standalone checkpoints. 8Star Elastic: Many-in-One Reasoning LLMs with Efficient Budget Control
+
+checkpoints for Nano v3, both containing the full 30B/23B/12B nested family and supporting the same zero-shot slicing pipeline as the BF16 model. 
+
+Overview of quantization formats: We use two formats, both defined per output channel of each linear layer: 
+
+• FP8 (E4M3): Per-tensor scaling with E4M3 mantissa-exponent format. Weights are stored in FP8; KV/SSM states are kept in BF16. 
+
+• NVFP4: NVIDIA’s 4-bit floating-point format with two-level scaling factors (E4M3 per-block scales and FP32 per-tensor scale). Weights are stored in NVFP4. The quantization configura-tion is the same one that was used for Nemotron-3-Nano-NVFP4 [ 27 ] i.e. we keep the 6 self-attention layers and their preceding Mamba-2 layers in BF16 precision, quantize the remaining network to NVFP4, and quantize KV-Cache to FP8. 
+
+Quantization Approach: We start from the BF16 elastic checkpoint and apply quantization while pre-serving the nested structure. For FP8, post-training quantization (PTQ) is sufficient: we quantize the BF16 checkpoint and then apply the nested masks to obtain all variants. This preserves the shared pa-rameter space and yields strong accuracy without retraining. For NVFP4, PTQ leads to substantial degradation (4.12% average accuracy drop on the 30B variant). To recover this loss, we apply nested Quantization-Aware Distillation (QAD) on top of the quantized model. 
+
+Nested QAD: Given a trained elastic BF16 teacher 
+
+𝒯 with parameters Θbf16  
+
+> max
+
+and the same router-determined nested mask hierarchy used at deploy-ment, we initialize a quantized student 𝒮 𝑞 with the same architecture and router masks but quantized weights Θ𝑞 (NVFP4). At each training step, we sam-ple a budget 𝑏 ∈ { 30 B, 23 B, 12 B} following the same curriculum-based, non-uniform sampling distribution used during BF16 elastification (Section ), apply the corresponding budget-conditioned masks to only the student 𝒮 𝑞 , and minimize a KL divergence between teacher and student logits: 
+
+ℒQAD = E𝑏 ∼𝑝 2[︀ 𝐷 KL (︀ 𝑝 𝒯 (· | 𝑥 )⃦⃦ 𝑝 𝒮 𝑞 (· | 𝑥 ; 𝑏 ))︀]︀ , (1) where 𝑝 2 is the same Stage-2 budget distribution used in BF16 elastification. Because the student is trained with the same nested mask hierarchy while being distilled from a non-elastified teacher, gradients from the smaller budgets regularize the most salient Table 4 | Nested-quantized accuracy recovery for Star Elastic-Nano v3. Recovery is computed as the ratio of the average benchmark accuracy of the quantized variant to that of the corresponding BF16 elastic variant.         
+
+> Variant FP8 NVFP4
+> 30B (3.6A) 98.69% 97.79% 23B (2.8A) 99.03% 99.15% 12B (2.0A) 100.26% 97.10%
+
+shared weights, while gradients from the full budget shape the tail; this follows the same multi-budget opti-mization intuition that justifies BF16 elastic training, transposed to the quantized regime. 
+
+Nested QAD recipe: We reuse the Stage-2 extended-context KD dataset and run a short dis-tillation phase with a context length of 48K. We use a batch size of 512, and keep the learning rate to a small constant value of 1e −5. We train for 200 steps (∼5B tokens) and select the checkpoint with the best accuracy on the downstream benchmarks across the elastic variants. 
+
+Accuracy recovery: Aggregated across the bench-mark suite of Section , both FP8 and NVFP4 nested variants recover the vast majority of BF16 accuracy (Table 4) while preserving the nested structure, i.e., the 23B and 12B variants are obtained via zero-shot slicing from the corresponding FP8/NVFP4 30B checkpoint. 
+
+Per-benchmark FP8 and NVFP4 results: Per-benchmark BF16, FP8, and NVFP4 numbers across the three nested variants on the full evaluation suite (including MATH-500) are reported in Table 14 of Appendix . 
+
+Throughput and deployment memory: Quan-tized elastic checkpoints offer further deployment sav-ings on top of the nested BF16 baseline. We summa-rize device memory for loading BF16/FP8/NVFP4 variants of the nested 12B/23B/30B elastic family in Table 5, measured under vLLM on RTX Pro 6000, RTX 5090, and RTX 5080 (reported memory is device-agnostic at load time in our setup). At ISL = 8192 
+
+and OSL = 16384 , Figure 4 reports maximum aggre-gate decode throughput (tokens/s) for each variant on those GPUs; entries marked OOM did not com-plete successfully in our sweep. The combination of nested elasticity and quantization opens up deploy-ment regimes that are unreachable with the BF16 
+
+> 9Star Elastic: Many-in-One Reasoning LLMs with Efficient Budget Control
+
+Table 5 | Per-variant device memory (GB) to load each nested-elastic Star Elastic (Nano v3) standalone. Because the variants are nested, deploying a family of any size requires storing only the largest checkpoint.             
+
+> Variant BF16 FP8 NVFP4
+> 30B (3.6A) 58.9 31.4 18.7 23B (2.8A) 44.0 23.7 14.1 12B (2.0A) 23.2 13.0 8.0
+
+Figure 4 | Generation throughput (tokens/s) of Star Elastic (Nano v3) variants under vLLM at max batch size with ISL/OSL = 8k/16k, on RTX 5080 (top), RTX 5090 (middle), and RTX Pro 6000 (bottom), in BF16, FP8 (PTQ), and NVFP4 (QAD). “OOM” marks configurations that do not fit. NVFP4 enables deployment of larger nested budgets on smaller GPUs and dominates throughput at every operating point. 30B parent: the 12B NVFP4 variant fits and runs on an RTX 5080 (where every BF16 budget OOMs), and on an RTX 5090 the 30B/23B variants are only deployable in NVFP4. On the higher-memory RTX Pro 6000, every variant is deployable at every preci-sion and NVFP4 still delivers the best throughput, with the 12B NVFP4 model reaching 7,426 tokens/s— a 3.4 × improvement over the 30B BF16 baseline (2,178 tokens/s). 
+
+Take-aways: Quantized elastification preserves the single-checkpoint paradigm while adapting to format-specific constraints. FP8 supports direct PTQ on the BF16 elastic checkpoint with negligible accuracy loss, whereas NVFP4 requires a short nested QAD phase to recover the degradation introduced by PTQ. In both cases, the nested structure is maintained, en-abling zero-shot extraction of 30B/23B/12B variants from a single quantized checkpoint. This retains the deployment flexibility of Star Elastic while further reducing memory and improving efficiency across the accuracy–latency trade-off. 
+
+# Related Work 
+
+Hybrid SSM–Transformer–MoE Models. Star Elastic focuses on hybrid SSM–Transformer–MoE and SSM–Transformer architectures, both of which have demonstrated strong performance for general tasks and efficient long-context modeling [ 10 , 11 , 12 , 13 ,14 , 2]. Concurrent compression work [ 16 ] introduces group-aware Mamba pruning but requires separate dis-tillation per model size; Star Elastic sidesteps this by adopting nested elastification across the full Mamba– Attention–MoE design space. 
+
+Elastic and Nested Architectures. MatFormer [ 9]and Flextron [ 8] pioneered nested weight-sharing for Transformers. MatMamba [ 15 ] introduces Matryoshka-style sub-block architecture for Mamba layers. FlexGS [ 28 ] extends this methodology into the computer vision domain. Most directly, Nemotron Elastic [ 1 ] introduces the first elastic post-training framework for hybrid Mamba–Attention reasoning LLMs (Nano v2), with a learnable router, two-stage curriculum, and zero-shot slicing. Star Elastic builds directly on Nemotron Elastic and extends it along three orthogonal axes: (1) elastification of Mamba– Attention–MoE parents (Nano v3), with REAP-based MoE expert ranking and heterogeneous per-layer ex-pert/FFN selection; (2) elastic budget control , which leverages the nested family at inference to allocate different submodels to the thinking and answering phases; and (3) elastification in the quantized regime via QAD, producing nested NVFP4 / FP8 check-points. To the best of our knowledge, no prior work jointly addresses these three settings in a single elastic checkpoint. 
+
+Reasoning Model Efficiency. Reasoning-capable LLMs generate extended thought chains for complex problem-solving [ 29 , 30 ]. While prior work focuses on improving reasoning model efficiency via prompting strategies or reinforcement learning [ 31 ], we explore a novel axis (model size, plus phase-wise model selec-tion) to achieve the same objective. 
+
+Quantization for LLMs. Post-training quantiza-tion (PTQ) and quantization-aware training (QAT) have been widely studied for dense Transformer LLMs, typically targeting INT8/FP8 weights and activa-tions. Recent work extends these recipes to FP4-class formats. Star Elastic differs in that it performs 
+
+quantization-aware distillation on top of an elastic teacher : the same nested mask hierarchy is applied to both teacher and student, so quantization preserves rather than collapses the elastic structure, and a sin-
+
+> 10 Star Elastic: Many-in-One Reasoning LLMs with Efficient Budget Control
+
+gle quantized checkpoint supports zero-shot slicing across the full model family. 
+
+# Conclusions 
+
+We present Star Elastic, the first post-training method for producing elastic, reasoning-capable hy-brid Mamba–Transformer–MoE LLMs that simulta-neously unlocks efficient many-in-one model families and elastic budget control at inference. Building on the Nemotron Elastic framework [ 1], Star Elas-tic efficiently derives 23B and 12B model variants from Nemotron Nano v3 30B using only ∼160B train-ing tokens, achieving a 360 × reduction over train-ing from scratch and a 7× reduction versus sequen-tial compression. Additionally, elastic budget con-trol at inference improves the accuracy–latency trade-off, achieving up to 16% higher accuracy and 1.9×
+
+lower latency. Through post-training quantization and quantization-aware distillation, we further pro-duce FP8 and NVFP4 nested checkpoints that pre-serve zero-shot slicing while substantially shrinking the deployment footprint. All nested models share a constant memory footprint, enabling efficient deploy-ment. Overall, our approach enables state-of-the-art accuracy with adaptive inference and makes training and deploying a family of reasoning models highly cost-effective. 
+
+Limitations and future work. Our current ap-proach achieves ∼2.5 × compression for the smallest variant; exploring extreme compression ratios (e.g., 10 ×) for ultra-resource-constrained settings remains an open challenge. Further, task-specific elastic rout-ing (i.e., automatically selecting optimal model con-figurations based on the input domain, such as code, math, or multilingual tasks) requires further study. Cache-state transplantation across nested variants is another promising direction whose practical realiza-tion is currently bottlenecked by inference framework support. 
+
+# Acknowledgments 
+
+We would like to thank our colleagues and leaders at NVIDIA for their valuable input and support, in-cluding Alex Fit-Florea, Bill Dally, Bryan Catanzaro, Joey Conway, Jonah Alben, Jonathan Cohen, Kari Briski, Luis Vega, Michael Lightstone, Nave Assaf, Oleksii Kuchaiev, Terry Kong, Udi Karpas. 
+
+> 11 Star Elastic: Many-in-One Reasoning LLMs with Efficient Budget Control
+
+# References 
+
+[1] Ali Taghibakhshi, Sharath Turuvekere Sreenivas, Saurav Muralidharan, Ruisi Cai, Marcin Chochowski, Ameya Sunil Mahabaleshwarkar, Yoshi Suhara, Oluwatobi Olabiyi, Daniel Korzekwa, Mostofa Pat-wary, et al. Nemotron elastic: Towards effi-cient many-in-one reasoning llms. arXiv preprint arXiv:2511.16664 , 2025. [2] Aaron Blakeman, Aaron Grattafiori, Aarti Basant, Abhibha Gupta, Abhinav Khattar, Adi Renduch-intala, Aditya Vavre, Akanksha Shukla, Akhiad Bercovich, Aleksander Ficek, et al. Nemotron 3 nano: Open, efficient mixture-of-experts hybrid mamba-transformer model for agentic reasoning. arXiv preprint arXiv:2512.20848 , 2025. [3] Hugo Touvron, Louis Martin, Kevin Stone, Peter Albert, Amjad Almahairi, Yasmine Babaei, Nikolay Bashlykov, Soumya Batra, Prajjwal Bhargava, Shruti Bhosale, Dan Bikel, Lukas Blecher, Cristian Can-ton Ferrer, Moya Chen, Guillem Cucurull, David Esiobu, Jude Fernandes, Jeremy Fu, Wenyin Fu, Brian Fuller, Cynthia Gao, Vedanuj Goswami, Na-man Goyal, Anthony Hartshorn, Saghar Hosseini, Rui Hou, Hakan Inan, Marcin Kardas, Viktor Kerkez, Madian Khabsa, Isabel Kloumann, Artem Korenev, Punit Singh Koura, Marie-Anne Lachaux, Thibaut Lavril, Jenya Lee, Diana Liskovich, Yinghai Lu, Yun-ing Mao, Xavier Martinet, Todor Mihaylov, Pushkar Mishra, Igor Molybog, Yixin Nie, Andrew Poulton, Jeremy Reizenstein, Rashi Rungta, Kalyan Saladi, Alan Schelten, Ruan Silva, Eric Michael Smith, Ran-jan Subramanian, Xiaoqing Ellen Tan, Binh Tang, Ross Taylor, Adina Williams, Jian Xiang Kuan, Puxin Xu, Zheng Yan, Iliyan Zarov, Yuchen Zhang, Angela Fan, Melanie Kambadur, Sharan Narang, Au-relien Rodriguez, Robert Stojnic, Sergey Edunov, and Thomas Scialom. Llama 2: Open foundation and fine-tuned chat models. ArXiv , abs/2307.09288, 2023. [4] Abhimanyu Dubey and Abhinav Jauhri et al. The Llama 3 Herd of Models. arXiv 2407.21783 , 2024. [5] Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, et al. The llama 3 herd of models. arXiv preprint arXiv:2407.21783 , 2024. [6] Saurav Muralidharan, Sharath Turuvekere Sreenivas, Raviraj Joshi, et al. Compact language models via pruning and knowledge distillation. arXiv preprint arXiv:2407.14679 , 2024. [7] Mengzhou Xia, Tianyu Gao, Zhiyuan Zeng, and Danqi Chen. Sheared llama: Accelerating language model pre-training via structured pruning. arXiv preprint arXiv:2310.06694 , 2023. [8] Ruisi Cai, Saurav Muralidharan, Greg Heinrich, et al. Flextron: Many-in-one flexible large language model. 
+
+arXiv preprint arXiv:2406.10260 , 2024. [9] Sneha Kudugunta, Aditya Kusupati, Tim Dettmers, et al. Matformer: Nested transformer for elastic inference. arXiv preprint arXiv:2310.07707 , 2023. [10] Albert Gu and Tri Dao. Mamba: Linear-time se-quence modeling with selective state spaces. arXiv preprint arXiv:2312.00752 , 2023. [11] Tri Dao and Albert Gu. Transformers are ssms: Generalized models and efficient algorithms through structured state space duality. arXiv preprint arXiv:2405.21060 , 2024. [12] Opher Lieber, Barak Lenz, Hofit Bata, et al. Jamba: A hybrid transformer-mamba language model. arXiv preprint arXiv:2403.19887 , 2024. [13] Paolo Glorioso, Quentin Anthony, and Yury Tok-panov. Zamba: A compact 7b ssm hybrid model. 
+
+arxiv preprint arXiv:2405.16712 , 2024. [14] Aaron Blakeman, Aarti Basant, et al. Nemotron-h: A family of accurate and efficient hy-brid mamba-transformer models. arXiv preprint arXiv:2504.03624 , 2025. [15] Abhinav Shukla, Sai Vemprala, Aditya Kusupati, and Ashish Kapoor. MatMamba: A Matryoshka State Space Model, 2024. [16] Ali Taghibakhshi, Sharath Turuvekere Sreenivas, Saurav Muralidharan, et al. Minitron-SSM: Effi-cient Hybrid Language Model Compression through Group-Aware SSM Pruning. arXiv preprint arXiv:2504.11409 , 2025. [17] Mike Lasby, Ivan Lazarevich, Nish Sinnadurai, Sean Lie, Yani Ioannou, and Vithursan Thangarasa. Reap the experts: Why pruning prevails for one-shot moe compression. arXiv preprint arXiv:2510.13999 , 2025. [18] Geoffrey Hinton, Oriol Vinyals, and Jeff Dean. Dis-tilling the Knowledge in a Neural Network. arXiv preprint arXiv:1503.02531 , 2015. [19] NVIDIA Nemotron Nano. Efficient hybrid mamba-transformer reasoning model. arXiv preprint arXiv:2508.14444 , 2025. [20] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et al. Qwen3 technical report. arXiv preprint arXiv:2505.09388 , 2025. [21] Yubo Wang, Xueguang Ma, Ge Zhang, Yuansheng Ni, Abhranil Chandra, Shiguang Guo, Weiming Ren, Aaran Arulraj, Xuan He, Ziyan Jiang, et al. Mmlu-pro: A more robust and challenging multi-task lan-guage understanding benchmark. arXiv preprint arXiv:2406.01574 , 2024. [22] David Rein, Betty Li Hou, Asa Cooper Stickland, Jackson Petty, Richard Yuanzhe Pang, Julien Dirani, Julian Michael, and Samuel R Bowman. Gpqa: A graduate-level google-proof q&a benchmark. arXiv preprint arXiv:2311.12022 , 2023. 
+
+> 12 Star Elastic: Many-in-One Reasoning LLMs with Efficient Budget Control
+
+[23] Mathematical Association of America. American invitational mathematics examination. https:// www .maa .org/math-competitions/aime , 2024. [24] Naman Jain, King Han, Alex Gu, Wen-Ding Li, Fanjia Yan, Tianjun Zhang, Sida Wang, Armando Solar-Lezama, Koushik Sen, and Ion Stoica. Live-codebench: Holistic and contamination free evalua-tion of large language models for code. arXiv preprint arXiv:2403.07974 , 2024. [25] Valentina Pyatkin, Saumya Malik, Victoria Graf, Hamish Ivison, Shengyi Huang, Pradeep Dasigi, Nathan Lambert, and Hannaneh Hajishirzi. General-izing verifiable instruction following. arXiv preprint arXiv:2507.02833 , 2025. [26] Victor Barres, Honghua Dong, Soham Ray, Xujie Si, and Karthik Narasimhan. 𝜏 2-bench: Evaluating conversational agents in a dual-control environment. 
+
+arXiv preprint arXiv:2506.07982 , 2025. [27] Meng Xin, Sweta Priyadarshi, Jingyu Xin, Bilal Kar-tal, Aditya Vavre, Asma Kuriparambil Thekkumpate, Zijia Chen, Ameya Sunil Mahabaleshwarkar, Ido Sha-haf, Akhiad Bercovich, Kinjal Patel, Suguna Varshini Velury, Chenjie Luo, Zhiyu Cheng, Jenny Chen, Chen-Han Yu, Wei Ping, Oleg Rybakov, Nima Tajbakhsh, Oluwatobi Olabiyi, Dusan Stosic, Di Wu, Song Han, Eric Chung, Sharath Turuvekere Sreenivas, Bryan Catanzaro, Yoshi Suhara, Tijmen Blankevoort, and Huizi Mao. Quantization-aware distillation for nvfp4 inference accuracy recovery, 2026. [28] Hengyu Liu, Yuehao Wang, Chenxin Li, Ruisi Cai, Kevin Wang, Wuyang Li, Pavlo Molchanov, Peihao Wang, and Zhangyang Wang. Flexgs: Train once, deploy everywhere with many-in-one flexible 3d gaus-sian splatting. In Proceedings of the Computer Vision and Pattern Recognition Conference (CVPR) , pages 16336–16345, June 2025. [29] Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Fei Xia, Ed Chi, Quoc V Le, Denny Zhou, et al. Chain-of-thought prompting elicits reasoning in large language models. Advances in Neural Infor-mation Processing Systems , 35:24824–24837, 2022. [30] Shunyu Yao, Dian Yu, Jeffrey Zhao, et al. Tree of thoughts: Deliberate problem solving with large language models. Advances in Neural Information Processing Systems , 36, 2023. [31] Hunter Lightman, Vineet Kosaraju, Yura Burda, et al. Let’s verify step by step. arXiv preprint arXiv:2305.20050 , 2023. 
+
+# Router-Selected Architecture Speci-fications 
+
+Nemotron Nano v3 
+
+The router optimizes for target active parameter bud-gets. Due to the limitation of vLLM (which is used for all benchmark evaluations) in supporting hetero-geneous MoE FFN channels, the router is set to select homogeneous configurations across layers. All variants share 32 attention heads, 64 Mamba heads, 128 MoE experts and the layer pattern. The embedding dimensions and MoE FFN dimensions for each budget are shown in Table 6. Table 6 | Star Elastic (Nano v3) architecture variants.         
+
+> 30B (3.6A) 23B (2.8A) 12B (2.0A)
+> Embedding Dim 2688 2304 1920 MoE FFN Dim 1856 1600 960
+
+Layer Pattern: M-E-M-E-M*-E-M-E-M-E-M*-E-M-E-M-E-M*-E-M-E-M-E-M*-E-M-E-M-E-M*-E-M-E-M-E-M-E-M-E (M = Mamba, E = MoE, * = Attention). For analogous Nano v2 architecture specifications, see [1]. 
+
+# Ablation Studies 
+
+To validate key design choices, we summarize the ab-lations performed for the Star Elastic-Nano v3 setting. The corresponding Nano v2 ablations are reported in detail in [1] and the conclusions transfer directly. 
+
+Effects of Two-Stage Training 
+
+Table 7 reveals that Stage 2 extended-context training delivers significant improvements on complex reason-ing benchmarks, especially for smaller models. The 6B model gains 19.8% on AIME-2025, while the 12B model gains 4.0%, indicating that smaller models par-ticularly benefit from extended-context adaptation for multi-step reasoning. We adopt the same two-stage curriculum for Nano v3 elastification. 
+
+Impact of Budget Sampling Strategy 
+
+The budget sampling ablation comparing uniform vs. adjusted Stage-2 sampling is reported in detail in [ 1]. Adjusted sampling ( 𝑝 (12B ) = 0 .5, 𝑝 (9B ) = 0.3, 𝑝 (6B ) = 0 .2 for Nano v2; analogous weighting for Nano v3) substantially improves performance for the full-budget model on challenging reasoning bench-marks (e.g., +3.54 percentage points on AIME-2025 
+
+> 13 Star Elastic: Many-in-One Reasoning LLMs with Efficient Budget Control
+
+Table 7 | Two-stage training improvements (Nano v2). Stage 2 (extended-context) provides substantial gains on reasoning benchmarks, particularly AIME-2025, where smaller models benefit significantly (6B: +19.8%, 9B: +9.7%). Reproduced from [ 1] for completeness, since this is the empirical anchor that motivates our two-stage curriculum on Nano v3 as well. 
+
+Model (Benchmark) Stage 1 Stage 2 Absolute Gain Relative Improvement 
+
+NanoV2 Elastic-6B (MATH-500) 95.15 96.50 +1.35 +1.4% NanoV2 Elastic-6B (AIME-2025) 56.88 68.13 +11.25 +19.8% NanoV2 Elastic-6B (GPQA) 49.12 53.78 +4.66 +9.5% NanoV2 Elastic-9B (MATH-500) 97.13 97.25 +0.12 +0.1% NanoV2 Elastic-9B (AIME-2025) 68.75 75.42 +6.67 +9.7% NanoV2 Elastic-9B (GPQA) 59.43 62.50 +3.07 +5.2% NanoV2 Elastic-12B (MATH-500) 97.27 97.70 +0.43 +0.4% NanoV2 Elastic-12B (AIME-2025) 72.92 75.83 +2.91 +4.0% NanoV2 Elastic-12B (GPQA) 62.50 63.25 +0.75 +1.2% 
+
+for the Nano v2 12B model). For Nano v3, we apply the analogous distribution 𝑝 (30B ) = 0 .5, 𝑝 (23B ) = 0.3, 𝑝 (12B ) = 0 .2 in Stage 2 and observe the same qualitative behavior. 
+
+Data Blend Ablation Study 
+
+To determine the optimal training data composition for elastic compression of Nano v3, we conduct a comprehensive ablation study across multiple dimen-sions: data blend ratio (reasoning vs. pretraining data), sequence length, prompt masking strategy, and inclusion of teacher-generated RL samples. For Nemotron Nano v2, we adopt the data blend ratio established in prior compression studies [ 19 ], which identified 70% reasoning (post-training) + 30% pre-training as optimal. We maintain this blend through-out the Nano v2 experiments reported in [ 1]. For Nemotron Nano v3, no compression study exists in the accompanying report [ 2 ]. We therefore begin with the same 70% reasoning + 30% pretraining blend as our baseline and systematically ablate across addi-tional dimensions: 100% reasoning variants, prompt masking strategies, sequence lengths, and augmenting the dataset with RL rollouts from the parent model, as detailed below. All ablations are performed on a 15% embedding-pruned student model derived from Nemotron Nano v3 30B. The same calibration data is used for both im-portance estimation and knowledge distillation across each configuration. 
+
+Ablation Dimensions 
+
+We systematically vary four key dimensions: 
+
+• Data blend ratio: 100% reasoning (post-training) vs. 70% reasoning + 30% pretraining. 
+
+• Sequence length: 8K vs. 32K vs. 49K vs. 256K tokens. 
+
+• Prompt masking: With prompt masking vs. without prompt masking. 
+
+• RL augmentation: With and without teacher-generated RL rollouts. 
+
+Stage 1: Initial Configuration Selection (15B Tokens) 
+
+Table 8 presents results for the first stage of ablation, where all configurations are trained for 15B tokens at their respective sequence lengths. 
+
+Stage 2: Context Extension Strategy (Addi-tional 10B Tokens) 
+
+After identifying the optimal Stage 1 configuration (70% reasoning + 30% pretraining, 8K, no prompt mask, no RL rollouts), we investigate context ex-tension strategies by training for an additional 10B tokens (total 25B). We compare three approaches: (1) continuing at 8K throughout, (2) extending from 8K to 49K in Stage 2, and (3) training at 49K from the start. Results are shown in Table 9. 
+
+Key Findings 
+
+Stage 1 findings: 
+
+1. Sequence length: 8K achieves the best bal-ance between computational efficiency and per-formance. While longer contexts (32K, 49K) pro-vide modest gains on specific benchmarks (e.g., AIME-2025), they do not consistently improve av-erage performance and incur significantly higher training costs. 2. Prompt masking: Removing prompt masking consistently improves performance by 1.5–2.5 per-
+
+> 14 Star Elastic: Many-in-One Reasoning LLMs with Efficient Budget Control
+
+Table 8 | Stage 1 data blend ablation (15B tokens). The configuration with 70% reasoning + 30% PT has the best overall average. The effect of sequence length is negligible among 8K, 32K, and 49K, while the performance drops significantly at 256K. Data blend abbreviation: PT = Pretraining, SFT = Supervised Finetuning Reasoning, RL = Reinforcement Learning rollouts.                                                                                                                              
+
+> Configuration (15B token training) MATH AIME GPQA LiveCode MMLU IFB-P IFB-I Avg
+> Pruning-only baseline (0B tokens, no training)
+> 1a 100% reasoning, mask, 0B 89.50 40.83 40.09 38.10 59.41 48.43 53.07 52.78 1b 70% SFT + 30% PT, no mask, 0B 89.90 40.83 41.60 38.41 59.22 44.55 47.17 51.67 1c 100% reasoning, no mask, 0B 89.05 39.77 44.57 41.27 59.61 46.73 50.81 53.12
+> Masking ablation
+> 2a 100% reasoning, mask, 8K 96.75 82.29 63.63 63.17 74.98 53.88 56.96 70.24
+> 2c 100% reasoning, no mask, 8K 97.20 85.42 68.31 66.03 77.04 55.91 57.67 72.51
+> Blend ratio ablation (70% vs. 100% reasoning)
+> 3a 70% SFT + 30% PT, no mask, 8K 97.30 85.11 69.19 65.71 76.94 59.01 60.60 73.41
+> 3b 100% reasoning, no mask, 8K 97.20 85.42 68.31 66.03 77.04 55.91 57.67 72.51
+> Extended sequence length (32K, 49K, 256K)
+> 4a 70% SFT + 30% PT, no mask, 32K 97.20 88.13 69.44 66.35 77.55 55.98 58.45 73.30
+> 4b 70% SFT + 30% PT, no mask, 49K 97.50 86.46 67.99 65.07 76.90 58.84 62.03 73.54
+> 4c 70% SFT + 30% PT, no mask, 256K 96.75 84.58 66.41 61.26 76.58 56.46 59.58 71.66
+> RL augmentation ablation
+> 5a 30% RL + 49% SFT + 21% PT, 8K 97.65 84.17 67.55 63.81 76.91 59.31 61.61 73.00 5b 50% RL + 35% SFT + 15% PT, 8K 97.50 85.21 69.19 66.66 76.93 57.14 59.58 73.17 5c 70% RL + 21% SFT + 9% PT, 8K 96.95 83.75 66.47 66.35 76.72 57.48 60.77 72.64
+
+centage points across all benchmarks, suggesting that allowing the model to attend to prompts during training improves reasoning capability. 3. Blend ratio: The 70% reasoning + 30% pre-training blend outperforms 100% reasoning by 0.9 percentage points on average. The inclusion of pretraining data provides beneficial diversity and prevents overfitting to post-training distri-butions. 4. RL augmentation: Adding teacher-generated RL rollouts does not provide consistent improve-ments and occasionally degrades performance on reasoning-heavy benchmarks, potentially due to distribution mismatch. 
+
+Stage 2 findings (context extension): 
+
+1. Staged context extension is superior: The 8K →49K extension strategy (74.40% average) outperforms both 8K-only (72.37%) and 49K-from-start (73.70%) approaches, achieving the best balance between recovery and long-context capability. 2. Recovery before extension: Training at 49K from the beginning yields slightly lower perfor-mance than staged extension despite using 2B more tokens (27B vs. 25B). This suggests that the compressed model benefits from initial re-covery at shorter contexts before adapting to extended sequences. 
+
+Final Configuration 
+
+Based on these findings, we adopt the following two-stage training recipe for all elastic compression exper-iments: 
+
+Stage 1 (short-context): 70% reasoning + 30% pretraining, 8K sequence length, no prompt masking 
+
+Stage 2 (extended-context): 70% reasoning + 30% pretraining, 49K sequence length, no prompt masking For Nano v3 we use a total budget of 160B tokens (100B + 60B). The corresponding 110B-token config-uration for Nano v2 is reported in [1]. 
+
+Ablation on Depth vs. Width Compression 
+
+As elastic compression can target both depth (layer count) and width (hidden dimensions, expert count) of neural networks, we compare the two approaches in isolation early in the study. 
+
+Depth vs. Width Compression Investigation 
+
+We conducted preliminary ablations on elastic depth compression (15% layer reduction) and width com-pression (15% reduction across experts, FFN hidden dimensions, and embedding dimensions) on Nemotron Nano v3 base model. Both configurations were trained with 25B tokens of knowledge distillation from the 
+
+> 15 Star Elastic: Many-in-One Reasoning LLMs with Efficient Budget Control
+
+Table 9 | Stage 2 context extension ablation (25B total tokens). Each configuration starts from the corresponding Stage 1 checkpoint (Table 8). Extending from 8K to 49K (74.40%) outperforms both 8K-only (72.37%) and 49K-from-start (73.70%) strategies.                                                                          
+
+> Configuration (extra 10B token training) MATH AIME GPQA LiveCode MMLU IFB-P IFB-I Avg
+> 8K only (no context extension)
+> 3a →8K continued, same blend 97.05 82.92 67.42 64.76 77.17 57.48 59.76 72.37
+> 8K →49K context extension
+> 3a →49K extension, same blend 97.40 87.08 69.94 67.94 77.49 59.25 61.67 74.40
+> 3a →49K extension, 50% RL + 35% SFT + 15% PT 97.50 86.67 68.81 66.67 77.47 59.66 62.87 74.24 5b →49K extension, 50% RL + 35% SFT + 15% PT 97.20 88.33 69.26 66.35 77.15 57.35 61.79 73.92
+> 49K from start (no staged extension)
+> 4b →49K continued, same blend 97.65 87.50 68.75 65.71 77.63 58.02 60.65 73.70 4b →49K continued, 100% RL 97.20 86.04 68.18 64.36 76.96 59.93 61.91 73.51 4b →49K continued, 50% RL + 35% SFT + 15% PT 97.30 84.58 68.11 67.94 76.85 57.82 60.53 73.30
+
+full Nano v3 30B base (pretrained only) model as teacher. Results in Table 10 reveal important tradeoffs be-tween the two approaches. Width-based compres-sion achieves 98.1% of baseline performance (0.768 vs. 0.783 average), maintaining competitive accu-racy across nearly all benchmarks. In contrast, depth compression achieves 95.2% of baseline performance (0.745 vs. 0.783 average), with noticeable degradation on HumanEval and MMLU-Pro ( ∼5.4% each). Given the superior performance of width-based approaches, we prioritize width-based elastic compression for the main results, though depth compression remains vi-able for extreme latency-constrained scenarios. 
+
+Practical Implications 
+
+For most deployment scenarios prioritizing accuracy, we recommend width-based elastic compression as implemented in Star Elastic. However, for extreme latency-constrained scenarios where inference speed is paramount, and some accuracy loss is acceptable, depth-based compression via layer skipping can be easily activated as an optional mechanism. Star Elas-tic, as described in Section and Appendix , supports the layer skipping mechanism. However, depth reduction is omitted in the final mod-els to explore potential cache reuse benefits (see Ap-pendix ). 
+
+# Per-Benchmark Elastic Budget Con-trol Results 
+
+This appendix provides detailed per-benchmark anal-ysis of the elastic budget control results presented in Figure 1 (right). We evaluate hybrid elastic budget control configurations on Nemotron Nano v3 across six benchmarks: AIME-2025, GPQA, MMLU-Pro, LiveCodeBench v5, and IFBench (prompt-strict and instruction-strict modes). The evaluated configurations are: 
+
+• Baseline: 30B model for both thinking and an-swering 
+
+• 23B-30B: 23B for thinking, 30B for answering 
+
+• 30B-23B: 30B for thinking, 23B for answering 
+
+• 12B-30B: 12B for thinking, 30B for answering 
+
+• 30B-12B: 30B for thinking, 12B for answering 
+
+Overall Performance and Pareto Frontier 
+
+Figure 5 demonstrates that hybrid elastic budget con-trol consistently improves the accuracy vs. speed Pareto frontier compared to vanilla Nemotron Nano v3 budget control across all benchmarks. The elastic configurations achieve higher accuracy at equivalent inference times or faster inference at equivalent ac-curacy, validating the effectiveness of phase-specific model selection. 
+
+Configuration-Specific Analysis 
+
+Figure 6 provides a detailed breakdown of which con-figurations are optimal at different operating points. The 23B-30B configuration (23B thinking, 30B an-swering) achieves the best overall balance, particularly excelling with higher accuracy and moderate inference times. For extremely low-latency scenarios where in-ference time is minimized, the 12B-30B and 30B-12B configurations provide optimal performance, while high latency scenarios prefer the 30B-23B configura-tion. 
+
+Budget Control Length Stats 
+
+In this section, we analyze the token distribution across three distinct components: prompt, thinking process, and final answer. Table 11 details the average 
+
+> 16 Star Elastic: Many-in-One Reasoning LLMs with Efficient Budget Control
+
+Table 10 | Depth vs. width compression comparison with 15% parameter reduction and 25B token knowledge distillation. Star Elastic width compression achieves 98.1% of baseline performance (0.768 vs. 0.783 average). Elastic depth compression achieves 95.2% of baseline (0.745 vs. 0.783 average). 
+
+Config ARC GSM8K HumanEval MATH MBPP MMLU-Pro MMLU RACE Wino Avg 
+
+Baseline 0.918 0.915 0.703 0.775 0.724 0.613 0.782 0.884 0.762 0.783 Depth (15%) 0.883 0.892 0.649 0.728 0.666 0.559 0.727 0.868 0.737 0.745 Width (15%) 0.908 0.886 0.696 0.724 0.711 0.604 0.764 0.874 0.744 0.768 
+
+Figure 5 | Per-benchmark Pareto frontiers comparing hybrid elastic budget control (colored curves) against vanilla Nano v3 budget control (gray). Across all benchmarks, elastic configurations dominate the Pareto frontier, achieving superior accuracy–speed tradeoffs. 
+
+> 17 Star Elastic: Many-in-One Reasoning LLMs with Efficient Budget Control
+
+Figure 6 | Detailed configuration comparison across accuracy–speed space. The 23B-30B configuration dominates at higher scores and moderate inference times, while 12B-30B and 30B-12B are optimal for extremely low-latency scenarios. token lengths for each benchmark under a fixed com-putation budget ( 16 𝑘 ). Note that the average thinking length remains below the budget cap because many samples naturally conclude their generation process before exhausting the full allocation. Table 11 | Comparison of budget control statistics. The table shows results for GPQA with a fixed com-putation budget of 16 𝑘 across different Think–Answer setups. Setup Avg Prompt Avg Reason Avg Answer 23B – 30B 11020 1066 12B – 12B 257 12524 1291 12B – 30B 12580 1270 23B – 23B 10812 1062 30B – 12B 10674 1106 30B – 23B 10586 1033 30B – 30B 10518 1035 
+
+# Cache State Reuse 
+
+As detailed in Section , the nested structure of Star Elastic models preserves the parameters of Mamba and attention layers across different model depths. We hypothesize that this architectural consistency allows for the direct transplantation of KV and SSM state caches from a smaller “thinking” model (e.g., 
+
+ℳ𝑆 ) to a larger “answering” model (e.g., ℳ𝐿 ) with-out the need for recomputation. In this section, we provide empirical evidence validating the structural consistency of these caches and quantify the impact of cache transplantation on generation quality. For all experiments in this section, we use the Nano v2 Elastic family from [1]. To evaluate cache compatibility, we first compare the internal states (specifically, KV caches, Mamba SSM states, and Mamba convolutional states) generated by the nested sub-models against those of the full model, given an identical input sequence. We quan-tify this alignment by computing the average cosine similarity across shared layers. As shown in Table 12, we observe high cosine similarity across most state types, particularly for the Mamba SSM states (0.96) and Value caches (0.95), confirming strong structural alignment. While the convolutional states show lower similarity (0.71), their impact is limited due to their relatively small memory footprint (2.2 MB) compared to the dominant SSM states (70 MB). This suggests that the vast majority of the recurrent context is preserved during transplantation. Table 12 | Analysis of cache state compatibility be-tween the nested sub-model and the full model given identical input sequences. Memory Footprint indi-cates the storage requirement for the cache states (BF16 precision). Note the distinct scaling behaviors: Key/Value caches grow linearly (adding 12 KB for every new token), whereas Conv/SSM states have a fixed total size ( 𝑂 (1) ) that does not increase with sequence length. Cosine similarity is calculated inde-pendently for each shared layer and then averaged. State Type Key Cache Value Cache Conv State SSM State Mem. Footprint 12 KB /tok. 12 KB /tok. 2.2 MB 70 MB Cosine Sim. 0.89 0.95 0.71 0.96 Beyond structural similarity, we evaluate the impact of cache transplantation on downstream task perfor-mance using the GSM8k benchmark. Specifically, we use the compressed 6B sub-model to process the prompt and generate the cache states (KV, Conv, and SSM), which are then transplanted to the full 12B model for the answering phase. Table 13 presents the results. We observe that trans-planting the full cache configuration (“All 6B cache”) results in a minimal accuracy drop compared to the standard 12B baseline (90.93% vs. 90.18%), a dif-ference likely attributable to generation randomness rather than structural incompatibility. Interestingly, transplanting the convolutional states alone occasion-ally yields results slightly surpassing the baseline, suggesting that the local features captured by the smaller model are particularly robust. Overall, these results confirm that the transplanted states retain the critical reasoning information required for high-quality generation. 
+
+# Per-Benchmark Quantized Results 
+
+Table 14 provides the full per-benchmark breakdown of BF16, FP8 (PTQ), and NVFP4 (QAD) accuracy 
+
+> 18 Star Elastic: Many-in-One Reasoning LLMs with Efficient Budget Control
+
+Table 13 | Ablation study of cache transplantation on GSM8k accuracy. The “Baseline” represents stan-dard 12B inference. The “Transplant” rows denote experiments where the specific cache components are generated by the 6B sub-model and transferred to the 12B model for generation. The minimal performance drop in the “All” setting confirms the viability of cache reuse. Method Accuracy 12B Model (Baseline) 90.93% Transplant 6B KV Cache 89.26% Transplant 6B Conv State 91.34% Transplant 6B SSM State 89.24% Transplant All 6B Cache 90.18% across the three nested Star Elastic (Nano v3) vari-ants. AVG is the mean across MATH-500, AIME-2025, GPQA, LiveCodeBench v5, MMLU-Pro, IF-Bench (prompt and instruct), and the average of Tau-Airline/Retail/Telecom (denoted TAU). 
+
+# Implementation Details 
+
+Implementation 
+
+The elastic architecture is instantiated through structured masking applied to the hybrid Mamba– Attention–MoE and Mamba–Transformer models. Rather than modifying network topology or creating distinct sub-networks, we apply dimension-specific binary masks that dynamically select active com-ponents. This masking-based approach enables ef-ficient training of multiple budgets simultaneously while maintaining architectural transparency and en-abling straightforward deployment of any sub-network without architectural recompilation. 
+
+Dynamic Model Formulation 
+
+We present a flexible architecture framework for Star Elastic that enables dynamic adjustment of model dimensions during training through a structured mask-ing approach. Our method builds upon the hybrid Mamba–Attention–MoE and Mamba–Transformer ar-chitectures and extends the elastic training paradigm to support comprehensive width and depth flexibility for hybrid architectures. A dynamic model is obtained by making the stack of layers dynamic and then making each layer type dynamic across different dimensions. If the origi-nal LLM is defined as 𝑦 = ℒ𝑁  
+
+> 0
+
+(𝑥 ) where ℒ𝑗 
+
+> 0
+
+(𝑥 ) = 
+
+ℒ𝑗 −10 (𝑥 )+ ℒ𝑗 (ℒ𝑗 −10 (𝑥 )) , a dynamic layer stack is noted as 𝒟 ∘ ℒ 𝑁  
+
+> 0
+
+where the operator 𝒟 is applied to each layer and makes it dynamic. For example: 
+
+𝒟 ∘ ℒ 𝑗 = ( 𝒟 ∘ ℒ 𝑗 ) · 𝛾 𝑗 (2) where 𝛾 𝑗 ∈ { 0, 1} controls layer retention (depth adap-tation) and 𝒟 ∘ ℒ 𝑗 represents a dynamic Mamba, Attention, FFN, or MoE layer. The dynamic operator 𝒟 applies dimension-specific binary masks m to the output activations of each layer component, enabling selective feature retention (width adaptation): 
+
+𝒟 (ℒ(𝑥 )) = ℒ(𝑥 ) ⊙ m (3) where ⊙ denotes element-wise multiplication and 
+
+m ∈ { 0, 1}𝑑 is a binary mask vector that determines which dimensions remain active. Depth adaptation is controlled through the binary coefficient vector 
+
+𝛾 = [ 𝛾 0, 𝛾 1, . . . , 𝛾 𝑁 −1], while width adaptation is man-aged through dimension-specific masks applied within each layer type. 
+
+Dynamic Mamba 
+
+For Mamba-2 components in the hybrid architecture, we apply group-aware masking following permutation-preserving constraints to maintain structural integrity of state-space computations. 
+
+Dynamic Embedding Mask Operator. The op-erator ℳemb applies to any activation or weight ma-trix with the hidden size 𝑑 𝑒 as one dimension. For a matrix W ∈ R𝑑 𝑒 ×𝑘 , the masked operation is: 
+
+ℳemb (W) = W ⊙ (I𝑒 ⊗ 1𝑘 ) (4) where I𝑒 ∈ { 0, 1}𝑑 𝑒 with I𝑒 [0 : 𝑖 ] = 1 and I𝑒 [𝑖 + 1 : 
+
+𝑑 𝑒 ] = 0 for some 𝑖 ∈ [0 , 𝑑 𝑒 ], and ⊗ denotes outer product broadcasting across dimension 𝑘 . For ma-trices W ∈ R𝑘 ×𝑑 𝑒 , the mask broadcasts similarly: 
+
+ℳemb (W) = W ⊙ (1𝑘 ⊗ I𝑒 ). This operator is applied to layer normalization outputs and all weight matrices interfacing with the embedding dimension. 
+
+Dynamic Mamba Mask Operator. The operator 
+
+ℳmamba applies to matrices where dimensions derive from Mamba heads 𝑚 ℎ or head channels 𝑚 𝑑 . For a matrix W ∈ R𝑓 (𝑚 ℎ,𝑚 𝑑 )×𝑑 𝑒 where 𝑓 represents a dimension function (typically 𝑓 (𝑚 ℎ, 𝑚 𝑑 ) = 𝑚 ℎ · 𝑚 𝑑 ), the masked operation is: 
+
+ℳmamba (W) = W ⊙ (I𝑚 ⊗ 1𝑑 𝑒 ) (5) where I𝑚 ∈ { 0, 1}𝑓 (𝑚 ℎ,𝑚 𝑑 ) is constructed to satisfy: 
+
+I𝑚 [𝜑 (ℎ, 𝑐 )] = {︃ 1 if ℎ ≤ ℎ* and 𝑐 ≤ 𝑐 *
+
+0 otherwise (6) 
+
+> 19 Star Elastic: Many-in-One Reasoning LLMs with Efficient Budget Control
+
+Table 14 | Per-benchmark results for BF16, FP8 (PTQ), and NVFP4 (QAD) across nested variants of Star Elastic (Nano v3). 
+
+## Model MATH-500 AIME GPQA LCB MMLU IF-P IF-I TAU AVG 30B BF16 97.70 88.54 72.10 72.70 78.63 70.58 73.96 45.34 74.94 30B FP8 97.35 86.66 73.23 70.16 78.71 70.24 73.36 41.96 73.96 30B NVFP4 97.60 86.46 72.60 68.25 78.17 69.18 72.24 41.80 73.29 23B BF16 97.60 85.63 69.82 67.30 76.07 67.43 70.75 41.74 72.04 23B FP8 97.35 83.33 68.18 66.59 76.05 66.33 69.85 43.07 71.34 23B NVFP4 96.95 85.00 67.30 67.62 74.76 68.16 71.58 40.08 71.43 12B BF16 96.00 78.54 57.39 55.24 68.28 64.03 67.39 34.37 65.16 12B FP8 96.10 76.46 58.02 54.60 68.30 65.87 68.85 34.38 65.32 12B NVFP4 95.85 74.17 55.43 54.29 62.49 64.42 67.88 31.62 63.27 
+
+with 𝜑 (ℎ, 𝑐 ) mapping head ℎ and channel 𝑐 to flat index, ℎ* ∈ [0 , 𝑚 ℎ] and 𝑐 * ∈ [0 , 𝑚 𝑑 ] defining active dimensions. This construction preserves group-aware permutation structure: for heads ℎ, ℎ ′ ∈ 𝒢 𝑔 belonging to group 𝑔 , I𝑚 [𝜑 (ℎ, ·)] = I𝑚 [𝜑 (ℎ′, ·)] , and maintains head channel consistency: I𝑚 [𝜑 (·, 𝑐 )] is uniform across all heads for each channel 𝑐 .
+
+Forward Pass. The dynamic Mamba layer pro-cesses input through projection matrices following masked layer normalization. First, we apply the em-bedding mask to the layer norm output: 
+
+𝑦 ln = ℳemb (LN (𝑦 )) (7) Then, projections are computed from the masked normalized input: 
+
+𝑧 = W𝑧 · 𝑦 ln , 𝑥 = W𝑥 · 𝑦 ln ,𝐵 = W𝐵 · 𝑦 ln , 𝐶 = W𝐶 · 𝑦 ln , 𝑑 𝑡 = W𝑑𝑡 · 𝑦 ln 
+
+(8) where W𝑧 , W𝑥 ∈ R(𝑚 ℎ·𝑚 𝑑 )×𝑑 𝑒 , W𝐵 , W𝐶 ∈
+
+R(𝑔 ·𝑑 𝑠 )×𝑑 𝑒 , and W𝑑𝑡 ∈ R𝑚 ℎ×𝑑 𝑒 . Here, 𝑑 𝑒 is the em-bedding dimension, 𝑚 ℎ denotes Mamba heads, 𝑚 𝑑 is the head channel dimension, 𝑔 represents the number of Mamba groups, and 𝑑 𝑠 is the SSM state dimension. We apply the Mamba-specific mask to 𝑧 , 𝑥 , and 𝑑 𝑡 :
+
+𝑧 ← ℳ mamba (𝑧 ),𝑥 ← ℳ mamba (𝑥 ),𝑑 𝑡 ← ℳ mamba (𝑑 𝑡 )
+
+(9) The intermediate activations 𝑥 , 𝐵 , and 𝐶 undergo causal convolution: 
+
+^𝑥 = conv1d (𝑥 ), ^𝐵 = conv1d (𝐵 ), ^𝐶 = conv1d (𝐶 )
+
+(10) where the conv1d operation on ^𝑥 implicitly respects the Mamba mask structure. The selective state-space model update computes: 
+
+˜𝑦 = SSM (^ 𝑥, ^𝐵, ^𝐶, A, D, 𝑑 𝑡 ) (11) Followed by gated RMSNorm and output projection: 
+
+𝑦 pre = W𝑂 · RMSNorm (˜ 𝑦 ⊙ silu (𝑧 )) (12) where W𝑂 ∈ R𝑑 𝑒 ×(𝑚 ℎ·𝑚 𝑑 ).Finally, both dynamic masks are applied to the layer output: 
+
+𝑦 out = ℳemb (ℳmamba (𝑦 pre )) (13) 
+
+Dynamic Attention 
+
+For multi-head attention layers in the hybrid architec-ture, we apply head-wise and embedding dimension masking to control capacity. 
+
+Dynamic Attention Head Mask Operator. 
+
+The operator ℳattn_head applies to matrices where one dimension derives from attention heads 𝑛 ℎ or head dimension 𝑑 ℎ. For a matrix W ∈ R𝑓 (𝑛 ℎ,𝑑 ℎ)×𝑑 𝑒 
+
+where 𝑓 (𝑛 ℎ, 𝑑 ℎ) = 𝑛 ℎ × 𝑑 ℎ, the masked operation is: 
+
+ℳattn_head (W) = W ⊙ (I𝑎 ⊗ 1𝑑 𝑒 ) (14) where I𝑎 ∈ { 0, 1}𝑛 ℎ·𝑑 ℎ satisfies: 
+
+I𝑎 [𝜓 (𝑛, 𝑑 )] = {︃ 1 if 𝑛 ≤ 𝑛 * and 𝑑 ≤ 𝑑 *
+
+0 otherwise (15) with 𝜓 (𝑛, 𝑑 ) mapping head 𝑛 and head dimension 𝑑 
+
+to flat index, 𝑛 * ∈ [0 , 𝑛 ℎ] and 𝑑 * ∈ [0 , 𝑑 ℎ] defining active dimensions. 
+
+> 20 Star Elastic: Many-in-One Reasoning LLMs with Efficient Budget Control
+
+Forward Pass. The dynamic attention layer pro-cesses input through masked layer normalization: 
+
+𝑦 ln = ℳemb (LN (𝑦 )) (16) Projections for query, key, and value are computed as: 
+
+Q = ℳattn_head (W𝑄 ) · 𝑦 ln ,
+
+K = ℳattn_head (W𝐾 ) · 𝑦 ln ,
+
+V = ℳattn_head (W𝑉 ) · 𝑦 ln 
+
+(17) where W𝑄 , W𝐾 , W𝑉 ∈ R(𝑛 ℎ·𝑑 ℎ)×𝑑 𝑒 , with 𝑛 ℎ denot-ing attention heads and 𝑑 ℎ the head dimension. The attention computation follows: Attn = softmax (︂ QK 𝑇 
+
+√𝑑 ℎ)︂ V (18) Followed by output projection: 
+
+𝑦 pre = ℳemb (W𝑂 ) · Attn (19) where W𝑂 ∈ R𝑑 𝑒 ×(𝑛 ℎ·𝑑 ℎ).Finally, both dynamic masks are applied to the layer output: 
+
+𝑦 out = ℳemb (ℳattn_head (𝑦 pre )) (20) 
+
+Dynamic FFN 
+
+This formulation is applicable to both traditional dense FFN and the FFN in each expert in an MoE layer. For these layers, we apply masking to both embedding and intermediate dimensions. 
+
+Dynamic FFN Mask Operator. The operator 
+
+ℳffn applies to matrices where one dimension derives from the FFN intermediate dimension 𝑓 𝛿 , where 𝛿 is the layer number corresponding to the current FFN, 
+
+1 ≤ 𝛿 ≤ 𝑁 F. For a matrix W ∈ R𝑓 𝛿 ×𝑑 𝑒 , the masked operation is: 
+
+ℳffn (W) = W ⊙ (I𝑓 ⊗ 1𝑑 𝑒 ) (21) where I𝑓 ∈ { 0, 1}𝑓 𝛿 with I𝑓 [0 : 𝑗 ] = 1 and I𝑓 [𝑗 + 1 : 
+
+𝑓 𝛿 ] = 0 for some 𝑗 ∈ [0 , 𝑓 𝛿 ]. For matrices W ∈ R𝑑 𝑒 ×𝑓 𝛿 ,the mask broadcasts similarly. 
+
+Forward Pass. The dynamic FFN layer processes input through masked layer normalization: 
+
+𝑦 ln = ℳemb (LN (𝑦 )) (22) The first linear transformation with dynamic masking: 
+
+ℎ = ℳffn (W1) · 𝑦 ln (23) where W1 ∈ R𝑓 𝛿 ×𝑑 𝑒 and 𝑓 𝛿 is the intermediate di-mension. Followed by activation and second linear transforma-tion: 
+
+𝑦 pre = ℳemb (W2) · 𝜎 (ℎ) (24) where W2 ∈ R𝑑 𝑒 ×𝑓 𝛿 and 𝜎 (·) denotes the activation function. Finally, both dynamic masks are applied to the layer output: 
+
+𝑦 out = ℳemb (ℳffn (𝑦 pre )) (25) 
+
+Dynamic MoE 
+
+For MoE layers, elasticity is realized by masking ex-perts at the router level rather than modifying expert FFNs directly. 
+
+Dynamic Expert Mask Operator. The router produces logits over all experts via a learned linear projection: 
+
+Θ = Wrouter · 𝑥 ∈ R𝐵 ×𝐸 , (26) where 𝐵 is the number of tokens and Wrouter ∈ R𝐸 ×𝑑 𝑒 
+
+is the router weight matrix. Given a target expert count 𝑒 (ℓ) at layer ℓ, and a global per-layer importance ranking of experts (from REAP [ 17 ]), we construct a binary expert mask mexpert that retains only the top 
+
+𝑒 (ℓ) experts: 
+
+mexpert [𝑗 ] = {︃ 1 if expert 𝑗 is among the top 𝑒 (ℓ)0 otherwise. (27) This mask is applied along the expert dimension of the router logits before the routing operation: 
+
+Θ′ = Θ + log mexpert , (28) where masked experts receive −∞ logits, preventing them from being selected. 
+
+Forward Pass. The dynamic MoE layer first com-putes router logits and applies the expert mask before routing: 
+
+𝑥 in = LN (𝑦 ),
+
+Θ = Wrouter · 𝑥 in ,
+
+Θ′ = Θ + log mexpert ,
+
+(29) The masked logits Θ′ are passed to the router’s rout-ing function, which performs TopK selection with load balancing: 
+
+scores , routing _map = routing (Θ′), (30) 
+
+> 21 Star Elastic: Many-in-One Reasoning LLMs with Efficient Budget Control
+
+The routing function selects the top-𝑘 experts per token from the masked logits, applies load-balancing losses (e.g., auxiliary loss, sequence-level load bal-ancing), enforces capacity constraints, and returns routing weights and a routing map indicating token-to-expert assignments. Since only the top 𝑒 (ℓ) experts have finite logits, at most 𝑒 (ℓ) experts can be selected per token, realizing the budget constraint. 
+
+Depth Adaptation. 
+
+Layer-wise depth adaptation is achieved through se-lective layer retention controlled by 𝛾 . The set of active layers is: 
+
+𝒜 = {𝑗 | 𝛾 𝑗 = 1 , 𝑗 ∈ [0 , 𝑁 − 1] } (31) where |𝒜| = 𝑁 target specifies the target model depth. Skipped layers are bypassed via residual connections: 
+
+𝑦 𝑗 +1 ={︃ 𝑦 𝑗 + 𝒟 ∘ ℒ 𝑗 (𝑦 𝑗 ) if 𝛾 𝑗 = 1 
+
+𝑦 𝑗 if 𝛾 𝑗 = 0 (32) This maintains signal propagation while reducing computation. For hybrid architectures, selective layer retention enables leveraging the complemen-tary strengths of Mamba and attention components at different model scales. 
+
+Mask Generation 
+
+Mask Generation from Router Output. The router outputs 𝜋 (axis ) are processed through Gumbel-Softmax to produce relaxed discrete selections, where 
+
+axis ∈ { 𝑑 𝑒 , 𝑚 ℎ, 𝑚 𝑑 , 𝑛 ℎ, 𝑒, 𝑓 }. The selected configura-tion index is determined by ^𝑎 axis = arg max 𝑖 𝑃 (axis ) 
+
+> 𝑖
+
+,where 𝑃 (axis ) is the Gumbel-Softmax probability dis-tribution. In homogeneous mode, if dimension axis 
+
+selects configuration index ^𝑎 axis , the corresponding target count is 𝑐 ^𝑎 axis (e.g., number of active embed-ding channels, depth, or head counts per layer). The binary mask is then constructed by selecting the top 
+
+𝑐 ^𝑎 axis components according to the importance-based ranking 𝜎 (axis ):
+
+I(axis ) = I[𝜎 (axis )(𝑗 ) ≤ 𝑐 ^𝑎 axis ], 𝑗 = 1 , . . . , size (axis )
+
+(33) In heterogeneous mode, the router output is reshaped into per-layer selections: 𝜋 (axis ) is partitioned into 𝑁 X
+
+segments of size |𝒳 | , where each segment determines the configuration for one layer. Per-layer masks are constructed similarly, allowing each layer to have distinct compression ratios. For depth selection, if the router outputs 𝐿 target ∈ [1 , 𝑁 ], the top 𝐿 target layers from the importance depth ranking are activated via 
+
+𝛾 𝑗 = 1 for the selected layers. The generated masks are then applied to the dynamic model operators ℳemb , ℳmamba , ℳattn_head , ℳffn ,and depth retention coefficients 𝛾 as defined in the Dynamic Model Formulation section, enabling the model to dynamically adjust capacity. 
+
+Mask Integration Strategies. The Gumbel-Softmax probabilities provide differentiable signals for router optimization. We support two mask inte-gration modes: 
+
+Mode 1: Hard Selection via Argmax Logits. The dis-crete selection is obtained by ^𝑖 axis = arg max 𝑖 𝑃 (axis ) 
+
+> 𝑖
+
+,and a hard mask is applied using the corresponding logit: 
+
+I(axis ) 
+
+> train
+
+= 𝜋 (axis )^𝑖 axis 
+
+· I^𝑖 axis (34) This directly applies the mask from the selected con-figuration, scaled by its logit magnitude to provide task-relevant gradient signals. 
+
+Mode 2: Soft Masking via Probabilistic Combination. 
+
+Alternatively, masks from all candidate configurations are combined proportionally to their probabilities: 
+
+I(axis ) 
+
+> train
+
+=∑︁ 
+
+> 𝑖
+
+𝑃 (axis ) 
+
+> 𝑖
+
+· I𝑖 (35) During training, this soft mask is applied to the dy-namic operators, allowing gradients to flow through all configuration options. At inference time, the dis-crete mask corresponding to ^𝑖 axis from the argmax mode is used and the logit, 𝜋 (axis )^𝑖 axis 
+
+is set to 1. We use soft masking throughout this paper. 
+
+Elastic Model Deployment 
+
+A key advantage of the elastic architecture is the ability to extract multiple model variants from a single trained checkpoint without requiring separate training or fine-tuning. This is achieved through a learned slicing mechanism that leverages the router module trained during the elastic training phase. After training converges, the router has learned opti-mal budget-aware decisions for every layer and com-ponent (attention heads, Mamba, FFN, embeddings). At deployment time, to extract a model for any tar-get budget 𝐵 that was seen during training, we in-voke the router with the budget specification. The router’s learned decisions are used to determine which components should be pruned from the full model. These components are then permanently removed (sliced out) from the checkpoint, effectively extracting a nested sub-network that corresponds to the desired parameter count. Formally, given a trained full model with parameter set Θmax and a target budget 𝐵 ∈ ℬ (where ℬ is the 
+
+> 22 Star Elastic: Many-in-One Reasoning LLMs with Efficient Budget Control
+
+set of budgets used during training), the router ℛ
+
+produces a pruning specification that identifies the parameters to retain. The sliced model parameters are then: 
+
+Θ𝐵 = {𝜃 ∈ Θmax : 𝜃 is retained for budget 𝐵 }
+
+This zero-shot slicing operation is computationally negligible and produces an inference-ready model im-mediately, with no retraining, fine-tuning, or addi-tional distillation required. Crucially, any budget 
+
+𝐵 ∈ ℬ —whether the largest, smallest, or any interme-diate size explored during training—can be deployed directly from the single full-model checkpoint. The same slicing pipeline applies to the FP8 and NVFP4 elastic checkpoints described in Section : be-cause QAD preserves the nested mask hierarchy, the 23B and 12B variants can be sliced zero-shot from the 30B quantized checkpoint with no additional cali-bration.

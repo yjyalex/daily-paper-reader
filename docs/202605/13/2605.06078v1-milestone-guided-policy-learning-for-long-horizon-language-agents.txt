@@ -1,0 +1,1117 @@
+Title: Milestone-Guided Policy Learning for Long-Horizon Language Agents
+
+URL Source: https://arxiv.org/pdf/2605.06078v1
+
+Published Time: Fri, 08 May 2026 01:19:58 GMT
+
+Number of Pages: 15
+
+Markdown Content:
+# Milestone-Guided Policy Learning for Long-Horizon Language Agents 
+
+Zixuan Wang 1 2 Yuchen Yan 1 Hongxing Li 1 Teng Pan 1 2 Dingming Li 1 Ruiqing Zhang 2 Weiming Lu 1
+
+Jun Xiao 1 Yueting Zhuang 1 Yongliang Shen † 1
+
+## Abstract 
+
+While long-horizon agentic tasks require lan-guage agents to perform dozens of sequential decisions, training such agents with reinforce-ment learning remains challenging. We identify two root causes: credit misattribution, where cor-rect early actions are penalized due to terminal failures, and sample inefficiency, where scarce successful trajectories result in near-total loss of learning signal. We introduce a milestone-guided policy learning framework, BEACON , that lever-ages the compositional structure of long-horizon tasks to ensure precise credit assignment. BEA-CON partitions trajectories at milestone bound-aries, applies temporal reward shaping within seg-ments to credit partial progress, and estimates advantages at dual scales to prevent distant fail-ures from corrupting the evaluation of local ac-tions. On ALFWorld, WebShop, and Science-World, BEACON consistently outperforms GRPO and GiGPO. Notably, on long-horizon ALFWorld tasks, BEACON achieves 92.9% success rate, nearly doubling GRPO’s 53.5%, while improving effective sample utilization from 23.7% to 82.0%. These results establish milestone-anchored credit assignment as an effective paradigm for train-ing long-horizon language agents. Code is avail-able at https://github.com/ZJU-REAL/ BEACON .
+
+## 1. Introduction 
+
+Large language model agents have demonstrated remarkable capabilities in performing complex tasks in diverse environ-ments (Yao et al., 2023; Schick et al., 2023), including web navigation (Zhou et al., 2023; Deng et al., 2023), embodied control (Ahn et al., 2022; Huang et al., 2022; Wang et al., 2025a), and scientific experimentation (Boiko et al., 2023; Bran et al., 2023). These agents must perform sequences of    
+
+> †Corresponding author. 1Zhejiang University 2Baidu Inc.. Cor-respondence to: Yongliang Shen <syl@zju.edu.cn >.
+> Preprint. May 8, 2026.
+
+decisions that span dozens of steps, with success determined only at task completion. Training such agents through rein-forcement learning has shown promise (Zhang et al., 2025a; Ouyang et al., 2022b), yet current policy optimization meth-ods scale poorly with task horizon, exhibiting systematic performance collapse as decision sequences lengthen. This collapse stems from two fundamental limitations of trajectory-level optimization, which treats trajectories as flat action sequences and assigns credit based solely on terminal outcomes. The first is credit misattribution : all ac-tions within a trajectory receive identical advantages based solely on the terminal outcome. A correct early action is penalized when later actions cause failure; the same ac-tion receives opposite gradient signals across trajectories depending on downstream stochasticity, causing gradients to conflict. The second is sample inefficiency : as task horizons extend, successful trajectories become increasingly scarce, causing most samples to yield zero reward. Moreover, tra-jectories that complete substantial subgoals but fail the final objective receive zero reward identical to complete failures, wasting meaningful progress. We validate these limitations on ALFWorld (Shridhar et al., 2021): GRPO (Shao et al., 2024) achieves 77% success on short tasks but collapses to 54% on long tasks, with over 40% of gradient updates con-taining contradictory signals. Furthermore, 39% of sampled trajectories complete at least one subgoal yet contribute no learning signal under trajectory-level optimization. Existing methods that aim to provide denser credit assign-ment introduce their own limitations. Process reward mod-els (Lightman et al., 2023; Wang et al., 2024) require expen-sive step-level annotations and risk reward hacking (Gao et al., 2022). Monte Carlo value estimation (Kazemne-jad et al., 2024) demands multiple rollouts per decision point, multiplying computational cost. GiGPO (Feng et al., 2025) constructs step-level comparison groups by identify-ing repeated states across trajectories, but its effectiveness depends on state recurrence, which diminishes as agents progress toward task completion in long-horizon settings. We observe that long-horizon agentic tasks already exhibit exploitable structure: they decompose into phases bounded by milestones , state transitions where subgoal achievement renders prior execution history largely irrelevant. This ap-proximate Markov property enables credit to be decoupled 1
+
+> arXiv:2605.06078v1 [cs.CL] 7 May 2026
+
+Milestone-Anchored Policy Learning for Long-Horizon Language Agents ç                                                      
+
+> Segment 1
+> S0
+> Segment 2
+> M1Segment n
+> M2
+> Outcome
+> .....
+> BEACON
+> R = 1
+> Good Early Actions Later Failure Actions
+> GRPO
+> S0
+> R = 0
+> You hear your cat meowing inside the locked storage room .It must have slipped in before the door was shut .You need
+> the blue key to unlock the door and let it out .You recall putting the key in acabinet ,but cannot remember which one .
+> Goto Cabinet Pick Key 𝛾 !𝑟 𝛾 "𝑟 𝛾 #𝑟 𝛾 $𝑟 𝛾 !𝑟 𝛾 "𝑟 𝛾 #𝑟 𝛾 !𝑟 𝛾 "𝑟 𝛾 #𝑟 𝛾 $𝑟 Short Medium Long
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Accuracy (%)
+> 76.7
+> 96.8
+> 18.2
+> 73.9
+> 87.0
+> 10.5
+> 53.5
+> 92.9
+> 2.0
+> GRPO BEACON ReAct
+
+Figure 1. BEACON overview and performance preview. Left: GRPO assigns uniform credit from terminal outcomes, penalizing correct early actions when later actions fail; BEACON partitions trajectories at milestones and estimates advantages at dual scales. Right: 
+
+On ALFWorld, GRPO degrades sharply with task horizon while BEACON maintains robust performance across all horizons. 
+
+across phases, yet trajectory-level methods ignore it entirely. We introduce Milestone-Guided Policy Learning Frame-work (BEACON), which leverages task structure to address both credit misattribution and sample inefficiency. The key idea is to partition trajectories at milestone boundaries and perform credit assignment at the segment level rather than the trajectory level. Given a trajectory, BEACON first identifies milestones from verifiable state changes, and par-titions the trajectory into segments accordingly. Within each segment, temporal reward shaping assigns higher credit to actions closer to milestone completion, transforming sparse terminal signals into dense feedback that rewards partial progress. Across segments, dual-scale advantage estimation computes advantages at both trajectory and segment levels. The trajectory-level advantage captures global task perfor-mance, while the segment-level advantage compares only among trajectories that reached the same milestone, iso-lating local action quality from the variance introduced by subsequent segments. This decomposition ensures that a cor-rect action in an early segment is not penalized by failures in later segments, directly addressing credit misattribution. We evaluate BEACON on ALFWorld (Shridhar et al., 2021), WebShop (Yao et al., 2022), and ScienceWorld (Wang et al., 2022). BEACON outperforms GRPO across all benchmarks, with improvements that amplify as task horizons extend: relative gains over GRPO scale from 26.2% on short tasks to 73.6% on long tasks on ALFWorld. On Long tasks, BEACON achieves 92.9% success versus 53.5% for GRPO. Analysis reveals that BEACON recovers learning signal from partial successes: effective sample utilization improves from 23.7% to 82.0%. Furthermore, BEACON achieves 91.4% success compared to 43% for supervised fine-tuning on oracle trajectories, confirming that the gains stem from policy optimization rather than milestone imitation. In summary, our contributions are as follows: • This work identifies credit misattribution and sample in-efficiency as fundamental limitations of trajectory-level optimization, showing that over 40% of gradient updates 50 100 150          
+
+> (a) Sample distribution
+> 0
+> 25
+> 50
+> 75
+> 100
+> Proportion (%)
+> 27% 23%
+> 47%
+> 39% 39%
+> 49% 34% 38%
+> Success Partial Failure
+> 50 100 150
+> (b) Gradient conflict
+> 0
+> 20
+> 40
+> CAR (%)
+> CAR Single
+> 0
+> 20
+> 40
+> Single (%)
+
+Figure 2. Failures in flat trajectory optimization. (a) Sample distribution during GRPO training. Partial successes yield zero gra-dient despite meaningful progress. (b) Gradient conflict analysis. Contradictory signals cause effective learning signal to collapse. 
+
+contain contradictory signals as task horizons extend. • We propose BEACON, a framework that partitions trajec-tories at milestone boundaries, applies temporal reward shaping within segments, and estimates advantages at dual scales to isolate local action quality from later failures. • Experiments on ALFWorld, WebShop, and ScienceWorld demonstrate horizon-dependent improvements, with rela-tive gains over GRPO scaling from 26.2% to 73.6% and sample utilization improving from 23.7% to 82.0%. 
+
+## 2. Failures in Flat Trajectory Optimization 
+
+We first establish empirically that trajectory-level policy op-timization fails systematically as task horizons extend, then diagnose the underlying causes through gradient analysis. Experiments use Qwen2.5-1.5B-Instruct (Qwen et al., 2025) on ALFWorld with GRPO, stratifying tasks by optimal trajectory length: Short ( L∗ ≤ 4), Medium ( 5 ≤ L∗ ≤
+
+7), and Long ( L∗ > 7) (details in Section 4.1). Fig-ure 1(Right) shows GRPO degrades from 76.7% (Short) to 53.5% (Long). 
+
+Sample Inefficiency. Figure 2(a) shows the sampled tra-jectory distribution during training. We categorize trajecto-ries into three types: full successes (green) that complete the task, partial successes (orange) that complete at least one milestone but fail the final task, and complete failures (gray) that achieving none. Partial successes consistently 2Milestone-Anchored Policy Learning for Long-Horizon Language Agents 
+
+comprise 39–47% of samples throughout training, yet un-der GRPO they receive zero reward identical to complete failures. Meanwhile, full successes remain below 27%, meaning over 73% of samples yield no learning signal. This waste of partial progress severely limits learning efficiency. 
+
+Credit Misattribution. Even among trajectories that do provide signal, credit assignment is corrupted. Figure 2(b) reveals a second pathology: gradient corruption from con-tradictory credit assignment. We measure the Contradictory Action Ratio (CAR), defined as the fraction of actions that receive opposite-sign advantages across different trajecto-ries despite being executed at identical states. CAR exceeds 40% at its peak, indicating that nearly half of gradient up-dates for repeated state-action pairs point in conflicting di-rections. As a consequence, the effective learning signal (the fraction of gradient that survives after cancellation) collapses below 20% (see Appendix C.2 for detailed com-putation). The root cause is that trajectory-level advantages conflate action quality with downstream stochasticity: the same correct action receives positive credit when later ac-tions succeed and negative credit when they fail. 
+
+Takeaways. Flat trajectory optimization suffers from two compounding problems. Sample inefficiency discards learn-ing signal from partial successes, while credit misattribution corrupts the signal that remains. Both problems worsen as horizons extend: longer tasks have lower success rates (in-creasing partial successes) and more opportunities for down-stream variance to corrupt credit assignment. Addressing these failures requires exploiting the compositional structure that trajectory-level methods ignore. 
+
+## 3. Milestone-Anchored Policy Optimization 
+
+We introduce BEACON, a framework that exploits the com-positional structure of long-horizon tasks to address the credit assignment failures identified in Section 2. BEACON operates in three stages: partitioning trajectories at mile-stone boundaries, shaping rewards within segments, and estimating advantages at dual scales. 
+
+3.1. Preliminaries 
+
+We consider a Markov Decision Process (S, A, P, R, γ )
+
+where a language agent policy πθ produces trajectories 
+
+τ = {(st, a t)}Tt=1 through interaction with an environment. The agent receives sparse terminal reward R(τ ) ∈ { 0, 1}
+
+indicating task success. We assume access to a milestone indicator Φ : S ×A×S → {0, 1} that returns 1 when a transition completes a semantic subgoal, and 0 otherwise. Crucially, Φ does not require learned models or manual annotation—it detects observable state changes from environment feedback. In interactive environments, such signals are typically available: in ALF-World, Φ detects object state changes such as successful pick-up or heating completion; in WebShop, Φ identifies page transitions advancing toward the target product; in ScienceWorld, the environment provides explicit subgoal signals that Φ directly consumes. 
+
+3.2. Trajectory Partitioning 
+
+Long-horizon tasks naturally decompose into phases bounded by milestone states. Given trajectory τ , ap-plying Φ to each transition yields milestone timestamps 
+
+M = {t1, . . . , t K } where K is the number of milestones reached. Setting t0 = 0 and tK+1 = T , we partition τ into 
+
+K + 1 segments:            
+
+> Seg k={(st, a t) : tk−1< t ≤tk},k∈ { 1, . . . , K +1 }.(1)
+
+We partition at milestone boundaries based on the following structural assumption: 
+
+Assumption 3.1 (Milestone Markov Property) . For mile-stone state stk reached at timestep tk:
+
+P (Seg k+1 , . . . , Seg K+1 | stk , Seg 1, . . . , Seg k)
+
+≈ P (Seg k+1 , . . . , Seg K+1 | stk ). (2) This assumption states that conditioned on reaching a mile-stone state, future trajectory distribution depends primarily on remaining subgoals rather than the full history. This is natural for compositional tasks: once an object is picked up, subsequent success depends on what to do next, not on how the object was found. We discuss the validity and limitations of this assumption in Appendix A.2. 
+
+3.3. Temporal Reward Shaping 
+
+Partitioning alone does not address sample inefficiency, since segments in failed trajectories still receive zero re-ward. We assign shaped rewards crediting partial progress. For action at in segment Seg k of trajectory τi with Ki com-pleted milestones: 
+
+rt =
+
+(
+
+Rms · γtk −t if k ≤ Ki
+
+0 if k = Ki + 1 , (3) where Rms > 0 is the milestone reward and γ ∈ (0 , 1) is the temporal decay factor. Only segments that end with a completed milestone receive positive reward. This design has two properties: (1) all actions in completed segments receive positive reward, enabling learning from partial suc-cesses; (2) actions closer to milestone completion receive higher credit, encouraging efficient execution. 3Milestone-Anchored Policy Learning for Long-Horizon Language Agents Advantage Estimation 
+
+> Group by Rollout
+> (1)
+
+s 1
+
+> (1)
+
+r 1
+
+> (1)
+
+s 2
+
+> (1)
+
+r 2
+
+> (1)
+
+r (1) 
+
+sT(1,1)+1 
+
+> (1)
+
+r (1) 
+
+rT(1 ,2 ) 
+
+> ..... (1)
+
+s (1) 
+
+r *
+
+s..... 
+
+s0
+
+> (2)
+
+s 1
+
+> (2)
+
+r 1
+
+> (2)
+
+s 2
+
+> (2)
+
+r 2
+
+> (2)
+
+rT(2 ,2 ) 
+
+> ..... (2)
+
+s (2) 
+
+r (2) 
+
+s (2) 
+
+r..... 
+
+> (N)
+
+s 1
+
+> (N)
+
+r 1
+
+> (N)
+
+s 2
+
+> (N)
+
+r 2
+
+> (N)
+
+s (N) 
+
+r (N) 
+
+s (N) 
+
+r..... 
+
+γ γ
+
+> ...
+> ...
+> ...
+
+Segment 1 towards a 1 Segment 2 towards a 2 Segment m towerds a m
+
+> .....
+> .....
+> (N)
+
+s (N) 
+
+r
+
+> T(1,1)
+> (2)
+
+rT(2,1) 
+
+> (N)
+
+rT(N,1) 
+
+> *
+
+s 2
+
+> *
+
+s 2T(1,1)+1 
+
+> (2)
+
+sT(2,1)+1 
+
+> (2)
+
+rT(2,1)+1 
+
+> T(1,1)+1
+
+γ
+
+γ  
+
+> T(1,m -1)+1 T(1,m -1)+1 m
+> (1)
+
+rT(1,m)         
+
+> T(2,m -1)+1 T(2,m -1)+1 T(2,m) T(2,m)
+> T(N,1)+1 T(N,1)+1 T(N,1)+3 T(N,1)+3 T(N,m) T(N,m)
+
+τ1
+
+τ2
+
+τN
+
+s1
+
+> *
+
+s1
+
+> *
+
+s1
+
+> *
+> (1)
+
+r 1
+
+> (1)
+
+r 1
+
+> (1)
+
+r 1
+
+> (1)
+
+r 1
+
+> (1)
+
+r 1
+
+> seg
+
+A 1,1 
+
+> (1)
+
+r 1
+
+> (1)
+
+r 1
+
+> (1)
+
+r
+
+> (1)
+
+r 1
+
+> (1)
+
+r 1
+
+> (1)
+
+r
+
+> (1)
+
+r 1
+
+> (1)
+
+r 1A 1,2 
+
+> (1)
+
+r 1
+
+> (1)
+
+r 1A 1,3 
+
+Seg 1 
+
+Seg 2 
+
+Seg m  
+
+> 1, 1
+
+A1,1 + 
+
+> 2,1
+
+A2,1 + 
+
+> 3,1
+
+A3,1 + 3,2 A3,2 + 
+
+> 2,2
+
+A2,2 + 
+
+> 1,2
+
+A1,2 + ... 
+
+> ...
+> ...
+
+τN
+
+τ1  
+
+> ...
+> ... ...
+> Advantage Estimation
+> Group by Segment Final Advantage
+
+τ2
+
+> ...
+> Rollout Data
+> ...
+> ...
+> (N)
+
+s (N) 
+
+rT(N,1)+2 T(N,1)+2 
+
+Outcome 
+
+𝐴 "
+
+𝐴 "
+
+𝐴 "
+
+𝐴 "
+
+𝐴 "
+
+𝐴 "
+
+> T(1,1)+1
+> T(1,m -1)+1
+> ...
+> traj
+
+A 1
+
+A 2
+
+A 3 
+
+> seg
+> seg
+> traj
+> traj traj
+
+A 1
+
+> traj
+
+A 1
+
+> traj
+
+A 1
+
+> traj
+
+A 1
+
+> traj
+
+A 1
+
+> traj
+
+A 1
+
+> seg
+> seg
+> seg
+> seg
+> seg
+> seg
+
+R(τ!)
+
+R(τ")
+
+R(τ#)
+
+R(τ!)
+
+R(τ")
+
+R(τ#)
+
+Figure 3. The BEACON framework. Top: Trajectory partitioning divides rollouts into segments at milestone boundaries; temporal reward decay (factor γ) assigns higher credit to actions closer to milestone completion. Bottom: Dual-scale advantage estimation computes trajectory-level advantages by comparing terminal outcomes (left), segment-level advantages by comparing returns within milestone-matched groups (middle), and combines both scales for final credit assignment (right). 
+
+3.4. Dual-Scale Advantage Estimation 
+
+Temporal reward shaping provides dense signal but does not fully resolve credit misattribution: actions in early segments may still receive credit influenced by outcomes in later seg-ments through trajectory-level comparison. We address this through dual-scale advantage estimation. 
+
+Trajectory-Level Advantage. For a group of G trajecto-ries {τi}Gi=1 sampled for the same task, the trajectory-level advantage follows GRPO: 
+
+Atraj 
+
+i = R(τi) − μσ + ϵ , (4) where μ and σ are the mean and standard deviation of ter-minal rewards across the group. 
+
+Segment-Level Advantage. Trajectory-level comparison assigns identical credit to all actions regardless of position. To isolate local action quality from downstream variance, we compare segment performance only among trajectories that reached the same milestone. Define the comparison group for milestone k as Gk = {i : Ki ≥ k}, where Ki
+
+is the number of milestones reached by trajectory τi. The segment return is: 
+
+R(i)
+
+k = X
+
+t∈Seg (i)
+
+> k
+
+rt. (5) The segment-level advantage compares the per-step reward against the group’s average per-step return: 
+
+Aseg 
+
+i,t = rt − 1
+
+|G k|
+
+X
+
+j∈G k
+
+R(j)
+
+k
+
+|Seg (j)
+
+k | , t ∈ Seg (i)
+
+k . (6) By comparing only among trajectories that reached mile-stone k, this advantage isolates the quality of actions within segment k from variance in subsequent segments: 
+
+Proposition 3.2 (Variance Isolation) . Under Assump-tion A.1, for trajectories in comparison group Gk:
+
+Cov i∈G k (Aseg 
+
+i,t , R (i)
+
+k′ ) ≈ 0, ∀i ∈ G k, ∀t ∈ Seg (i)
+
+k , ∀k′ > k. 
+
+(7) The proof is provided in Appendix A.1. This result en-sures that credit for actions in segment k is not corrupted by variance in later segments, directly addressing credit misattribution. 
+
+Combined Advantage. The final advantage for action at
+
+in segment Seg k of trajectory τi is: 
+
+ˆAi,t = Atraj 
+
+i + λ · Aseg 
+
+i,t , (8) where λ > 0 balances global task performance and local segment quality. 
+
+3.5. Optimization 
+
+We optimize the policy using a clipped surrogate objective: 
+
+J (θ) = E
+
+"X
+
+t
+
+min 
+
+
+
+ρt ˆAi,t , clip (ρt, 1 − ϵ, 1 + ϵ) ˆAi,t 
+
+#
+
+(9) 
+
+where ρt = πθ (at|st)/π θold (at|st) is the importance ratio. The complete procedure is summarized in Algorithm 1. 4Milestone-Anchored Policy Learning for Long-Horizon Language Agents 
+
+Table 1. Main Results. Performance comparison across benchmarks. By utilizing structural milestones, BEACON achieves state-of-the-art performance, showing particular robustness in Long-horizon tasks on ALFWorld. 
+
+Type Method ALFWorld SciWorld WebShop 
+
+Short Medium Long Avg Score Succ Score Succ 
+
+Closed-Source Models 
+
+Prompting GPT-4o (ReAct) 71.4 33.7 49.8 48.0 54.3 45.4 31.8 23.7 Prompting Gemini-2.5-Pro (ReAct) 84.8 50.7 58.7 60.3 47.8 36.7 42.5 35.9 
+
+Base: Qwen2.5-1.5B-Instruct 
+
+Prompting Direct Prompt 5.8 5.1 0.0 4.1 5.9 0.7 23.1 5.2 Prompting ReAct (Yao et al., 2023) 18.2 10.5 2.0 12.8 9.0 1.2 40.1 11.3 Prompting Reflexion (Shinn et al., 2023) 31.8 18.9 3.7 21.8 7.1 3.9 55.8 21.9 RL Training PPO (Schulman et al., 2017) 58.2 54.0 47.4 54.4 29.3 10.9 73.8 51.5 RL Training RLOO (Ahmadian et al., 2024b) 78.7 67.4 56.9 69.7 - - 73.9 52.1 RL Training GRPO (Shao et al., 2024) 76.7 73.9 53.5 72.8 31.7 21.1 75.8 56.8 RL Training GiGPO (Feng et al., 2025) 90.7 84.3 79.5 86.1 35.6 25.8 83.1 65.0 RL Training BEACON (Ours) 96.8 +6 .1 87.0 +2 .7 92.9 +13 .4 91.4 +5 .3 58.9 +23 .3 45.3 +19 .5 86.1 +3 .0 75.6 +10 .6
+
+Base: Qwen2.5-7B-Instruct 
+
+Prompting Direct Prompt 30.2 10.3 3.2 14.8 11.4 4.2 26.4 7.8 Prompting ReAct (Yao et al., 2023) 45.0 23.4 17.6 31.2 17.4 7.8 46.2 19.5 Prompting Reflexion (Shinn et al., 2023) 56.5 38.4 23.8 42.7 23.4 11.7 58.1 28.8 RL Training PPO (Schulman et al., 2017) 84.6 87.3 68.8 80.4 37.1 24.0 81.4 68.7 RL Training RLOO (Ahmadian et al., 2024b) 85.1 80.2 48.9 75.5 - - 80.3 65.7 RL Training GRPO (Shao et al., 2024) 84.1 79.7 64.7 77.6 61.8 49.1 79.3 66.1 RL Training GiGPO (Feng et al., 2025) 93.6 91.8 79.2 90.8 69.2 53.4 84.4 72.8 RL Training BEACON (Ours) 95.1 +1 .5 94.9 +3 .1 90.0 +10 .8 94.5 +3 .7 83.7 +14 .5 64.3 +10 .9 87.7 +3 .3 79.7 +6 .9
+
+## 4. Experiments 
+
+4.1. Experimental Setup Benchmarks. We evaluate on three long-horizon bench-marks: ALFWorld (Shridhar et al., 2021), Science-World (Wang et al., 2022) and WebShop (Yao et al., 2022). 
+
+ALFWorld is a text-based embodied environment where agents complete household tasks (e.g., heating objects, cleaning items) through multi-step interaction, receiving only sparse terminal rewards upon task completion. Web-Shop is a web navigation environment with 1.18M products, requiring agents to search, filter, and purchase items match-ing natural language specifications through compositional understanding of product attributes. ScienceWorld is a text-based environment for scientific reasoning, spanning 30 task types across 10 domains, requiring agents to conduct virtual experiments (e.g., measuring melting points, testing electrical conductivity). See Appendix C.1 for details. 
+
+Baselines. We compare against baselines across paradigms: (1) Closed-source models: GPT-4o (Hurst et al., 2024) and Gemini-2.5-Pro (Comanici et al., 2025), evaluated under ReAct (Yao et al., 2023) prompting as reference points for frontier model capabilities. (2) Prompting methods: ReAct, which guides multi-step reasoning through in-context chain-of-thought without training. (3) RL training methods: PPO (Schulman et al., 2017), a standard actor-critic algorithm, and group-based approaches GRPO (Shao et al., 2024) and GiGPO (Feng et al., 2025), which estimate advantages over trajectory groups without learned critics. 
+
+Implementation. We use Qwen2.5-1.5B-Instruct and Qwen2.5-7B-Instruct (Qwen et al., 2025) as base models. For fair comparison, all RL methods use identical training configurations. BEACON-specific parameters ( γ = 0 .95 ,
+
+λ = 1 .0) are fixed across all benchmarks without task-specific tuning. Full details are in Appendix C.4. 
+
+4.2. Main Results Overall Performance. Table 1 presents results. BEA-CON achieves the highest success rate across all bench-marks and model scales. On ALFWorld with the 1.5B model, BEACON achieves 91.4% average success rate, sur-passing GiGPO (86.1%) by 5.3% and GRPO (72.8%) by 18.6%. On WebShop, BEACON achieves 75.6% success rate compared to 65.0% for GiGPO and 56.8% for GRPO. On ScienceWorld, BEACON reaches 45.3% success ver-sus 25.8% for GiGPO and 21.1% for GRPO. Scaling to Qwen2.5-7B yields consistent improvements: BEACON achieves 94.5% on ALFWorld and 79.7% on WebShop. No-tably, even the 1.5B BEACON model outperforms closed-source baselines (GPT-4o: 48.0% on ALFWorld, 23.7% on WebShop), demonstrating that milestone-anchored credit as-signment provides advantages that model scale alone cannot match. We provide task-wise breakdown for ALFWorld in 5Milestone-Anchored Policy Learning for Long-Horizon Language Agents 
+
+Algorithm 1 BEACON Training                                                                                                                
+
+> Require: Policy πθ, milestone detector Φ, group size G, decay γ,weight λ
+> 1: for each iteration do
+> 2: // Sample trajectories 3: Sample Gtrajectories {τi}Gi=1 using πθ
+> 4: for each trajectory τido
+> 5: // Detect milestones and partition 6: Mi← { t: Φ( st, a t, s t+1 ) = 1 }
+> 7: Partition τiinto {Seg (i)
+> k}Ki+1
+> k=1 using Mi
+> 8: // Compute shaped rewards 9: rt←I[k≤Ki]·Rms ·γtk−tfor each t∈Seg (i)
+> k
+> 10: end for
+> 11: // Compute trajectory-level advantages 12: μ←1
+> G
+> P
+> iR(τi),σ←std ({R(τi)})
+> 13: Atraj
+> i←(R(τi)−μ)/(σ+ϵ)for all i
+> 14: // Compute segment-level advantages 15: for k= 1 , . . . , max iKido
+> 16: Gk← { i:Ki≥k}
+> 17: Aseg
+> i,t ←rt−1
+> |G k|
+> P
+> j∈G kR(j)
+> k/|Seg (j)
+> k|for t∈
+> Seg (i)
+> k, i ∈ G k
+> 18: end for
+> 19: // Combine advantages and update policy 20: ˆAi,t ←Atraj
+> i+λ·Aseg
+> i,t for each at∈Seg (i)
+> k
+> 21: Update θby maximizing J(θ)
+> 22: end for
+
+Appendix B, showing consistent gains across all task types. 
+
+Horizon-Dependent Performance. On ALFWorld with the 1.5B model, GRPO exhibits severe degradation as hori-zon extends: success rate drops from 76.7% on Short tasks to 53.5% on Long tasks, a 30% relative decline. GiGPO miti-gates this partially (90.7% to 79.5%, 12.4% relative decline) but still shows clear degradation. In contrast, BEACON maintains robust performance across horizons (96.8% Short, 87.0% Medium, 92.9% Long). Figure 5(b) illustrates this pattern on the 7B model through relative improvement over GRPO. On Short tasks, BEACON and GiGPO achieve com-parable gains (+13% vs +11%). However, the gap widens as horizon extends: on Long tasks, BEACON reaches +39% while GiGPO remains at +22%. GiGPO relies on state recur-rence for step-level grouping, which diminishes as policies improve and trajectories diversify. These results indicate that milestone-anchored credit assignment provides increas-ing benefit as task horizons extend. 
+
+4.3. Analysis Partial Successes Become Learning Signal. We analyze sample efficiency by categorizing trajectories during train-ing into three types: full successes (complete the task), partial successes (complete at least one milestone but fail the final task), and complete failures (achieve no milestone). Figure 4 shows the distribution on ALFWorld (Qwen2.5-1.5B) across 150 training iterations. Under GRPO, 39% of trajectories at iteration 150 are partial successes that com-plete at least one milestone but receive zero reward. GiGPO reduces this to 28% through state-based grouping, but sub-stantial signal remains discarded. BEACON’s temporal reward shaping provides positive reward for milestone com-pletion, reducing partial successes to 13%. Effective sample utilization improves from 23.7% to 82.0%, a 3.5 × increase in trajectories providing useful gradient signal. 
+
+Gradient Starvation. We measure the Zero-Advantage Ratio (ZAR), defined as the fraction of samples receiving near-zero advantage during training. Figure 5(a) shows ZAR on ALFWorld. GRPO starts near 100% ZAR and decreases to around 55% by iteration 150, indicating that over half of samples provide no learning signal even after extended training. BEACON starts at 45% ZAR and rapidly decreases to approximately 10%, confirming that milestone-anchored credit assignment substantially alleviates gradient starvation by extracting signal from partial successes. 
+
+Credit Concentration. We compute the Credit Concentra-tion Ratio (CCR), defined as the average advantage magni-tude for milestone actions divided by that for non-milestone actions. CCR=1 indicates uniform credit; CCR >1 indi-cates concentration on milestones. Figure 6(a) shows CCR across methods on ALFWorld (Qwen2.5-1.5B). GiGPO ex-hibits the highest CCR (2.36), meaning milestone actions re-ceive 2.36 × more credit than non-milestone actions. GRPO shows moderate concentration (1.37). BEACON has the lowest CCR (0.84), indicating that non-milestone actions receive slightly more credit than milestone actions. Despite lower concentration, BEACON achieves the highest perfor-mance. This suggests that credit concentration penalizes in-termediate actions necessary for reaching milestones. BEA-CON’s temporal decay assigns graduated positive credit to all actions within successful segments, preserving signal for exploratory steps that enable milestone completion. 
+
+Beyond Behavior Cloning. A potential concern is whether BEACON degrades to behavior cloning given its use of milestone structure. Figure 6(b) compares BEACON against supervised fine-tuning (SFT) on oracle trajectories on ALFWorld (Qwen2.5-1.5B). Supervised fine-tuning on oracle trajectories achieves 43% success rate. BEACON with γ=0 (milestone reward only) reaches 81%, demonstrat-ing that milestone-anchored credit assignment alone enables the policy to discover strategies superior to the oracle. In-troducing temporal decay ( γ=0.95) further improves perfor-mance to 91.4%. This confirms that the milestone structure provides credit assignment anchors, but the policy discovers execution strategies superior to the oracle trajectories. 
+
+Training Dynamics. Figure 7 compares training dynam-ics on ALFWorld (Qwen2.5-1.5B). BEACON converges 6Milestone-Anchored Policy Learning for Long-Horizon Language Agents 50 100 150              
+
+> Training Steps
+> 0
+> 20
+> 40
+> 60
+> 80
+> 100
+> Proportion (%)
+> 27% 23%
+> 47%
+> 39% 39%
+> 49% 34% 38%
+> GRPO
+> 50 100 150
+> Training Steps
+> 46% 50%
+> 61%
+> 38% 28%
+> 31% 16% 22%
+> GiGPO
+> 50 100 150
+> Training Steps
+> 21%
+> 46%
+> 77%
+> 46%
+> 36%
+> 13% 33% 18%
+> BEACON (Ours)
+
+Figure 4. Sample Efficiency. Trajectory distribution during training on ALFWorld. Green: full successes; Orange: partial successes (complete ≥1 milestone but fail); Gray: complete failures. 50 100 150   
+
+> (a) Zero-advantage samples
+> 0
+> 25
+> 50
+> 75
+> 100
+> Zero-Adv Ratio (%)
+> GRPO
+> BEACON
+> Short Med. Long
+> (b) Improvement over GRPO
+> 10
+> 20
+> 30
+> 40
+> Impr. vs GRPO (%)
+> +11%
+> +13%
+> +15%
+> +19%
+> +22%
+> +39%
+> GiGPO
+> BEACON
+
+Figure 5. Learning Signal and Horizon Scaling. (a) Zero-Advantage Ratio during training. (b) Relative improvement over GRPO by task horizon. GRPO GiGPO BEACON   
+
+> (a) Credit Concentration Ratio
+> 0
+> 1
+> 2
+> 3
+> 4
+> CCR
+> 1.37
+> 2.36
+> 0.84
+> CCR=1
+> SFT γ=0 γ=0.95
+> (b) BEACON vs. BC
+> 0
+> 25
+> 50
+> 75
+> 100
+> Success Rate (%)
+> 43%
+> 81%
+> 91% BC Upper Bound
+
+Figure 6. Credit Distribution and Policy Optimization. (a) Credit Concentration Ratio across methods. Higher CCR indicates more aggressive concentration on milestone actions. (b) Compari-son with behavior cloning (SFT on oracle trajectories). 
+
+faster: it reaches 60% success rate by iteration 50, while GRPO requires iteration 120 to reach the same threshold. This faster convergence is consistent with BEACON’s im-proved sample utilization (23.7% to 82.0%), as more trajec-tories contribute useful gradient signal per batch. Figure 7(b) shows policy entropy. BEACON exhibits smooth entropy reduction, while GRPO maintains high entropy through-out. The contrast reflects the difference in gradient quality: BEACON receives consistent feedback from milestone com-pletion, enabling steady policy refinement. 
+
+4.4. Ablation Study Trajectory Partitioning. We evaluate degraded partition-ing strategies on ALFWorld. Random partitioning (selecting 5 arbitrary positions as milestones) achieves 74.2%, slightly above GRPO (72.8%), indicating that segmentation struc-ture itself provides modest benefit. With 50% milestone dropout, performance degrades gracefully to 82.8%, still outperforming GRPO by 10%, indicating that BEACON tolerates imperfect milestone detection. Notably, the gap 0 50 100 150    
+
+> (a) Success rate
+> 0
+> 25
+> 50
+> 75
+> 100
+> Success Rate (%)
+> GRPO
+> BEACON
+> 050 100 150
+> (b) Entropy loss
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> Entropy Loss  GRPO
+> BEACON
+
+Figure 7. Training Dynamics. (a) Success rate. BEACON con-verges faster than GRPO. (b) Policy entropy evolution. BEACON exhibits smooth reduction indicating stable refinement. 
+
+Table 2. Ablation Study with Qwen2.5-1.5B-Instruct. Variant ALFWorld WebShop BEACON 91.4 75.6 
+
+Trajectory Partitioning 
+
+w/ 50% Milestone Dropout 82.8 68.3 w/ Random Partition 74.2 57.6 
+
+Reward Shaping 
+
+w/o Temporal Decay ( γ = 0 ) 81.2 62.1 w/ Uniform Shaping ( γ = 1 ) 71.8 64.1 
+
+Advantage Estimation 
+
+w/o Segment-level Adv 72.8 56.8 w/o Trajectory-level Adv 23.4 67.9 GRPO 72.8 56.8 
+
+between random and full milestones (17.2%) far exceeds the gap between GRPO and random (1.4%), demonstrat-ing that BEACON’s gains stem primarily from exploiting task-inherent structure rather than segmentation alone. 
+
+Temporal Reward Shaping. Removing temporal decay (γ = 0 ) reduces performance from 91.4% to 81.2% on ALFWorld and from 75.6% to 62.1% on WebShop, yet still outperforms GRPO (72.8% and 56.8%). This confirms that milestone-anchored structure itself provides significant ben-efit, while temporal decay contributes additional gains by distinguishing action contributions within segments. No-tably, uniform shaping ( γ = 1 ) performs worse than no shaping on ALFWorld (71.8% vs 81.2%): assigning equal credit to all actions obscures the distinction between critical and preparatory actions, producing misleading gradients. 7Milestone-Anchored Policy Learning for Long-Horizon Language Agents -2.50 -2.50 -2.50 -2.50 -2.50                     
+
+> -2.48 -4.00 -1.28 -1.28 -0.68
+> -0.92 +0.51 +0.32 -2.20 -2.20
+> S0
+> go to toilet
+> S3 ✓
+> put soapbar
+> S4 ✓
+> go to counter
+> S5
+> go to counter
+> S7
+> go to holder
+> GRPO
+> GiGPO
+> BEACON
+> (Ours)
+> (a) Failed Trajectory
+> +7.50 +7.50 +7.50 +7.50 +7.50
+> +5.69 +0.00 +8.10 +6.56 +8.13
+> +0.51 +7.80 -1.10 +0.32 -0.85
+> S1 ✓
+> go to sink
+> S3 ✓
+> take soapbar
+> S4
+> go to holder
+> S7 ✓
+> go to toilet
+> S11
+> go to counter
+> (b) Successful Trajectory
+
+Figure 8. Credit Assignment on Representative Trajectories. (a) Failed trajectory with intermediate milestones. (b) Successful trajectory with detours. GRPO assigns uniform credit to all actions; GiGPO produces counterintuitive assignments due to state-based grouping; BEACON credits milestone completions while appropriately penalizing errors and inefficient detours. 
+
+Dual-Scale Advantage. Removing segment-level advan-tage naturally degrades BEACON to GRPO (72.8% on ALFWorld, 56.8% on WebShop), establishing GRPO as the performance lower bound. Removing trajectory-level advantage produces different effects across benchmarks: severe degradation on ALFWorld (23.4%) but reasonable performance on WebShop (67.9%). This difference reflects task structure. On ALFWorld, segment-level optimization alone can reinforce actions that achieve intermediate mile-stones but lead to eventual task failure. Trajectory-level feedback provides necessary correction. On WebShop, mile-stone completion aligns more directly with task success, with segment-level feedback driving the primary improve-ment while trajectory-level feedback provides additional gains. The dual-scale formulation leverages both signals, achieving robust performance across diverse task structures. 
+
+4.5. Case Study 
+
+Figure 8 presents credit assignment on two representa-tive trajectories from ALFWorld. In the failed trajectory, the agent completes milestones S3 and S4 before failing. GRPO assigns uniform negative advantage ( A=−2.50) to all actions. GiGPO produces counterintuitive credit: mile-stone S3 receives the lowest advantage ( A=−4.00), because state-based grouping compares it against successful trajec-tories. BEACON credits milestones ( A=+0.51) while pe-nalizing errors. In the successful trajectory with an unnec-essary detour at S4, GRPO assigns uniform positive advan-tage ( A=+7.50). GiGPO rewards the detour most heav-ily ( A=+8.10). BEACON penalizes the detour ( A=−1.10) while crediting milestones. These examples illustrate how BEACON provides precise credit assignment that distin-guishes productive actions from errors and inefficiencies. 
+
+## 5. Related Work 
+
+Our work relates to policy optimization for language models and credit assignment in reinforcement learning. 
+
+Policy Optimization for Language Models. PPO (Schul-man et al., 2017; Ouyang et al., 2022a) is widely used for RLHF but requires a value network that struggles over long horizons. Critic-free methods such as DPO (Rafailov et al., 2023), GRPO (Shao et al., 2024), and RLOO (Ahmadian et al., 2024a) eliminate this overhead and achieve strong results on reasoning tasks (Guo et al., 2025; Yu et al., 2025). However, when applied to LLM agents for web naviga-tion (Deng et al., 2023; Zhou et al., 2024a; Qi et al., 2024), embodied control (Shridhar et al., 2021; Wang et al., 2022), and tool use (Schick et al., 2023; Qin et al., 2023; Wang et al., 2025b; Zeng et al., 2024; Chen et al., 2023), these trajectory-level methods assign identical credit to all actions regardless of individual contribution, causing performance degradation as task horizons extend. BEACON exploits semantic milestones inherent to agentic tasks, enabling segment-level comparison within trajectories. 
+
+Credit Assignment and Reward Shaping. Existing ap-proaches to finer-grained credit assignment introduce dis-tinct limitations. Auxiliary model methods, including pro-cess reward models (Lightman et al., 2023; Wang et al., 2024), utterance-level critics (Zhou et al., 2024b), implicit reward models (Cui et al., 2025), and co-evolving veri-fiers (Pan et al., 2026), require expensive annotation, risk reward hacking (Gao et al., 2022), or add training complex-ity. Monte Carlo methods (Kazemnejad et al., 2024) avoid learned models but incur substantial sampling overhead from multiple rollouts per step. Structure-based methods such as GiGPO (Feng et al., 2025) and RLVMR (Zhang et al., 2025b) exploit repeated states or reasoning patterns for localized comparison, but depend on incidental struc-ture that may be sparse in long-horizon tasks. BEACON instead anchors credit to milestones that directly reflect task progress, providing consistent segment-level comparison without auxiliary models, sampling overhead, or reliance on emergent trajectory patterns. 
+
+## 6. Conclusion 
+
+We introduced BEACON, a framework that addresses credit misattribution and sample inefficiency in trajectory-level policy optimization for long-horizon language agents. BEA-CON exploits the compositional structure of long-horizon tasks: milestones, observable state transitions indicating subgoal completion, exhibit an approximate Markov prop-erty that enables credit to be decoupled across segments. By partitioning trajectories at milestone boundaries, ap-8Milestone-Anchored Policy Learning for Long-Horizon Language Agents 
+
+plying temporal reward shaping within segments, and es-timating advantages at dual scales, BEACON isolates lo-cal action quality from downstream variance. Experiments on ALFWorld, WebShop, and ScienceWorld demonstrate improvements that amplify as task horizons extend, with effective sample utilization improvement. These results es-tablish milestone-anchored credit assignment as an effective paradigm for training long-horizon language agents. We further discuss the limitations of BEACON and its future directions in Appendix D. 
+
+## Impact Statement 
+
+This paper presents work whose goal is to advance the training of language model agents for long-horizon tasks. The primary societal impact is enabling more capable au-tonomous agents that can assist humans in complex, multi-step tasks such as web navigation, household management, and scientific experimentation. While improved agent capa-bilities could increase productivity and accessibility, they also raise considerations around automation of tasks cur-rently performed by humans. Our method does not intro-duce new capabilities beyond existing language models but rather improves the efficiency of training agents on tasks with sparse rewards. We do not anticipate specific negative societal consequences beyond those generally associated with advances in language model agents. 
+
+## References 
+
+Ahmadian, A., Cremer, C., Gall ´e, M., Fadaee, M., Kreutzer, J., Pietquin, O., ¨Ust ¨un, A., and Hooker, S. Back to basics: Revisiting REINFORCE-style optimization for learning from human feedback in LLMs. In Ku, L.-W., Martins, A., and Srikumar, V. (eds.), Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pp. 12248–12267, Bangkok, Thailand, August 2024a. Association for Com-putational Linguistics. doi: 10.18653/v1/2024.acl-long. 662. URL https://aclanthology.org/2024. acl-long.662/ .Ahmadian, A., Cremer, C., Gall ´e, M., Fadaee, M., Kreutzer, J., Pietquin, O., ¨Ust ¨un, A., and Hooker, S. Back to ba-sics: Revisiting reinforce style optimization for learning from human feedback in llms, 2024b. URL https: //arxiv.org/abs/2402.14740 .Ahn, M., Brohan, A., Brown, N., Chebotar, Y., Cortes, O., David, B., Finn, C., Gopalakrishnan, K., Hausman, K., Herzog, A., Ho, D., Hsu, J., Ibarz, J., Ichter, B., Irpan, A., Jang, E., Ruano, R. M. J., Jeffrey, K., Jesmonth, S., Joshi, N. J., Julian, R. C., Kalashnikov, D., Kuang, Y., Lee, K.-H., Levine, S., Lu, Y., Luu, L., Parada, C., Pas-tor, P., Quiambao, J., Rao, K., Rettinghouse, J., Reyes, D. M., Sermanet, P., Sievers, N., Tan, C., Toshev, A., Vanhoucke, V., Xia, F., Xiao, T., Xu, P., Xu, S., and Yan, M. Do as i can, not as i say: Grounding language in robotic affordances. In Conference on Robot Learning ,2022. URL https://api.semanticscholar. org/CorpusID:247939706 .Boiko, D. A., MacKnight, R., Kline, B., and Gomes, G. Autonomous chemical research with large language models. Nature , 624:570 – 578, 2023. URL https://api.semanticscholar. org/CorpusID:266432059 .Bran, A. M., Cox, S., White, A. D., and Schwaller, P. Chemcrow: Augmenting large-language mod-els with chemistry tools. 2023. URL https: //api.semanticscholar.org/CorpusID: 271293795 .Chen, B., Shu, C., Shareghi, E., Collier, N., Narasimhan, K., and Yao, S. Fireact: Toward language agent fine-tuning, 2023. Comanici, G., Bieber, E., Schaekermann, M., Pasupat, I., Sachdeva, N., Dhillon, I., Blistein, M., Ram, O., Zhang, D., Rosen, E., et al. Gemini 2.5: Pushing the frontier with advanced reasoning, multimodality, long context, and next generation agentic capabilities. arXiv preprint arXiv:2507.06261 , 2025. C ˆot ´e, M.-A., K ´ad ´ar, ´A., Yuan, X., Kybartas, B. A., Barnes, T., Fine, E., Moore, J., Hausknecht, M. J., Asri, L. E., Adada, M., Tay, W., and Trischler, A. Textworld: A learn-ing environment for text-based games. In CGW@IJCAI ,2018. URL https://api.semanticscholar. org/CorpusID:49552345 .Cui, G., Yuan, L., Wang, Z., Wang, H., Zhang, Y., Li, W., He, B., Fan, Y., Yu, T., Xu, Q., Chen, W., Yuan, J., Chen, H., Zhang, K., Lv, X., Wang, S., Yao, Y., Han, X., Peng, H., Cheng, Y., Liu, Z., Sun, M., Zhou, B., and Ding, N. Process reinforce-ment through implicit rewards. ArXiv , abs/2502.01456, 2025. URL https://api.semanticscholar. org/CorpusID:276107672 .Deng, X., Gu, Y., Zheng, B., Chen, S., Stevens, S., Wang, B., Sun, H., and Su, Y. Mind2web: Towards a generalist agent for the web, 2023. Feng, L., Xue, Z., Liu, T., and An, B. Group-in-group policy optimization for llm agent training, 2025. URL 
+
+https://arxiv.org/abs/2505.10978 .Gao, L., Schulman, J., and Hilton, J. Scaling laws for reward model overoptimization. In International Conference on Machine Learning , 2022. URL https: 
+
+9Milestone-Anchored Policy Learning for Long-Horizon Language Agents 
+
+//api.semanticscholar.org/CorpusID: 252992904 .Guo, D., Yang, D., Zhang, H., Song, J., Wang, P., Zhu, Q., Xu, R., Zhang, R., Ma, S., Bi, X., Zhang, X., Yu, X., Wu, Y., Wu, Z. F., Gou, Z., Shao, Z., Li, Z., Gao, Z., Liu, A., Xue, B., Wang, B., Wu, B., Feng, B., Lu, C., Zhao, C., Deng, C., Ruan, C., Dai, D., Chen, D., Ji, D., Li, E., Lin, F., Dai, F., Luo, F., Hao, G., Chen, G., Li, G., Zhang, H., Xu, H., Ding, H., Gao, H., Qu, H., Li, H., Guo, J., Li, J., Chen, J., Yuan, J., Tu, J., Qiu, J., Li, J., Cai, J. L., Ni, J., Liang, J., Chen, J., Dong, K., Hu, K., You, K., Gao, K., Guan, K., Huang, K., Yu, K., Wang, L., Zhang, L., Zhao, L., Wang, L., Zhang, L., Xu, L., Xia, L., Zhang, M., Zhang, M., Tang, M., Zhou, M., Li, M., Wang, M., Li, M., Tian, N., Huang, P., Zhang, P., Wang, Q., Chen, Q., Du, Q., Ge, R., Zhang, R., Pan, R., Wang, R., Chen, R. J., Jin, R. L., Chen, R., Lu, S., Zhou, S., Chen, S., Ye, S., Wang, S., Yu, S., Zhou, S., Pan, S., Li, S. S., Zhou, S., Wu, S., Yun, T., Pei, T., Sun, T., Wang, T., Zeng, W., Liu, W., Liang, W., Gao, W., Yu, W., Zhang, W., Xiao, W. L., An, W., Liu, X., Wang, X., Chen, X., Nie, X., Cheng, X., Liu, X., Xie, X., Liu, X., Yang, X., Li, X., Su, X., Lin, X., Li, X. Q., Jin, X., Shen, X., Chen, X., Sun, X., Wang, X., Song, X., Zhou, X., Wang, X., Shan, X., Li, Y. K., Wang, Y. Q., Wei, Y. X., Zhang, Y., Xu, Y., Li, Y., Zhao, Y., Sun, Y., Wang, Y., Yu, Y., Zhang, Y., Shi, Y., Xiong, Y., He, Y., Piao, Y., Wang, Y., Tan, Y., Ma, Y., Liu, Y., Guo, Y., Ou, Y., Wang, Y., Gong, Y., Zou, Y., He, Y., Xiong, Y., Luo, Y., You, Y., Liu, Y., Zhou, Y., Zhu, Y. X., Huang, Y., Li, Y., Zheng, Y., Zhu, Y., Ma, Y., Tang, Y., Zha, Y., Yan, Y., Ren, Z. Z., Ren, Z., Sha, Z., Fu, Z., Xu, Z., Xie, Z., Zhang, Z., Hao, Z., Ma, Z., Yan, Z., Wu, Z., Gu, Z., Zhu, Z., Liu, Z., Li, Z., Xie, Z., Song, Z., Pan, Z., Huang, Z., Xu, Z., Zhang, Z., and Zhang, Z. Deepseek-r1 incentivizes reasoning in llms through reinforcement learning. Nature ,645(8081):633–638, September 2025. ISSN 1476-4687. doi: 10.1038/s41586-025-09422-z. URL http://dx. doi.org/10.1038/s41586-025-09422-z .Huang, W., Xia, F., Xiao, T., Chan, H., Liang, J., Florence, P., Zeng, A., Tompson, J., Mordatch, I., Chebotar, Y., Sermanet, P., Brown, N., Jackson, T., Luu, L., Levine, S., Hausman, K., and Ichter, B. Inner monologue: Embodied reasoning through planning with language models. In 
+
+arXiv preprint arXiv:2207.05608 , 2022. Hurst, A., Lerer, A., Goucher, A. P., Perelman, A., Ramesh, A., Clark, A., Ostrow, A., Welihinda, A., Hayes, A., Radford, A., et al. Gpt-4o system card. arXiv preprint arXiv:2410.21276 , 2024. Kazemnejad, A., Aghajohari, M., Portelance, E., Sordoni, A., Reddy, S., Courville, A., and Roux, N. L. Vineppo: Unlocking rl potential for llm reasoning through re-fined credit assignment, 2024. URL https://arxiv. org/abs/2410.01679 .Kwon, W., Li, Z., Zhuang, S., Sheng, Y., Zheng, L., Yu, C. H., Gonzalez, J. E., Zhang, H., and Stoica, I. Efficient memory management for large language model serving with pagedattention. Proceedings of the 29th Symposium on Operating Systems Principles ,2023. URL https://api.semanticscholar. org/CorpusID:261697361 .Lightman, H., Kosaraju, V., Burda, Y., Edwards, H., Baker, B., Lee, T., Leike, J., Schulman, J., Sutskever, I., and Cobbe, K. Let’s verify step by step, 2023. URL https: //arxiv.org/abs/2305.20050 .Ouyang, L., Wu, J., Jiang, X., Almeida, D., Wainwright, C. L., Mishkin, P., Zhang, C., Agarwal, S., Slama, K., Ray, A., Schulman, J., Hilton, J., Kelton, F., Miller, L., Simens, M., Askell, A., Welinder, P., Christiano, P., Leike, J., and Lowe, R. Training language models to follow instructions with human feedback, 2022a. URL https: //arxiv.org/abs/2203.02155 .Ouyang, L., Wu, J., Jiang, X., Almeida, D., Wain-wright, C. L., Mishkin, P., Zhang, C., Agarwal, S., Slama, K., Ray, A., Schulman, J., Hilton, J., Kelton, F., Miller, L. E., Simens, M., Askell, A., Welinder, P., Christiano, P. F., Leike, J., and Lowe, R. J. Training language models to follow instruc-tions with human feedback. ArXiv , abs/2203.02155, 2022b. URL https://api.semanticscholar. org/CorpusID:246426909 .Pan, T., Yan, Y., Wang, Z., Zhang, R., Han, G., Zhang, W., Lu, W., Xiao, J., and Shen, Y. Coverrl: Breaking the consensus trap in label-free reasoning via generator-verifier co-evolution. arXiv preprint arXiv:2603.17775 ,2026. Qi, Z., Liu, X., Iong, I. L., Lai, H., Sun, X., Yang, X., Sun, J., Yang, Y., Yao, S., Zhang, T., et al. Webrl: Training llm web agents via self-evolving online curriculum re-inforcement learning. arXiv preprint arXiv:2411.02337 ,2024. Qin, Y., Liang, S., Ye, Y., Zhu, K., Yan, L., Lu, Y., Lin, Y., Cong, X., Tang, X., Qian, B., Zhao, S., Hong, L., Tian, R., Xie, R., Zhou, J., Gerstein, M., Li, D., Liu, Z., and Sun, M. Toolllm: Facilitating large language models to master 16000+ real-world apis, 2023. URL 
+
+https://arxiv.org/abs/2307.16789 .Qwen, :, Yang, A., Yang, B., Zhang, B., Hui, B., Zheng, B., Yu, B., Li, C., Liu, D., Huang, F., Wei, H., Lin, H., Yang, J., Tu, J., Zhang, J., Yang, J., Yang, J., Zhou, J., Lin, J., Dang, K., Lu, K., Bao, K., Yang, K., Yu, L., 10 Milestone-Anchored Policy Learning for Long-Horizon Language Agents 
+
+Li, M., Xue, M., Zhang, P., Zhu, Q., Men, R., Lin, R., Li, T., Tang, T., Xia, T., Ren, X., Ren, X., Fan, Y., Su, Y., Zhang, Y., Wan, Y., Liu, Y., Cui, Z., Zhang, Z., and Qiu, Z. Qwen2.5 technical report, 2025. URL https: //arxiv.org/abs/2412.15115 .Rafailov, R., Sharma, A., Mitchell, E., Ermon, S., Manning, C. D., and Finn, C. Direct prefer-ence optimization: Your language model is se-cretly a reward model. ArXiv , abs/2305.18290, 2023. URL https://api.semanticscholar. org/CorpusID:258959321 .Schick, T., Dwivedi-Yu, J., Dess `ı, R., Raileanu, R., Lomeli, M., Zettlemoyer, L., Cancedda, N., and Scialom, T. Toolformer: Language models can teach themselves to use tools, 2023. URL https://arxiv.org/abs/ 2302.04761 .Schulman, J., Wolski, F., Dhariwal, P., Radford, A., and Klimov, O. Proximal policy optimization algo-rithms, 2017. URL https://arxiv.org/abs/ 1707.06347 .Shao, Z., Wang, P., Zhu, Q., Xu, R., Song, J., Bi, X., Zhang, H., Zhang, M., Li, Y. K., Wu, Y., and Guo, D. Deepseekmath: Pushing the limits of mathemat-ical reasoning in open language models, 2024. URL 
+
+https://arxiv.org/abs/2402.03300 .Sheng, G., Zhang, C., Ye, Z., Wu, X., Zhang, W., Zhang, R., Peng, Y., Lin, H., and Wu, C. Hybridflow: A flexi-ble and efficient rlhf framework. arXiv preprint arXiv: 2409.19256 , 2024. Shinn, N., Cassano, F., Berman, E., Gopinath, A., Narasimhan, K., and Yao, S. Reflexion: Language agents with verbal reinforcement learning, 2023. URL 
+
+https://arxiv.org/abs/2303.11366 .Shridhar, M., Thomason, J., Gordon, D., Bisk, Y., Han, W., Mottaghi, R., Zettlemoyer, L., and Fox, D. Alfred: A benchmark for interpreting grounded instructions for everyday tasks. In Proceedings of the IEEE/CVF con-ference on computer vision and pattern recognition , pp. 10740–10749, 2020. Shridhar, M., Yuan, X., C ˆot ´e, M.-A., Bisk, Y., Trischler, A., and Hausknecht, M. ALFWorld: Aligning Text and Embodied Environments for Interactive Learning. In 
+
+Proceedings of the International Conference on Learning Representations (ICLR) , 2021. URL https://arxiv. org/abs/2010.03768 .Wang, P., Li, L., Shao, Z., Xu, R., Dai, D., Li, Y., Chen, D., Wu, Y., and Sui, Z. Math-shepherd: Ver-ify and reinforce LLMs step-by-step without human an-notations. In Ku, L.-W., Martins, A., and Srikumar, V. (eds.), Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pp. 9426–9439, Bangkok, Thailand, August 2024. Association for Computational Linguis-tics. doi: 10.18653/v1/2024.acl-long.510. URL https: //aclanthology.org/2024.acl-long.510/ .Wang, R., Jansen, P., C ˆot ´e, M.-A., and Ammanabrolu, P. ScienceWorld: Is your agent smarter than a 5th grader? In Goldberg, Y., Kozareva, Z., and Zhang, Y. (eds.), Proceed-ings of the 2022 Conference on Empirical Methods in Nat-ural Language Processing , pp. 11279–11298, Abu Dhabi, United Arab Emirates, December 2022. Association for Computational Linguistics. doi: 10.18653/v1/2022. emnlp-main.775. URL https://aclanthology. org/2022.emnlp-main.775/ .Wang, Z., Li, D., Li, H., Chen, S., Yan, Y., Zhang, W., Shen, Y., Lu, W., Xiao, J., and Zhuang, Y. Omniear: Benchmarking agent reasoning in embodied tasks. arXiv preprint arXiv:2508.05614 , 2025a. Wang, Z., Wang, K., Wang, Q., Zhang, P., Li, L., Yang, Z., Jin, X., Yu, K., Nguyen, M. N., Liu, L., Gottlieb, E., Lu, Y., Cho, K., Wu, J., Fei-Fei, L., Wang, L., Choi, Y., and Li, M. Ragen: Understanding self-evolution in llm agents via multi-turn reinforcement learning, 2025b. URL https://arxiv.org/abs/2504.20073 .Yao, S., Chen, H., Yang, J., and Narasimhan, K. Web-shop: Towards scalable real-world web interaction with grounded language agents. ArXiv , abs/2207.01206, 2022. URL https://api.semanticscholar. org/CorpusID:250264533 .Yao, S., Zhao, J., Yu, D., Du, N., Shafran, I., Narasimhan, K., and Cao, Y. React: Synergizing reasoning and act-ing in language models, 2023. URL https://arxiv. org/abs/2210.03629 .Yu, Q., Zhang, Z., Zhu, R., Yuan, Y., Zuo, X., Yue, Y., Dai, W., Fan, T., Liu, G., Liu, L., Liu, X., Lin, H., Lin, Z., Ma, B., Sheng, G., Tong, Y., Zhang, C., Zhang, M., Zhang, W., Zhu, H., Zhu, J., Chen, J., Chen, J., Wang, C., Yu, H., Song, Y., Wei, X., Zhou, H., Liu, J., Ma, W.-Y., Zhang, Y.-Q., Yan, L., Qiao, M., Wu, Y., and Wang, M. Dapo: An open-source llm reinforcement learning system at scale, 2025. URL https://arxiv.org/ abs/2503.14476 .Zeng, A., Liu, M., Lu, R., Wang, B., Liu, X., Dong, Y., and Tang, J. AgentTuning: Enabling generalized agent abilities for LLMs. In Ku, L.-W., Martins, A., and Srikumar, V. (eds.), Findings of the Association for Computational Linguistics: ACL 2024 , pp. 3053– 3077, Bangkok, Thailand, August 2024. Association for Computational Linguistics. doi: 10.18653/v1/2024. 11 Milestone-Anchored Policy Learning for Long-Horizon Language Agents 
+
+findings-acl.181. URL https://aclanthology. org/2024.findings-acl.181/ .Zhang, G., Geng, H., Yu, X., Yin, Z., Zhang, Z., Tan, Z., Zhou, H., Li, Z., Xue, X., Li, Y., Zhou, Y., Chen, Y., Zhang, C., Fan, Y., Wang, Z., Huang, S., Piedrahita-Velez, F., Liao, Y., Wang, H., Yang, M., Ji, H., Wang, J., Yan, S., Torr, P., and Bai, L. The landscape of agentic reinforcement learning for llms: A survey, 2025a. URL 
+
+https://arxiv.org/abs/2509.02547 .Zhang, Z., Chen, Z., Li, M., Tu, Z., and Li, X. Rlvmr: Reinforcement learning with verifiable meta-reasoning rewards for robust long-horizon agents, 2025b. URL 
+
+https://arxiv.org/abs/2507.22844 .Zhou, S., Xu, F. F., Zhu, H., Zhou, X., Lo, R., Sridhar, A., Cheng, X., Bisk, Y., Fried, D., Alon, U., et al. Webarena: A realistic web environment for building autonomous agents. arXiv preprint arXiv:2307.13854 , 2023. URL 
+
+https://webarena.dev .Zhou, S., Xu, F. F., Zhu, H., Zhou, X., Lo, R., Sridhar, A., Cheng, X., Bisk, Y., Fried, D., Alon, U., et al. Webarena: A realistic web environment for building autonomous agents. ICLR , 2024a. Zhou, Y., Zanette, A., Pan, J., Levine, S., and Kumar, A. Archer: Training language model agents via hierarchical multi-turn rl, 2024b. 12 Milestone-Anchored Policy Learning for Long-Horizon Language Agents 
+
+## A. Theoretical Analysis 
+
+This appendix provides formal analysis supporting the de-sign of BEACON, establishing that segment-level advan-tages isolate local action quality from downstream variance. 
+
+A.1. Variance Isolation in Segment-Level Advantages 
+
+The foundation of BEACON’s credit assignment is the struc-tural assumption that milestone states are approximately Markovian. 
+
+Assumption A.1 (Milestone Markov Property) . For mile-stone state stk reached at timestep tk:
+
+P (Seg k+1 , . . . , Seg K+1 | stk , Seg 1, . . . , Seg k)
+
+≈ P (Seg k+1 , . . . , Seg K+1 | stk ). (10) This assumption is natural for compositional tasks: once a subgoal is achieved (e.g., an object is picked up), subsequent success depends on completing remaining subgoals, not on how previous subgoals were achieved. 
+
+Proposition A.2 (Variance Isolation) . Under Assump-tion A.1, for trajectories in comparison group Gk = {i :
+
+Ki ≥ k}:
+
+Cov i∈G k (Aseg  
+
+> i,t
+
+, R (i) 
+
+> k′
+
+) ≈ 0, ∀i ∈ G k, ∀t ∈ Seg (i) 
+
+> k
+
+, ∀k′ > k. 
+
+(11) 
+
+Proof. For trajectories in Gk, the per-step segment-level advantage is: 
+
+Aseg  
+
+> i,t
+
+= rt − ¯bk, where ¯bk = 1
+
+|G k|
+
+X
+
+> j∈G k
+
+R(j)
+
+> k
+
+|Seg (j) 
+
+> k
+
+| . (12) For t ∈ Seg (i) 
+
+> k
+
+, the shaped reward rt depends only on the position within segment k (through t(i) 
+
+> k
+
+− t) and on actions 
+
+{at′ : t′ ∈ Seg (i) 
+
+> k
+
+}, which occur before milestone k is reached. For k′ > k , the segment return R(i) 
+
+> k′
+
+depends only on actions {at : t ∈ Seg (i) 
+
+> k′
+
+}, which occur after milestone k
+
+is reached. By Assumption A.1, conditioned on the milestone state stk ,the actions in segment k′ are independent of the actions in segment k:
+
+E[rt · R(i) 
+
+> k′
+
+| i ∈ G k] ≈ E[rt | i ∈ G k] · E[R(i) 
+
+> k′
+
+| i ∈ G k].
+
+(13) Since ¯Rk is constant over Gk:Cov (Aseg 
+
+> i,k
+
+, R (i) 
+
+> k′
+
+) = Cov (R(i) 
+
+> k
+
+− ¯Rk, R (i) 
+
+> k′
+
+)= Cov (R(i) 
+
+> k
+
+, R (i) 
+
+> k′
+
+) ≈ 0.
+
+(14) This result establishes that segment-level advantages isolate local action quality from downstream variance: the gradient for actions in segment k is not affected by outcomes in later segments, directly addressing credit misattribution. 
+
+A.2. Discussion of Assumptions 
+
+The Milestone Markov Property (Assumption A.1) is cen-tral to the variance isolation guarantee. This assumption holds well when milestone states encode complete subgoal achievement and future success depends primarily on re-maining subgoals rather than execution details of past sub-goals. The assumption may be approximate when resources carry across segments (e.g., inventory limits) or when execu-tion efficiency affects future success (e.g., time constraints). However, even when the Markov property is only approxi-mately satisfied, BEACON provides empirical benefits: par-tial successes still contribute gradient signal through shaped rewards, and segment-level comparison reduces downstream variance even if it does not fully eliminate it. The trajectory-level advantage component maintains task alignment regard-less of the Markov property. The experimental results in Section 4 demonstrate substantial improvements on tasks where the assumption is only approximately satisfied. 
+
+## B. Task-wise Analysis on ALFWorld 
+
+We report the success rates of different methods across all six ALFWorld task types in Table 3. The table presents re-sults for both Qwen2.5-1.5B and Qwen2.5-7B base models. BEACON consistently outperforms other methods on both model scales, with particularly strong gains on Pick2 (+13% on 1.5B, +11% on 7B), which requires locating and picking up two separate objects and thus involves more milestones for credit assignment. Notably, BEACON-trained 1.5B mod-els (91.4%) substantially outperform GPT-4o (48.0%) and Gemini-2.5-Pro (60.3%), demonstrating that task-specific training with proper credit assignment can surpass general-purpose large models. 
+
+## C. Experimental Details 
+
+C.1. Benchmark Descriptions 
+
+We evaluate BEACON on three diverse benchmarks span-ning embodied reasoning, web navigation, and scientific experimentation. 
+
+ALFWorld. ALFWorld (Shridhar et al., 2021) is a text-based embodied reasoning benchmark that aligns TextWorld (C ˆot ´e et al., 2018) environments with AL-FRED (Shridhar et al., 2020) visual tasks. The bench-mark comprises six task types: PICK (pick up an object), 13 Milestone-Anchored Policy Learning for Long-Horizon Language Agents                                                                                                                                                                           
+
+> Table 3. ALFWorld Task-wise Results. Success rate (%) on each task type.
+> Type Method ALFWorld
+> Pick Look Clean Heat Cool Pick2 All
+> Closed-Source Models
+> Prompting GPT-4o 75.3 60.8 31.2 56.7 21.6 49.8 48.0 Prompting Gemini-2.5-Pro 92.8 63.3 62.1 69.0 26.6 58.7 60.3
+> Base: Qwen2.5-1.5B-Instruct
+> Prompting Direct Prompt 5.9 5.5 3.3 9.7 4.2 0.0 4.1 Prompting ReAct 17.4 20.5 15.7 6.2 7.7 2.0 12.8 Prompting Reflexion 35.3 22.2 21.7 13.6 19.4 3.7 21.8 RL Training PPO 64.8 40.5 57.1 60.6 46.4 47.4 54.4 RL Training RLOO 88.3 52.8 71.0 62.8 66.4 56.9 69.7 RL Training GRPO 85.3 53.7 84.5 78.2 59.7 53.5 72.8 RL Training GiGPO 96.0 76.5 91.8 91.3 71.7 79.5 86.1 RL Training BEACON (Ours) 100 88.2 86.7 100 78.9 92.9 91.4
+> ∆vs GRPO +14.7 +34.5 +2.2 +21.8 +19.2 +39.4 +18.6
+> Base: Qwen2.5-7B-Instruct
+> Prompting Direct Prompt 33.4 21.6 19.3 6.9 2.8 3.2 14.8 Prompting ReAct 48.5 35.4 34.3 13.2 18.2 17.6 31.2 Prompting Reflexion 62.0 41.6 44.9 30.9 36.3 23.8 42.7 RL Training PPO 92.3 64.0 92.5 89.5 80.3 68.8 80.4 RL Training RLOO 87.6 78.2 87.3 81.3 71.9 48.9 75.5 RL Training GRPO 90.8 66.1 89.3 74.7 72.5 64.7 77.6 RL Training GiGPO 97.7 82.7 98.8 83.7 89.3 79.2 90.8 RL Training BEACON (Ours) 100 81.8 96.3 92.9 94.7 90.0 94.5
+> ∆vs GRPO +9.2 +15.7 +7.0 +18.2 +22.2 +25.3 +16.9
+
+CLEAN (clean an object), HEAT (heat an object), COOL 
+
+(cool an object), LOOK (examine an object under light), and PICK2 (pick up two objects). Tasks require agents to navigate household environments and manipulate objects through natural language commands. We use the standard train/validation/test split with 3,321/140/140 tasks respec-tively. Following prior work, we stratify tasks by optimal trajectory length: Short ( L∗ ≤ 4), Medium ( 5 ≤ L∗ ≤ 7), and Long ( L∗ > 7). 
+
+WebShop. WebShop (Yao et al., 2022) is a simulated e-commerce environment containing 1.18 million real-world products and 12,087 human instructions. Agents must nav-igate web pages through search, filtering, and clicking ac-tions to purchase products matching natural language speci-fications. The benchmark tests compositional understanding of product attributes including color, size, price constraints, and feature requirements. We use the standard evaluation protocol with 500 test instructions and report both Score (partial credit based on attribute matching) and Success Rate (binary task completion). 
+
+ScienceWorld. ScienceWorld (Wang et al., 2022) presents 30 scientific reasoning tasks requiring agents to conduct virtual experiments, such as measuring melting points, test-ing electrical conductivity, and identifying life stages of organisms. Tasks involve long action sequences frequently exceeding 30 steps, with complex dependencies between sub-experiments. The environment provides explicit sub-goal feedback that our milestone detector directly consumes. We report both Score (normalized progress) and Success Rate across all 30 task types. 
+
+C.2. Diagnostic Metrics 
+
+We introduce two metrics to quantify credit assignment quality in policy optimization. 
+
+Contradictory Action Ratio (CAR). For a batch of tra-jectories, let Sshared denote the set of state-action pairs (s, a )
+
+that appear in multiple trajectories. For each (s, a ) ∈ S shared ,let A+ and A− denote the number of trajectories where this pair receives positive and negative advantages, respectively. The CAR is defined as: CAR = 1
+
+|S shared |
+
+X
+
+> (s,a )∈S shared
+
+I[A+ > 0 ∧ A− > 0] , (15) where I[·] is the indicator function. CAR measures the frac-tion of repeated state-action pairs receiving contradictory gradient signals. 
+
+Effective Gradient Ratio (EGR). For each state-action pair (s, a ) ∈ S shared , let g+ and g− denote the sum of posi-tive and negative advantage magnitudes, respectively. The 14 Milestone-Anchored Policy Learning for Long-Horizon Language Agents 
+
+EGR is defined as: EGR =
+
+P 
+
+> (s,a )∈S shared
+
+|g+ − g−|
+
+P 
+
+> (s,a )∈S shared
+
+(g+ + g−) . (16) EGR measures the proportion of gradient magnitude that survives after cancellation from contradictory signals. An EGR of 1.0 indicates fully consistent gradients, while lower values indicate greater cancellation. 
+
+C.3. Implementation Details 
+
+All experiments are conducted using the veRL frame-work (Sheng et al., 2024) with vLLM (Kwon et al., 2023) for efficient inference. We use 8 NVIDIA A100 80GB GPUs for training. Gradient checkpointing is enabled to reduce memory consumption. The reference model uses CPU parameter offloading while the actor model remains fully on GPU. Training 150 iterations takes approximately 10 hours for ALFWorld and ScienceWorld, and 8 hours for WebShop. For all group-based methods (GRPO, GiGPO, BEACON), we use identical base configurations to ensure fair compari-son. The only differences are in the advantage computation mechanisms specific to each method. All experiments use a fixed random seed (seed=0). Evaluation is conducted on 128 samples per checkpoint. 
+
+C.4. Hyperparameters 
+
+Table 4 presents the hyperparameters used in our experi-ments. BEACON-specific parameters are listed separately from general training parameters shared across all methods. 
+
+## D. Limitations and Future Work 
+
+Milestone Detection. BEACON relies on a task-specific milestone detector Φ that identifies subgoal completions from environment feedback. In our experiments, milestones are extracted through pattern matching on environment re-sponses (ALFWorld), page transitions (WebShop), or ex-plicit subgoal signals (ScienceWorld). This approach re-quires domain knowledge to design appropriate detectors and may not generalize to environments without clear sub-goal structure or verifiable state transitions. Developing au-tomated milestone discovery methods, potentially through learning or leveraging large language models to identify se-mantically meaningful progress, remains an important open problem. 
+
+Milestone Granularity. The effectiveness of BEACON depends on milestones occurring at an appropriate granu-larity. If milestones are too sparse, BEACON approaches trajectory-level optimization; if too dense, the segment-level advantages may become noisy. Our experiments use natu-                                    
+
+> Table 4. Hyperparameters. BEACON-specific parameters control milestone-anchored credit assignment; other parameters are shared across all group-based methods (GRPO, GiGPO, BEACON) for fair comparison. For environment-specific values, we report ALF-World / WebShop / ScienceWorld.
+> Hyperparameter Symbol Value
+> BEACON-specific
+> Segment advantage weight λ1.0 Temporal decay factor γ0.95
+> Optimization
+> Learning rate –1×10 −6
+> PPO clip ratio ϵ0.2 Gradient clip norm –1.0 Entropy coefficient –0.001 KL penalty coefficient β0.01
+> Batch Configuration
+> Prompts per iteration –16 Rollouts per prompt G8PPO mini-batch size –256
+> Sequence
+> Max prompt length –7000 Max response length –512 Temperature (train / eval) –1.0 / 0.4
+> Environment
+> Max steps per episode T30 / 15 / 30 Total training iterations –150
+
+rally occurring task milestones without tuning granularity, but optimal milestone density likely varies across tasks. Investigating adaptive or hierarchical milestone structures could further improve performance. 
+
+Benchmark Scope. We evaluate BEACON on three benchmarks spanning embodied reasoning, web navigation, and scientific experimentation. While these cover diverse agent capabilities, all involve discrete action spaces and text-based interaction. The applicability of milestone-anchored credit assignment to continuous control, multi-agent set-tings, or tasks with less compositional structure remains unexplored. 15
