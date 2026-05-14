@@ -1,0 +1,1715 @@
+Title: Revisiting Reinforcement Learning with Verifiable Rewards from a Contrastive Perspective
+
+URL Source: https://arxiv.org/pdf/2605.12969v1
+
+Published Time: Thu, 14 May 2026 00:36:35 GMT
+
+Number of Pages: 17
+
+Markdown Content:
+# Revisiting Reinforcement Learning with Verifiable Rewards from a Contrastive Perspective 
+
+Feng Zhang 1,2 Xinhong Ma 2 Ziqiang Dong 2 Xi Leng 2,3
+
+Jianfei Zhao 1,4 Xin Sun 1 Yang Yang 2 Guanjun Jiang 21Beijing Institute of Technology 2Alibaba Group 
+
+> 3
+
+The Chinese University of Hong Kong, Shenzhen 4Zhongguancun Academy 
+
+{bit_zhangfeng, zhqingan, sunxin}@bit.edu.cn {xinhong.mxh, ziqiang.dzq, chris.yang, guanj.jianggj}@alibaba-inc.com xileng@link.cuhk.edu.cn 
+
+## Abstract 
+
+Reinforcement learning with verifiable rewards (RLVR) has become a widely adopted paradigm for improving LLMs’ reasoning capabilities, and Group Relative Policy Optimization (GRPO) is one of its most representative algorithms. In this paper, we first show that GRPO admits an equivalent discriminative reformulation as a weighted positive-negative score difference. Under this view, GRPO increases sequence-level scores of verified positive rollouts (responses judged correct) and decreases those of negative rollouts (responses judged incorrect), where the scores are averages of clipped token-level importance sampling ratios. This reformula-tion reveals two structural limitations of GRPO: likelihood-misaligned scoring ,where clipped ratio-based surrogate scores are optimized instead of generation likelihoods, and score-insensitive credit assignment , where rollout-level credit is assigned without accounting for relative score gaps between positive and negative rollouts in the same group. To address these limitations, we propose ConSPO, a framework for Con trastive Sequence-level Policy Optimization in RLVR. Con-SPO replaces GRPO’s clipped ratio-based scores with length-normalized sequence log-probabilities, aligning the optimized rollout scores with the likelihoods used in autoregressive generation. It then optimizes a group-wise InfoNCE-style objective that contrasts each positive rollout against negative distractors from the same group, enabling credit assignment to depend on their relative scores. This contrastive formulation amplifies updates for poorly separated positives while concentrating suppressive updates on high-scoring negatives. Moreover, ConSPO introduces a curriculum-scheduled margin, guiding optimization from coarse positive-negative ordering in early training toward stronger separation in later stages. Extensive evaluations across diverse backbone models, parameter scales, and training datasets show that ConSPO consistently outperforms several strong RLVR baselines on challenging mathematical reasoning benchmarks. Code will be released upon paper acceptance. 
+
+## 1 Introduction 
+
+Reinforcement learning with verifiable rewards (RLVR) has become a standard paradigm for post-training LLMs on reasoning tasks. Among RLVR algorithms, Group Relative Policy Optimization (GRPO) [ 1 , 2] is particularly influential: it estimates group-relative advantages directly from outcome rewards within sampled rollout groups, without requiring a learned critic. Its algorithmic simplicity, empirical scalability, and robust generalizability across reasoning tasks [ 3– 7] have motivated extensive 
+
+> Preprint.
+> arXiv:2605.12969v1 [cs.LG] 13 May 2026 GRPO ConSPO
+> Objective Gradient Objective Gradient
+
+Figure 1: Gradient comparison and training dynamics of ConSPO. Left: score-level gradient comparison between GRPO and ConSPO. GRPO assigns credit using group-level statistics and ignores relative score gaps, whereas ConSPO assigns contrast-sensitive credit according to relative rollout scores. P + 
+
+> i
+
+and P − 
+
+> ij
+
+are defined in Eq. (11) . Right: training reward curves of GRPO and ConSPO, showing that ConSPO achieves consistently higher rewards during training. efforts to further improve training stability and efficiency. Recent works recalibrate importance sampling ratios via sequence-level geometric means [ 8 , 9] or incorporate token-level soft gating to mitigate policy entropy collapse [ 10 ]. In parallel, other studies apply reward shaping to control the lengths of reasoning trajectories [ 11 –13 ] or adapt the framework to broader agentic applications such as search [ 14 , 15 ] and code generation [ 16 , 17 ]. Despite these advances, existing approaches mainly modify GRPO around its original objective, leaving its core optimization mechanism less explored. Recent studies have highlighted the potential role of discriminative learning principles [ 18 , 19 ], providing a useful departure point from the standard group-relative advantage formulation. In this paper, we make this connection explicit by rewriting GRPO as a weighted positive-negative discrimination objective (Proposition 1). For each question, GRPO increases sequence-level scores of verified positive rollouts and decreases those of verified negative rollouts. The scores in this reformulation are averages of clipped token-level importance sampling ratios. The general form and its specialization under binary rewards, a common setting in RLVR, are summarized as follows: 
+
+Equivalent discriminative formulation. 
+
+J0(θ) = Eq
+
+ 12 E¯o∼πold (·| q)
+
+|A(¯ o|q)| Eo∼eπ+ 
+
+> q, o ′∼eπ−
+> q
+
+s+ 
+
+> θ
+
+(o, q ) − s− 
+
+> θ
+
+(o′, q )
+
+.
+
+Specialization under binary rewards. 
+
+J0(θ) = Eq
+
+pp(q)(1 − p(q)) Eo∼π+old (·| q), o ′∼π−
+
+> old (·| q)
+
+s+ 
+
+> θ
+
+(o, q ) − s− 
+
+> θ
+
+(o′, q ).                          
+
+> where A(o|q)denotes the GRPO group-relative advantage. The distributions eπ+
+> qand eπ−
+> qare obtained by reweighting rollouts from πold (·| q)using the positive and negative parts of A(o|q), respectively; under binary rewards, they reduce to π+old (·| q)and π−
+> old (·| q). The distributions π+old (·| q)and π−
+> old (·| q)denote the old policy conditioned on verified positive ( r= 1 ) and negative ( r= 0 ) rollouts. The quantity p(q) = Eo∼πold (·| q)[r(o, q )] is the expected reward under πold , and s+
+> θand s−
+> θare sequence-level averages of clipped token-level importance sampling ratios.
+
+This reformulation reveals two limitations in the GRPO objective. First, GRPO suffers from likelihood-misaligned scoring : it optimizes a surrogate score that is not the likelihood used for generation. Its discriminative form separates positive from negative rollouts by averaging clipped importance sampling ratios, rather than by comparing their sequence likelihoods under the current policy. Thus, GRPO can enlarge the surrogate score gap without improving the likelihood ordering between positive and negative rollouts. This training-inference mismatch weakens the connection between objective improvement and generation quality, leading to suboptimal policy improvement [ 20 ]. Second, GRPO suffers from score-insensitive credit assignment : it assigns credit across rollouts through reward-based advantages, which under binary rewards are governed by the group pass rate, i.e., the fraction of positive rollouts in the group, without considering the within-group scores of positive and negative rollouts. As shown in Figure 1, the resulting gradient is insensitive to score gaps among rollouts. Within a group, positive rollouts share one coefficient and negative rollouts share another, regardless 2of whether a positive is barely separated from negatives or a hard negative already receives a high score; thus, the rollouts that most need corrective updates are not explicitly emphasized. Dynamic sampling mitigates this bias by retaining groups with intermediate pass rates [ 21 – 23 ], but it does not remove the underlying source in the GRPO objective. To address these limitations, we propose ConSPO, which revisits RLVR as Con trastive Sequence-level 
+
+Policy Optimization. ConSPO first addresses likelihood-misaligned scoring by replacing the clipped importance sampling ratio scores in GRPO with length-normalized sequence log-probabilities. This score is the same quantity used to rank responses during autoregressive generation, thereby aligning the training objective with inference-time likelihoods. ConSPO then addresses score-insensitive credit assignment with a group-wise InfoNCE objective [ 24 ], where each verified positive rollout is contrasted against negative distractors generated for the same question. As shown in Figure 1, the softmax normalization over each positive rollout and its negative distractors makes the gradient depend on their relative scores within the group, rather than only on reward-derived group statistics. For a positive rollout, the update is amplified when its score remains close to the distractors and is smoothly attenuated once it becomes well separated. For negative rollouts, the total suppressive signal becomes stronger when positives are poorly separated from the distractor set, and this signal is distributed according to the negative scores, assigning larger updates to high-scoring incorrect rollouts. Furthermore, ConSPO introduces a margin into the contrastive objective to prevent premature gradient attenuation when positive rollouts only marginally outperform negative distractors. We schedule the margin in a curriculum manner [ 25 , 26 ], allowing optimization to begin with coarse positive-negative ordering and gradually shift toward stronger separation. Extensive evaluations across diverse backbone models, parameter scales, and training datasets show that ConSPO consistently improves performance on seven challenging mathematical reasoning benchmarks. Our main contributions are summarized as follows: • We establish an equivalent discriminative reformulation of GRPO, showing that it optimizes a weighted positive-negative score difference. This reformulation reveals two limitations of GRPO: 
+
+likelihood-misaligned scoring and score-insensitive credit assignment across rollouts. • We propose ConSPO, which constructs a group-wise contrastive objective with likelihood-aligned sequence scores and a curriculum-scheduled margin, enabling contrast-sensitive credit assignment within rollout groups. • Extensive experiments across diverse settings show that ConSPO consistently outperforms several strong RLVR baselines on seven challenging reasoning benchmarks. 
+
+## 2 Related Work 
+
+Reinforcement learning with LLMs. GRPO [ 2] circumvents the reliance on a parameterized value model by estimating group-relative advantages directly from outcome-level rewards, maintaining robust performance across diverse reasoning tasks. Guided by this paradigm, subsequent efforts have advanced GRPO toward better performance, more stable training, and more efficient reasoning. Dr. GRPO [ 27 ] removes the standard deviation in advantage estimation to mitigate difficulty bias, and adjusts loss allocation to reduce length bias. DAPO [ 21 ] introduces dynamic sampling to reduce high-variance gradient updates, and employs length-based reward shaping for finer-grained length control. GMPO [8] addresses outlier effects in asynchronous training by replacing token-level clipping with sequence-level geometric-mean clipping. CISPO [ 28 ] introduces soft clipping to preserve learning signals discarded by hard clipping, while SAPO [ 10 ] applies asymmetric, temperature-controlled clipping for finer-grained and stable updates. HAPO [ 11 ] and ShorterBetter [ 12 ] promote concise reasoning by selecting shorter trajectories from either historical or current generations. While DisCO [ 29 ] reinterprets GRPO through a discriminative lens under binary rewards and explores different scoring functions, it does not address the score-insensitive credit assignment induced by GRPO’s objective. In contrast, ConSPO applies an InfoNCE-style contrastive objective to online RLVR, using likelihood-aligned sequence scores and a curriculum-scheduled margin to adapt credit assignment to within-group rollout scores. 
+
+Contrastive Objectives for Policy Alignment. Contrastive learning trains models by distinguishing positive samples from negative distractors, with InfoNCE-style objectives serving as a standard formulation [ 24 ]. Foundational methods improve contrastive learning by enlarging the negative set, 3for example, through large-batch sampling in SimCLR [ 30 ] or momentum queues in MoCo [ 31 ]. Inspired by contrastive learning principles, recent policy alignment methods formulate preference optimization as a task of discriminating between preferred and dispreferred responses. For example, DPO [ 32 ] and CPO [ 33 ] optimize policy likelihoods over preference pairs without explicit reward modeling, while SimPO [ 20 ] further uses length-normalized sequence log-probabilities as an implicit ranking score. Unlike these offline preference optimization methods, ConSPO transfers the contrastive principle to online RLVR, where positive-negative comparisons are constructed from verifiable rewards on policy-generated rollouts rather than from static pairwise preference data. 
+
+## 3 Preliminaries 
+
+Given a query q ∈ Q, GRPO samples a group of G rollouts {oi}Gi=1 ∼ πold (· | q), where each rollout consists of discrete tokens oi = ( oi, 1, . . . , o i, |oi|) generated autoregressively. Upon receiving the verifiable sequence-level reward ri = r(oi, q ), the group-relative advantage bAi for each rollout is estimated by normalizing the reward against the empirical group statistics: 
+
+bμq = 1
+
+G
+
+> G
+
+X
+
+> j=1
+
+rj , bσq =
+
+vuut 1
+
+G
+
+> G
+
+X
+
+> j=1
+
+(rj − bμq )2, bAi = ri − bμq
+
+bσq
+
+. (1) For the analysis in Section 4, we also use the corresponding expected advantage under πold (· | q):
+
+A(o | q) = r(o, q ) − μq
+
+σq
+
+, μq = Eo∼πold (·| q)[r(o, q )] , σ2 
+
+> q
+
+= Var o∼πold (·| q)[r(o, q )] . (2) Subsequently, the policy parameters θ are updated by maximizing a clipped surrogate objective, augmented with a KL divergence penalty to prevent severe deviation from a reference model πref :
+
+JGRPO (θ) = Eq, {oi}Gi=1 
+
+ 1
+
+G
+
+> G
+
+X
+
+> i=1
+
+1
+
+|oi|
+
+> |oi|
+
+X
+
+> t=1
+
+f
+
+
+
+ρi,t (θ), bAi
+
+
+
+− βD KL (πθ ∥πref )
+
+ , (3) where the token-level importance sampling ratio ρi,t (θ) and the clipping function f (ρ, A ) are formally defined as: 
+
+ρi,t (θ) = πθ (oi,t | q, o i,<t )
+
+πold (oi,t | q, o i,<t ) , f (ρ, A ) = min ( ρA, clip( ρ, 1 − ϵ, 1 + ϵ)A) . (4) 
+
+## 4 Methods 
+
+In this section, we first reformulate GRPO as an equivalent discrimination objective, revealing its likelihood-misaligned scoring and score-insensitive credit assignment. We then propose ConSPO, which addresses these limitations through a group-wise contrastive objective with likelihood-aligned sequence scores and a curriculum-scheduled margin. 
+
+4.1 An Equivalent Discriminative View of GRPO 
+
+Let J clip GRPO (θ) denote the expectation-form clipped policy surrogate corresponding to Eq. (3) , ob-tained by removing the KL regularizer. Using the expected advantage A(o | q) defined in Eq. (2) , we first show that this surrogate admits an equivalent discriminative reformulation. 
+
+Proposition 1. For queries with σq > 0, the clipped GRPO surrogate J clip GRPO (θ) admits the following equivalent discriminative form: 
+
+J clip GRPO (θ) = Eq
+
+ 12 E¯o∼πold (·| q)
+
+|A(¯ o | q)| Eo∼eπ+ 
+
+> q, o ′∼eπ−
+> q
+
+s+ 
+
+> θ
+
+(o, q ) − s− 
+
+> θ
+
+(o′, q )
+
+, (5) 
+
+where eπ+ 
+
+> q
+
+and eπ− 
+
+> q
+
+denote the normalized reweightings of πold (· | q) by the positive and negative parts of A(o | q), respectively. In the common RLVR setting with binary rewards r(o, q ) ∈ { 0, 1}
+
+and valid queries satisfying 0 < p (q) < 1, Eq. (5) becomes 
+
+J clip GRPO (θ) = Eq
+
+pp(q)(1 − p(q)) Eo∼π+old (·| q), o ′∼π−
+
+> old (·| q)
+
+s+ 
+
+> θ
+
+(o, q ) − s− 
+
+> θ
+
+(o′, q ), (6) 4where p(q) = Eo∼πold (·| q)[r(o, q )] is the expected reward under πold , and π+old (· | q) and π−
+
+> old
+
+(· | q)
+
+denote πold conditioned on verified positive and negative outcomes, respectively. 
+
+The proof is provided in Appendix A.1. The sequence-level scores s+ 
+
+> θ
+
+and s− 
+
+> θ
+
+in Proposition 1 are obtained by averaging the clipped token-level importance sampling ratios: 
+
+s+ 
+
+> θ
+
+(o, q ) = 1
+
+|o|
+
+> |o|
+
+X
+
+> t=1
+
+min 
+
+ πθ (ot | q, o <t )
+
+πold (ot | q, o <t ) , 1 + ϵ
+
+
+
+, s− 
+
+> θ
+
+(o′, q ) = 1
+
+|o′|
+
+> |o′|
+
+X
+
+> t=1
+
+max 
+
+ πθ (o′ 
+
+> t
+
+| q, o ′
+
+> <t
+
+)
+
+πold (o′ 
+
+> t
+
+| q, o ′
+
+> <t
+
+) , 1 − ϵ
+
+
+
+.
+
+(7) To make rollout-level credit assignment explicit, we instantiate Eq. (6) on a sampled group with 
+
+N + > 0 and N − > 0, and differentiate the empirical objective with respect to the rollout scores. 
+
+Lemma 1. Consider a sampled valid group with positive rollout set Pq = {o+ 
+
+> i
+
+}N + 
+
+> i=1
+
+and negative rollout set Nq = {o− 
+
+> j
+
+}N −
+
+> j=1
+
+, and let bpq = N +/(N + + N −) denote its empirical pass rate. Replacing the conditional expectations in Eq. (6) with empirical averages gives 
+
+bJ clip GRPO (q) = 
+
+qbpq (1 − bpq )
+
+ 1
+
+N + 
+
+> N+
+
+X
+
+> i=1
+
+s+ 
+
+> θ
+
+(o+ 
+
+> i
+
+, q ) − 1
+
+N − 
+
+> N−
+
+X
+
+> j=1
+
+s− 
+
+> θ
+
+(o− 
+
+> j
+
+, q )
+
+ . (8) 
+
+The derivatives with respect to the positive and negative rollout scores are 
+
+∂ bJ clip GRPO (q)
+
+∂s + 
+
+> θ
+
+(o+ 
+
+> i
+
+, q ) = 1
+
+N +
+
+qbpq (1 − bpq ), ∂ bJ clip GRPO (q)
+
+∂s − 
+
+> θ
+
+(o− 
+
+> j
+
+, q ) = − 1
+
+N −
+
+qbpq (1 − bpq ). (9) The proof of Lemma 1 follows by direct differentiation and is provided in Appendix A.1. 
+
+Implications. Equation (7) and Lemma 1 formalize the two limitations of GRPO discussed above. First, Eq. (7) reveals likelihood-misaligned scoring : GRPO scores each rollout by averaging clipped token-level importance sampling ratios. This score is an optimization surrogate, not the sequence log-probability that determines how likely the current policy is to generate the rollout. As a result, increasing the GRPO score does not necessarily improve the likelihood ordering between positive and negative rollouts. Second, Lemma 1 reveals score-insensitive credit assignment : within a valid group, all positive rollouts receive the same coefficient and all negative rollouts receive another. These coefficients are determined by the group pass rate through pbpq (1 − bpq ), rather than by the score gaps between positive and negative rollouts. Therefore, GRPO assigns the same rollout-level credit to positives with different score gaps, and likewise to high-scoring and low-scoring negatives within the same group. 
+
+4.2 A Contrastive View of RLVR Optimization 
+
+Motivated by the limitations above, ConSPO uses likelihood-aligned sequence scoring and group-wise positive-negative comparison. Specifically, it scores each rollout by the length-normalized log-probability sθ (o, q ) = 1
+
+> |o|
+
+P|o| 
+
+> t=1
+
+log πθ (ot | q, o <t ). Unlike the clipped surrogate scores s+
+
+> θ
+
+and s− 
+
+> θ
+
+in Eq. (7) , this score is shared by positive and negative rollouts, allowing all rollouts to be compared on the likelihood scale used by autoregressive generation. Given the rollout sets Pq and 
+
+Nq , we treat the negative rollouts as distractors and optimizes the following InfoNCE-style objective: 
+
+bJNCE (q) = 1
+
+N + 
+
+> N+
+
+X
+
+> i=1
+
+τ log exp( sθ (o+ 
+
+> i
+
+, q )/τ )exp( sθ (o+ 
+
+> i
+
+, q )/τ ) + PN − 
+
+> j=1
+
+exp( sθ (o− 
+
+> j
+
+, q )/τ ) , (10) where τ > 0 is the temperature parameter. Unlike the linear positive-negative score difference in Eq. (6) , Eq. (10) compares each positive rollout with the negative set through a softmax distribution. For each positive rollout o+ 
+
+> i
+
+, we define the contrastive probabilities assigned to itself and to its negative distractors as                                  
+
+> P+
+> i=exp( sθ(o+
+> i, q )/τ )exp( sθ(o+
+> i, q )/τ ) + PN−
+> k=1 exp( sθ(o−
+> k, q )/τ ),P−
+> ij =exp( sθ(o−
+> j, q )/τ )exp( sθ(o+
+> i, q )/τ ) + PN−
+> k=1 exp( sθ(o−
+> k, q )/τ ).
+
+(11) 5By construction, P + 
+
+> i
+
++ PN − 
+
+> j=1
+
+P − 
+
+> ij
+
+= 1 for each positive rollout o+ 
+
+> i
+
+. These probabilities make the rollout-level credit depend on the scores within the group, as formalized in Lemma 2. 
+
+Lemma 2. For the InfoNCE-style objective in Eq. (10) , the derivatives with respect to the positive and negative rollout scores are 
+
+∂ bJNCE (q)
+
+∂s θ (o+ 
+
+> i
+
+, q ) = 1
+
+N + (1 − P + 
+
+> i
+
+), ∂ bJNCE (q)
+
+∂s θ (o− 
+
+> j
+
+, q ) = − 1
+
+N + 
+
+> N+
+
+X
+
+> i=1
+
+P − 
+
+> ij
+
+. (12) 
+
+Moreover, the aggregate derivative over the negative rollout scores and the total derivative over the group satisfy  
+
+> N−
+
+X
+
+> j=1
+
+∂ bJNCE (q)
+
+∂s θ (o− 
+
+> j
+
+, q ) = − 1
+
+N + 
+
+> N+
+
+X
+
+> i=1
+
+(1 − P + 
+
+> i
+
+), 
+
+> N+
+
+X
+
+> i=1
+
+∂ bJNCE (q)
+
+∂s θ (o+ 
+
+> i
+
+, q ) + 
+
+> N−
+
+X
+
+> j=1
+
+∂ bJNCE (q)
+
+∂s θ (o− 
+
+> j
+
+, q ) = 0 . (13) 
+
+For any two negative rollouts o− 
+
+> j
+
+and o− 
+
+> k
+
+, the magnitudes of their negative-score derivatives satisfy 
+
+∂ bJNCE (q)/∂s θ (o− 
+
+> j
+
+, q )
+
+∂ bJNCE (q)/∂s θ (o− 
+
+> k
+
+, q )
+
+=
+
+PN + 
+
+> i=1
+
+P −
+
+> ij
+
+PN + 
+
+> i=1
+
+P −
+
+> ik
+
+= exp sθ (o− 
+
+> j
+
+, q ) − sθ (o− 
+
+> k
+
+, q )
+
+τ
+
+!
+
+. (14) The proof is provided in Appendix A.2. For positive rollouts, the coefficient 1 − P + 
+
+> i
+
+is large when the positive rollout is not well separated from its negative distractors, and decreases as P + 
+
+> i
+
+approaches one. For negative rollouts, Eq. (13) shows that the total negative-side derivative has magnitude  
+
+> 1
+> N+
+
+PN +
+
+> i=1
+
+(1 − P + 
+
+> i
+
+), which increases when positive rollouts receive low contrastive probabilities. This negative-side derivative is distributed by P − 
+
+> ij
+
+across negative rollouts. As shown in Eq. (14) ,higher-scoring negative rollouts receive larger derivative magnitudes than lower-scoring negatives. The balance relation in Eq. (13) further shows that the positive and negative score derivatives cancel at the group level. Compared with Lemma 1, ConSPO assigns rollout-level credit according to within-group score comparisons rather than fixed coefficients determined by group reward statistics. 
+
+4.3 Scheduled Margin as a Separation Curriculum 
+
+Although the InfoNCE-style objective in Eq. (10) enables contrast-aware credit assignment, its gradients may attenuate prematurely when positive rollouts only marginally outperform their negative distractors. This issue becomes more pronounced in later training stages, where positive and negative scores may already be correctly ordered but still lack sufficient separation. To prevent premature gradient attenuation, ConSPO introduces a scheduled margin that lowers the effective score of each positive rollout in the contrastive objective. The margin starts from zero, allowing early training to focus on coarse positive-negative ordering, and gradually increases to promote stronger separation as optimization progresses. At training step t, ConSPO maximizes the following margin-enhanced objective: 
+
+bJConSPO (q) = 1
+
+N + 
+
+> N+
+
+X
+
+> i=1
+
+τ log exp(( sθ (o+ 
+
+> i
+
+, q ) − mt)/τ )exp(( sθ (o+ 
+
+> i
+
+, q ) − mt)/τ ) + PN − 
+
+> j=1
+
+exp( sθ (o− 
+
+> j
+
+, q )/τ ) , (15) where mt ≥ 0 is the scheduled margin. By subtracting mt from the positive rollout score, ConSPO requires a positive rollout to exceed its negative distractors by a larger gap before the contrastive gradient attenuates. Let λt ∈ [0 , 1] denote the normalized training progress, and let α ∈ (0 , 1] denote the fraction of training used for margin warmup. We define the effective schedule progress and the margin as 
+
+ρt = min 
+
+ λt
+
+α , 1
+
+
+
+, mt = M
+
+2 (1 − cos( πρ t)) , (16) where M is the target margin. Thus, the margin smoothly increases from zero to M during the first α
+
+portion of training and remains fixed afterward. 6Table 1: Comparative performance on seven mathematical reasoning benchmarks with DeepSeek-R1-Distill-Qwen-1.5B. We report avg@32 on AIME, HMMT, and AMC, and pass@1 on the remaining benchmarks. O-Bench is short for OlympiadBench. The best and runner-up results are highlighted in bold and underlined, respectively.                                                                                 
+
+> Method AIME24 AIME25 AIME26 HMMT25 MATH500 AMC O-Bench Avg.
+> Base Model 20.9 20.7 13.9 9.7 79.2 52.8 37.6 33.5 GRPO 28.6 22.9 20.4 11.7 85.4 64.4 46.5 40.0 DAPO 28.6 22.9 20.8 13.5 86.0 66.2 50.2 41.2 Dr. GRPO 27.4 22.0 19.5 10.7 83.4 63.5 46.7 39.0 DisCO 28.3 24.8 21.7 14.4 86.6 66.5 49.3 41.7 GMPO 31.5 24.6 23.8 12.8 87.0 70.0 49.0 42.7 CISPO 31.4 23.0 23.0 13.3 87.2 65.2 47.6 41.5 SAPO 30.6 25.3 23.3 12.8 87.2 70.1 50.4 42.8
+> ConSPO (Ours) 34.7 26.7 23.9 14.9 88.8 70.4 51.1 44.4
+
+Table 2: Comparative performance on larger reasoning models.                                                                                                         
+
+> Method AIME24 AIME25 AIME26 HMMT25 MATH500 AMC O-Bench Avg.
+> DeepSeek-R1-Distill-Qwen-7B
+> Base Model 41.9 30.3 35.5 17.5 88.0 70.3 50.7 47.7 GRPO 50.0 35.9 43.9 20.7 92.8 82.8 59.4 55.1 DAPO 49.9 34.2 37.9 20.4 93.4 80.6 58.5 53.6 Dr. GRPO 53.2 35.3 43.3 21.7 92.4 82.2 59.1 55.3 DisCO 51.8 36.9 45.1 19.6 93.2 82.0 59.3 55.4
+> ConSPO (Ours) 54.9 39.1 46.8 21.5 93.8 83.8 62.4 57.5
+> DeepSeek-R1-Distill-Llama-8B
+> Base Model 28.9 21.3 20.6 13.5 81.6 63.5 42.1 38.8 GRPO 42.8 25.5 34.2 18.5 88.6 78.6 55.7 49.1 DAPO 40.0 24.0 29.9 17.9 87.6 77.6 53.3 47.2 Dr. GRPO 44.8 26.8 32.4 19.6 89.2 80.5 56.1 49.9 DisCO 44.2 28.8 32.8 19.7 88.8 78.4 54.7 49.6
+> ConSPO (Ours) 43.0 29.6 35.5 22.6 90.4 81.1 60.7 51.8
+
+## 5 Experiments 
+
+5.1 Settings Models. We conduct experiments across diverse model families and scales to validate the general-ization of ConSPO, including DeepSeek-R1-Distill-Qwen-1.5B [ 2 ], DeepSeek-R1-Distill-Qwen-7B, DeepSeek-R1-Distill-Llama-8B, Qwen3-4B-Base [4], and Llama-3.2-3B-Instruct [34]. 
+
+Training data. We use the DeepScaleR-Preview-Dataset [ 35 ] which comprises approximately 40k mathematical problems drawn from AIME [ 8], AMC [ 36 ], Omni-MATH [ 37 ], and Still [ 38 ]. We also use DAPO-Math-17k [21] to validate the effectiveness of ConSPO on different training data. 
+
+Benchmarks. We evaluate our models on seven benchmarks, including AIME 2024, AIME 2025, AIME 2026, HMMT 2025 [ 39 ], MATH500 [ 40 ], AMC, and OlympiadBench [ 41 ]. We report pass@1 on most benchmarks, and avg@32 on AIME, HMMT, and AMC to mitigate the variance introduced by the relatively small size of these datasets [42]. More details are provided in Appendix B.1. 
+
+Baselines. We compare ConSPO against seven recent state-of-the-art RLVR methods, including (1) GRPO ; (2) DAPO , which refines the GRPO loss formulation and introduces dynamic sampling and overlong reward shaping; (3) Dr. GRPO , which removes the standard deviation in advantage estimation and reorganizes loss allocation; (4) DisCO , which revisits GRPO from a discriminative perspective and eliminates its difficulty bias; (5) GMPO , which introduce sequence-level geometric-mean importance sampling; (6) CISPO , which introduces soft clipping in importance sampling; and (7) SAPO , which replaces hard clipping with a smooth, temperature-controlled gate to adaptively control off-policy updates. 7Table 3: Generalization on Qwen3-4B-Base.                                                         
+
+> Method AIME24 AIME25 AIME26 HMMT25 MATH500 AMC O-Bench Avg.
+> Base Model 9.2 5.7 4.8 0.9 49.4 31.7 27.1 18.4 GRPO 16.5 10.7 10.5 2.6 80.2 48.6 43.3 30.3 DAPO 14.6 10.1 8.5 2.2 82.0 48.4 43.1 29.8 Dr. GRPO 17.4 11.4 12.4 2.6 82.6 51.7 45.0 31.9 DisCO 19.8 12.2 9.4 5.3 83.0 52.9 39.1 31.7
+> ConSPO (Ours) 19.8 15.6 12.8 8.0 82.2 53.8 45.6 34.0
+
+Table 4: Generalization on Llama-3.2-3B-Instruct.                                    
+
+> Method AIME 2024 MATH500 AMC OlympiadBench Avg.
+> Base Model 3.3 26.4 12.5 9.3 12.9 GRPO 12.0 52.8 25.9 18.7 27.4 DAPO 10.5 52.8 25.0 18.4 26.7 Dr. GRPO 11.1 54.0 26.5 18.7 27.6 DisCO 11.4 56.6 27.5 18.7 28.6
+> ConSPO (Ours) 12.3 57.4 26.7 20.4 29.2
+
+Implementation details. During training, we set we set the temperature to 1.0 to ensure sufficient exploration and the learning rate to 2 × 10 −6. The maximum response length is 8K for DeepSeek-R1-Distill-Qwen and DeepSeek-R1-Distill-Llama, and 4K for all other models. All methods run for 4 epochs, except for Qwen3-4B-Base, which runs for 2 epochs due to its faster convergence. We set the contrastive temperature τ to 10, the target margin M to 0.01, and the margin warmup ratio α
+
+to 30%. Evaluations are conducted every 100 steps, with a temperature of 0.6, a top-p of 0.95, and the same maximum response length used during training. The best performance for each method is reported. Experiments on the 1.5B, 3B, and 4B models are run on 8 H100 GPUs, while experiments on the 7B and 8B models are run on 4 nodes, each equipped with 8 H100 GPUs. More details are provided in Appendix B.2. 
+
+5.2 Main Results Performance with reasoning models. As shown in Tables 1 and 2, ConSPO delivers consistent improvements on reasoning models. On DeepSeek-R1-Distill-Qwen-1.5B, ConSPO achieves the best average performance of 44.4, outperforming GRPO by 4.4 points and the strongest baseline by 1.6 points. Moreover, ConSPO achieves the highest performance across all seven benchmarks in this setting, indicating its generalization across different reasoning tasks. The same trend holds for larger reasoning models. On DeepSeek-R1-Distill-Qwen-7B and DeepSeek-R1-Distill-Llama-8B, ConSPO improves over the strongest baseline by 2.1 and 1.9 points, respectively. These results suggest that the proposed contrastive objective remains effective across different parameter scales. 
+
+Generalization across backbone models and training datasets. As shown in Tables 3 and 4, ConSPO generalizes well across both base and instruction-tuned models. On Qwen3-4B-Base, ConSPO achieves the best average performance of 34.0, outperforming the strongest baseline by 2.1 points. Notably, on the challenging HMMT25 benchmark, where the base model obtains only 0.9, ConSPO improves the score to 8.0, suggesting that our method can substantially enhance performance on difficult reasoning tasks where the initial model is weak. On Llama-3.2-3B-Instruct, whose base reasoning capability is substantially weaker, ConSPO still achieves the highest average performance of 29.2, improving over the strongest baseline by 0.6 points. Moreover, Table 5 shows that ConSPO remains effective when trained on the DAPO-Math-17k dataset, achieving an average performance of 44.1 and outperforming the strongest baseline by 1.9 points. These results demonstrate that the effectiveness of ConSPO is not tied to a specific backbone or training dataset. 
+
+5.3 Ablation Study 
+
+Table 6 ablates the key components of ConSPO on DeepSeek-R1-Distill-Qwen-1.5B. Removing the contrastive objective causes the largest performance drop, reducing the average score from 44.4 to 42.7. This result shows that group-wise contrastive optimization is central to ConSPO, as it enables credit assignment to adapt to the relative scores of positive and negative rollouts. Replacing the 8Table 5: Generalization to the DAPO-Math-17k dataset. 
+
+Method AIME24 AIME25 AIME26 HMMT25 MATH500 AMC O-Bench Avg. 
+
+Base Model 20.9 20.7 13.9 9.7 79.2 52.8 37.6 33.5 GRPO 29.2 22.7 21.6 13.1 83.4 64.5 44.6 39.9 DAPO 29.2 22.4 19.6 12.8 83.8 65.4 49.5 40.4 Dr. GRPO 30.0 22.9 19.6 12.8 84.0 65.2 45.8 40.0 DisCO 31.3 24.2 20.2 12.9 86.6 69.5 50.4 42.2 
+
+ConSPO (Ours) 34.2 25.8 24.8 14.2 87.6 70.0 52.0 44.1 
+
+Table 6: Ablation study of key components. The variant “w/o contrastive objective” replaces the InfoNCE-style objective with the linear positive-negative score difference in Eq. (8) . The variant “w/o log-likelihood scores” replaces the length-normalized log-likelihood scores with scores based on clipped importance sampling ratios from Eq. (7) . The variant “w/o scheduled margin” removes the margin, while “w/ fixed margin” replaces the schedule with a constant margin. 
+
+Method AIME24 AIME25 AIME26 HMMT25 MATH500 AMC O-Bench Avg. ConSPO 34.7 26.7 23.9 14.9 88.8 70.4 51.1 44.4 w/o contrastive objective 32.0 24.8 21.1 13.6 85.8 69.7 52.1 42.7 w/o log-likelihood scores 33.1 25.9 22.1 13.4 88.6 70.1 50.7 43.4 w/o scheduled margin 34.3 25.4 23.4 14.2 89.0 70.6 51.7 44.1 w/ fixed margin 34.1 25.8 23.8 14.7 87.8 70.1 51.3 43.9 1 5 10 20         
+
+> 35.0
+> 37.5
+> 40.0
+> 42.5
+> 45.0
+> 47.5
+> 50.0
+> Avg.
+> 5e-3 1e-2 2e-2 3e-2 5e-2
+> M
+> 35.0
+> 37.5
+> 40.0
+> 42.5
+> 45.0
+> 47.5
+> 50.0
+> Avg.
+> 10% 30% 50% 70% 100%
+> 35.0
+> 37.5
+> 40.0
+> 42.5
+> 45.0
+> 47.5
+> 50.0
+> Avg.
+
+Figure 2: Parameter study of ConSPO. We vary the contrastive temperature τ , target margin M ,and margin warmup ratio α, and report the average performance on seven reasoning benchmarks. length-normalized log-likelihood scores with clipped importance sampling ratio scores also decreases the average score to 43.4, confirming the importance of aligning rollout scoring with autoregressive generation likelihoods. The scheduled margin further improves performance: removing the margin reduces the average score to 44.1, while using a fixed margin obtains 43.9. These results indicate that the contrastive objective, likelihood-aligned rollout scoring, and curriculum-scheduled margin play complementary roles in the effectiveness of ConSPO. 
+
+5.4 Parameter Study 
+
+Figure 2 studies the sensitivity of ConSPO to the contrastive temperature τ , target margin M , and margin warmup ratio α. When τ is too small, the contrastive distribution becomes overly sharp and can overemphasize a few high-scoring negatives, leading to less stable optimization. For the margin schedule, performance drops when either the target margin or the warmup ratio is large, suggesting that ConSPO benefits from a moderate separation requirement introduced at a proper pace. 
+
+## 6 Conclusion 
+
+In this paper, we investigate the optimization structure of GRPO and establish an equivalent dis-criminative reformulation that characterizes it as a weighted positive-negative score difference. This reformulation reveals two structural limitations of GRPO: likelihood-misaligned scoring and score-insensitive credit assignment across rollouts. To address these limitations, we propose ConSPO, which optimizes a group-wise contrastive objective using likelihood-aligned sequence scores and a curriculum-scheduled margin to enable contrast-sensitive policy optimization. Extensive experiments across diverse settings demonstrate that ConSPO consistently outperforms strong RLVR baselines on challenging reasoning benchmarks. 9References 
+
+[1] Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan Zhang, YK Li, Yang Wu, et al. Deepseekmath: Pushing the limits of mathematical reasoning in open language models. arXiv preprint arXiv:2402.03300 , 2024. [2] Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Peiyi Wang, Qihao Zhu, Runxin Xu, Ruoyu Zhang, Shirong Ma, Xiao Bi, et al. Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement learning. arXiv preprint arXiv:2501.12948 , 2025. [3] An Yang, Beichen Zhang, Binyuan Hui, Bofei Gao, Bowen Yu, Chengpeng Li, Dayiheng Liu, Jianhong Tu, Jingren Zhou, Junyang Lin, et al. Qwen2. 5-math technical report: Toward mathematical expert model via self-improvement. arXiv preprint arXiv:2409.12122 , 2024. [4] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et al. Qwen3 technical report. arXiv preprint arXiv:2505.09388 , 2025. [5] Kimi Team, Angang Du, Bohong Yin, Bowei Xing, Bowen Qu, Bowen Wang, Cheng Chen, Chenlin Zhang, Chenzhuang Du, Chu Wei, et al. Kimi-vl technical report. arXiv preprint arXiv:2504.07491 , 2025. [6] Yang Yue, Zhiqi Chen, Rui Lu, Andrew Zhao, Zhaokai Wang, Yang Yue, Shiji Song, and Gao Huang. Does reinforcement learning really incentivize reasoning capacity in LLMs beyond the base model? In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. URL https://openreview.net/forum?id=4OsgYD7em5 .[7] Feng Zhang, Zezhong Tan, Xinhong Ma, Ziqiang Dong, Xi Leng, Jianfei Zhao, Xin Sun, and Yang Yang. Adhint: Adaptive hints with difficulty priors for reinforcement learning, 2026. URL 
+
+https://arxiv.org/abs/2512.13095 .[8] Yuzhong Zhao, Yue Liu, Junpeng Liu, Jingye Chen, Xun Wu, Yaru Hao, Tengchao Lv, Shaohan Huang, Lei Cui, Qixiang Ye, Fang Wan, and Furu Wei. Geometric-mean policy optimization. In The Fourteenth International Conference on Learning Representations , 2026. URL https: //openreview.net/forum?id=nCEs0tSwc2 .[9] Chujie Zheng, Shixuan Liu, Mingze Li, Xiong-Hui Chen, Bowen Yu, Chang Gao, Kai Dang, Yuqiong Liu, Rui Men, An Yang, Jingren Zhou, and Junyang Lin. Group sequence policy optimization, 2025. URL https://arxiv.org/abs/2507.18071 .[10] Chang Gao, Chujie Zheng, Xiong-Hui Chen, Kai Dang, Shixuan Liu, Bowen Yu, An Yang, Shuai Bai, Jingren Zhou, and Junyang Lin. Soft adaptive policy optimization. arXiv preprint arXiv:2511.20347 , 2025. [11] Chengyu Huang, Zhengxin Zhang, and Claire Cardie. Hapo: Training language models to reason concisely via history-aware policy optimization. In Proceedings of the AAAI Conference on Artificial Intelligence , volume 40, pages 31122–31130, 2026. [12] Jingyang Yi, Justin Wang, and Sida Li. Shorterbetter: Guiding reasoning models to find optimal inference length for efficient reasoning. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. URL https://openreview.net/forum?id= MJvwM5dBZM .[13] Zezhong Tan, Hang Gao, Xinhong Ma, Feng Zhang, and Ziqiang Dong. Towards flash thinking via decoupled advantage policy optimization. arXiv preprint arXiv:2510.15374 , 2025. [14] Bowen Jin, Hansi Zeng, Zhenrui Yue, Jinsung Yoon, Sercan O Arik, Dong Wang, Hamed Zamani, and Jiawei Han. Search-r1: Training LLMs to reason and leverage search engines with reinforcement learning. In Second Conference on Language Modeling , 2025. URL 
+
+https://openreview.net/forum?id=Rwhi91ideu .10 [15] Mingyang Chen, Linzhuang Sun, Tianpeng Li, sunhaoze, ZhouYijie, Chenzheng Zhu, Haofen Wang, Jeff Z. Pan, Wen Zhang, Huajun Chen, Fan Yang, Zenan Zhou, and Weipeng Chen. Research: Learning to reason with search for LLMs via reinforcement learning. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2026. URL https: //openreview.net/forum?id=OuGAwwAT8G .[16] Jeff Da, Clinton Wang, Xiang Deng, Yuntao Ma, Nikhil Barhate, and Sean Hendryx. Agent-rlvr: Training software engineering agents via guidance and environment rewards. arXiv preprint arXiv:2506.11425 , 2025. [17] Luan Zhang, Dandan Song, Zhijing Wu, Zhengyu Chen, Chen Zhang, Yuhang Tian, Huipeng Ma, Chenhao Li, Changzhi Zhou, Xudong Li, and Shuhao Zhang. Prunetir: Inference-time tool call pruning for effective yet efficient tool-integrated reasoning, 2026. URL https: //arxiv.org/abs/2605.09931 .[18] Xuerui Su, Shufang Xie, Guoqing Liu, Yingce Xia, Renqian Luo, Peiran Jin, Zhiming Ma, Yue Wang, Zun Wang, and Yuting Liu. Trust region preference approximation: A simple and stable reinforcement learning algorithm for llm reasoning. arXiv preprint arXiv:2504.04524 , 2025. [19] Sijia Cui, Pengyu Cheng, Jiajun Song, Yongbo Gai, Guojun Zhang, Zhechao Yu, Jianhe Lin, Xiaoxi Jiang, and Guanjun Jiang. Clipo: Contrastive learning in policy optimization generalizes rlvr. arXiv preprint arXiv:2603.10101 , 2026. [20] Yu Meng, Mengzhou Xia, and Danqi Chen. Simpo: Simple preference optimization with a reference-free reward. Advances in Neural Information Processing Systems , 37:124198–124235, 2024. [21] Qiying Yu, Zheng Zhang, Ruofei Zhu, Yufeng Yuan, Xiaochen Zuo, YuYue, Weinan Dai, Tiantian Fan, Gaohong Liu, Juncai Liu, LingJun Liu, Xin Liu, Haibin Lin, Zhiqi Lin, Bole Ma, Guangming Sheng, Yuxuan Tong, Chi Zhang, Mofan Zhang, Ru Zhang, Wang Zhang, Hang Zhu, Jinhua Zhu, Jiaze Chen, Jiangjie Chen, Chengyi Wang, Hongli Yu, Yuxuan Song, Xiangpeng Wei, Hao Zhou, Jingjing Liu, Wei-Ying Ma, Ya-Qin Zhang, Lin Yan, Yonghui Wu, and Mingxuan Wang. DAPO: An open-source LLM reinforcement learning system at scale. In 
+
+The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. URL 
+
+https://openreview.net/forum?id=2a36EMSSTp .[22] Sanghwan Bae, Jiwoo Hong, Min Young Lee, Hanbyul Kim, JeongYeon Nam, and Donghyun Kwak. Online difficulty filtering for reasoning oriented reinforcement learning. In Proceedings of the 19th Conference of the European Chapter of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 700–719, 2026. [23] Guochao Jiang, Wenfeng Feng, Guofeng Quan, Chuzhan Hao, Yuewei Zhang, Guohua Liu, and Hao Wang. Vcrl: Variance-based curriculum reinforcement learning for large language models. 
+
+arXiv preprint arXiv:2509.19803 , 2025. [24] Aaron van den Oord, Yazhe Li, and Oriol Vinyals. Representation learning with contrastive predictive coding. arXiv preprint arXiv:1807.03748 , 2018. [25] Yoshua Bengio, Jérôme Louradour, Ronan Collobert, and Jason Weston. Curriculum learning. In Proceedings of the 26th annual international conference on machine learning , pages 41–48, 2009. [26] Xin Wang, Yudong Chen, and Wenwu Zhu. A survey on curriculum learning. IEEE transactions on pattern analysis and machine intelligence , 44(9):4555–4576, 2021. [27] Zichen Liu, Changyu Chen, Wenjun Li, Penghui Qi, Tianyu Pang, Chao Du, Wee Sun Lee, and Min Lin. Understanding r1-zero-like training: A critical perspective. In Second Conference on Language Modeling , 2025. URL https://openreview.net/forum?id=5PAF7PAY2Y .[28] Aili Chen, Aonian Li, Bangwei Gong, Binyang Jiang, Bo Fei, Bo Yang, Boji Shan, Changqing Yu, Chao Wang, Cheng Zhu, et al. Minimax-m1: Scaling test-time compute efficiently with lightning attention. arXiv preprint arXiv:2506.13585 , 2025. 11 [29] Gang Li, Ming Lin, Tomer Galanti, Zhengzhong Tu, and Tianbao Yang. DisCO: Reinforcing large reasoning models with discriminative constrained optimization. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. URL https://openreview. net/forum?id=zzUXS4f91r .[30] Ting Chen, Simon Kornblith, Mohammad Norouzi, and Geoffrey Hinton. A simple framework for contrastive learning of visual representations. In International conference on machine learning , pages 1597–1607. PmLR, 2020. [31] Kaiming He, Haoqi Fan, Yuxin Wu, Saining Xie, and Ross Girshick. Momentum contrast for unsupervised visual representation learning. In Proceedings of the IEEE/CVF conference on computer vision and pattern recognition , pages 9729–9738, 2020. [32] Rafael Rafailov, Archit Sharma, Eric Mitchell, Christopher D Manning, Stefano Ermon, and Chelsea Finn. Direct preference optimization: Your language model is secretly a reward model. 
+
+Advances in neural information processing systems , 36:53728–53741, 2023. [33] Haoran Xu, Amr Sharaf, Yunmo Chen, Weiting Tan, Lingfeng Shen, Benjamin Van Durme, Ken-ton Murray, and Young Jin Kim. Contrastive preference optimization: Pushing the boundaries of llm performance in machine translation. arXiv preprint arXiv:2401.08417 , 2024. [34] Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Alex Vaughan, et al. The llama 3 herd of models. arXiv preprint arXiv:2407.21783 , 2024. [35] Sijun Tan, Michael Luo, Justin Wong, Colin Cai, Xiaoxiang Shi, William Yuan Tang, Manan Roongta, Tianjun Zhang, Li Erran Li, Raluca Ada Popa, and Ion Stoica. Deepscaler: Effective RL scaling of reasoning models via iterative context lengthening, 2026. URL https:// openreview.net/forum?id=I6GzDCne7U .[36] Jia Li, Edward Beeching, Lewis Tunstall, Ben Lipkin, Roman Soletskyi, Shengyi Huang, Kashif Rasul, Longhui Yu, Albert Q Jiang, Ziju Shen, et al. Numinamath: The largest public dataset in ai4maths with 860k pairs of competition math problems and solutions. Hugging Face repository ,13(9):9, 2024. [37] Bofei Gao, Feifan Song, Zhe Yang, Zefan Cai, Yibo Miao, Qingxiu Dong, Lei Li, Chenghao Ma, Liang Chen, Runxin Xu, Zhengyang Tang, Benyou Wang, Daoguang Zan, Shanghaoran Quan, Ge Zhang, Lei Sha, Yichang Zhang, Xuancheng Ren, Tianyu Liu, and Baobao Chang. Omni-MATH: A universal olympiad level mathematic benchmark for large language models. In The Thirteenth International Conference on Learning Representations , 2025. URL https: //openreview.net/forum?id=yaqPf0KAlN .[38] Yingqian Min, Zhipeng Chen, Jinhao Jiang, Jie Chen, Jia Deng, Yiwen Hu, Yiru Tang, Jiapeng Wang, Xiaoxue Cheng, Huatong Song, et al. Imitate, explore, and self-improve: A reproduction report on slow-thinking reasoning systems. arXiv preprint arXiv:2412.09413 , 2024. [39] Mislav Balunovi´ c, Jasper Dekoninck, Ivo Petrov, Nikola Jovanovi´ c, and Martin Vechev. Matharena: Evaluating llms on uncontaminated math competitions, February 2025. URL 
+
+https://matharena.ai/ .[40] Dan Hendrycks, Collin Burns, Saurav Kadavath, Akul Arora, Steven Basart, Eric Tang, Dawn Song, and Jacob Steinhardt. Measuring mathematical problem solving with the math dataset. In 
+
+Thirty-fifth Conference on Neural Information Processing Systems Datasets and Benchmarks Track (Round 2) , 2021. [41] Chaoqun He, Renjie Luo, Yuzhuo Bai, Shengding Hu, Zhen Thai, Junhao Shen, Jinyi Hu, Xu Han, Yujie Huang, Yuxiang Zhang, et al. Olympiadbench: A challenging benchmark for promoting agi with olympiad-level bilingual multimodal scientific problems. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 3828–3850, 2024. [42] Ziru Liu, Cheng Gong, Xinyu Fu, Yaofang Liu, Ran Chen, Shoubo Hu, Suiyun Zhang, Rui Liu, Qingfu Zhang, and Dandan Tu. Ghpo: Adaptive guidance for stable and efficient llm reinforcement learning. arXiv preprint arXiv:2507.10628 , 2025. 12 [43] Jianhao Yan, Yafu Li, Zican Hu, Zhi Wang, Ganqu Cui, Xiaoye Qu, Yu Cheng, and Yue Zhang. Learning to reason under off-policy guidance. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2026. URL https://openreview.net/forum?id= vO8LLoNWWk .[44] Luan Zhang, Dandan Song, Zhijing Wu, Yuhang Tian, Changzhi Zhou, Jing Xu, Ziyi Yang, and Shuhao Zhang. Detecting hallucination in large language models through deep internal representation analysis. In Proceedings of the Thirty-Fourth International Joint Conference on Artificial Intelligence, IJCAI-25 , pages 8357–8365, 2025. 
+
+## A Proofs 
+
+A.1 Proof of Proposition 1 and Lemma 1 
+
+We first state two auxiliary lemmas. 
+
+Lemma 3. For any query q with σq > 0, define 
+
+A+(o | q) = max( A(o | q), 0) , A−(o | q) = max( −A(o | q), 0) .
+
+Let 
+
+W+(q) = Eo∼πold (·| q)[A+(o | q)] , W−(q) = Eo∼πold (·| q)[A−(o | q)] .
+
+Then W+(q) = W−(q). Denoting the common value by W (q), we have 
+
+W (q) = 12 E¯o∼πold (·| q)
+
+|A(¯ o | q)| > 0.
+
+Moreover, 
+
+eπ+ 
+
+> q
+
+(do ) = A+(o | q)
+
+W (q) πold (do | q), eπ− 
+
+> q
+
+(do ) = A−(o | q)
+
+W (q) πold (do | q)
+
+are valid probability distributions. Proof. By the definition of A(o | q),
+
+Eo∼πold (·| q)[A(o | q)] = Eo∼πold (·| q)[r(o, q )] − μq
+
+σq
+
+= 0 .
+
+Since A = A+ − A−, it follows that W+(q) = W−(q). Since |A| = A+ + A−,
+
+E¯o∼πold (·| q)
+
+|A(¯ o | q)| = W+(q) + W−(q) = 2 W (q).
+
+The condition σq > 0 implies that A(o | q) is not almost surely zero; combined with E[A(o | q)] = 0 ,this gives W (q) > 0.The reweighted measures are nonnegative, and 
+
+Zeπ+ 
+
+> q
+
+(do ) = Eo∼πold (·| q)[A+(o | q)] 
+
+W (q) = 1 ,
+
+Zeπ− 
+
+> q
+
+(do ) = Eo∼πold (·| q)[A−(o | q)] 
+
+W (q) = 1 .
+
+Lemma 4. Assume binary rewards r(o, q ) ∈ { 0, 1} and define 
+
+p(q) = Eo∼πold (·| q)[r(o, q )] .
+
+For any query with 0 < p (q) < 1,
+
+W (q) = pp(q)(1 − p(q)) , eπ+ 
+
+> q
+
+= π+old (· | q), eπ− 
+
+> q
+
+= π−
+
+> old
+
+(· | q),
+
+where π+old (· | q) and π−
+
+> old
+
+(· | q) denote πold conditioned on r(o, q ) = 1 and r(o, q ) = 0 , respectively. 
+
+13 Proof. Under binary rewards, 
+
+μq = p(q), σq = pp(q)(1 − p(q)) , A(o | q) = 
+
+s
+
+1 − p(q)
+
+p(q) , r(o, q ) = 1 ,
+
+−
+
+s
+
+p(q)1 − p(q) , r(o, q ) = 0 .
+
+Therefore, 
+
+W (q) = Eo∼πold (·| q)[A+(o | q)] = p(q)
+
+s
+
+1 − p(q)
+
+p(q) = pp(q)(1 − p(q)) .
+
+Substituting this value into the definitions of eπ+ 
+
+> q
+
+and eπ− 
+
+> q
+
+gives 
+
+eπ+ 
+
+> q
+
+(do ) = A+(o | q)
+
+W (q) πold (do | q) = 1{r(o, q ) = 1 }
+
+p(q) πold (do | q) = π+old (do | q),
+
+eπ− 
+
+> q
+
+(do ) = A−(o | q)
+
+W (q) πold (do | q) = 1{r(o, q ) = 0 }
+
+1 − p(q) πold (do | q) = π−
+
+> old
+
+(do | q).
+
+Proof of Proposition 1. Let 
+
+ρt(θ) = πθ (ot | q, o <t )
+
+πold (ot | q, o <t ) .
+
+Removing the KL regularizer from Eq. (3) gives 
+
+J clip GRPO (θ) = Eq Eo∼πold (·| q)
+
+ 1
+
+|o|
+
+> |o|
+
+X
+
+> t=1
+
+f (ρt(θ), A (o | q)) 
+
+ .
+
+For the clipping function in Eq. (4), 
+
+f (ρ, A (o | q)) = A+(o | q) min( ρ, 1 + ϵ) − A−(o | q) max( ρ, 1 − ϵ).
+
+Averaging over tokens and using Eq. (7), we obtain 
+
+J clip GRPO (θ) = Eq Eo∼πold (·| q)
+
+A+(o | q)s+ 
+
+> θ
+
+(o, q ) − A−(o | q)s− 
+
+> θ
+
+(o, q )
+
+= Eq W (q)
+
+
+
+Eo∼eπ+ 
+
+> q
+
+[s+ 
+
+> θ
+
+(o, q )] − Eo′∼eπ− 
+
+> q
+
+[s− 
+
+> θ
+
+(o′, q )] 
+
+
+
+= Eq W (q) Eo∼eπ+ 
+
+> q, o ′∼eπ−
+> q
+
+s+ 
+
+> θ
+
+(o, q ) − s− 
+
+> θ
+
+(o′, q ) . (17) By Lemma 3, 
+
+W (q) = 12 E¯o∼πold (·| q)
+
+|A(¯ o | q)|.
+
+Substituting this identity into Eq. (17) yields 
+
+J clip GRPO (θ) = Eq
+
+ 12 E¯o∼πold (·| q)
+
+|A(¯ o | q)| Eo∼eπ+ 
+
+> q, o ′∼eπ−
+> q
+
+s+ 
+
+> θ
+
+(o, q ) − s− 
+
+> θ
+
+(o′, q )
+
+, (18) which is Eq. (5). For binary rewards with 0 < p (q) < 1, applying Lemma 4 to Eq. (17) gives 
+
+J clip GRPO (θ) = Eq
+
+pp(q)(1 − p(q)) Eo∼π+old (·| q), o ′∼π−
+
+> old (·| q)
+
+s+ 
+
+> θ
+
+(o, q ) − s− 
+
+> θ
+
+(o′, q ), (19) which is Eq. (6). 
+
+Proof of Lemma 1. By Eq. (8), 
+
+bJ clip GRPO (q) = 
+
+qbpq (1 − bpq )
+
+ 1
+
+N + 
+
+> N+
+
+X
+
+> i=1
+
+s+ 
+
+> θ
+
+(o+ 
+
+> i
+
+, q ) − 1
+
+N − 
+
+> N−
+
+X
+
+> j=1
+
+s− 
+
+> θ
+
+(o− 
+
+> j
+
+, q )
+
+ .
+
+Differentiating with respect to s+ 
+
+> θ
+
+(o+ 
+
+> i
+
+, q ) and s− 
+
+> θ
+
+(o− 
+
+> j
+
+, q ) gives 
+
+∂ bJ clip GRPO (q)
+
+∂s + 
+
+> θ
+
+(o+ 
+
+> i
+
+, q ) = 1
+
+N +
+
+qbpq (1 − bpq ), ∂ bJ clip GRPO (q)
+
+∂s − 
+
+> θ
+
+(o− 
+
+> j
+
+, q ) = − 1
+
+N −
+
+qbpq (1 − bpq ).
+
+14 A.2 Proof of Lemma 2 
+
+Proof. For brevity, write 
+
+s+ 
+
+> i
+
+= sθ (o+ 
+
+> i
+
+, q ), s− 
+
+> j
+
+= sθ (o− 
+
+> j
+
+, q ), Zi = exp( s+ 
+
+> i
+
+/τ ) +  
+
+> N−
+
+X
+
+> k=1
+
+exp( s− 
+
+> k
+
+/τ ).
+
+Then Eq. (10) becomes 
+
+bJNCE (q) = 1
+
+N + 
+
+> N+
+
+X
+
+> i=1
+
+τ
+
+ s+
+
+> i
+
+τ − log Zi
+
+
+
+,
+
+and the contrastive probabilities in Eq. (11) are 
+
+P + 
+
+> i
+
+= exp( s+ 
+
+> i
+
+/τ )
+
+Zi
+
+, P − 
+
+> ij
+
+= exp( s− 
+
+> j
+
+/τ )
+
+Zi
+
+.
+
+For a positive rollout score s+ 
+
+> i
+
+, only the i-th summand depends on it. Hence 
+
+∂ bJNCE (q)
+
+∂s +
+
+> i
+
+= 1
+
+N + τ
+
+ 1
+
+τ − 1
+
+Zi
+
+∂Z i
+
+∂s +
+
+> i
+
+
+
+= 1
+
+N + τ
+
+ 1
+
+τ − 1
+
+Zi
+
+exp( s+ 
+
+> i
+
+/τ )
+
+τ
+
+
+
+= 1
+
+N + (1 − P + 
+
+> i
+
+).
+
+For a negative rollout score s− 
+
+> j
+
+, all summands depend on it through their denominators, giving 
+
+∂ bJNCE (q)
+
+∂s −
+
+> j
+
+= − 1
+
+N + 
+
+> N+
+
+X
+
+> i=1
+
+τ 1
+
+Zi
+
+∂Z i
+
+∂s −
+
+> j
+
+= − 1
+
+N + 
+
+> N+
+
+X
+
+> i=1
+
+τ 1
+
+Zi
+
+exp( s− 
+
+> j
+
+/τ )
+
+τ = − 1
+
+N + 
+
+> N+
+
+X
+
+> i=1
+
+P − 
+
+> ij
+
+.
+
+This gives Eq. (12). Using P + 
+
+> i
+
++ PN − 
+
+> j=1
+
+P − 
+
+> ij
+
+= 1 , we obtain  
+
+> N−
+
+X
+
+> j=1
+
+∂ bJNCE (q)
+
+∂s −
+
+> j
+
+= − 1
+
+N + 
+
+> N+
+
+X 
+
+> i=1
+> N−
+
+X
+
+> j=1
+
+P − 
+
+> ij
+
+= − 1
+
+N + 
+
+> N+
+
+X
+
+> i=1
+
+(1 − P + 
+
+> i
+
+).
+
+Moreover,  
+
+> N+
+
+X
+
+> i=1
+
+∂ bJNCE (q)
+
+∂s +
+
+> i
+
++ 
+
+> N−
+
+X
+
+> j=1
+
+∂ bJNCE (q)
+
+∂s −
+
+> j
+
+= 1
+
+N + 
+
+> N+
+
+X
+
+> i=1
+
+(1 − P + 
+
+> i
+
+) − 1
+
+N + 
+
+> N+
+
+X
+
+> i=1
+
+(1 − P + 
+
+> i
+
+) = 0 .
+
+This gives Eq. (13). Finally, for any two negative rollouts o− 
+
+> j
+
+and o− 
+
+> k
+
+,
+
+P − 
+
+> ij
+
+= exp( s− 
+
+> j
+
+/τ )
+
+Zi
+
+= exp s− 
+
+> j
+
+− s−
+
+> k
+
+τ
+
+!
+
+exp( s− 
+
+> k
+
+/τ )
+
+Zi
+
+= exp s− 
+
+> j
+
+− s−
+
+> k
+
+τ
+
+!
+
+P − 
+
+> ik
+
+.
+
+Summing over i yields  
+
+> N+
+
+X
+
+> i=1
+
+P − 
+
+> ij
+
+= exp s− 
+
+> j
+
+− s−
+
+> k
+
+τ
+
+! N +
+
+X
+
+> i=1
+
+P − 
+
+> ik
+
+.
+
+Combining this identity with Eq. (12) gives 
+
+∂ bJNCE (q)/∂s −
+
+> j
+
+∂ bJNCE (q)/∂s −
+
+> k
+
+=
+
+PN + 
+
+> i=1
+
+P −
+
+> ij
+
+PN + 
+
+> i=1
+
+P −
+
+> ik
+
+= exp s− 
+
+> j
+
+− s−
+
+> k
+
+τ
+
+!
+
+,
+
+This gives Eq. (14). 15 Table 7: Training configurations for the main experiments.                  
+
+> Model Config Value R1-Distill-Qwen &R1-Distill-Llama
+> max prompt length 1024 max response length 8192 rollout temperature 1.0 learning rate 2×10 −6
+> train batch size 256 number of rollouts 8training epochs 4contrastive temperature τ10 maximum margin M0.01 margin warmup ratio α30%
+
+Table 8: Evaluation configurations for the main experiments.       
+
+> Model Config Value R1-Distill-Qwen &R1-Distill-Llama
+> max response length 8192 rollout temperature 0.6 top-p0.95 evaluation interval 100 steps
+
+## B Detailed Experimental Settings 
+
+B.1 Benchmarks 
+
+We evaluate the mathematical reasoning ability of the trained models on seven benchmarks that are commonly used in recent RLVR studies [35, 43, 7, 44]. • AIME24–26 — Problems from the 2024, 2025, and 2026 American Invitational Mathematics Examination. AIME consists of challenging high-school competition problems with integer-valued answers, requiring precise multi-step reasoning rather than multiple-choice selection. • HMMT25 — Problems from the February 2025 Harvard–MIT Mathematics Tournament. The benchmark covers competition-level problems in algebra and number theory, combinatorics, geom-etry, and team-based rounds. • MATH500 — A 500-problem evaluation subset of the MATH benchmark. It contains competition-style problems across seven subjects, including algebra, geometry, counting and probability, number theory, and precalculus. • AMC — Problems from the American Mathematics Competitions, covering a broad range of high-school mathematics topics. Although AMC is originally multiple-choice, the problems still require careful reasoning and symbolic manipulation. • OlympiadBench — An Olympiad-level benchmark containing challenging mathematics and physics problems. It evaluates advanced scientific reasoning on problems collected from Olympiad-style competitions and related examinations. Following prior work [ 42 ], we report avg@32 on AIME, HMMT, and AMC to reduce the variance caused by their relatively small test sizes, and report pass@1 on the remaining benchmarks. 
+
+B.2 Implementation Details 
+
+The training and evaluation configurations for the R1-Distill models are summarized in Tables 7 and 8, respectively. For the experiments on Qwen3-4B-Base and Llama-3.2-3B-Instruct, we keep the same settings as the R1-Distill models except for the maximum response length, which is set to 4096 during both training and evaluation. In addition, Qwen3-4B-Base is trained for 2 epochs due to its faster convergence, while the other models are trained for 4 epochs. 16 C Prompt Template 
+
+We use a unified prompt template for both rollout generation and evaluation across all methods. As shown in Figure 3, the prompt asks the model to solve the problem step by step and place the final answer in , which facilitates answer extraction and rule-based verification. Prompt  Template 
+
+Julie is preparing a speech for her class. Her speech must last between one-half hour and three-quarters of an hour. The ideal rate of speech is 150 words per minute. If Julie speaks at the ideal rate, what number of words would be an appropriate length for her speech?  Let's think step by step and output the final answer within \boxed{}. 
+
+Figure 3: Prompt template for rollout generation and evaluation. 
+
+## D Limitations 
+
+Despite our best efforts, this study has several limitations. First, extending the empirical evaluation to larger-scale models, such as 32B and above, remains an important direction for future work. Second, ConSPO is a preliminary exploration of RLVR from a contrastive perspective, and broader choices of objective formulations and rollout scoring functions remain worth investigating. 
+
+## E Broader Impacts 
+
+The potential negative social impacts of our method align with those typically associated with general LLM reasoning technologies. We emphasize the importance of adhering to the principles of fair and safe deployment in LLM systems. 17

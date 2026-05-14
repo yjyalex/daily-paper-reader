@@ -1,0 +1,534 @@
+Title: From History to State: Constant-Context Skill Learning for LLM Agents
+
+URL Source: https://arxiv.org/pdf/2605.05413v1
+
+Published Time: Fri, 08 May 2026 00:17:07 GMT
+
+Number of Pages: 17
+
+Markdown Content:
+# From History to State: Constant-Context Skill Learning for LLM Agents 
+
+Haoyang Xie, Xinyuan Wang, Yancheng Wang, Puda Zhao, Feng Ju ∗
+
+School of Computing and Augmented Intelligence, Arizona State University 
+
+{hxie40, xwang735, ywan1053, pzhao34, fengju}@asu.edu 
+
+## Abstract 
+
+Large language model (LLM) agents are increasingly used to operate browsers, files, code and tools, making personal assistants a natural deployment target. Yet personal agents face a privacy-cost-capability tension: cloud models execute multi-step workflows well but expose sensitive intermediate context to external APIs, while local models preserve privacy but remain less reliable. Both settings also pay repeatedly for long skill prompts and growing histories. We propose constant-context skill learning, a context-to-weights framework for recurring agent work-flows: reusable procedures are learned in lightweight task-family modules, while inference conditions only on the current observation and a compact state block. A deterministic tracker renders this state block from task progress and supplies aligned subgoal rewards, so each module can be trained with step-level SFT and refined through online RL. Across ALFWorld, WebShop, and SciWorld, our agents achieve strong performance across Qwen3-4B, Qwen3-8B and Llama-3.1-8B. With Qwen3-8B, SFT+RL reaches 89.6% unseen success on ALFWorld, 76.8% success on WebShop, and 66.4% unseen success on SciWorld. They match or exceed strong published agent-training results while reducing prompt tokens per turn by 2–7 ×
+
+relative to controlled ReAct prompting baselines, showing that procedural context can be moved from prompts into weights. 
+
+## 1 Introduction 
+
+Large language model (LLM) agents are moving from conversational assistants toward systems that execute real multi-turn tasks across browsers, files, code, GUIs, and other tools [ 12 , 39 , 40 , 25 , 24 , 38 ]. As agents become capable of operating tools and files, a natural next step is to deploy them as personal assistants. Systems such as OpenClaw illustrate this direction, where agents interact with personal devices, local tools, and user feedback during normal use [ 23 ]. Such local and user-specific deployment makes privacy and cost first-order concerns. Today, the strongest agent models are often accessed through external APIs [ 22 , 2], while models that can run locally are typically less reliable on long-horizon interactive tasks [ 33 ]. As a result, personal agents face an uncomfortable trade-off. Cloud models provide stronger execution, but personal agents may handle sensitive data such as emails, calendars, code, documents, and tool outputs, making it undesirable to send every intermediate state to an external service. At the same time, token costs grow quickly with daily use when every step must process long skill descriptions and accumulated execution histories. Current approaches still treat agent behavior largely as a context-management problem. ReAct-style agents preserve task progress by replaying prior actions, observations, and reasoning traces in the prompt [ 40 ]. Memory-augmented agents reduce this burden by storing, organizing, or retrieving past interactions [ 44 , 37 , 30 , 3]. Recent agent-training methods improve the policy through expert 
+
+> ∗Corresponding author Preprint.
+> arXiv:2605.05413v1 [cs.AI] 6 May 2026
+
+trajectories, self-generated experience, or multi-turn preference and reinforcement-learning objec-tives [ 27 , 5 , 31 , 4 , 42 , 19 ]. These directions substantially improve long-horizon behavior, but they largely preserve the same inference-time interface: before each action, the agent is still prompted with task instructions, skill descriptions, retrieved memories, demonstrations, or accumulated histories. For recurring personal workflows, this is inefficient, the agent repeatedly re-reads procedures it has already practiced, instead of using that experience as part of the policy itself. A recurring workflow should not require the agent to reread the same procedure, instructions, and examples at every execution. In personal settings, successful executions naturally accumulate as users repeat the same workflow, and even tens of expert trajectories provide many state-action decisions for supervision. This makes the task family a natural unit of learning. Rather than treating repeated executions as isolated episodes, we group variants of the same skill when they share a tool environment, action space, and procedural subgoals. Learning at this level encourages the module to capture the shared procedure across variants, rather than replaying a fixed action sequence from the training trajectories. The prompt only needs the information that changes from step to step, including the current observation and a compact state block describing progress, relevant entities, and remaining subgoals. Inference is therefore shorter but still well specified. The agent need not reread long skill descriptions or replayed histories, yet it has enough state to choose the next action. We keep the base model fixed and learn a separate lightweight skill module for each task family, first from expert demonstrations and then through interaction. Adding a new workflow only requires training a new module. At inference time, running a workflow loads its corresponding module, keeping computation modest and avoiding catastrophic forgetting across unrelated skills. 
+
+Our solution : We instantiate this idea as a context-to-weights training pipeline. For each task family, we train a lightweight skill module with step-level supervised fine-tuning (SFT) and then refine it with interaction-based reinforcement learning (RL). A deterministic task tracker provides the interface between raw interaction and learning. It summarizes control-relevant progress into a compact state block, such as acquired objects, completed subgoals, and remaining requirements, and also supplies shaped subgoal rewards during RL. The tracker is a deterministic algorithm, not an LLM reasoner. It converts observations and actions into task progress through simple environment-specific rules. At inference time, the agent loads the corresponding module and conditions on the current observation and state block, rather than the full execution history or long skill prompt. We evaluate this design on ALFWorld, WebShop, and SciWorld [ 29 , 39 , 35 ], which provide representative recurring workflows analogous to personal-agent use cases, including household manipulation, web interaction and procedural tool use. Our experiments show that this context-to-weights design improves both task performance and context efficiency. With Qwen3-8B, SFT+RL reaches 83.6% / 89.6% success on ALFWorld seen/unseen, 76.8% success on WebShop, and 62.9% / 66.4% success on SciWorld seen/unseen. At the same time, it substantially reduces inference context. Compared with full-history ReAct, our method reduces prompt tokens per turn from 1.3k to 0.18k on ALFWorld, from 3.1k to 0.49k on WebShop, and from about 2.0k to 0.49k on SciWorld. It also reduces total tokens per episode from 34k to about 3k on ALFWorld, from 47k to 3.4k on WebShop, and from 42k to 18k on SciWorld. Building on these findings, we summarize our main contributions as follows: • We formulate recurring personal-agent workflows as constant-context skill learning , where reusable procedures are moved from prompts and growing histories into lightweight skill-module weights, while step-specific progress remains explicit in a compact state block. • We introduce a modular SFT+RL training pipeline that learns lightweight skill modules from expert trajectories and refines them through interaction, pairing deterministic state-block construction with subgoal rewards aligned to the same tracker fields. • We conduct controlled evaluations, ablations, and context-efficiency analyses across ALF-World, WebShop, and SciWorld using Qwen and Llama backbones, showing that bounded-context skill modules can match strong agent-training baselines while reducing prompt-token cost by 2–7 × relative to ReAct baselines. 
+
+## 2 Problem Setup 
+
+Task families. We study recurring agent workflows organized as task families. A task family k is a set of episode variants that share a tool environment, action space, and procedural structure, while 2differing in episode-specific goals, objects, constraints, or initial states. In personal-agent use, such families arise from repeated workflows, such as ordering items through the same interface, organizing files with the same toolchain, or running variants of the same analysis procedure. In benchmarks, they correspond to predefined families such as ALFWorld object manipulation, WebShop shopping, and SciWorld science-lab tasks. This is a natural unit of learning because variants share reusable procedure but still require episode-specific decisions. At the start of an episode, the agent receives an instruction g ∼ G k. At step t, it observes ot, produces textual action at, and continues until termination, yielding τ = ( g, o 1, a 1, . . . , o T , a T ). For each family, we assume a modest set of successful executions Tk, from user demonstrations or prior successful agent runs. 
+
+Standard history-based formulation. Most prompting-based agents maintain task progress by placing more information into the context. Let dk denote task-family context such as skill instructions, demonstrations, retrieved memories, or examples, and let ht = ( o1, a 1, . . . , o t) be the execution history. A standard history-based agent predicts actions from chist  
+
+> t
+
+= Format( g, d k, h t). This formulation covers ReAct-style prompting, retrieved-memory agents, and skill-prompted agents: they differ in how dk or ht is assembled, but the next action is still generated from a text context that contains reusable procedure and accumulated interaction state. Its length scales as 
+
+|chist  
+
+> t
+
+| ≈ | g| + |dk| +
+
+> t
+
+X
+
+> i=1
+
+(|oi| + |ai|), (1) This is inefficient for recurring workflows. dk is reprocessed at every step, while the history term grows with the episode length and can make relevant state harder to use reliably [16]. 
+
+Bounded-context skill learning. We instead seek a task-family policy whose input remains bounded as the episode grows. For each family k, we keep a frozen base model θ0 and learn a lightweight skill module ϕk. At step t, the model conditions on xt = Format( g, o t, q t, b t), where qt = ( ot−1, a t−1)
+
+is one-step context and bt is a compact state block. The state block contains progress information, such as the current subgoal, selected entities, acquired objects, chosen options, checked locations, or remaining requirements. The desired policy is 
+
+at ∼ πθ0,ϕ k (· | xt), |xt| ≤ Bk ∀t, (2) where Bk does not scale with the trajectory length. Thus, ϕk represents the reusable procedure, while xt carries only step-specific state. This bounded-context objective creates a state challenge that the agent must avoid carrying the full history, but it also cannot simply discard history altogether. The current observation alone may omit important progress information, such as selected entities or completed subgoals, and different tasks require different pieces of past state. We use bt to denote the compact state block that should carry this information. Its role is not to restate the whole trajectory or provide a solution plan, but to expose the minimal state variables needed for the next decision. 
+
+## 3 Context-to-Weights Skill Learning 
+
+Given the bounded-context formulation in Section 2, we now instantiate it as a concrete context-to-weights training pipeline. The pipeline has three stages (Figure 1). First, a deterministic task tracker compresses the relevant interaction state into a compact state block. Second, successful executions are converted into step-level supervision for training a task-family skill module. Third, the module is refined through interaction using rewards derived from the same subgoal structure. Throughout training and inference, the base model θ0 remains frozen, only the task-family module ϕk is updated. 
+
+3.1 From History to State Blocks 
+
+The purpose of the state block is to preserve decision-relevant progress without passing the full execution history to the model. For each task family k, we define a deterministic tracker Mk that maintains a structured state mt [ 7, 43 ]. Initialized from the task instruction g, mt stores variables from which the state block can be rendered, including task targets, acquired or selected entities, checked locations, completed subgoals, and other family-specific progress indicators. Within a task family, an episode progresses through procedural phases or subgoals, such as search, manipulation, selection, or placement. The tracker records the current phase as part of mt. At step t, the tracker updates its state as mt = Update k(mt−1, a t−1, o t) and renders the model-facing state block as 
+
+bt = Render k(mt). Algorithm 1 gives the generic update-and-render interface. 3Base LLM                              
+
+> (frozen)
+> Task -Family LoRA
+> (skill module)
+> SFT (Imitation)
+> State -action pairs
+> RL (Refinement)
+> Subgoal rewards
+> aligned with tracker fields
+> Constant -Size Input (no history)
+> gbtot(ot-1,at-1)
+> Base LLM (frozen)
+> +
+> Trained Skill LoRA
+> Action at
+> No growing history
+> Constant context at every step
+> Successful Trajectories
+> o1a1o2a2oT…
+> (observation) (action)
+> Deterministic
+> State Tracker
+> Subgoal Fields Global State
+> Compact State
+> Block bt
+> 1From Successful Trajectories to State Blocks Train State -Conditioned
+> Skill Module
+> Environment & Tools
+> Inference: Constant -
+> Context Execution
+> 32
+> Action at
+> Current
+> subgoal
+> Target
+> Progress
+> Goal
+> Targe t
+> Constr .
+> Phase
+> Visible?
+> Done?
+> Current Obs. OtOne -step Context
+> (o t-1, a t-1)
+> Task Goal gState Block bt
+> Build step input xt
+
+Figure 1: Context-to-weights skill learning pipeline. The tracker is deterministic rather than an LLM summarizer, so its outputs are reproducible and require no additional model calls. It updates task-family variables with lightweight parsing rules, making state construction inexpensive. The rendered block records only state facts needed for the next decision, not a trajectory summary or full solution plan. The tracked variables depend on the family and phase of the task. In ALFWorld, the state block records fields such as the target object, whether the agent is holding it, the destination receptacle, and checked locations. In WebShop, it tracks the current query, inspected product, selected options, remaining options, and purchase readiness. In SciWorld, it tracks the current phase, selected entity, inventory, answer room, and completed subgoals. Across these settings, the same interface is used: the policy receives the current observation ot, one-step context qt = ( ot−1, a t−1), and the rendered state block bt:
+
+xt = Format( g, o t, q t, b t). (3) Thus, past interactions affect the policy only through the tracker state and one-step context, rather than through a growing history window. 
+
+Algorithm 1 Tracker Update and Render 
+
+Require: k, g, m t−1, a t−1, o t
+
+Ensure: mt, b t
+
+1: zt ← Parse k (g, o t, a t−1)
+
+entities, locations, options, outcomes 
+
+2: mt ← mt−1
+
+3: Update global fields in mt from zt
+
+targets, constraints, inventory 
+
+4: Update phase-specific fields in mt from zt
+
+checked locations, selected options, results 
+
+5: bt ← Render k (mt)
+
+render fields relevant to current phase/subgoal 
+
+6: return mt, b t
+
+Algorithm 2 State-Action Samples 
+
+Require: k, Tk , Mk
+
+Ensure: Dk
+
+1: Dk ← ∅ 
+
+2: for each τ = ( g, o 1, a ⋆ 
+
+> 1
+
+, . . . , o T , a ⋆T ) ∈ T k do 
+
+3: m0 ← M k .Init( g); o0, a ⋆ 
+
+> 0
+
+← ∅
+
+4: for t = 1 , . . . , T do 
+
+5: mt ← M k .Update( mt−1, a ⋆t−1, o t)
+
+6: bt ← M k .Render( mt)
+
+7: xt ← Format( g, o t, (ot−1, a ⋆t−1), b t)
+
+8: Dk ← D k ∪ { (xt, a ⋆t )}
+
+9: end for 
+
+10: end for 
+
+11: return Dk
+
+3.2 Training Task-Family Skill Modules 
+
+For each task family k, we replay successful executions from Tk through the tracker and collect step-level supervision pairs as detailed in Algorithm 2, where a⋆t denotes the expert action from the successful trajectory. Algorithm 2 invokes the update-and-render procedure in Algorithm 1 at each step. This yields 
+
+Dk = {(xt, a ⋆t ) : τ ∈ T k, t = 1 , . . . , T τ }. (4) The module is trained with standard next-action supervision: 
+
+L(k)SFT = − X
+
+(xt,a ⋆t )∈D k
+
+log pθ0,ϕ k (a⋆t | xt). (5) 4The target is the executable environment action, not a reasoning trace or a choice among enumerated valid actions. The policy therefore learns to generate the next action text directly from xt, rather than relying on a per-step action list supplied in the prompt. In our implementation, each task-family module ϕk is one LoRA adapter [ 9]. LoRA keeps each pretrained matrix W0 fixed and learns a low-rank update: 
+
+Wk = W0 + ∆ Wk, ∆Wk = αr BLoRA  
+
+> k
+
+ALoRA  
+
+> k
+
+, (6) where ALoRA  
+
+> k
+
+∈ Rr×din , BLoRA  
+
+> k
+
+∈ Rdout ×r , and r ≪ min( din , d out ). The superscript distinguishes these LoRA matrices from the context bound Bk in Eq. 2. Only these adapter parameters are trained, while the shared base model remains frozen. This gives each task family its own lightweight skill module without overwriting unrelated skills [8, 6, 36]. This stage transfers repeated procedural knowledge from prompt-time context into task-family parameters. The module learns how to act from the compact state representation across many variants of the same workflow, while episode-specific information remains explicit in xt.
+
+3.3 Refining Skill Modules with Subgoal-Guided RL 
+
+Supervised training imitates successful trajectories, but online execution can lead the learned policy into off-trajectory states. We therefore refine each skill module through online interaction. During RL, rollouts use the same bounded input xt as in supervised training: after each action, the environment returns a new observation, the tracker updates mt, and the next state block bt is rendered. The key design is that the same tracker state mt used to render bt also supplies subgoal-level reward signals, so RL reinforces progress on the variables exposed in the state block. At each step, the reward combines the benchmark environment signal with deterministic progress and error terms: 
+
+rt = renv  
+
+> t
+
++ rprog  
+
+> t
+
+− rerr  
+
+> t
+
+. (7) Here renv  
+
+> t
+
+is the environment score or success signal. The progress and error terms, rprog  
+
+> t
+
+and rerr  
+
+> t
+
+, are defined around the same subgoals and state-block fields used by the tracker, following the broader idea of shaping sparse task rewards with intermediate progress signals [ 21 ]. As a result, RL encourages the policy to use the state block as its execution state. The progress term rprog  
+
+> t
+
+rewards actions that advance the current subgoal, while the error term rerr  
+
+> t
+
+penalizes invalid, repetitive, or phase-inconsistent actions, together with a small step cost. We use a strong reasoning model (GPT-5.5 [ 22 ]) offline to help design these rules from the task specification and the state-block schema. The rewards are then fully deterministic at rollout time, with no LLM judge queried during RL. Appendix 7.2 gives the reward specification and Appendix 7.5 shows the prompt used to ask the reasoning model to draft deterministic reward rules from the state-block schema. We use a GRPO-style group-normalized policy-gradient update [ 26 ]. For each task instance, the current policy samples a group of K rollouts, indexed by i. Let Ti be the length of rollout i, and let 
+
+r(i) 
+
+> u
+
+be its shaped reward at step u. We compute the discounted step return G(i) 
+
+> t
+
+= PTi 
+
+> u=t
+
+γu−tr(i) 
+
+> u
+
+,then normalize these returns across all steps from the K rollouts of the same task instance: 
+
+A(i) 
+
+> t
+
+= G(i) 
+
+> t
+
+− μgroup 
+
+σgroup + ϵ , μgroup , σ group = MeanStd 
+
+
+
+{G(i) 
+
+> t
+
+}i,t 
+
+
+
+. (8) Here γ is the discount factor and ϵ is a small constant for numerical stability. This compares attempts under the same task difficulty and avoids training a separate value function. The sampled action at step t of rollout i is a(i) 
+
+> t
+
+, generated from the bounded input x(i) 
+
+> t
+
+. We update only the task-family module with a sampled policy-gradient loss and a reference-policy penalty to the frozen SFT adapter: 
+
+L(k)RL = Ei,t 
+
+h
+
+−A(i) 
+
+> t
+
+log πθ0,ϕ k (a(i) 
+
+> t
+
+| x(i) 
+
+> t
+
+) + β
+
+
+
+log πθ0,ϕ k (a(i) 
+
+> t
+
+| x(i) 
+
+> t
+
+) − log πθ0,ϕ SFT  
+
+> k
+
+(a(i) 
+
+> t
+
+| x(i) 
+
+> t
+
+)
+
+i 
+
+.
+
+(9) Here ϕSFT  
+
+> k
+
+is the frozen SFT-stage adapter, which keeps RL close to the action format and procedural behavior learned during supervised training. During refinement, θ0 remains frozen and only ϕk is updated. 5Table 1: Main task performance (mean ±std over inference seeds; bold = best per column). Score is benchmark-provided. SR denotes success rate, measured as binary full-task success (%).                                                                
+
+> Base Model Method ALFWorld WebShop SciWorld SR Seen Unseen Seen Unseen Score SR Score SR Score SR Qwen3-4B Ours: SFT only 59.5 ±3.5 56.7 ±3.3 66.4 ±1.4 59.6 ±2.3 67.8 ±1.9 59.3 ±1.7 61.0 ±1.0 52.0 ±0.3
+> Ours: SFT + RL 76.4 ±1.5 81.3 ±1.9 86.0 ±0.6 76.1 ±1.1 72.4 ±1.9 63.1 ±1.5 75.1 ±1.4 65.4 ±1.4
+> Qwen3-8B Ours: SFT only 62.4 ±2.5 61.7 ±2.2 69.5 ±1.7 62.2 ±1.2 65.7 ±1.6 58.2 ±1.5 61.5 ±0.9 52.0 ±0.7
+> Ours: SFT + RL 83.6 ±1.8 89.6 ±0.4 84.0 ±0.0 76.8 ±0.2 72.8 ±2.7 62.9 ±2.2 79.7 ±0.2 66.4 ±0.5
+> Llama-3.1-8B Ours: SFT only 61.0 ±3.4 60.2 ±1.7 69.1 ±1.7 60.3 ±1.0 66.5 ±1.5 61.0 ±1.6 57.6 ±0.7 50.6 ±1.0
+> Ours: SFT + RL 73.6 ±0.7 80.6 ±2.6 86.3 ±1.5 75.7 ±1.3 74.1 ±1.0 66.2 ±2.1 73.9 ±0.6 64.1 ±0.3
+
+## 4 Experiments and Results 
+
+We evaluate the proposed context-to-weights pipeline on three representative agent benchmarks, using Qwen and Llama backbones at different model scales. Our experiments are organized around four research questions. ( RQ1 ) Does task-family skill learning improve agent performance across benchmarks and backbones, and how much does interaction-based RL refinement add over SFT-only skill modules? ( RQ2 ) How much inference context does the bounded-context interface save compared with ReAct-style prompting, a representative history-based agent interface that repeatedly conditions on long instructions and growing execution histories? ( RQ3 ) Which components of the pipeline, including the state block, one-step context, SFT training, and subgoal-guided reward shaping, are responsible for the gains? ( RQ4 ) How does the method compare with prior agent methods across memory-based prompting, learned memory and RL-based agent training? 
+
+4.1 Experimental Setup Benchmarks. We evaluate on three text-mode agent benchmarks that approximate recurring personal-agent workflows in different fixed environments. ALFWorld [29 ] represents household assistance: the agent navigates simulated rooms, finds target objects, applies transformations such as cleaning, heating, or cooling and places objects in target receptacles. We evaluate on 140 seen and 134 unseen games. WebShop [ 39 ] represents shopping assistance: the agent searches for products, opens item pages, selects required options, and purchases the target item. We use the 1,000-product text setting and evaluate on 500 test goals. SciWorld [ 35 ] represents procedural tool use: the agent manipulates objects, uses instruments, performs experiments, and reports answers in science-lab environments. We evaluate on 194 seen and 211 unseen variants following the ETO split structure [ 31 ]. All three use the same agent interface, text observations in and executable text actions out. Figures 2, 5, and 6 show representative interactions from these settings. Additional details on task families, training trajectories, and evaluation settings are provided in Appendix 7.1. 
+
+Baselines. Our baselines serve two purposes. For a controlled token-cost comparison , we run two ReAct variants under the same evaluation setup as our method: ReAct-1step retains only the most recent observation and action, while ReAct-full appends the available trajectory history with truncation when needed. Prior prompt- and memory-based agents differ in their prompts, retrieved content, and history policies, but they usually include at least recent interaction context and often much more. The two ReAct variants therefore represent the main short-context and history-based settings used by prompting-based agents, giving a controlled efficiency comparison in Table 2. For 
+
+performance comparison , we report published state-of-the-art agent-training results in Table 4. 
+
+Implementation details. We use Qwen3-8B as the default backbone and repeat the main experiments with Qwen3-4B and Llama-3.1-8B to test robustness across model scale and family. For each task family, the base model is frozen and only a LoRA skill module is trained, updating about 2% of the parameters, 0.5–0.7 GB on disk per adapter. We first train modules with SFT and then refine them with online GRPO-style RL using four rollouts per task instance and the subgoal rewards. All main training runs fit on a single NVIDIA A100 80GB GPU. Main performance is reported as mean ±std over three inference seeds with temperature 0.4 and top-p 0.95, while token-cost results use deterministic decoding for stable accounting. Full hyperparameters, decoding settings, and compute details are reported in Appendix 7.1. 6Table 2: Context and compute efficiency with Qwen3-8B under controlled prompting comparisons. All methods use the same tokenizer, environment split, and action parser.                                                                     
+
+> Metric Method ALFWorld WebShop SciWorld Seen Unseen Test Seen Unseen Avg. Steps ReAct, 1-step history 24.9 25.3 13.6 18.9 12.3 ReAct, full history 21.6 21.8 14.4 13.4 12.5 Ours: SFT + RL 18.4 15.9 6.8 33.7 30.7 Prompt Tok./Turn ReAct, 1-step history 380.0 358.6 1,059.0 1,443.0 1,481.0 ReAct, full history 1,310.5 1,320.4 3,092.7 2,038.9 1,938.0 Ours: SFT + RL 183.8 179.9 488.0 492.0 496.3 Completion Tok./Turn ReAct, 1-step history 53.3 52.3 72.4 61.9 65.3 ReAct, full history 50.9 52.9 71.4 54.6 54.3 Ours: SFT + RL 7.1 7.1 10.4 5.3 5.3 Total Tok./Episode ReAct, 1-step history 10,969 10,443 15,763 28,088 18,953 ReAct, full history 34,199 34,145 46,531 42,280 39,550 Ours: SFT + RL 3,251 2,851 3,353 17,894 16,182
+
+Figure 2: Qualitative ALFWorld household trace with rendered state blocks. 
+
+4.2 Main Task Performance 
+
+Table 1 shows that moving recurring procedures from context into task-family modules is effective across benchmarks. SFT already gives strong performance, indicating that expert trajectories provide enough step-level supervision for the model to act from compact per-step inputs rather than long skill prompts or full histories. On WebShop, for example, the untrained prompt variant with a state block reaches only 23.6% success in Table 3, while SFT raises success to 62.2% with Qwen3-8B. RL refinement further improves the trained modules. With Qwen3-8B, SFT+RL reaches 83.6% / 89.6% success on ALFWorld seen/unseen, 76.8% success on WebShop, and 62.9% / 66.4% success on SciWorld seen/unseen. Across the three backbones, RL improves over SFT by roughly 13–28 percentage points on ALFWorld, 15–17 points on WebShop, and 5–15 points on SciWorld. The improvements are also not tied to a single backbone. Qwen3-8B gives the strongest ALFWorld performance and the best SciWorld unseen results, while Llama-3.1-8B is strongest on WebShop score and SciWorld seen performance. Qwen3-4B also benefits from the same training recipe despite its smaller size. This pattern suggests that the gains come from the task-family training setup, not from a particular pretrained model. As a modularity check, we also train a single unified Qwen3-8B module across all ALFWorld families, which reaches 74.3% / 70.9% seen/unseen success after SFT and 86.4% / 88.1% after RL. This shows that a unified module is viable, but we use task-family modules for realistic deployment because they reduce interference among different skills, especially for smaller local models, and avoid training bias from imbalanced task-family data. We analyze the individual contributions of the state block, SFT, and RL in Section 4.4. 74.3 Context and Token Efficiency 
+
+Table 2 shows that the bounded-context interface substantially reduces inference context. ReAct-1step is already a strong efficiency baseline because it keeps only the latest observation and action. Many prompt- and memory-based agents keep more history, retrieved memories, or both. Our method still uses 2.1–3.0 × fewer prompt tokens per turn than ReAct-1step on all three benchmarks and reduces prompt tokens by about 4–7 × relative to ReAct-full. This saving comes from moving reusable procedural context into the learned module, not merely from dropping history. The episode-level totals show the same pattern. On ALFWorld and WebShop, failed executions often continue producing unproductive actions until the step limit, so better execution also reduces average steps. SciWorld behaves differently, invalid actions can terminate an episode early with negative score, while successful procedures can be long, with task-specific limits up to 100 steps. Thus, stronger SciWorld agents may take more steps because they survive and complete more procedures. Even there, our method substantially reduces total token use. Relative to ReAct-full, total token use drops by about 10–12 × on ALFWorld, 14 × on WebShop, and 2–3 × on SciWorld. 
+
+4.4 Component Ablations 
+
+Table 3: Ablation study on WebShop with Qwen3-8B.                 
+
+> Method Score SR
+> Prompt design (no training):
+> Current observation only 10.1 1.2% + one-step context 34.2 5.6% + subgoal state block 42.6 23.6%
+> Trained leave-one-out variants:
+> w/o state block 72.9 61.2% w/o reward shaping 83.1 72.2%
+> Trained methods:
+> SFT only 69.5 62.2% Full method 84.0 76.8%
+
+We ablate components on WebShop with Qwen3-8B, evaluated on all 500 test goals. This default-backbone,single-module set-ting makes component changes easy to isolate. Table 3 shows that the state block is the main prompt-side signal. Without training, the current observation alone is near floor perfor-mance, and adding one-step context only raises success from 1.2% to 5.6%. Adding the state block raises success to 23.6%, a much larger gain, showing that compact progress state is the key information missing from short prompts. Training then moves reusable procedure into the skill module. SFT raises success from 23.6% to 62.2%, and RL further im-proves it to 76.8%. The trained leave-one-out variants are all evaluated after RL refinement. Removing the state block drops success by 15.6 points, confirming that the model still uses it as execution state rather than memorizing trajectories. 68 70 72 74 76 78 
+
+> Success rate (%)
+> Full reward
+> w/o progress
+> w/o error
+> Terminal-only
+> w/o step cost
+> 76.8
+> 75.2
+> 73.6
+> 72.2
+> 71.2
+
+Figure 3: Reward ablation. Using only terminal task reward during RL drops success by 4.6 points, showing that subgoal rewards provide useful inter-mediate feedback. Figure 3 further decomposes the reward design. Progress rewards guide option and subgoal comple-tion, error penalties reduce invalid or repeated actions, and the step cost discourages unnecessary actions. Removing any component lowers success, showing that the shaped reward works as a combined signal. The full reward specification is listed in Appendix 7.2. Appendix 7.3 further studies SFT data efficiency on WebShop. 
+
+4.5 Comparison with Published Methods 
+
+Table 4: Comparison with published baselines. % denote success rates, otherwise values are task scores.                                  
+
+> Method ALFWorld WebShop SciWorld ReAct-1 23.1% 8.8 / 1.2% -50.0 ReAct-full 46.3% 7.0 / 3.8% -21.5 ETO [31] 72.4% 67.4 / 37.5% 65.0 DMPO [27] 88.8% 64.3 / – 65.1 GiGPO [4] 90.8% 84.4 / 72.8% –MemGen [41] 90.6% ––Early Exp. [42] 85.9% 77.0 / 62.2% 68.0 EMPO2 [19] –88.3 / 76.9% 75.9 ACT [18] 88.1% – / 33.8% 50.34 Ours 89.6% 84.0 / 76.8% 79.7
+
+Table 4 compares our method with published agent-training baselines. These results are copied from the original pa-pers. We discuss these families of methods in more detail in Section 5. The comparison is not fully controlled, since the methods differ in training objectives, data construction, and implementation details. However, it is still informative: most methods use similar-scale open backbones such as Qwen2.5-7B or Qwen3-8B, and overlapping results are re-ported under the same settings, including the 1,000-product WebShop setting and the ETO SciWorld split. Our method is also strong compared with published agent-training results. On ALFWorld, it reaches 89.6% success, only 1.2 points below the strongest listed result. 8On WebShop, it reaches 76.8% success, essentially tied with the strongest listed result of 76.9%. On SciWorld, it obtains the best listed score, 79.7 versus EMPO2’s 75.9. We obtain these results with a modest training budget, with all training runs using a single A100 GPU, whereas strong published RL baselines such as GiGPO report using multiple H100 GPUs for training. This performance also comes with a shorter inference context. ReAct-1step lower-bounds the context used by most prior methods because they at least require the current observation and recent interaction context, and often add retrieved memories, multi-step histories, preference traces, or candidate actions. Since our method uses 2.1–3.0 × fewer prompt tokens per turn than ReAct-1step, its context savings over these published methods should be at least this large in most cases. 
+
+## 5 Related Work 
+
+Prompting and memory-augmented agents. ReAct-style agents maintain task progress by placing prior observations, actions, and reasoning traces in the prompt [ 40 ]. A large line of memory-augmented agents reduces this burden by storing, summarizing, retrieving, or compressing past interactions [ 44 , 37 , 30 , 3, 41 , 13 , 15 ]. Prompt-compression methods similarly reduce inference cost by shortening the text context [ 10 , 20 , 14 ]. These methods improve long-horizon behavior, but reusable procedural knowledge remains represented as text that must be selected and reprocessed at inference time. Our work takes a complementary direction: recurring procedure is moved into task-family weights, while the prompt carries only the compact information. 
+
+Training language agents. Recent work improves LLM agents with expert trajectories, self-generated experience, preference optimization, or reinforcement learning [ 28 , 27 , 45 , 5, 31 , 4 , 42 , 19 , 18 ]. These methods substantially improve task performance, and several also incorporate memories or early experiences into training. However, most preserve a prompting-style execution interface, where the agent still conditions on long instructions, histories, retrieved content, or candidate actions. Our pipeline shares the SFT-then-RL training recipe, but trains the policy to act from a bounded-context input consisting of the current observation, one-step context, and a tracker-rendered state block. 
+
+Skill modules and subgoal-aligned rewards. Some agents accumulate reusable skills as retrievable text or code libraries [ 34 , 17 ]. We share the goal of reusable skills, but move recurring procedures into lightweight task-family weights, avoiding the longer prompts and slower inference caused by repeated skill-text processing. Parameter-efficient adaptation makes this practical without updating the full backbone [ 9, 6]. New workflows are added by training new adapters, limiting interference and catastrophic forgetting across heterogeneous task families, especially for smaller local models. Group-normalized RL avoids training a separate value model [ 26 ]. Our contribution is the feedback design, subgoal rewards are aligned with the tracker fields rendered in the state block, encouraging the module to use compact state during interaction [32, 11, 21]. 
+
+## 6 Conclusion and Limitations 
+
+We presented constant-context skill learning, a context-to-weights framework for recurring LLM-agent workflows. Instead of repeatedly prompting an agent with long skill descriptions and growing histories, we train lightweight task-family modules that internalize reusable procedure while condi-tioning on the current observation and a compact tracker-rendered state block. Across ALFWorld, WebShop and SciWorld, the resulting agents achieve competitive task performance while substantially reducing inference context compared with ReAct-style prompting. The results suggest that recurring agent behavior can be made both more capable and more context-efficient by moving procedural context from prompts into weights. The main limitations concern automation, modality, and transfer. First, the state tracker and re-ward rules are specified at the task-family level. We use a strong reasoning model offline to draft deterministic subgoal rewards from the task description and state-block schema, but the rules still require validation before RL. This manual design may become easier to automate as agent systems expose SKILL.md -style specifications of procedures, tool constraints, and success conditions [ 1 ]. Compiling such specifications with execution logs into state-block schemas and subgoal rewards is a promising future direction. Second, our evaluation is limited to text-mode environments. Extending the interface to GUI and multimodal agents is a natural next step. Third, per-family modules do not zero-shot transfer to new skills. Adding a workflow requires training a new adapter, although the base model remains fixed and existing skills are preserved. Moreover, each adapter is only 0.5–0.7
+
+GB on disk and only the active one loads at inference, making the storage cost modest in practice. 9References 
+
+[1] Anthropic. Agent skills. https://platform.claude.com/docs/en/agents-and-tools/ agent-skills/overview , 2026. Accessed: 2026-05-04. [2] Anthropic. Claude opus 4.7. https://www.anthropic.com/news/claude-opus-4-7 , 2026. Accessed: 2026-05-01. [3] Jizhan Fang, Xinle Deng, Haoming Xu, Ziyan Jiang, Yuqi Tang, Ziwen Xu, Shumin Deng, Yunzhi Yao, Mengru Wang, Shuofei Qiao, et al. Lightmem: Lightweight and efficient memory-augmented generation. 
+
+arXiv preprint arXiv:2510.18866 , 2025. [4] Lang Feng, Zhenghai Xue, Tingcong Liu, and Bo An. Group-in-group policy optimization for llm agent training. arXiv preprint arXiv:2505.10978 , 2025. [5] Dayuan Fu, Keqing He, Yejie Wang, Wentao Hong, Zhuoma Gongque, Weihao Zeng, Wei Wang, Jingang Wang, Xunliang Cai, and Weiran Xu. Agentrefine: Enhancing agent generalization through refinement tuning. arXiv preprint arXiv:2501.01702 , 2025. [6] Zeyu Han, Chao Gao, Jinyang Liu, Jeff Zhang, and Sai Qian Zhang. Parameter-efficient fine-tuning for large models: A comprehensive survey. arXiv preprint arXiv:2403.14608 , 2024. [7] Matthew Henderson, Blaise Thomson, and Steve Young. Word-based dialog state tracking with recurrent neural networks. In Proceedings of the 15th annual meeting of the special interest group on discourse and dialogue (SIGDIAL) , pages 292–299, 2014. [8] Neil Houlsby, Andrei Giurgiu, Stanislaw Jastrzebski, Bruna Morrone, Quentin De Laroussilhe, Andrea Ges-mundo, Mona Attariyan, and Sylvain Gelly. Parameter-efficient transfer learning for nlp. In International conference on machine learning , pages 2790–2799. PMLR, 2019. [9] Edward J Hu, Yelong Shen, Phillip Wallis, Zeyuan Allen-Zhu, Yuanzhi Li, Shean Wang, Liang Wang, Weizhu Chen, et al. Lora: Low-rank adaptation of large language models. Iclr , 1(2):3, 2022. [10] Huiqiang Jiang, Qianhui Wu, Chin-Yew Lin, Yuqing Yang, and Lili Qiu. Llmlingua: Compressing prompts for accelerated inference of large language models. In Proceedings of the 2023 conference on empirical methods in natural language processing , pages 13358–13376, 2023. [11] Tejas D Kulkarni, Karthik Narasimhan, Ardavan Saeedi, and Josh Tenenbaum. Hierarchical deep reinforce-ment learning: Integrating temporal abstraction and intrinsic motivation. Advances in neural information processing systems , 29, 2016. [12] Yubo Li, Xiaobin Shen, Xinyu Yao, Xueying Ding, Yidi Miao, Ramayya Krishnan, and Rema Padman. Beyond single-turn: A survey on multi-turn interactions with large language models. arXiv preprint arXiv:2504.04717 , 2025. [13] Xuechen Liang, Meiling Tao, Yinghui Xia, Jianhui Wang, Kun Li, Yijin Wang, Yangfan He, Jingsong Yang, Tianyu Shi, Yuantao Wang, et al. Sage: Self-evolving agents with reflective and memory-augmented abilities. Neurocomputing , 647:130470, 2025. [14] Barys Liskavets, Maxim Ushakov, Shuvendu Roy, Mark Klibanov, Ali Etemad, and Shane K Luke. Prompt compression with context-aware sentence encoding for fast and improved llm inference. In Proceedings of the AAAI Conference on Artificial Intelligence , volume 39, pages 24595–24604, 2025. [15] Junyang Liu, Wenning Hao, Kai Cheng, and Dawei Jin. Large language model-based planning agent with generative memory strengthens performance in textualized world. Engineering Applications of Artificial Intelligence , 148:110319, 2025. [16] Nelson F Liu, Kevin Lin, John Hewitt, Ashwin Paranjape, Michele Bevilacqua, Fabio Petroni, and Percy Liang. Lost in the middle: How language models use long contexts. Transactions of the association for computational linguistics , 12:157–173, 2024. [17] Shunyu Liu, Yaoru Li, Kongcheng Zhang, Zhenyu Cui, Wenkai Fang, Yuxuan Zheng, Tongya Zheng, and Mingli Song. Odyssey: Empowering minecraft agents with open-world skills. arXiv preprint arXiv:2407.15325 , 2024. [18] Weize Liu, Minghui Liu, Sy-Tuyen Ho, Souradip Chakraborty, Xiyao Wang, and Furong Huang. Agentic critical training. arXiv preprint arXiv:2603.08706 , 2026. [19] Zeyuan Liu, Jeonghye Kim, Xufang Luo, Dongsheng Li, and Yuqing Yang. Exploratory memory-augmented llm agent via hybrid on-and off-policy optimization. arXiv preprint arXiv:2602.23008 , 2026. 
+
+10 [20] Jesse Mu, Xiang Li, and Noah Goodman. Learning to compress prompts with gist tokens. Advances in Neural Information Processing Systems , 36:19327–19352, 2023. [21] Andrew Y Ng, Daishi Harada, and Stuart Russell. Policy invariance under reward transformations: Theory and application to reward shaping. In Icml , volume 99, pages 278–287. Citeseer, 1999. [22] OpenAI. Introducing gpt-5.5. https://openai.com/index/introducing-gpt-5-5/ , 2026. Accessed: 2026-05-01. [23] OpenClaw. Openclaw — personal ai assistant. https://openclaw.ai/ , 2026. Accessed: 2026-05-01. [24] Shishir G Patil, Tianjun Zhang, Xin Wang, and Joseph E Gonzalez. Gorilla: Large language model connected with massive apis. Advances in Neural Information Processing Systems , 37:126544–126565, 2024. [25] Timo Schick, Jane Dwivedi-Yu, Roberto Dessì, Roberta Raileanu, Maria Lomeli, Eric Hambro, Luke Zettlemoyer, Nicola Cancedda, and Thomas Scialom. Toolformer: Language models can teach themselves to use tools. Advances in neural information processing systems , 36:68539–68551, 2023. [26] Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan Zhang, YK Li, Yang Wu, et al. Deepseekmath: Pushing the limits of mathematical reasoning in open language models. arXiv preprint arXiv:2402.03300 , 2024. [27] Wentao Shi, Mengqi Yuan, Junkang Wu, Qifan Wang, and Fuli Feng. Direct multi-turn preference optimization for language agents. In Proceedings of the 2024 Conference on Empirical Methods in Natural Language Processing , pages 2312–2324, 2024. [28] Noah Shinn, Federico Cassano, Ashwin Gopinath, Karthik Narasimhan, and Shunyu Yao. Reflexion: Language agents with verbal reinforcement learning. Advances in neural information processing systems ,36:8634–8652, 2023. [29] Mohit Shridhar, Xingdi Yuan, Marc-Alexandre Côté, Yonatan Bisk, Adam Trischler, and Matthew Hausknecht. Alfworld: Aligning text and embodied environments for interactive learning. arXiv preprint arXiv:2010.03768 , 2020. [30] Yiheng Shu, Saisri Padmaja Jonnalagedda, Xiang Gao, Bernal Jiménez Gutiérrez, Weijian Qi, Kamalika Das, Huan Sun, and Yu Su. Remem: Reasoning with episodic memory in language agent. arXiv preprint arXiv:2602.13530 , 2026. [31] Yifan Song, Da Yin, Xiang Yue, Jie Huang, Sujian Li, and Bill Yuchen Lin. Trial and error: Exploration-based trajectory optimization of llm agents. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 7584–7600, 2024. [32] Richard S Sutton, Doina Precup, and Satinder Singh. Between mdps and semi-mdps: A framework for temporal abstraction in reinforcement learning. Artificial intelligence , 112(1-2):181–211, 1999. [33] Qwen Team. Qwen3. 5-omni technical report. arXiv preprint arXiv:2604.15804 , 2026. [34] Guanzhi Wang, Yuqi Xie, Yunfan Jiang, Ajay Mandlekar, Chaowei Xiao, Yuke Zhu, Linxi Fan, and Anima Anandkumar. Voyager: An open-ended embodied agent with large language models. arXiv preprint arXiv:2305.16291 , 2023. [35] Ruoyao Wang, Peter Jansen, Marc-Alexandre Côté, and Prithviraj Ammanabrolu. Scienceworld: Is your agent smarter than a 5th grader? In Proceedings of the 2022 Conference on Empirical Methods in Natural Language Processing , pages 11279–11298, 2022. [36] Lingling Xu, Haoran Xie, S Joe Qin, Xiaohui Tao, and Fu Lee Wang. Parameter-efficient fine-tuning methods for pretrained language models: A critical review and assessment. IEEE Transactions on Pattern Analysis and Machine Intelligence , 2026. [37] Wujiang Xu, Zujie Liang, Kai Mei, Hang Gao, Juntao Tan, and Yongfeng Zhang. A-mem: Agentic memory for llm agents. arXiv preprint arXiv:2502.12110 , 2025. [38] John Yang, Carlos E Jimenez, Alexander Wettig, Kilian Lieret, Shunyu Yao, Karthik Narasimhan, and Ofir Press. Swe-agent: Agent-computer interfaces enable automated software engineering. Advances in Neural Information Processing Systems , 37:50528–50652, 2024. 
+
+11 [39] Shunyu Yao, Howard Chen, John Yang, and Karthik Narasimhan. Webshop: Towards scalable real-world web interaction with grounded language agents. Advances in Neural Information Processing Systems , 35: 20744–20757, 2022. [40] Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak Shafran, Karthik R Narasimhan, and Yuan Cao. React: Synergizing reasoning and acting in language models. In The eleventh international conference on learning representations , 2022. [41] Guibin Zhang, Muxin Fu, and Shuicheng Yan. Memgen: Weaving generative latent memory for self-evolving agents. arXiv preprint arXiv:2509.24704 , 2025. [42] Kai Zhang, Xiangchao Chen, Bo Liu, Tianci Xue, Zeyi Liao, Zhihan Liu, Xiyao Wang, Yuting Ning, Zhaorun Chen, Xiaohan Fu, et al. Agent learning via early experience. arXiv preprint arXiv:2510.08558 ,2025. [43] Yichi Zhang, Zhijian Ou, Min Hu, and Junlan Feng. A probabilistic end-to-end task-oriented dialog model with latent belief states towards semi-supervised learning. In Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing (EMNLP) , pages 9207–9219, 2020. [44] Zeyu Zhang, Quanyu Dai, Xiaohe Bo, Chen Ma, Rui Li, Xu Chen, Jieming Zhu, Zhenhua Dong, and Ji-Rong Wen. A survey on the memory mechanism of large language model-based agents. ACM Transactions on Information Systems , 43(6):1–47, 2025. [45] Yifei Zhou, Andrea Zanette, Jiayi Pan, Sergey Levine, and Aviral Kumar. Archer: Training language model agents via hierarchical multi-turn rl. arXiv preprint arXiv:2402.19446 , 2024. 
+
+12 7 Technical appendices and supplementary material 
+
+7.1 Training Details and Hyperparameters 
+
+All three benchmarks provide expert trajectories, which we use directly to construct the SFT data after benchmark-specific filtering. Each successful trajectory is converted into step-level bounded-context inputs paired with the expert action, so the number of SFT samples is larger than the number of trajectories. Table 5 reports the resulting data scale and training settings for the main Qwen3-8B experiments. The Qwen3-4B and Llama-3.1-8B runs use the same recipe unless otherwise specified. Because Qwen3-8B supports a chat-template thinking mode, we disable it during both training and evaluation ( enable_thinking=False ) and use the model as a standard instruction-following language model. Qwen3-4B and Llama-3.1-8B do not have a thinking mode and are used with their default chat templates. ALFWorld contains five base task families in our training setup: Pick, Clean, Heat, Cool, and Examine. Pick2 is not trained as a separate module because it does not introduce a new procedure: it consists of two sequential executions of the same Pick-and-Place skill. At evaluation time, we therefore reuse the Pick module twice rather than learning an additional Pick2-specific module. WebShop is treated as a single task family because all examples share the same shopping workflow. To align with standard WebShop evaluation, we use the 1K-product text environment and evaluate on 500 held-out goals. For SciWorld, we follow the ETO evaluation protocol, which is the common setup used by recent ScienceWorld agent-training work, including the task-family grouping, official train/dev/test splits, and per-task step limits [ 31 ]. We keep the family definitions fixed rather than regrouping tasks manually. We train nine task-family modules: find_X, lifespan, conductivity, measurement, growth, state_change, power, chemistry, and life_stages. The first five families have more expert data, with 480, 254, 256, 348, and 145 training variants respectively. Their SFT policies are already near-saturated, so we do not apply RL refinement to them. The remaining four families are lower-data: state_change has 56 training variants, power has 16, chemistry has 52, and life_stages has 10. We apply RL refinement to these four families in the main SciWorld setting. Evaluation is performed over the full ETO dev/test sets used in our experiments, containing 194 seen and 211 unseen variants across the nine families. 
+
+7.2 Reward Specification 
+
+Table 6 summarizes the immediate per-step rewards used during RL. To make reward construction scalable across task families, we draft the rule sets offline using OpenAI GPT-5.5, prompted with the task description and state-block schema. A representative ALFWorld prompt skeleton is shown in Appendix 7.5. We then implement the proposed rules as fixed deterministic scoring rules. During RL rollouts, no LLM judge or external model is queried. Discounted returns are computed from these rewards with discount factor γ = 0 .98 .
+
+7.3 Data Efficiency of Expert Trajectories 
+
+To study how many expert trajectories are needed to learn a recurring workflow, we run a data-efficiency sweep on WebShop with Qwen3-8B. We focus on the SFT stage only, because adding RL would introduce additional interaction budget and make the effect of demonstration count harder to isolate. For each setting, we train the same WebShop skill module with the same hyperparameters as the main experiment, varying only the number of expert trajectories used for SFT. Evaluation is performed on a fixed 100-goal test subset, so these numbers are intended to show trends rather than replace the full 500-goal results in Table 1. Figure 4 shows a clear scaling trend. With only 5 trajectories, the model fails to learn a usable shopping policy. Performance improves steadily from 25 to 1,000 trajectories, with success rate increasing from 16.0% to 57.0%. Using all available WebShop trajectories gives similar performance to the 1,000-trajectory setting, suggesting that SFT begins to saturate at this scale for the fixed 100-goal subset. 13 Table 5: Training and evaluation data scale, hyperparameters, and evaluation protocol for the main Qwen3-8B experiments. SFT samples denote step-level state-action pairs. 
+
+Hyperparameter ALFWorld WebShop SciWorld 
+
+Backbone and adapter 
+
+Base model Qwen3-8B (frozen) Adapter LoRA, rank 64, α = 128 
+
+Target modules q, k, v, o, gate, up, down Trainable params ∼175M (2.09% of base) Precision bf16 mixed Optimizer AdamW 
+
+Training data 
+
+Task-family modules 5 1 9Expert trajectories 2,628 1,571 1,617 SFT samples 36,702 15,087 37,403 
+
+Supervised fine-tuning 
+
+Learning rate 2 × 10 −4
+
+Effective batch 16 Epochs 3 3 1Loss masking action tokens only LR scheduler cosine, warmup ratio 0.1 LoRA dropout 0.05 Max seq length 1024 2048 1024 
+
+Reinforcement learning 
+
+Initialization SFT adapter Reference model frozen SFT adapter RL epochs 1Rollouts per group K 4Rollout temperature 0.8 Rollout top-p 0.95 Learning rate 5 × 10 −6
+
+Discount γ 0.98 KL coefficient β 0.02 Gradient clip 1.0 Train games 200/family 200 low-data families only Max episode steps 30 15 ETO per-task limits 
+
+Evaluation 
+
+Eval games (seen/unseen) 140 / 134 500 194 / 211 Performance eval temperature 0.4, top-p 0.95; seeds 0, 1, 2 Token-cost eval greedy ( T = 0 ), seed 42 Max new tokens 64 
+
+Compute 
+
+Hardware 1×A100 80GB Training seed 42 SFT wall-clock ∼173 min ∼143 min ∼90 min RL wall-clock ∼650 min ∼86 min ∼130 min 
+
+7.4 Qualitative Examples 
+
+Figures 5 and 6 illustrate the same bounded-context interface on WebShop and SciWorld. Each trace shows how the rendered state block, current observation, and one-step context support direct executable action generation without carrying the full episode history. 14 Table 6: Reward specification used for RL. Rewards are deterministic rules computed from the environment response, action, and tracker state. 
+
+Benchmark Component Reward terms ALFWorld Environment success +3 .0 if the episode terminates successfully. Progress rewards +1 .0 for advancing the tracked subgoal; +0 .02 for visiting a new hinted location type during search; 
+
++0 .05 for opening a new hinted container; +0 .2 for reaching the destination; +0 .2 for opening the destination receptacle; +0 .5 for a correct placement action. Error penalties −0.3 for invalid actions; −0.2 for no-effect actions when admissible actions are unavailable; −0.2
+
+for repeated no-progress; −0.3 for late-stage regression; −0.2 for looking during placement; −0.3
+
+for moving to a wrong destination instance; −0.1 for revisiting a location; −0.1 for reopening a searched container; −0.15 for wandering after the search phase. Step cost −0.01 per step. WebShop Environment success +3 .0 for exact successful purchase, i.e., final score = 1 .0.Progress rewards +0 .15 for selecting a required option; +0 .10 when all required options are filled and the phase advances to purchase. Error penalties −0.10 for selecting a wrong option; −0.25 for premature purchase before required options are filled; 
+
+−0.10 for an A→B→A action loop; −0.08 for clicking an already visited product; −0.08 for revisiting the same detail page. Step cost −0.01 per step. SciWorld Environment score ∆score /33 .0, so a 100-point task contributes about +3 .0 in total; additionally +1 .0 when the episode terminates with score ≥ 100 .Progress rewards Family-specific milestone bonuses tied to the state block, such as focusing or acquiring the target object, reaching the answer room, connecting circuit components, planting and watering seeds, observing state changes, reading recipes, mixing required materials, or focusing the next life stage. Milestone bonuses are one-time and typically range from +0 .08 to +2 .0 depending on their position in the procedure. Error penalties Invalid or no-effect actions, repeated actions, oscillations, premature answers, wrong-focus actions, wrong-skill actions, invalid circuit or mixing operations, and task-specific loops. Penalties are typically between −0.03 and −0.25 .Step cost −0.01 per step. 5 25 50 100 500 1000 All 
+
+# Expert trajectories 
+
+# 0
+
+# 10 
+
+# 20 
+
+# 30 
+
+# 40 
+
+# 50 
+
+# 60 
+
+> Performance
+
+# Score 
+
+# Success rate 
+
+Figure 4: WebShop SFT performance versus expert trajectory count. 15 Figure 5: Qualitative WebShop shopping trace with rendered state blocks. 
+
+Figure 6: Qualitative SciWorld lab-procedure trace with rendered state blocks. 16 7.5 Reward-Drafting Prompt Example 
+
+To make reward construction reproducible, we release representative reward-drafting prompts. The prompt below shows the ALFWorld pick-and-place template. WebShop and SciWorld use the same structure, with the environment description, action space, and tracker schema replaced by the corresponding task family. The drafted rules are manually checked and then implemented as fixed deterministic scoring rules. Listing 1: Reward-drafting prompt skeleton (ALFWorld example). 
+
+SYSTEM You are drafting deterministic reward-shaping rules for online RL refinement of an LLM agent. Your job is to design: (1) r_progress: subgoal-progress rewards aligned with the state block, (2) r_error: penalties for actions that block, undo, or violate progress, (3) r_step: a small step cost to discourage unnecessary actions. All rules must be computable from the tracker state, executed action, new observation, and updated tracker state. No LLM judge is allowed at rollout time. TASK FAMILY ALFWorld pick-and-place: put a target object into a target receptacle. ACTION SPACE go to X; take X from Y; put X in/on Y; open X; close X; examine X; look. STATE-BLOCK SCHEMA target_object : object to manipulate destination : target receptacle holding : currently held object or None checked_locations : visited receptacles searched_containers : opened containers current_subgoal : find_object | take_object | reach_dest |place_object | done TRACKER TRANSITION EXAMPLES - find_object -> take_object when the target object becomes visible. - take_object -> reach_dest when holding changes from None to target_object. - reach_dest -> place_object when the agent reaches destination. - place_object -> done when the object is placed in the destination. - No progress if the same location is revisited without new evidence. - Regression if the agent leaves the destination during place_object. DESIGN INSTRUCTION Design reward-shaping terms over the above state-block fields and tracker transitions. The total reward will be: r_t = r_env + r_progress - r_error - r_step where r_env is fixed by the environment. Return a Python-style dictionary reward_terms. Rules: - r_progress should reward tracker-state changes that advance the current subgoal or make required state-block fields closer to done. - r_error should penalize invalid actions, repeated no-progress actions, premature placement, wrong-destination behavior, and subgoal regression. - r_step should be a small positive penalty magnitude applied each step to discourage unnecessary wandering or browsing. - Every trigger must explicitly reference tracker fields, actions, observations, or tracker-state changes. 
+
+17

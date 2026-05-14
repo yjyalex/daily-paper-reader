@@ -1,0 +1,790 @@
+Title: One Pool, Two Caches: Adaptive HBM Partitioning for Accelerating Generative Recommender Serving
+
+URL Source: https://arxiv.org/pdf/2605.04450v1
+
+Published Time: Thu, 07 May 2026 00:25:04 GMT
+
+Number of Pages: 13
+
+Markdown Content:
+# One Pool, Two Caches: Adaptive HBM Partitioning for Accelerating Generative Recommender Serving 
+
+Wenjun Yu 
+
+Hong Kong Baptist University 
+
+Hong Kong, China cswjyu@comp.hkbu.edu.hk 
+
+Shuguang Han 
+
+Alibaba Inc 
+
+Hangzhou, China hanshuguang@gmail.com 
+
+Amelie Chi Zhou *
+
+Hong Kong Baptist University 
+
+Hong Kong, China amelieczhou@hkbu.edu.hk 
+
+Abstract — Generative Recommender (GR) inference places embedding hot caches (EMB) and KV caches in direct com-petition for limited GPU HBM: allocating more memory to one improves its efficiency but degrades the other. Existing systems optimize them in isolation, overlooking that the optimal EMB–KV allocation ratio can shift by up to 0.35 across workload regimes, leaving 20–30% latency improvement unrealized. While online reallocation is required to close this gap, naive approaches introduce H2D refill traffic on the critical path, causing P99 SLO violations. To address this, we present HLEM , which jointly manages HBM allocation and request routing at runtime through two key components: (1) Adaptive Memory Allocation, a three-layer PPO-based controller (frozen base policy, online residual adapter, and burst-aware recovery controller) that achieves 32 μsdecision latency while staying within 0.024–0.029 of the offline-optimal ratio; and (2) EMB–KV-Aware Scheduling, which routes requests by jointly considering KV residency, embedding locality, and node load to avoid routing inefficiencies under heterogeneous allocations. Evaluations on three production-scale datasets over a 32-node A100 cluster show that HLEM reduces P99 latency by 24–38% over the best static policy and achieves 93.5–99.6% SLO satisfaction across Steady, Trend, and Burst workloads, signifi-cantly outperforming state-of-the-art baselines without sacrificing throughput. I. I NTRODUCTION 
+
+Generative Recommenders (GRs) are transformer-based rec-ommendation models that predict the next item or a set of can-didate items from a user’s historical interaction sequence [53], [55]. In contrast to traditional recommendation models such as DLRMs [32], which primarily rely on shallow feature inter-actions, GRs leverage transformer-based sequence modeling over long user interaction histories (10k+), achieving higher accuracy [6], [14], [56]. GRs have become increasingly im-portant in large-scale production recommendation systems. In this paper, we focus on Meta’s HSTU [53] as a representative GR architecture due to its widespread industrial adoption [18], [20], [26], making our insights broadly applicable. HSTU inference consists of two tightly coupled stages. 1) Embedding Table Lookup retrieves dense vectors for sparse features from large embedding tables sharded in CPU DRAM, whose scale reaches tens to hundreds of terabytes (e.g., 96TB Model-F and 200TB+ Persia [25], [31]), leading to frequent DRAM–HBM transfers and memory pressure. 2) Transformer Block Computation applies stacked multi-head self-attention over long interaction sequences, with KV cache reuse retained in HBM to avoid redundant recomputation.     
+
+> *Corresponding author. 2048 4096 8192 16384 20480
+> User Interaction Sequence Length
+> 0
+> 20
+> 40
+> 60
+> Latency (ms)
+> EMB Lookup
+> Attention Compute
+> Other
+
+(a) Latency breakdown with vari-ous sequence length (#table=10) 1 5 10 15 20 25 
+
+> Number of Embedding Tables
+> 0
+> 20
+> 40
+> 60
+> Latency (ms)
+> EMB Lookup
+> Attention Compute
+> Other
+
+(b) Latency breakdown with vari-ous #tables (seq. length=15k) 
+
+Fig. 1: HSTU inference latency under different settings Production GR serving clusters comprise a request router 
+
+and multiple serving nodes (see Figure 3), each featuring a two-level memory hierarchy with GPU HBM and CPU DRAM [22], [42], [44]. Within HBM, two persistent caches co-exist: 1) embedding hot caches that store frequently ac-cessed embeddings (EMB) to reduce PCIe/RDMA transfers from CPU-side sharded EMB tables, and 2) KV caches that retain precomputed attention tensors for historical sequences, avoiding redundant recomputation. As a result, both EMB and KV caches are inside the same GPU HBM memory. Profiling from production traces on real-world datasets re-veals that both EMB lookup and KV cache access are primary bottlenecks, as shown in Figure 1. EMB lookup consistently dominates end-to-end latency as interaction length scales to 10k+ [6], [14], [56]: at a sequence length of 20,480, it alone contributes over 40% of total inference time. The KV com-putation phase also incurs substantial overhead due to long-sequence attention at the same time. The figure further shows that each additional embedding table introduces a roughly linear transfer cost, since every item must be looked up across all tables and production deployments commonly involve tens to hundreds of tables [1], [2], [11], [52]. Existing systems address each bottleneck in isolation. On the embedding side, prior work focuses on prefetching [54], sharding [38], and near-storage access [50] to reduce EMB lookup latency. On the KV side, recent GR-aware systems pro-pose KV compression, sharing, and cache-aware routing [22], [42], [44] to improve reuse rates. However, both lines of work implicitly treat HBM capacity as fixed for their respective caches, ignoring the fundamental resource contention between them. Allocating more HBM to the embedding hot cache re-duces EMB lookup stalls but starves the KV cache, increasing recomputation overhead and vice versa. No existing system 
+
+> arXiv:2605.04450v1 [cs.DC] 6 May 2026
+
+jointly manages this trade-off, leaving significant latency re-duction unrealized. Insights from production metrics indicate that allocating all HBM to a single cache is suboptimal. As shown in Figure 4, the optimal EMB–KV HBM memory allocation is highly dynamic across sequence lengths and workload scenarios, with the ratio shifting from ≈0.20 to ≈0.55 as sequence length increases or workloads vary. This leaves 20–30% latency improvement untapped under static allocations. The optimal memory allocation evolves over time, and adapting it online can interfere with live inference. Memory reallocation may evict hot embeddings or starve in-flight prefill requests, leading to latency spikes that violate strict production P99 SLOs (30–50 ms [46], [48]). These observations surface three concrete challenges that our system must address. (1) Multi-factor workload modeling: 
+
+The optimal memory allocation ratio is jointly determined by the hot-user ratio, KV hit rate, and EMB hit rate, which together account for over 60% of decision importance, making simple heuristics insufficient. (2) Fast and non-intrusive ad-justment: even a 10% ratio change can trigger up to 8GB H2D data movement on the critical path of embedding transfers, degrading service quality and requiring incremental, decoupled allocation updates. (3) Joint-aware scheduling: once memory allocation ratios become heterogeneous across nodes, EMB transfer costs vary per node, breaking KV-only routing and requiring EMB–KV–aware scheduling. We present HLEM (HBM-level EMB–KV Latency 
+
+Manager) , which jointly allocates GPU HBM between EMB and KV caches at runtime and routes requests to maximize cache reuse, while satisfying strict production P99 SLO targets (30–50 ms) without disrupting live inference traffic. On three production-scale datasets over a 32-node A100 cluster (5TB EMB tables, 8K–15K sequence lengths), HLEM reduces P99 latency by 24–38% over the best static allocation, achieves 
+
+≥93 .5% SLO satisfaction, and incurs only 32 μs overhead. We summarize our key contributions as follows:  
+
+> •
+
+Dual-bottleneck characterization for GR serving. We identify the EMB–KV memory allocation bottleneck in GR inference and show that the optimal memory allocation ratio α∗ shifts by up to 0.35, leaving 20–30% latency improvement untapped under static policies.  
+
+> •
+
+Adaptive EMB–KV memory allocation. We design alightweight runtime controller that tracks the best EMB– KV memory allocation under dynamic workloads, achieving 32 μs decision latency and staying within 0.024–0.029 of the offline-optimal ratio across evaluated settings.  
+
+> •
+
+Non-disruptive memory allocation adjustment. We present a memory-management mechanism that applies allo-cation updates under live traffic without relocating resident KV state or introducing uncontrolled H2D interference.  
+
+> •
+
+EMB–KV-aware request routing. We design a routing policy that jointly considers KV locality, embedding local-ity, and node load, yielding an additional 15–20% latency reduction under burst traffic. Item 0              
+
+> Item Id
+> Category Id
+> 1 Item->M+N+K parallel
+> EMB Lookups
+> EMBEDDING
+> TABLES
+> INTERACTION
+> SEQUENCES
+> ×N
+> TRANSFORMER
+> BLOCKS
+> Concatenate + Positional Encoding →Stack all T tokens ( 100MB+ )
+> T×D
+> Predict Output
+> ×M
+> Item EMB Table Item Feature EMB Table
+> ×K
+> Context EMB Table
+> ×N
+> Item 1
+> Item Id
+> Category Id
+> Item 2
+> Item Id
+> Category Id
+> Item 1W+
+> Item Id
+> Category Id
+> Add & LayerNorm
+> Feed-Forward Network
+> Multi-Head Self-Attention
+> QK
+> VQ·K ᵀ/√d · V
+
+Fig. 2: HSTU Model Structure II. B ACKGROUND AND MOTIVATION 
+
+A. Generative Recommender Systems 
+
+Generative Recommenders (GRs) are transformer-based rec-ommendation models that predict future user interactions from long historical behavior sequences. In this paper, we focus on Meta’s HSTU [53] as a representative GR architecture because it has become a common design point in industrial generative recommendation systems. As illustrated in Figure 2, HSTU takes an ordered sequence of prior user-item interactions as input and produces candidate items as recommendation output. HSTU inference has two stages that place different demands on the memory system.  
+
+> •
+
+First, the model performs embedding lookups for each item and its associated categorical features (e.g., item ID, category, and context). These embeddings reside in large embedding tables that can reach tens to hundreds of ter-abytes in production [10], [25], [29], [31], far exceeding GPU memory capacity. Consequently, the tables are typi-cally sharded across CPU memory, and cache misses require data movement from host DRAM or remote nodes.  
+
+> •
+
+Second, the retrieved embeddings are processed by stacked 
+
+transformer blocks , whose self-attention layers operate over long interaction histories (e.g., over 10K+ items in modern GR systems) and therefore incur substantial com-pute and memory cost. A key property of GR inference is that both stages benefit from persistent GPU-resident state. Frequently accessed em-bedding vectors can be retained in an embedding cache (EMB cache) to reduce repeated DRAM-to-HBM transfers. Likewise, previously computed key/value tensors can be retained in a KV cache to avoid recomputing attention state for users whose histories overlap with earlier requests. These two caches accelerate different parts of the pipeline, but they compete for the same limited GPU HBM capacity. This competition distinguishes GR serving from prior LLM/DLRM systems that optimize only one cache in isolation [38], [42]. 
+
+B. Online Serving Architecture of GRs 
+
+Production GR systems typically adopt a multi-node serving architecture to satisfy strict tail-latency service-level objectives (SLOs), commonly ∼30–50 ms in industry deployments [46], [48]. As shown in Figure 3, a typical GR serving deployment 2Response       
+
+> SLO: P99<30ms
+> Request
+> GPU HBM MEMORY
+> KV Cache EMB Cache
+> miss
+> CPU DDR MEMORY
+> EMB Table Shard 1/N
+> KV0
+> KV2
+> KV1
+> -
+> E0 E1
+> miss
+> Node 1
+> E0 E3 E1
+> E2 E4
+> GPU HBM MEMORY
+> KV Cache EMB Cache
+> E6
+> CPU DDR MEMORY
+> EMB Table Shard i/N
+> KV4
+> KV7
+> KV5
+> -
+> E0
+> E9
+> E6 E5
+> E3
+> E1
+> E28 E14
+> RDMA
+> E14
+> PCIE
+> E3
+> EMB
+> LookUp
+> 2
+> 1
+> 1Hstu
+> Calculate
+> 3
+> Transformer
+> Blocks
+> EMB
+> LookUp
+> 2Hstu
+> Calculate
+> 3
+> Transformer
+> Blocks PCIE 4Node
+> States
+> Request Router
+> Node
+> States
+> 4
+> Route
+> Route
+> Nodes Cache Info
+> KV
+> State
+> Maps
+> Load
+> State
+> Maps
+> KV6-
+> KV288
+> Node i
+> Load
+> Pressure
+> Node i
+> 2
+> Node i
+
+Fig. 3: HSTU Online Inference Serving Architecture 0.0 0.2 0.4 0.6 0.8 1.0   
+
+> EMB Fraction in GPU Memory
+> 0.6
+> 0.7
+> 0.8
+> 0.9
+> 1.0
+> Normalized Latency  optimal allocation
+> Short (2048) Medium (10240) Long (20480)
+
+(a) Varying sequence lengths (same scenario) 0.0 0.2 0.4 0.6 0.8 1.0   
+
+> EMB Fraction in GPU Memory
+> 0.6
+> 0.7
+> 0.8
+> 0.9
+> 1.0
+> Normalized Latency  optimal allocation
+> Steady Trend Burst
+
+(b) Varying scenarios (fixed se-quence length) 
+
+Fig. 4: Normalized latency vs. EMB–KV allocation ratio. consists of two core components [22], [42], [44], namely a 
+
+request router and a set of serving nodes . Each node contains CPUs for orchestration and host-side memory management, together with GPUs for embedding access and transformer execution. This organization creates a two-level memory hier-archy spanning CPU DRAM and GPU HBM across the cluster. 
+
+Data placement. Within this memory hierarchy, data is nat-urally split by capacity and access pattern. Because embedding tables are far larger than a single node’s memory capacity, they are sharded across CPU DRAM over all serving nodes. In con-trast, each node’s GPU HBM holds two persistent caches: an EMB cache for hot embeddings, and a KV cache for reusable attention state. Unlike LLM serving, where KV movement can often be overlapped with autoregressive decoding, GR inference in our setting is executed as a single forward pass with no comparable decode phase. As a result, CPU offloading of KV states [13], [36] is unattractive for our workloads, and KV states are stored in GPU only during serving. 
+
+Request serving. Under this architecture, each request pro-ceeds through four stages: (1) Route: the request router selects a serving node; (2) EMB lookup: if the required embeddings are absent from that node’s EMB cache, they are fetched from the local CPU shard or from a remote node through RDMA; 
+
+(3) Compute: the GPU executes the HSTU forward pass, reusing any resident KV state and cached embeddings; and (4) State sync: after completion, the serving node asynchronously reports updated cache residency and load information back to the router. This request path makes both embedding misses and KV reuse directly visible in end-to-end latency. 
+
+C. Motivation and Design Challenges 
+
+The serving architecture of GRs exposes the key system tension studied in this paper: the EMB hot cache , which reduces the EMB fetch cost, and the KV cache , which avoids redundant attention recomputation, compete for limited GPU HBM resources. Since both caches contribute to the end-to-end serving latency, the key system question is not how to optimize either cache in isolation, but how to divide limited HBM capacity between them and manage their trade-off online. To answer this question, we empirically study the cost of the two caches both individually and jointly. 
+
+First , to isolate EMB overhead from KV reuse, we profile a 6-layer HSTU model with 512-dimensional embeddings while varying sequence length and EMB-table count, with KV cache reuse disabled during this measurement. Figure 1 shows that the EMB lookup remains a major component of end-to-end latency across settings and becomes dominant for long sequences and large tables. For example, with a sequence length of 15k and 25 embedding tables, the EMB lookup alone accounts for more than 50% of total latency. Importantly, the figure shows that the EMB lookup cost grows roughly linearly with the number of embedding tables, making this a severe issue in production deployments that commonly involve tens to hundreds of tables [11], [52]. 
+
+Second , we quantify the joint trade-off between the two caches by sweeping the fraction of GPU HBM allocated to em-beddings. Figure 4 shows that end-to-end latency is minimized at an interior allocation rather than at either extreme: allocating too little HBM to the EMB cache increases embedding misses and transfer stalls, whereas allocating too little HBM to the KV cache reduces reusable history and increases recomputation. More importantly, the optimal allocation shifts substantially across workloads, moving from approximately 0.20 to 0.55 as sequence length and workload conditions change. This behavior implies that no single static allocation can remain near-optimal across operating regimes, leaving up to 20–30% latency improvement untapped in our study. Together, these observations induce three design challenges: 
+
+Challenge 1: The optimal EMB–KV allocation is dy-namic, making static allocation insufficient. As shown in Figure 4, the optimal EMB–KV memory allocation is not fixed, and can be affected by many factors (e.g., user-item interaction sequence length, EMB-table count). Further, Figure 5 shows the temporal workload variation using our production trace. The window size is 5 s. The figure reveals that the workload composition can change abruptly even across short windows, making memory reallocation a recurring need rather than a rare event. This result implies that EMB–KV management must adapt quickly online based on runtime 3Fig. 5: Rapid production fluc-tuations in hot-user req. share and mean seq. length EMB    
+
+> Aware
+> KV
+> Aware
+> GR
+> Aware
+> 0
+> 20
+> 40
+> 60
+> 80
+> Cache hit rate (%)
+> EMB hit rate KV hit rate P99 latency
+> 69%
+> 42%
+> 66%
+> 4%
+> 29% 24%
+> 20
+> 40
+> 60
+> 80
+> P99 latency (ms)
+
+Fig. 6: Comparison of cache hit rates across three schedul-ing methods workload signals rather than rely on a fixed allocation. 
+
+Challenge 2: Online memory reallocation is necessary, but naive adjustment can disrupt live inference. Effective GR serving requires online HBM memory reallocation be-tween EMB hot cache and KV cache. However, reallocation under live traffic is not free. A naive memory allocation scheme that expands one side of HBM must evict or refill cache state on the other side, introducing background data movement on the same host-to-device (H2D) path used by latency-critical EMB lookups. In our profiling, burst periods can generate ∼10 GB/s of H2D traffic for embedding misses alone, so naive memory reallocation risks increasing queueing delay and jitter on the critical path. Under strict production P99 SLO targets , such interference can be unacceptable even when average bandwidth utilization is not saturated. 
+
+Challenge 3: Memory allocation and request routing are inherently coupled. The EMB–KV trade-off is not purely a node-local problem. In production GR serving, EMB tables are sharded across nodes, while both hot embedding sets and KV states are distributed throughout the cluster. Request routing therefore determines where user-specific KV state and embedding locality accumulate, which in turn affects each node’s effective EMB and KV hit rates. Figure 6 illustrates this coupling. An embedding-aware scheduler [24] improves EMB hit rate but sacrifices KV locality, while a KV-aware scheduler [44] improves KV hit rate but ignores embedding locality. Our scheduler that jointly considers both achieves a more balanced hit-rate profile and, more importantly, lower end-to-end latency than either single-objective policy. These results show that memory allocation and request routing can-not be optimized independently. These challenges highlight why isolated optimizations are insufficient. Embedding-side techniques such as prefetch-ing [38] and KV-side techniques such as KV sharing [42], [44] or compression [22] improve only one side, but do not eliminate contention between the EMB and KV caches for GPU HBM. Insufficient EMB allocation causes prefetched embeddings to be evicted early and prefetch traffic to compete with H2D transfers, while more KV allocation shrinks EMB capacity and increases misses. Optimizing either alone shifts the bottleneck, so effective GR serving requires joint runtime control of allocation, memory, and request routing. III. D ESIGN RATIONALE 
+
+The challenges identified above suggest that efficient GR serving must address not one isolated bottleneck, but three coupled design problems: 1) deciding the EMB–KV split online as workloads change, 2) applying allocation changes without disrupting latency-sensitive inference, and 3) routing requests using the resulting per-node memory conditions. To address these problems, we propose HLEM , which is designed based on three rationales. 
+
+Rationale 1 : Dynamic memory reallocation requires fast and predictive online control. Dynamic EMB–KV allocation is fundamentally an online control problem: the controller must react to workload shifts, while the impact of each update is only realized after cache refill, eviction, and future reuse affects hit rates and tail latency. Thus, it must make lightweight decisions from coupled runtime signals while accounting for delayed effects, rather than optimizing a single instantaneous metric. This combination makes fixed heuristics and purely reactive policies insufficient. We therefore design a lightweight RL-based controller that enables fast online decisions while optimizing the downstream impact of each reallocation on serving performance (Section IV-A). 
+
+Rationale 2 : Memory reallocation should be fast and non-disruptive. Dynamic EMB–KV reallocation is only useful if it can run under live traffic without harming serving quality. In production, reallocation competes with latency-critical em-bedding misses for the same H2D path, so naive adjustments can worsen P99 latency. This makes reallocation an actuation problem rather than a one-time configuration. A practical design must minimize disruptive data movement, decouple updates from critical transfers, and amortize adjustment cost over time. HLEM follows these principles with a lightweight online memory-management mechanism that applies alloca-tion changes incrementally and safely (Section IV-B). 
+
+Rationale 3 : Request routing should capture the joint EMB–KV trade-off. In production GR serving, the router decides which serving node should handle each incoming request. This decision becomes more difficult under dynamic EMB–KV memory reallocation, because nodes no longer look identical due to embedding table sharding and distribution of EMB/KV caches. Request routing must therefore reason jointly about KV locality, embedding locality, and load bal-ancing. This makes existing KV-centric schedulers insufficient. In this paper, HLEM uses an EMB–KV-aware scheduler that explicitly estimates request cost from both cache perspectives and routes requests according to expected end-to-end latency. (Details in Section IV-C) The EMB–KV HBM allocation is not governed by a single component. As shown in Figure 7, HLEM forms a tightly entangled control loop between a global request router and a node-local control path . Each serving node continuously monitors workload, cache state, and latency signals, then the node-local SmartAllocator uses these signals to dynamically determine how GPU HBM is partitioned between the EMB cache and the KV cache. These signals are in turn influenced by the router’s earlier placement decisions, which shape user 4REQUEST ROUTER  
+
+> Route: EMB hit ↑
+> KV-EMB Aware Routing
+> Cache
+> State
+> Serving Node i
+> α
+> Update
+> Smart
+> Allocator
+> Memory
+> Manager
+> EMB(65%) KV(35%)
+> Metrics
+> Route: KV hit ↑
+> Serving Node j
+> α
+> Update
+> Smart
+> Allocator
+> Memory
+> Manager
+> EMB(35%) KV(65%)
+> Metrics
+> Cache
+> State
+
+Fig. 7: Overall architecture of HLEM 
+
+locality and cache residency on each node. The resulting allocation ratio α is applied incrementally by the memory manager to avoid interfering with latency-critical inference. At the cluster level, the global request router leverages refreshed cache states, node load, and per-node α to estimate the end-to-end serving cost of each request, while accounting for cache heterogeneity as nodes may specialize differently un-der varying allocations. These routing decisions subsequently reshape cache state and runtime signals, feeding back into future allocation updates. In this way, HLEM connects runtime measurement, allocation control, safe memory management, and routing into a single coordinated system for GR serving. IV. D ESIGN DETAILS 
+
+A. Adaptive EMB–KV Memory Allocation 
+
+This section presents SmartAllocator , a node-local adaptive memory allocator in HLEM . At each decision epoch, Smar-tAllocator determines how to partition GPU HBM between the EMB cache and KV cache based on recent runtime state. We formalize this as a sequential decision problem that minimizes end-to-end P99 latency under dynamic workloads. 
+
+Problem Formulation. Denote the GPU memory budget as 
+
+M and the EMB allocation ratio as α ∈ [0 , 1] . The memory capacity split for EMB cache and KV cache is MEmb = α·M
+
+and MKV = (1 − α) · M , respectively. At each decision epoch 
+
+t, our objective is to select the best α∗ 
+
+> t
+
+that minimizes end-to-end P99 latency ℓ(α, s t) under the current runtime state st:
+
+α∗ 
+
+> t
+
+= arg min  
+
+> α∈[0 ,1]
+
+ℓ(α, s t). (1) 
+
+RL-based Solution Formulation. We model dynamic EMB–KV memory allocation as a Markov Decision Process (MDP) (S, A, P, R, γ ). At each decision epoch t, SmartAl-locator observes a runtime state st ∈ S, takes an action 
+
+at ∈ A to adjust the current allocation ratio αt, and the system transitions to a new state st+1 ∼ P (· | st, a t). The reward 
+
+rt = R(st, a t) is computed from the serving performance observed over the subsequent decision window. The objective is to learn a policy π(at | st) that maximizes the expected discounted return 
+
+J(π) = Eπ
+
+" ∞X
+
+> t=0
+
+γtrt
+
+#
+
+. (2) 
+
+This formulation captures the delayed effects of memory allocation decisions: adjusting αt influences subsequent cache refill, eviction, and reuse, and its impact is reflected only after the system evolves to future states. We next describe the state, action, and reward design used to instantiate this MDP. 
+
+(1) State Space. The state st ∈ S summarizes the recent workload, cache, and serving conditions that are most in-TABLE I: State vector in HLEM .            
+
+> Symbol Definition
+> htFraction of requests from hot users (%)
+> ktKV cache hit rate of recent window (%)
+> etEMB cache hit rate of recent window (%)
+> LtMean user interaction sequence length
+> vtFraction of latency SLO violations (%)
+> αtCurrent EMB–KV memory allocation ratio (%)
+> ptNormalized P99 end-to-end request latency (%) PPO Agent ❄
+> DECISION LOOP LEARNING LOOP
+> System
+> State St
+> Online Adapter
+> Recovery
+> Controller
+> Clip &
+> Apply
+> Inference System
+> KV(α%) EMB(1-α%)
+> Burst Event
+> Detected
+> QoS & ℓ t
+> αt+1
+> Reward r t
+> Replay Buffer
+> Partition
+
+Fig. 8: Two-loop controller architecture in SmartAllocator 
+
+formative for the next memory-allocation decision. At each decision epoch t, SmartAllocator observes a 7-dimensional state vector st = ( ht, k t, e t, L t, v t, α t, ℓ t) ∈ R7, where ht,
+
+kt, et, Lt, vt, αt, and ℓt denote the hot-user ratio, KV hit rate, EMB hit rate, mean sequence length, SLO-violation rate, current EMB–KV memory allocation ratio, and P99 end-to-end latency, respectively. All features are normalized to [0 , 1] 
+
+before entering the allocation algorithm. 
+
+(2) Action Space. The action at ∈ A is an incremental update to the current EMB allocation ratio, i.e., at ≡ ∆αt.We use a small discrete action set 
+
+A = {± 0.06 , ±0.04 , ±0.02 , 0} (3) 
+
+where positive values expand the EMB allocation, negative values shrink it, and zero leaves the current allocation un-changed. The next allocation ratio is then computed as 
+
+αt+1 = clip( αt + ∆ αt, α min , α max ) (4) 
+
+where αmin and αmax bound the feasible EMB allocation range and prevent either cache from being fully starved. We use small incremental updates to avoid transient cache imbalance and latency spikes under live serving. 
+
+(3) Reward Function. After each action, the reward over the next decision window is defined as 
+
+rt = Eτ ∼T t
+
+1[dτ ≤ τSLO ]| {z }
+
+> QoS (SLO satisfaction)
+
+− λ · max  0, ℓ t − τSLO 
+
+| {z }
+
+> P99 penalty (tail violation)
+
+, (5) 
+
+where the first term measures SLO satisfaction and the second penalizes P99 latency violation. Here, Tt is the set of requests in the current window and dτ is the latency of request τ . This formulation balances overall QoS and tail latency. Optimizing only SLO satisfaction may tolerate rare but severe latency spikes, whereas optimizing only P99 may overemphasize a small fraction of requests and neglect overall service quality. We set λ = 1 
+
+> τSLO
+
+to keep both terms on a comparable scale. 
+
+SmartAllocator Architecture. To realize the above MDP in production serving, HLEM organizes the SmartAllocator into two cooperating loops, as shown in Figure 8. The decision loop 
+
+runs in the serving path: it consumes the current runtime state and produces the next EMB–KV allocation updates with low overhead. The learning loop runs in the background main-tenance path: it updates only the lightweight online adapter 50 100 200 300 400 500  
+
+> Time (ms)
+> 0
+> 2
+> 4
+> 6
+> 8
+> 10
+> 12
+> PCIe Bandwidth (GB/s)
+> Suppress
+> EMB-miss HTOD Background Reallocate
+
+Fig. 9: HLEM overlaps EMB HTOD and throttles back-ground reallocation traffic EMB     
+
+> Aware KV
+> Aware GR
+> Aware
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> Routing Score (a.u.)
+> 0.29
+> 0.38
+> 0.47
+> Load Score KV Hit Score EMB Hit Score
+
+Fig. 10: Routing score break-down for three scheduling methods with different focuses using recent serving experience while keeping the base policy fixed after offline training. At each decision epoch (5s), the decision loop combines three runtime components: a base action from the PPO policy, a residual result from the Online Adapter, and a Recovery Controller override result when triggered. Concretely, the next EMB allocation ratio is computed as 
+
+αt+1 = clip( αt + ∆ αppo + ∆ αadapt , α min , α max ) , (6) 
+
+or applies the Recovery Controller’s override during a burst event. Here, αmin = 0 .1 and αmax = 0 .9 ensure that neither cache is completely starved. 
+
+(1) PPO Agent (Base Frozen Policy). The PPO agent provides the dominant control signal ∆αppo , mapping runtime state to effective memory allocation. PPO [40] is used due to delayed effects: changes in αt propagate through cache refill, eviction, and reuse before affecting end-to-end latency. It is trained offline on historical traces over a discrete action space and converges within 100 episodes. We use a lightweight Actor–Critic with a two-layer MLP (64/128, < 25 K param-eters). The policy is frozen after training to avoid instability and serving overhead. 
+
+(2) Online Adapter (Residual Correction). This compo-nent compensates for offline–online mismatch by producing a residual correction ∆αadapt over the base policy. It uses a lightweight residual model (3-layer MLP, 5→16 →1, zero-initialized). The adapter is updated online from recent serving data. SmartAllocator maintains an EMA of P99 latency, ℓEMA ,and adjusts the learning rate as 
+
+ηt = η0 · |ℓt − ℓEMA |
+
+τSLO 
+
+(7) 
+
+where η0 = 10 −3. Each decision window’s reward rt and latency ℓt are appended to a replay buffer (size 1K, FIFO), which bounds memory overhead and mitigates catastrophic forgetting under bursty workloads. 
+
+(3) Recovery Controller (Burst Handling). This component handles burst events, where stability is more important than fine-grained adaptation. It maintains an EMA baseline of P99 latency ℓEMA and its standard deviation σEMA over the recent 10 decision epochs, and detects burst events when 
+
+ℓt > ℓ EMA + 3 σEMA (8) 
+
+Upon detection, the controller bypasses the normal update path and applies a conservative override, shifting memory toward the KV cache when the hot-user ratio exceeds ρ∗ = 0 .2. This fallback avoids contention on the H2D path during burst. 
+
+B. Non-Disruptive Memory Allocation Adjustment 
+
+The Memory Manager faces a fundamental tension: Smar-tAllocator operates on a 5s epoch and can issue allocation changes frequently, yet each change risks injecting H2D refill traffic that competes with latency-critical EMB-miss transfers. Resolving this tension requires decoupling logical boundary updates, which are metadata-only and incur microsecond-scale overhead, from physical refill, which is constrained by memory bandwidth. Given a new EMB–KV memory allocation ratio from 
+
+SmartAllocator , the remaining challenge is to realize that update efficiently under live serving. In HLEM , changing the allocation incurs two distinct costs. The first is a logical update to the EMB–KV memory boundary, which is lightweight and metadata-driven: alloc_page() and free_page() 
+
+update page tables in less than 1 μs and remain off the serving critical path. The second is physical refill of the newly exposed capacity with useful cache content, which introduces background H2D traffic. In practice, a 4% allocation update on an 80 GB GPU corresponds to approximately 3.2 GB of H2D refill traffic over PCIe, making refill rather than bookkeeping the dominant cost of online allocation adjustment. To apply allocation updates without degrading serving quality, HLEM decouples logical control from physical data movement and addresses two PCIe-bound challenges. (C1) Zero-copy allocation realization: relocating live KV blocks would introduce prohibitive stalls on the inference path. (C2) Bandwidth interference: H2D traffic induced by refill can in-terfere with latency-critical EMB-miss transfers on the critical path and amplify P99 latency. 
+
+Embedding-only boundary adjustment (addresses C1). 
+
+To avoid moving live KV state, HLEM enforces a strict invari-ant: only the EMB cache boundary is adjusted, while resident KV blocks remain physically immobile. The KV cache is organized as a paged block pool, similar to vLLM [23], where each block is managed through an explicit free list and indexed via page-table metadata. In contrast, the EMB cache is imple-mented as a contiguous LRU-managed slab backed by page-granularity allocation. When α increases, the EMB manager calls alloc_page() to take free pages from the KV pool and reassign them to the EMB cache without touching resident KV entries. When α decreases, evict_lru_entries() 
+
+reclaims EMB pages and returns them via free_page() to the KV free list. Because all boundary changes are metadata-only and require no cudaMemcpy , allocation adjustment incurs zero pipeline stalls regardless of scale. 
+
+Background refill with bandwidth throttling (addresses C2). While boundary adjustment is lightweight, the newly allocated memory must still be refilled with useful cache content, which introduces background H2D traffic. Miss-path transfers are on the inference critical path and can-not be overlapped with attention execution (§II-C), whereas proactive prefetch is a separate mechanism that specula-tively warms the EMB cache during compute windows. To keep refill from interfering with serving-critical trans-fers, HLEM issues H2D movement via cudaMemcpyAsync 
+
+6Algorithm 1 KV-EMB Aware GR Request Routing                                                                                      
+
+> 1: Input: request R, user u; nodes N; miss costs Ckv , C emb , C ld ; overload threshold τ; affinity bonus ϵ
+> 2: Output: target node n∗
+> Router maintains per-node: Aff[ u]: previous routed node per user;
+> KVM[ n]: KV cache state HashMap u→ { 0,1};EMBM[ n]: EMB cache state HashMap; Prof[ u]: top-Khot shards for u;l(n): load pressure 3: for each request Rwith user udo
+> 4: naff ←Aff[ u].node ▷Get Affinity Node 5: for each node n∈ N do
+> 6: hkv ←KVM[ n].get( u)▷KV hit rate 7: hemb ← | Prof[ u]∩EMBM[ n]|/|Prof[ u]|▷EMB hit rate 8: score( n)←wkv hkv +wemb hemb +wld (1 −l(n)) + ϵ
+> 9: n∗←arg max nscore( n)▷Best node 10: if l(n∗)> τ then
+> 11: n∗←arg min nl(n)▷Overloaded: fall back to least-loaded 12: Dispatch Rto n∗; Update Aff[ u]←n∗; Async update KVM[ n∗]
+
+on a dedicated high-priority CUDA stream (created with 
+
+cudaStreamCreateWithPriority ), decoupled from the default compute stream. HLEM further regulates refill bandwidth according to the current demand of EMB H2D traffic (Figure 9), throttling background allocation traffic when necessary to protect tail latency. Under controlled bandwidth usage, a typical 3.2 GB H2D refill completes within approxi-mately 1 s, while the allocator operates at a slower 5 s decision interval. This allows refill cost to be fully amortized without impacting end-to-end serving latency. 
+
+C. KV-EMB-Aware Request Routing 
+
+Dynamic allocation introduces a routing dilemma: once nodes carry different α values, no single notion of locality, whether KV affinity or EMB coverage, is sufficient to score them. A KV-centric router overlooks the fact that nodes with small 
+
+α have limited EMB cache capacity and are more likely to incur H2D transfer costs, while an EMB-centric router ignores KV residency and leads to recomputation. As a result, nodes are no longer interchangeable, and the same request may experience different latency depending on KV residency, embedding locality, and current load. To address this, HLEM 
+
+adopts a user-aware routing policy that evaluates each node based on the combined latency cost of both types of misses. 
+
+Cost-Based Routing Score. Algorithm 1 summarizes the routing procedure. For each request R from user u, the router scores every candidate node n as 
+
+score( n) = wkv · hkv + wemb · hemb + wld ·  1 − l(n) + b(n) (9) 
+
+where hkv ∈ { 0, 1} indicates whether node n already holds reusable KV state for user u, hemb ∈ [0 , 1] is the fraction of user u’s top-K hot embedding shards resident on node n, and 
+
+l(n) ∈ [0 , 1] is the normalized node load. The affinity term is 
+
+b(n) = ϵ · 1[n = naff ]
+
+which softly favors the user’s last-routed node. The three main terms capture expected latency savings: a KV hit avoids sequence recomputation, higher EMB coverage reduces H2D fetch cost, and lower load reduces queueing delay. 
+
+Weight and Threshold Configuration. The routing weights are derived from offline-profiled miss costs rather than tuned manually. Let Ckv , Cemb , and Cld denote the physical costs of a KV miss, an embedding miss, and marginal queueing delay, respectively, and let Z = Ckv + Cemb + Cld .Then the routing weights are normalized as wi = Ci/Z , so that 
+
+wkv + wemb + wld = 1 . In our implementation, the overload threshold is τ = 0 .85 , the affinity bonus is ϵ = 0 .05 , and the shard-profile size is K = 20 , which covers at least 95% of per-user embedding accesses while remaining insensitive for 
+
+K ∈ [10 , 50] . If the highest-scoring node exceeds the overload threshold, the router falls back to the least-loaded node. 
+
+Residency Tracking. To support routing efficiently, HLEM 
+
+maintains lightweight per-node metadata for both KV and EMB locality. KV residency is tracked at user granularity as a hash map from user ID to a presence bit, while EMB residency is tracked at shard granularity as a set of resident embedding-shard identifiers. For each request, hemb is computed by intersecting the node’s EMB-residency set with the user’s precomputed top-K hot shards, which is an O(K) operation. These structures are updated asynchronously off the routing critical path and remain inexpensive in practice: the KV-residency table occupies under 24 KB per node, and at α = 0 .5
+
+each node typically holds approximately 3K– 6K KV entries. 
+
+System-Level Effect. By scoring nodes using both cache perspectives and load, HLEM avoids EMB- or KV-only routing myopia and exploits heterogeneous memory conditions from dynamic EMB–KV allocation. As shown in Figure 10, our scheduler achieves a higher aggregate routing score (0.47) than EMB-only (0.29) or KV-only (0.38) by jointly optimizing all cost components. This closes the loop: SmartAllocator adapts per-node EMB–KV allocation, the memory manager enforces SLOs, and the router dispatches requests accordingly. Together, the controller, memory manager, and router form a closed runtime loop for dynamic EMB–KV management in 
+
+HLEM . SmartAllocator chooses the memory allocation, the memory manager applies it under live traffic, and the router exploits the resulting per-node cache conditions for request placement. Section V evaluates how this coordinated design improves end-to-end latency, SLO satisfaction, and scalability. V. EVALUATION 
+
+A. Experimental Setup 
+
+System Setup. HLEM is implemented on top of the open-source HSTU framework [53], a production-grade generative recommender architecture with wide industrial adoption. Re-quests are served via continuous batching at user-request gran-ularity [49]. We use FBGEMM [21] for optimized embedding kernels and NCCL [33] for collective communication. All experiments are conducted on a 32-node cluster. Each node is equipped with 8 × NVIDIA A100 GPUs (80 GB HBM2e), a dual-socket AMD EPYC 9684X CPU with a total of 2 TB DDR5 memory, and a 200 Gbps InfiniBand HDR interconnect. This setup ensures that the dominant bottlenecks are on-node memory allocation and routing rather than network bandwidth. 
+
+Model Configurations. We evaluate two HSTU configu-rations to cover both lightweight and heavyweight serving regimes: a 3-layer model corresponding to the ranking stage and a 6-layer model corresponding to the retrieval stage. Both models use 512-dimensional item embeddings. This setup allows us to evaluate HLEM under different compute and 7TABLE II: Datasets used for evaluation         
+
+> Dataset Users Top 5% User Req. Ratio
+> Taobao 0.98M 18% Amazon-Video-Games 2.76M 24% Amazon-Books 10.3M 38%
+
+memory intensities while keeping the serving stack unchanged. 
+
+Baselines. We compare HLEM against two groups of base-lines under a 30 ms P99 SLO. The first group evaluates end-to-end serving systems that optimize EMB and KV in isolation rather than jointly.  
+
+> •
+
+KV-Opt represents KV-centric serving systems [37], [42], [44] that optimize KV reuse and scheduling with α = 0 ,treating embedding access as secondary.  
+
+> •
+
+KV-EMB-Opt extends the KV-centric serving stack with ML-guided EMB prefetching [38], but still uses a fixed 
+
+EMB–KV memory allocation during serving. To give it the strongest possible static configuration, we select its allocation ratio α∗ offline by exhaustive grid search over 
+
+{0.0, 0.1, . . . , 1.0} and use the value that yields the lowest P99 latency on the target workload. The second baseline group isolates the dynamic memory allocation controller, while keeping the serving infrastructure fixed. We compare against three classes of methods.  
+
+> •
+
+Classical controllers: PID [5], Bayesian Optimization (BO) [41], and MILP [17].  
+
+> •
+
+Predictive learning-based methods: XGBoost [9] and LSTM [51], which estimate the best allocation from observed runtime state.  
+
+> •
+
+PPO-only: our base PPO controller with the Online Adapter and Recovery Controller disabled, isolating the contribution of online correction and burst handling. 
+
+Datasets and Workload Generation. We use three real-world datasets (Table II): Taobao [4] (e-commerce clicks), Amazon Video-Games and Amazon Books [19] (prod-uct reviews), covering low- and high-cardinality embedding regimes. To approximate production-scale serving pressure, we replay request traces based on production workloads from 
+
+Company X 1, request arrival rates are drawn from each user’s historical access frequency. To stress the system, we scale user profiles to 5K–15K tokens and retrieve 100 candidate items per request, following recent long-sequence GR settings [6], [14], [56]. To reflect production-scale embedding memory pressure [25], [50], [54], we enlarge embedding tables to 5 TB using NVIDIA DLRM scripts [3], while preserving each dataset’s original Zipfian ID-frequency distribution. This is important because the Zipf skew directly affects HBM miss rates and the sensitivity of EMB–KV memory allocation. 
+
+Workload Regimes. We evaluate three workload regimes that stress different aspects of the system. Steady uses uniform arrivals with a stable hot-user ratio. Trend gradually increases the hot-user ratio over time, testing whether SmartAllocator 
+
+can track a drifting optimum. Burst injects sudden hot-user spikes through Poisson arrivals lasting 3–5 decision windows, stressing both tail-latency robustness and the burst-handling logic in HLEM .            
+
+> 1Company X is anonymized due to the double-blind review policy. TaoBao Games Books
+> 0
+> 20
+> 40
+> 60
+> P99 Latency (ms)
+> 33
+> 38 36
+> 28 29
+> 35
+> 21 19 23
+> HSTU (3-layer)
+> TaoBao Games Books
+> 44
+> 51 48
+> 38 40
+> 46
+> 27 25 29
+> HSTU (6-layer)
+> KV-Opt KV-EMB-Opt RACER
+
+Fig. 11: Overall latency P99 of three methods across three production-scale datasets on two model depths 
+
+Metrics. We report two classes of metrics. (1) End-to-end serving performance: P99 latency (ms) and QoS rate, defined as the fraction of requests meeting the 30 ms SLO. (2) Allocation quality: the oracle ratio gap defined as |αt − α∗ 
+
+> t
+
+|,where α∗ 
+
+> t
+
+is the epoch-level offline optimum obtained by exhaustively evaluating α ∈ { 0.0, 0.01 , . . . , 1.0} using the full workload trace of epoch t and selecting the value minimizing mean P99 latency. The gap measures how closely the policy tracks it. For Burst events, α∗ 
+
+> t
+
+is computed independently per epoch to capture rapidly shifting optima. 
+
+B. Overall End-to-End Performance 
+
+P99 Latency. Figure 11 reports end-to-end P99 latency across datasets and HSTU model configurations. HLEM consistently satisfies the 30 ms P99 SLO across all datasets, model depths, and workload regimes (95% confidence intervals from five independent runs), whereas neither baseline does so reliably. KV-Opt already exceeds the SLO under steady load, reaching 33–38 ms for the 3-layer model and 44–51 ms for the 6-layer model, indicating that KV-centric optimization alone is fundamentally insufficient once embedding access becomes a first-order bottleneck. KV-EMB-Opt improves over KV-Opt by combining KV optimization with EMB prefetching and a fixed offline-tuned allocation ratio, but still cannot meet the SLO consistently, yielding 28–35 ms for the 3-layer model and 38–46 ms for the 6-layer model. In contrast, HLEM remains within the SLO across all set-tings, achieving 19–23 ms for the 3-layer model and 25–29 ms for the 6-layer model. Compared with the strongest static baseline, KV-EMB-Opt, HLEM reduces P99 latency by 25– 34% on the 3-layer model and 28–38% on the 6-layer model. These gains confirm that jointly adapting EMB–KV memory allocation at runtime is more effective than any fixed configu-ration, even when that configuration is chosen offline to be as favorable as possible. The gains are particularly pronounced on Amazon Books, where the hot-user ratio reaches 38%, because higher hot-user concentration intensifies EMB–KV contention and makes static allocation increasingly ineffective. Finally, the small run-to-run variance (within 1.2 ms) indicates that 
+
+HLEM stabilizes tail latency rather than merely shifting the average case. 
+
+SLO Satisfaction Rate. Figure 12 reports the fraction of requests that meet the 30 ms SLO under the three workload regimes. Under Steady traffic, the gap between HLEM and 
+
+KV-EMB-Opt is relatively modest: HLEM achieves at least 99.6% SLO satisfaction, while KV-EMB-Opt reaches 92.8– 8TaoBao Games Books TaoBao Games Books TaoBao Games Books     
+
+> 0.0
+> 0.5
+> 1.0
+> QoS Rate
+> Steady Trend Burst
+> KV-Opt KV-EMB-Opt RACER
+
+Fig. 12: SLO satisfaction rate of three methods across three production-scale datasets under 30 ms latency SLO. TaoBao Games Books TaoBao Games Books TaoBao Games Books      
+
+> 0
+> 25
+> 50
+> P99 Latency (ms)
+> Steady Trend Burst
+> KV-EMB-Opt +Allocator +Allocator+Router RACER
+
+Fig. 13: System-level ablation of HLEM 
+
+99.4%. This is expected, since a well-tuned fixed allocation can remain close to optimal when the workload remains stable. Under Trend , however, the gap widens: KV-EMB-Opt drops to 83–91% as the hot-user ratio drifts away from its design point, whereas HLEM maintains at least 98.9% by tracking the changing EMB–KV optimum online. The largest difference appears under Burst traffic. Static methods degrade sharply to 56–78% SLO satisfaction because sudden hot-user spikes quickly invalidate their fixed allocation, whereas HLEM sustains 93.5–95.3% through the combined effect of adaptive allocation, non-disruptive adjustment, and burst-aware recovery control. Across datasets, HLEM ’s QoS variation under Burst remains within 1.8%, compared with 12–22% for static baselines. This result shows that HLEM 
+
+not only lowers tail latency, but also makes system behavior significantly more robust to workload volatility and reduces the need for dataset-specific tuning. 
+
+C. Ablation Study 
+
+System-Level Ablation. Figure 13 quantifies the end-to-end contribution of HLEM ’s two system-level components: Smar-tAllocator and the EMB–KV-aware request router. Adding the allocator alone reduces P99 latency by ∼20% compared to baseline with fixed α∗, confirming that adaptive EMB–KV memory allocation already resolves a substantial portion of the dual-bottleneck problem. This gain is largest under Burst workloads, where fixed allocation under-provisions the active cache. Adding the router yields a further 10–25% reduction by concentrating KV residency for repeated users while pre-serving embedding locality, resulting in a more cache-friendly request distribution across nodes. 
+
+Allocator-Internal Ablation. Figure 14 ablates the al-locator components under a representative burst. PPO-only maintains ∼33 ms steady-state latency but reacts slowly, with P99 peaking at ∼46 ms before gradual recovery. Adding OnlineAdapter lowers steady-state latency to ∼23 ms and peak to ∼34 ms, but burst remains sluggish; the full SmartAllocator 0 10 20 30 40 50   
+
+> TimeStamps
+> 0
+> 20
+> 40
+> 60
+> P99 Latency (ms)  Burst Event
+> PPO only PPO + OnlineAdapter SmartAllocator
+
+Fig. 14: Allocator-internal ablation study TABLE III: Comparison of α control strategies. Dec. Time :time to produce one allocation decision; Opt. Gap : mean devi-ation from offline-optimal α∗ across three workload scenarios.                                                         
+
+> Method Dec. Time Opt. Gap Steady Trend Burst
+> Static-α=0.1 0 s 0.292 0.341 0.331 Static-α=0.3 0.092 0.141 0.131 Static-α=0.5 0.108 0.061 0.072 Static-α=0.7 0.308 0.259 0.269 Static-α=0.9 0.508 0.459 0.469 PID ∼1.2 s 0.094 0.108 0.167 XGBoost ∼3 ms 0.053 0.091 0.201 BO ∼7 s 0.061 0.089 0.174 MILP ∼36 s 0.044 0.068 0.161 LSTM ∼5 ms 0.051 0.083 0.156 LSTM+OFT ∼6 ms 0.043 0.067 0.128 LSTM+OFT+RC ∼6 ms 0.041 0.069 0.051 PPO Only 28 μs0.043 0.051 0.042
+> SmartAllocator 32 μs0.019 0.023 0.031
+
+maintains the same baseline while the Recovery Controller caps the peak at ∼31 ms and quickly collapses the tail. 
+
+Control Overhead. These gains are achieved with low runtime overhead. OnlineAdapter training increases peak CPU utilization from 20% to 46%, with an average utilization of 32%, and runs entirely in the background without affecting request serving. On the router side, the affinity table and KV residency table together occupy under 100 KB per node at 32-node scale, indicating that the metadata required for EMB– KV-aware routing is negligible. 
+
+D. Sensitivity Study 
+
+Comparison of α-control strategies. Table III compares 
+
+SmartAllocator against alternative controllers using two met-rics: the gap to the oracle offline-optimal allocation ratio α∗
+
+and the time required to produce one allocation decision. No static α performs competitively across regimes, confirm-ing that fixed allocation is fundamentally inadequate under changing workloads. Classical non-RL methods suffer from 
+
+objective mismatch : PID, BO, MILP, and XGBoost optimize single-step objectives, yet allocation changes influence P99 latency only after cache warm-up and eviction effects propa-gate across multiple epochs. As a result, these methods either react too slowly or overreact under bursty workload shifts, yielding Burst gaps between 0.161 and 0.201. Their decision latency is also substantial in several cases, e.g., 1.2 s for PID, 7 s for BO, and 36 s for MILP, making them impractical for online control. LSTM-based methods partially mitigate this mismatch through temporal modeling, and LSTM+OFT+RC further improves Burst behavior by adding online fine-tuning and burst handling, reducing the Burst gap to 0.051. How-ever, its aggressive overrides inflate the Steady and Trend 9Fig. 15: RL-controlled αRL versus offline optimal α∗ over a four-hour window (Amazon-Books). Scatter points denote hot-user request regimes: Steady , Trend , and Burst .
+
+Fig. 16: Average αRL under varying cluster scale and hot-request share. Color denotes regime: All-EMB, Split, All-KV. gaps to 0.041–0.069, showing that temporal prediction alone does not fully resolve the trade-off between responsiveness and stable long-horizon control. RL-based methods, including PPO-only and SmartAllocator , improve both allocation quality and responsiveness. PPO-only reduces the gap to 0.043, 0.051, and 0.042 under Steady, Trend, and Burst, respectively, at only 28 μs per decision. SmartAllocator further reduces this to 0.019, 0.023, and 0.031 while increasing decision latency slightly to 32 μs. 
+
+Tracking offline-optimal α∗. Figure 15 shows how the RL-controlled allocation ratio αRL evolves over time relative to the offline optimum. After the warm-up region (shaded), 
+
+αRL closely tracks α∗ with mean absolute error 0.023, despite having no future knowledge of the incoming workload. The learned policy responds differently across operating regimes: under Steady load ( t ≈ 90 , hot-user ratio ≈ 0.20 ), it raises 
+
+αRL to 0.51 to favor EMB locality (EMB/KV hit rates: 55% / 21%); under Trend ( t ≈ 130 , hot-user ratio ≈ 0.32 ), it lowers the ratio to 0.38 as KV pressure grows (50% / 18%); under Burst ( t ≈ 175 , hot-user ratio ≈ 0.50 ), it further drops to 0.26, trading a 9% EMB-hit reduction for a 25% KV-hit gain to avoid SLO violations. This reflects asymmetric degradation: KV performance drops sharply below its working-set capacity while EMB degrades gradually; as the hot-user ratio grows, the KV working set expands super-linearly, amplifying each KV miss on the critical path. 
+
+Sensitivity to User Hotness and Cluster Scale. Figure 16 sweeps cluster size (2–32 nodes) and hot-request share (0.05– 0.60) while fixing the underlying hot-user population ratio. The heatmap reports the average αRL selected by SmartAl-locator . First, as hot-request share increases, the controller consistently reduces EMB allocation to preserve more KV capacity. Second, increasing cluster size further lowers αRL 
+
+because embedding tables are sharded across more nodes, reducing each node’s EMB working set and shifting the balance toward KV. Overall, the system transitions from an 2 8 16 32 64           
+
+> #Nodes
+> (TaoBao)
+> 0
+> 25
+> 50
+> 75
+> Throughput ( ×10 3 QPS)
+> +27%
+> 2816 32 64
+> #Nodes
+> (Games)
+> 0
+> 20
+> 40
+> 60
+> 80
+> +36%
+> 2816 32 64
+> #Nodes
+> (Books)
+> 0
+> 20
+> 40
+> +23%
+> RACER KV-EMB-Opt Static Best-Ideal linear
+
+Fig. 17: Weak-scaling throughput (QPS) on three datasets as node count scales from 2 to 32. EMB-dominated regime (2 nodes, hot-request share 0.05, 
+
+αRL = 1 ) to a KV-dominated regime (32 nodes, hot-request share 0.60, αRL ≈ 0.23 ), showing that SmartAllocator adapts across regimes where no static allocation is appropriate. 
+
+E. Scalability 
+
+Weak-Scaling Throughput. We evaluate weak scaling by fixing the embedding data per node and proportionally in-creasing total dataset size as the cluster grows from 2 to 32 nodes. Ideal linear scaling corresponds to constant per-node throughput. Figure 17 shows that HLEM maintains near-linear throughput growth across all three datasets. At 32 nodes, 
+
+HLEM outperforms KV-EMB-Opt by 27%, 36%, and 23% on three datasets respectively. The performance gap widens with cluster size, as static KV/EMB optimization incurs in-creasing cross-node coordination overhead, whereas HLEM ’s workload-aware memory allocation and routing keep per-node embedding traffic balanced and reduce unnecessary inter-node communication. 
+
+Hardware Generalizability. The dual bottleneck in GR serving is governed by the ratio Fgpu /B pcie , which compares KV recomputation cost ( ∝ L2/F gpu ) against EMB-miss trans-fer cost ( ∝ 1/B pcie ). This ratio remains stable across recent GPU generations: A100 yields 12.5, while H100 and H200 yield 15.5, a modest increase of at most 24% that keeps both costs first-order bottlenecks. Although H200 provides larger HBM capacity (141 GB/GPU), it does not remove the zero-sum EMB–KV trade-off: hot embeddings still exceed HBM by more than an order of magnitude, and KV tensors at sequence lengths 8K–15K (60–184 MB each) still limit an 8-GPU node to roughly 3K–6K active users. These observations suggest that EMB–KV contention is structural rather than A100-specific, and that RACER’s design should remain relevant across future GPU generations. VI. RELATED WORK 
+
+EMB and KV Optimizations for Recommendation Models. 
+
+While prior work has explored cache optimizations, improving either component in isolation may boost its individual hit rate, but leaves the other as the dominant bottleneck. (1) EMB optimizations, including sharding [25], [54], compression [12], [16], prefetching [7], [38], and quantization [27] can reduce EMB access overhead but assume EMBs are the sole memory bottleneck. (2) KV cache optimizations for GR, such as cross-user KV sharing [42], [44] and KV compression [22], improve cache reuse but treat KV memory in isolation. Comparisons of 10 HLEM with independent KV-optimized and EMB-optimized baselines are presented in §V. 
+
+Scheduling Optimizations for GR Inference. Existing GR scheduling optimizations such as Mooncake [37], xGR [44], BAT [42], Flame [15], and ReplayGR [46] focus on KV cache locality and node load under static EMB allocation. Once the EMB–KV allocation becomes dynamic, EMB transfer costs become heterogeneous across nodes, breaking their scheduling assumptions. Moreover, they target orthogonal objectives and do not jointly manage the EMB–KV HBM allocation. 
+
+RL for Resource Allocation in Serving Systems. (1) GPU memory allocation [35], [39] uses RL to improve utilization across co-located jobs (e.g., MPS [34]), focusing on inter-job scheduling. (2) Multi-resource allocation [30], [43], [45], [47] targets cluster-level scheduling across heterogeneous re-sources. (3) Online adaptation [8], [28] addresses workload drift in datacenter partitioning. In contrast, we study fine-grained, intra-device contention between KV cache and EMBs within a unified HBM pool under latency-critical serving, which is not captured by prior RL formulations. VII. CONCLUSION GR inference suffers from inherent HBM contention between EMB and KV caches, which prior systems fail to resolve due to isolated optimization. HLEM tackles this problem with a three-layer PPO-based controller that jointly reallocates HBM at runtime in an adaptive manner, together with an EMB-aware scheduler that maximizes cross-node EMB–KV reuse during serving. Experiments on three production-scale datasets over a 32-node A100 cluster show that HLEM reduces P99 latency by 24–38% compared to the best static baseline, maintains 
+
+≥93.5% SLO satisfaction across all workload regimes, and introduces only 32 μs of decision overhead. These results demonstrate that joint EMB–KV management is both neces-sary and practical for production GR serving. REFERENCES [1] “Avazu click-through rate prediction,” https://www.kaggle.com/c/avazu-ctr-prediction. [2] “Kdd cup 2012 track 2: Predicting clicks on advertisements,” https:// www.kdd.org/kdd-cup/view/kdd-cup-2012-track-2. [3] “Meta synthetic datasets for embedding lookup workloads,” https:// github.com/facebookresearch/dlrm datasets. [4] “Taobao user behavior dataset,” https://tianchi.aliyun.com/dataset/ dataDetail?dataId=649. [5] K. J. ˚Astr¨ om and T. H¨ agglund, PID Controllers: Theory, Design and Tuning , 2nd ed. Research Triangle Park, NC: Instrument Society of America, 1995. [Online]. Available: https://portal.research.lu.se/en/ publications/pid-controllers-theory-design-and-tuning [6] Z. Chai, Q. Ren, X. Xiao, H. Yang, B. Han, S. Zhang, D. Chen, H. Lu, W. Zhao, L. Yu et al. , “Longer: Scaling up long sequence modeling in industrial recommenders,” in Proceedings of the Nineteenth ACM Conference on Recommender Systems , 2025, pp. 247–256. [Online]. Available: https://doi.org/10.1145/3705328.3748065 [7] P. Chen, J. Zhang, H. Zhao, Y. Zhang, J. Yu, X. Tang, Y. Wang, H. Li, J. Zou, G. Xiong et al. , “Toward robust and efficient ml-based gpu caching for modern inference,” arXiv preprint arXiv:2509.20979 , 2025. [Online]. Available: https://doi.org/10.48550/arXiv.2509.20979 [8] R. Chen, J. Wu, H. Shi, Y. Li, X. Liu, and G. Wang, “Drlpart: A deep reinforcement learning framework for optimally efficient and robust resource partitioning on commodity servers,” in Proceedings of the 30th International Symposium on High-Performance Parallel and Distributed Computing , 2021, pp. 175–188. [Online]. Available: https://doi.org/10.1145/3431379.3460648 [9] T. Chen and C. Guestrin, “Xgboost: A scalable tree boosting system,” in Proceedings of the 22nd acm sigkdd international conference on knowledge discovery and data mining , 2016, pp. 785–794. [Online]. Available: https://doi.org/10.1145/2939672.2939785 [10] J. Coburn, C. Tang, S. A. Asal, N. Agrawal, R. Chinta, H. Dixit, B. Dodds, S. Dwarakapuram, A. Firoozshahian, C. Gao et al. , “Meta’s second generation ai chip: Model-chip co-design and productionization experiences,” in Proceedings of the 52nd Annual International Symposium on Computer Architecture , 2025, pp. 1689–1702. [Online]. Available: https://doi.org/10.1145/3695053.3731409 [11] Criteo AI Lab, “Criteo 1tb click logs dataset,” https://ailab.criteo.com/ criteo-1tb-click-logs-dataset/, accessed: 2026. [12] H. Feng, B. Zhang, F. Ye, M. Si, C.-H. Chu, J. Tian, C. Yin, S. Deng, Y. Hao, P. Balaji et al. , “Accelerating communication in deep learning recommendation model training with dual-level adaptive lossy compression,” in SC24: International Conference for High Performance Computing, Networking, Storage and Analysis . IEEE, 2024, pp. 1–16. [Online]. Available: https://doi.org/10.1109/SC41406.2024.00095 [13] S. Gao, Y. Chen, and J. Shu, “Fast state restoration in llm serving with hcache,” in Proceedings of the Twentieth European Conference on Computer Systems , 2025, pp. 128–143. [Online]. Available: https://www.doi.org/10.1145/3689031.3696072 [14] L. Guan, J.-Q. Yang, Z. Zhao, B. Zhang, B. Sun, X. Luo, J. Ni, X. Li, Y. Qi, Z. Fan et al. , “Make it long, keep it fast: End-to-end 10k-sequence modeling at billion scale on douyin,” arXiv preprint arXiv:2511.06077 ,2025. [Online]. Available: https://doi.org/10.48550/arXiv.2511.06077 [15] X. Guo, B. Huang, X. Wu, G. Wu, F. Li, S. Wang, Q. Xiao, C. Luo, and Y. Li, “Flame: A serving system optimized for large-scale generative recommendation with efficiency,” arXiv preprint arXiv:2509.22681 ,2025. [Online]. Available: https://doi.org/10.48550/arXiv.2509.22681 [16] U. Gupta, C.-J. Wu, X. Wang, M. Naumov, B. Reagen, D. Brooks, B. Cottel, K. Hazelwood, M. Hempstead, B. Jia et al. , “The architectural implications of facebook’s dnn-based personalized recommendation,” in 
+
+2020 IEEE International Symposium on High Performance Computer Architecture (HPCA) . IEEE, 2020, pp. 488–501. [Online]. Available: https://doi.org/10.1109/HPCA47549.2020.00047 [17] Gurobi Optimization, LLC, “Gurobi Optimizer Reference Man-ual,” https://www.gurobi.com/documentation/current/refman/index.html, 2021. [18] R. Han, B. Yin, S. Chen, H. Jiang, F. Jiang, X. Li, C. Ma, M. Huang, X. Li, C. Jing et al. , “Mtgr: Industrial-scale generative recommendation framework in meituan,” in Proceedings of the 34th ACM International Conference on Information and Knowledge Management , 2025, pp. 5731–5738. [Online]. Available: https: //www.doi.org/10.1145/3746252.3761565 [19] Y. Hou, J. Li, Z. He, A. Yan, X. Chen, and J. McAuley, “Bridging language and items for retrieval and recommendation,” 
+
+arXiv preprint arXiv:2403.03952 , 2024. [Online]. Available: https: //doi.org/10.48550/arXiv.2403.03952 [20] Y. Huang, Y. Chen, X. Cao, R. Yang, M. Qi, Y. Zhu, Q. Han, Y. Liu, Z. Liu, X. Yao et al. , “Towards large-scale generative ranking,” arXiv preprint arXiv:2505.04180 , 2025. [Online]. Available: https://doi.org/10.48550/arXiv.2505.04180 [21] D. Khudia, J. Huang, P. Basu, S. Deng, H. Liu, J. Park, and M. Smelyanskiy, “Fbgemm: Enabling high-performance low-precision deep learning inference,” arXiv preprint arXiv:2101.05615 , 2021. [Online]. Available: https://doi.org/10.48550/arXiv.2101.05615 [22] T. Kim, Y. Lee, J. Lim, and M. Rhu, “A characterization of generative recommendation models: Study of hierarchical sequential transduction unit,” IEEE Computer Architecture Letters , 2025. [Online]. Available: https://doi.org/10.1109/LCA.2025.3546811 [23] W. Kwon, Z. Li, S. Zhuang, Y. Sheng, L. Zheng, C. H. Yu, J. Gonzalez, H. Zhang, and I. Stoica, “Efficient memory management for large language model serving with pagedattention,” in Proceedings of the 29th symposium on operating systems principles , 2023, pp. 611–626. [Online]. Available: https://dl.acm.org/doi/10.1145/3600006.3613165 [24] G. Li, H. Tan, C. Zhang, H. Ni, Z. Wang, X. Zhang, Y. Xu, and H. Tian, “Embedding samples dispatching for recommendation model training in edge environments,” arXiv preprint arXiv:2512.21615 , 2025. [Online]. Available: https://doi.org/10.48550/arXiv.2512.21615 [25] X. Lian, B. Yuan, X. Zhu, Y. Wang, Y. He, H. Wu, L. Sun, H. Lyu, C. Liu, X. Dong et al. , “Persia: An open, hybrid system scaling 
+
+11 deep learning-based recommenders up to 100 trillion parameters,” in 
+
+Proceedings of the 28th ACM SIGKDD Conference on Knowledge Discovery and Data Mining , 2022, pp. 3288–3298. [Online]. Available: https://doi.org/10.1145/3534678.3539070 [26] Z. Liang, C. Wu, D. Huang, W. Sun, Z. Wang, Y. Yan, J. Wu, Y. Jiang, B. Zheng, K. Chen et al. , “Tbgrecall: A generative retrieval model for e-commerce recommendation scenarios,” in Proceedings of the 34th ACM International Conference on Information and Knowledge Management , 2025, pp. 5863–5870. [Online]. Available: https://dl.acm.org/doi/10.1145/3746252.3761557 [27] J. Lim, Y. G. Kim, S. W. Chung, F. Koushanfar, and J. Kong, “Near-memory computing with compressed embedding table for personalized recommendation,” IEEE Transactions on Emerging Topics in Computing , vol. 12, pp. 938–951, 2024. [Online]. Available: https://www.doi.org/10.1109/tetc.2023.3345870 [28] H. Lin, L. Yang, H. Guo, and J. Cao, “Decentralized task offloading in edge computing: An offline-to-online reinforcement learning approach,” 
+
+IEEE Transactions on Computers , vol. 73, pp. 1603–1615, 2024. [Online]. Available: https://www.doi.org/10.1109/tc.2024.3377912 [29] L. Ma, H. Kassa, Y. Lee, C. Liu, Z. Kong, Z. Jiang, P. Palangappa, R. Brugarolas, X. Cao, M. Hodak, C.-J. Wu, X. Liu, and J. Zhai, “DLRMv3: Generative recommendation benchmark in MLPerf in-ference,” https://mlcommons.org/2026/02/dlrmv3-inference-meta/, Feb. 2026, mLCommons Technical Report. [30] S. Maity, A. Majumder, R. Roy, A. R. Hota, and S. Dey, “Harnessing machine learning in dynamic thermal management in embedded cpu-gpu platforms,” ACM Transactions on Design Automation of Electronic Systems , vol. 30, pp. 1–32, 2024. [Online]. Available: https://www.doi.org/10.1145/3708890 [31] D. Mudigere, Y. Hao, J. Huang, Z. Jia, A. Tulloch, S. Sridharan, X. Liu, M. Ozdal, J. Nie, J. Park et al. , “Software-hardware co-design for fast and scalable training of deep learning recommendation models,” in Proceedings of the 49th Annual International Symposium on Computer Architecture , 2022, pp. 993–1011. [Online]. Available: https://doi.org/10.1145/3470496.3533727 [32] M. Naumov, D. Mudigere, H.-J. M. Shi, J. Huang, N. Sundaraman, J. Park, X. Wang, U. Gupta, C.-J. Wu, A. G. Azzolini et al. ,“Deep learning recommendation model for personalization and recommendation systems,” arXiv preprint arXiv:1906.00091 , 2019. [Online]. Available: https://doi.org/10.48550/arXiv.1906.00091 [33] NVIDIA Corporation, “Nvidia collective communications library (nccl),” https://developer.nvidia.com/nccl, 2017. [34] ——, “Nvidia multi-process service (mps) overview,” https://docs.nvidia. com/deploy/mps/index.html, 2023, accessed: 2026-03-26. [35] J. Oh and Y. Kim, “Job placement using reinforcement learning in gpu virtualization environment,” Cluster Computing , vol. 23, no. 3, pp. 2219–2234, Sep. 2020. [Online]. Available: https: //doi.org/10.1007/s10586-019-03044-7 [36] X. Pan, E. Li, Q. Li, S. Liang, Y. Shan, K. Zhou, Y. Luo, X. Wang, and J. Zhang, “Instattention: in-storage attention offloading for cost-effective long-context llm inference,” in 2025 IEEE International Symposium on High Performance Computer Architecture (HPCA) . IEEE, 2025, pp. 1510–1525. [Online]. Available: https://doi.org/10.1109/HPCA61900. 2025.00113 [37] R. Qin, Z. Li, W. He, J. Cui, F. Ren, M. Zhang, Y. Wu, W. Zheng, and X. Xu, “Mooncake: Trading more storage for less computation—a {KVCache-centric } architecture for serving 
+
+{LLM } chatbot,” in 23rd USENIX conference on file and storage technologies (FAST 25) , 2025, pp. 155–170. [Online]. Available: https://www.usenix.org/conference/fast25/presentation/qin [38] J. Ren, B. Ma, S. Yang, B. Francis, E. K. Ardestani, M. Si, and D. Li, “Machine learning-guided memory optimization for dlrm inference on tiered memory,” in 2025 IEEE International Symposium on High Performance Computer Architecture (HPCA) . IEEE, 2025, pp. 1631–1647. [Online]. Available: https://doi.org/10.1109/HPCA61900. 2025.00121 [39] U. Saroliya, E. Arima, D. Liu, and M. Schulz, “Hierarchical resource partitioning on modern gpus: A reinforcement learning approach,” in 2023 IEEE International Conference on Cluster Computing (CLUSTER) , 2023, pp. 185–196. [Online]. Available: https://www.doi.org/10.1109/cluster52292.2023.00023 [40] J. Schulman, F. Wolski, P. Dhariwal, A. Radford, and O. Klimov, “Prox-imal policy optimization algorithms,” arXiv preprint arXiv:1707.06347 ,2017. [Online]. Available: https://doi.org/10.48550/arXiv.1707.06347 [41] B. Shahriari, K. Swersky, Z. Wang, R. P. Adams, and N. De Freitas, “Taking the human out of the loop: A review of bayesian optimization,” 
+
+Proceedings of the IEEE , vol. 104, no. 1, pp. 148–175, 2015. [Online]. Available: https://doi.org/10.1109/JPROC.2015.2494218 [42] J. Sun, S. Wang, Z. Zhang, Z. Liu, Y. Xu, P. Sun, B. Zhao, B. He, F. Wu, and Z. Wang, “BAT: Efficient generative recommender serving with bipartite attention,” in Proceedings of the 31st ACM International Conference on Architectural Support for Programming Languages and Operating Systems (ASPLOS) , 2026. [Online]. Available: https://doi.org/10.1145/3779212.3790131 [43] J. Sun, B. Reidys, D. Li, J. Chang, M. Snir, and J. Huang, “Fleetio: Managing multi-tenant cloud storage with multi-agent reinforcement learning,” in Proceedings of the 30th ACM International Conference on Architectural Support for Programming Languages and Operating Systems, Volume 1 , 2025, pp. 478–492. [Online]. Available: https://doi.org/10.1145/3669940.3707229 [44] Q. Sun, T. Liu, S. Zhang, S. Wu, P. Yang, H. Liang, M. Li, X. Ma, Z. Liang, Z. Ren et al. , “xgr: Efficient generative recommendation serving at scale,” arXiv preprint arXiv:2512.11529 , 2025. [Online]. Available: https://doi.org/10.48550/arXiv.2512.11529 [45] S. Udkar, V. Gupta, M. Reddy, and M. Vaithianathan, “Dynamic resource allocation of virtualized gpus and cpus for scalable ai workloads in containerized environments,” in 2025 5th International Conference on Expert Clouds and Applications (ICOECA) . IEEE, 2025, pp. 432–437. [Online]. Available: https://www.doi.org/10.1109/ icoeca66273.2025.00080 [46] J. Wang, H. Chai, Y. Zhang, Z. Zhou, W. Guo, X. Yang, Q. Tang, B. Pan, J. Zhu, K. Cheng et al. , “Relaygr: Scaling long-sequence generative recommendation via cross-stage relay-race inference,” arXiv preprint arXiv:2601.01712 , 2026. [Online]. Available: https://doi.org/10.48550/arXiv.2601.01712 [47] W. Wei, H. Gu, K. Wang, J. Li, X. Zhang, and N. Wang, “Multi-dimensional resource allocation in distributed data centers using deep reinforcement learning,” IEEE Transactions on Network and Service Management , vol. 20, pp. 1817–1829, 2023. [Online]. Available: https://www.doi.org/10.1109/tnsm.2022.3213575 [48] L. Yang, Y. Wang, Y. Yu, Q. Weng, J. Dong, K. Liu, C. Zhang, Y. Zi, H. Li, Z. Zhang et al. , “Gpu-disaggregated serving for deep learning recommendation models at scale,” in 22nd USENIX Symposium on Networked Systems Design and Implementation (NSDI 25) , 2025, pp. 847–863. [Online]. Available: https://www.usenix.org/conference/ nsdi25/presentation/yang [49] G.-I. Yu, J. S. Jeong, G.-W. Kim, S. Kim, and B.-G. Chun, “Orca: A distributed serving system for transformer-based generative models,” in 16th USENIX symposium on operating systems design and implementation (OSDI 22) , 2022, pp. 521–538. [Online]. Available: https://www.usenix.org/conference/osdi22/presentation/yu [50] W. Yu, S. Chen, C. Chen, and A. C. Zhou, “Near-zero-overhead freshness for recommendation systems via inference-side model updates,” in Proceedings of the 32nd IEEE International Symposium on High-Performance Computer Architecture (HPCA) , 2026. [Online]. Available: https://doi.org/10.1109/HPCA68181.2026.11408549 [51] Y. Yu, X. Si, C. Hu, and J. Zhang, “A review of recurrent neural networks: Lstm cells and network architectures,” Neural computation , vol. 31, no. 7, pp. 1235–1270, 2019. [Online]. Available: https://www.doi.org/10.1162/neco a 01199 [52] D. Zha, L. Feng, B. Bhushanam, D. Choudhary, J. Nie, Y. Tian, J. Chae, Y. Ma, A. Kejariwal, and X. Hu, “Autoshard: Automated embedding table sharding for recommender systems,” in Proceedings of the 28th ACM SIGKDD Conference on Knowledge Discovery and Data Mining , 2022, pp. 4461–4471. [Online]. Available: https://www.doi.org/10.1145/3534678.3539034 [53] J. Zhai, L. Liao, X. Liu, Y. Wang, R. Li, X. Cao, L. Gao, Z. Gong, F. Gu, J. He et al. , “Actions speak louder than words: trillion-parameter sequential transducers for generative recommendations,” in Proceedings of the 41st International Conference on Machine Learning , 2024, pp. 58 484–58 509. [Online]. Available: https://dl.acm.org/doi/10.5555/ 3692070.3694484 [54] M. Zhao, D. Choudhary, D. Tyagi, A. Somani, M. Kaplan, S.-H. Lin, S. Pumma, J. Park, A. Basant, N. Agarwal 
+
+et al. , “Recd: Deduplication for end-to-end deep learning recommendation model training infrastructure,” Proceedings of Machine Learning and Systems , vol. 5, pp. 754–767, 2023. [On-
+
+12 line]. Available: https://proceedings.mlsys.org/paper files/paper/2023/ hash/f9b15fec25182f2d70af68a39546d60e-Abstract-mlsys2023.html [55] G. Zhou, H. Hu, H. Cheng, H. Wang, J. Deng, J. Zhang, K. Cai, L. Ren, L. Ren, L. Yu et al. , “Onerec-v2 technical report,” arXiv preprint arXiv:2508.20900 , 2025. [Online]. Available: https://doi.org/10.48550/arXiv.2508.20900 [56] Y. Zhou, C. Guo, K. Cai, J. Liu, Q. Luo, R. Tang, H. Li, K. Gai, and G. Zhou, “Gems: Breaking the long-sequence barrier in generative recommendation with a multi-stream decoder,” arXiv preprint arXiv:2602.13631 , 2026. [Online]. Available: https://doi.org/ 10.48550/arXiv.2602.13631 
+
+13
