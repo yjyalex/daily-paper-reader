@@ -1,0 +1,441 @@
+Title: Beyond GRPO and On-Policy Distillation: An Empirical Sparse-to-Dense Reward Principle for Language-Model Post-Training
+
+URL Source: https://arxiv.org/pdf/2605.12483v2
+
+Published Time: Fri, 15 May 2026 01:35:34 GMT
+
+Number of Pages: 17
+
+Markdown Content:
+# Beyond GRPO and On-Policy Distillation: An Empirical Sparse-to-Dense Reward Principle for LLM Post-Training 
+
+Hejian Sang ∗ Yuanda Xu ∗† Zhengze Zhou ∗ Ran He ∗ Zhipeng Wang Alborz Geramifard 
+
+# Abstract 
+
+In settings where labeled verifiable training data is the binding constraint, each checked example should be allocated carefully. The standard practice is to use this data directly on the model that will be deployed, for example by running GRPO on the deployment student. We argue that this is often an inefficient allocation because it overlooks a reward-density principle: sparse sequence-level reward should train models where exploration is productive, while dense token-level teacher reward should be used where the aim is to compress behavior into a smaller model. In this view, GRPO-style sparse RL and OPD-style dense teacher supervision are not separate recipes; they are different reward-density regimes. The allocation rule is simple: use scarce labeled training data upstream on the strongest model that can turn it into reward-shaped behavior, then transfer that behavior downstream as dense supervision. We evaluate this rule on verifiable math problems with Qwen3 and Llama mod-els. At fixed Qwen3-1.7B deployment-student size, an RL-improved 8B teacher distilled through the dense bridge outperforms direct GRPO on the same student (79 .3% vs. 75 .9% on MATH; 25 .2% vs. 19 .8% on AIME 2024), while transfer from the same teacher before RL underperforms. The bridge is important: a forward-KL warmup on teacher rollouts followed by OPD on student rollouts is consistently strongest on MATH before any post-bridge student-side sparse RL, and also gives the best pre-Stage 3 AIME endpoints for the canonical 8B/14B teachers. The bridge also makes later student-side sparse RL effective: GRPO that is weak on a cold student lifts MATH from 75 .4% to 78 .5% after the bridge and outperforms a matched replay control by 2.8 points. The teacher-quality ordering—raw-teacher transfer < direct GRPO < RL-teacher transfer—replicates on Llama-3.1-8B-Instruct with a Llama-3.3-70B-Instruct teacher. The operational lesson is to avoid using scarce labeled data on the least prepared policy: use sparse reward for teacher-side discovery, dense transfer for student compression, and student-side sparse reward only after the bridge. 
+
+# 1 Introduction 
+
+Labeled training data is the bottleneck of LLM post-training. Pretraining text and teacher rollouts can scale with compute; labeled data for verifiable tasks does not scale so easily. Each example needs a problem with a checkable answer and a grader whose errors will not corrupt the reward. In the Qwen experiments below, the labeled training data comes from DAPO-Math-17K [Yu et al., 2025]. The practical question is therefore not which post-training algorithm is best in isolation, but which model should train on each scarce labeled example . 
+
+> ∗Equal contribution, order decided by a coin flip.
+> †Correspondence to yuanda@math.princeton.edu
+> Preprint.
+> arXiv:2605.12483v2 [cs.LG] 14 May 2026 sparse reward should go
+> to the stronger explorer
+> (teacher discovery)
+> teacher logits become
+> dense token signal
+> for student compression
+> fresh sparse reward
+> refines the bridged,
+> now-trainable student
+> Teacher-side
+> discovery
+> Dense bridge
+> FKL-to-OPD
+> Post-bridge
+> student RL
+
+Figure 1: Where labeled training data should be allocated. The teacher-side path (Stage 1: teacher RL) discovers reward-shaped behavior; the two-stage dense bridge (Stage 2a: FKL warmup, Stage 2b: OPD) converts it into token-level supervision for the deployment student; the optional post-bridge student RL stage (Stage 3) uses any remaining labeled data on a now-trainable student. The default approach is to train the deployment model directly: if a 1.7B model must do well on MATH, run GRPO on it directly. This paper argues for a different allocation, and for the simple reward-density principle behind it. 
+
+The reward-density principle. Sparse reward first defines a reward-shaped target distribution. Direct GRPO asks the deployment student to discover this target from its own sparse rollouts. The teacher-first route instead uses the labeled examples to train a stronger teacher, then treats that teacher as a dense, autoregressive proxy for the target. The bridge is the projection step: forward KL moves the student onto teacher support; OPD transfers the teacher under student occupancy. Sparse reward is used where exploration is productive, and dense teacher supervision is used where the goal is compression. 
+
+Contributions. We evaluate the reward-density principle on verifiable math and make three contri-butions: 1. Teacher-first allocation. At fixed deployment-student size, a fixed pool of labeled training data yields a stronger student when it is allocated to teacher RL plus dense transfer than when it is allocated to direct student RL. The gain requires a reward-shaped teacher: transferring the same teacher before teacher-side RL underperforms direct GRPO, so scale alone is not the cause (Section 5.1). 2. A two-stage dense bridge. A forward-KL warmup on teacher rollouts followed by OPD on student rollouts outperforms both teacher-sample SFT and OPD-only transfer. The warmup reduces the cold student’s coverage mismatch so that the subsequent OPD stage is better conditioned (Section 5.2). 3. Post-bridge student RL. The bridge changes student trainability: sparse-reward GRPO that is weak on a cold student lifts the bridge endpoint above both direct GRPO and a matched replay control that reuses bridge data (Section 5.3). 
+
+What this changes in practice. The standard post-training pipeline—SFT, then RL on the deploy-ment model—places the scarce labeled data in the least effective position first. The teacher-first view prescribes a different order: allocate the labeled training data to a model large enough to use it, run a two-stage dense bridge into the deployment model, and only then decide whether any held-out labeled data remains worth using on the student. Figure 1 summarizes the resulting pipeline. 
+
+Scope. The evidence is on verifiable math (MATH, AIME 2024, AIME 2025) with two student-teacher families: Qwen3-family models [Yang et al., 2025] and Llama-family models [Grattafiori et al., 2024]. In the Qwen block, the deployment student is Qwen3-1.7B and the teachers are raw, SFT-trained, and RL-trained Qwen3-8B/14B checkpoints; in the Llama block, the deployment student is Llama-3.1-8B-Instruct and the teacher is Llama-3.3-70B-Instruct. OPD requires a shared tokenizer; “cross-family validation” below means that the recipe is run separately within each family, not that logits are transferred across vocabularies. 2Terminology. A sparse reward is a sequence-level task reward R(x, y ) available only at the end of a trajectory. A reward-shaped target π∗ 
+
+> R
+
+is the KL-regularized policy induced by that reward. A dense teacher signal is the token-level teacher log-probability rT (st, y t) = β log πT (yt | st)
+
+supplied by a teacher that approximates π∗
+
+> R
+
+. OPD is reverse-KL distillation on student rollouts. The 
+
+two-stage bridge (or FKL-to-OPD ) is forward-KL on teacher rollouts followed by OPD on student rollouts. Stage 1 is teacher RL on sparse reward; Stage 2 is the bridge; Stage 3 is optional student-side sparse-reward RL. Cold RL is direct Stage 3 on the base student with no Stages 1–2. 1H/2H denote the two halves of DAPO used in the data-split experiments. 
+
+# 2 From Sparse Reward to Dense Projection 
+
+We give a trust-region reading of the bridge that mirrors recent self-distillation analyses [Shenfeld et al., 2026]: reverse-KL distillation is a policy-gradient update under a dense, on-policy implicit reward, and the forward-KL warmup is the explicit device that makes that update well-conditioned in the cross-scale teacher–student setting. 
+
+Setup. Let x be a prompt, y = ( y1, . . . , y T ) a response, and st = ( x, y <t ) the autoregressive state. A sequence-level verifier reward R(x, y ) induces the KL-regularized target 
+
+π∗
+
+> R
+
+(y | x) = 1
+
+ZR(x) πref (y | x) exp( R(x, y )/β ), (1) the optimum of Ey∼π [R(x, y )] − β KL( π∥πref ) [Rafailov et al., 2023, Shenfeld et al., 2026]. Direct student RL tries to recover this distribution from sparse student rollouts. Teacher-first training instead uses sparse reward on a stronger model and treats the resulting teacher as a proxy 
+
+πT (· | x) ≈ π∗
+
+> R
+
+(· | x). (2) 
+
+Two conditions on the proxy. Mirroring Shenfeld et al. [2026], Eq. 2 is useful only when two conditions hold jointly. (C1) Optimality: πT achieves near-maximal reward on the veri-fier, Ey∼πT [R] ≈ Ey∼π∗ 
+
+> R
+
+[R]. This is testable directly through teacher accuracy and is what the raw / SFT / RL-teacher controls in Section 5 test empirically. (C2) Minimal deviation: KL( πT ∥πθ ) is small in the relevant state distribution. This is the trust-region condition: the teacher must sit inside a neighborhood of the student where small-step updates are well-conditioned. It can be diagnosed from logged log-probabilities and, as we argue below, is restored by the FKL warmup. Shenfeld et al. [2026] satisfy (C2) by construction because their teacher is the same model conditioned on a task-specific demonstration; in-context conditioning does not move the model far. Our setting is different: the teacher is a separate, post-RL checkpoint, typically at larger scale, that sparse reward has pushed onto a reward-shaped support which the cold student does not yet cover, so (C2) fails at initialization. 
+
+Reverse-KL distillation as IRL. Following Shenfeld et al. [2026], we read each OPD gradient step as a one-step trust-region IRL update. The identity is local: the trust-region anchor is the current student πk = πθk , not the fixed base πref of Eq. 1. Locally at πk, each step is the optimum of 
+
+max  
+
+> π
+
+Ey∼π [r(y, x )] − β KL( π(· | x)∥πk(· | x)) , (3) which has the tilted form π∗
+
+> k+1
+
+(y | x) ∝ πk(y | x) exp( r(y, x )/β ) and inverts to an implicit per-step reward r(y, x ) = β[log π∗
+
+> k+1
+
+(y | x) − log πk(y | x)] + C. Substituting the proxy π∗ 
+
+> k+1
+
+≈ πT from Eq. 2 and dropping the additive constant, the autoregressive token decomposition gives 
+
+eRkT (x, y ) = 
+
+> T
+
+X
+
+> t=1
+
+β log πT (yt | st)
+
+πk(yt | st) . (4) The policy gradient under eRkT equals the negative reverse-KL gradient; any additive constant in the implicit reward contributes only a zero-mean score-function term: 
+
+−β ∇θ KL( πθ ∥πT ) θk
+
+= Ey∼πk
+
+h eRkT (x, y ) ∇θ log πθ (y | x)
+
+i
+
+> θk
+
+; (5) the derivation is in Appendix A. 3Two levels of abstraction coexist here. Globally, Eq. 1 defines a reward-shaped fixed point π∗ 
+
+> R
+
+from a fixed base πref ; we use it as a bookkeeping target for what teacher-side sparse RL approximates. Locally, each OPD gradient step is the per-step trust-region IRL update above, anchored at the current πk with πT playing the role of the one-step optimum π∗
+
+> k+1
+
+. The local identity holds at any θk
+
+regardless of which global πref was used to define π∗
+
+> R
+
+—it is purely a fact about the linearization at 
+
+πk. The dense per-token reward β log( πT /π k) is a teacher-induced surrogate for the sparse verifier, generated on-policy by querying the teacher at student-sampled prefixes; its quality is governed by the proxy assumption (C1). 
+
+Why FKL first: closing the (C2) gap. Eq. 5 is mathematically valid for any πT and πk, but it is 
+
+informative only when (C2) approximately holds at the current local anchor πk. When teacher and student have little coverage overlap—for example a cold 1.7B student and a post-RL 8B teacher—the implicit reward β log( πT /π k) has high variance: it takes large magnitudes on student-sampled tokens that the teacher considers unlikely, while teacher-favored tokens are rarely sampled and contribute little. The OPD gradient is then dominated by a few outlier terms; updates are unstable. This is the cold-start failure that motivates a warmup [Li et al., 2026, Hou et al., 2026]. The forward-KL stage is the explicit device that moves the local anchor toward the trust region of πT . On teacher rollouts, 
+
+LF(θ) = Es∼dπT KL( πT (· | s)∥πθ (· | s)) , (6) this is supervised next-token training under teacher occupancy: mode-covering, off-policy with respect to the student, and well-conditioned at cold start because it trains directly on teacher-supported tokens rather than relying on student rollouts to discover them. FKL does not invoke the local IRL identity itself; its role is to move the anchor. After warmup, πθ has substantial mass on teacher-supported tokens and KL( πT ∥πθ ) shrinks on teacher states; the local trust-region anchor for the next phase is the post-FKL student, and (C2) is more plausible at this new πk. The subsequent OPD stage 
+
+LR(θ) = Es∼dπθ KL( πθ (· | s)∥πT (· | s)) (7) applies the local identity Eq. 5 at this post-FKL anchor: the implicit reward β log( πT /π k) has lower variance and gives a more useful gradient direction. Two ablation endpoints fall out. Teacher-sample SFT stays in the off-policy stage indefinitely; the student never receives feedback on its own states. 
+
+OPD-only attempts the on-policy stage before (C2) holds at the cold anchor; the IRL identity is correct but ill-conditioned. The two-stage bridge is the cross-scale construction that makes the teacher more local to the student—the structural property that Shenfeld et al. [2026] obtain for free from in-context conditioning. 
+
+The full route. Putting the pieces together, 
+
+R|{z} 
+
+> sparse verifier
+
+⇒ π∗
+
+> R
+
+|{z} 
+
+> reward-shaped target
+
+≈ πT
+
+|{z} 
+
+> RL teacher: (C1) by construction
+
+⇒ LF
+
+|{z} 
+
+> trust-region transport: enforce (C2)
+
+→ LR
+
+|{z} 
+
+> on-policy IRL
+
+→ Jsparse 
+
+| {z } 
+
+> optional student RL
+
+. (8) 
+
+Three predictions. The two conditions yield three falsifiable predictions for Section 5. (P1, Optimality): if (C1) fails—a raw or merely SFT’d teacher that has not been shaped by sparse reward—bridge endpoints should not exceed direct student GRPO, regardless of teacher scale. This is the central allocation contrast (Section 5.1). (P2, Minimal deviation): if (C2) fails at cold start, one-stage variants that bypass the warmup should underperform the two-stage bridge. This is tested by the OPD-only and teacher-sample SFT ablations (Section 5.2). (P3, post-bridge trainability): 
+
+once the bridge places the student in a useful neighborhood of πT , fresh labeled examples should produce sparse-reward gradients beyond what extra updates on bridge data can extract. This is tested by the half-split plus replay control (Section 5.3). 
+
+# 3 Why the Teacher Is the Right Place for Sparse Reward 
+
+Eq. 5 says that the student receives a dense implicit reward from the teacher-student likelihood ratio. The value of that signal is therefore governed by the quality of the teacher distribution. This avoids two failure modes of sparse student RL, while introducing one clear risk. 4Failure mode 1: weak rollout distribution. Sparse reward can distinguish only the trajectories that the policy already samples with non-negligible probability. A small base model on AIME has near-zero pass rate, so most rollouts receive the same zero reward and the gradient signal collapses. A larger model has a higher base pass rate, so the same labeled training example produces a more informative spread of rewards and a more useful advantage. The same labeled example is worth more to a larger model. 
+
+Failure mode 2: long-horizon credit assignment. Even when the final reward is non-zero, assigning it to the right token in a 4k-token chain is sample-inefficient. A teacher’s per-token distribution supplies this assignment by construction. Distilling a reward-shaped teacher into the student converts a sequence-level signal into a token-level one. 
+
+The risk: teacher bias. The implicit reward is only as good as the proxy πT in Eq. 2. If the teacher was not reward-shaped—if it was only pretrained, or only SFT’d—then dense transfer simply imitates a generic teacher. This is why scale alone is not enough: in Section 5, raw-teacher transfer underperforms direct GRPO, while RL-teacher transfer outperforms it. The teacher-first prescription is therefore not simply “use a bigger model.” It is to move sparse reward upstream to the model that can turn it into a reward-shaped distribution, then make that distribution dense. 
+
+# 4 The Two-Stage Bridge 
+
+The bridge in Eq. 8 is not merely an ordering choice; its two stages address complementary weak-nesses. A forward-KL warmup on teacher rollouts is the stage that can expose the student to teacher-supported tokens without sparse-reward feedback or student-side discovery. It is supervised next-token training under teacher occupancy, stable and inexpensive. Up to teacher-entropy terms it equals Es∼dπT KL( πT ∥πθ ): a per-state mode-covering projection. Its weakness is that it never visits student-only states. OPD then takes over. On the teacher-shaped neighborhood now more reachable by the student, it minimizes KL( πθ ∥πT ) under student occupancy, which is mode-seeking and on-policy. By Eq. 5, this update has the local policy-gradient form of dense implicit-reward maximization. Its weakness at initialization is precisely what the warmup mitigates. Two alternatives in the literature keep only one side of this pair. Teacher-sample SFT (the DeepSeek-R1 distillation recipe [Guo et al., 2025]) keeps the off-policy half and drops the on-policy half: the student never receives feedback on its own states. OPD-only [Agarwal et al., 2024, Lu and Thinking Machines Lab, 2025] keeps the on-policy half and drops the support-fixing half. Section 5 shows that both are weaker than the pair on the pre-Stage 3 Qwen transfer endpoints, and that the bridge remains the strongest MATH endpoint after the subsequent student-RL stage. 
+
+# 5 Experiments 
+
+The experiments follow the three contributions in turn. Table 1 provides a compact map of the routes and controls, so that each comparison has a named purpose. The training stack builds on verl/HybridFlow [Sheng et al., 2024]; key hyperparameters are in Appendix E. Accuracies are avg@16 (each problem is scored by the mean correctness over 16 independent samples), with ±
+
+standard error across evaluation problems. 
+
+5.1 Teacher-side vs. student-side sparse reward 
+
+The direct comparison considers three uses of the same labeled training data at fixed deployment-student size (Qwen3-1.7B): allocate it to student RL, allocate it to raw-teacher distillation, or allocate it to teacher RL followed by dense transfer. Table 3 reports the full-DAPO endpoints; Table 2 first checks that the 1.7B direct-RL baseline is not an artifact of an under-scaled GRPO recipe. 5Table 1: Compact map of the Qwen3 routes and controls. The table is intentionally smaller than a full route grid: it lists only the contrasts needed to interpret the claims. In the half-split rows, 1H and 2H denote the first and second halves of DAPO.             
+
+> Route / control Sparse-reward placement Purpose Cold GRPO (R1) Direct GRPO on the base Qwen3-1.7B student Deployment-student baseline Full teacher-side bridge (R3-full) Full DAPO for teacher RL and two-stage bridge; no Stage 3 Teacher-side allocation ceiling Half-split post-bridge RL (R5-half) 1H for teacher RL and bridge; 2H for student GRPO Student-side use of the held-out half after transfer Replay control (R7) Same 1H bridge as R5-half; Stage 3 reuses 1H Separates new labeled examples from extra updates Teacher-sample SFT (R2) RL’d teacher; teacher-sample SFT in-stead of bridge; 2H GRPO Tests off-policy hard-label transfer SFT-teacher control (R6) SFT-trained teacher; bridge plus 2H GRPO Tests whether teacher RL is needed OPD-only control (R8) RL’d teacher; OPD without FKL warmup; 2H GRPO Tests the value of the forward-KL warmup
+
+Table 2: Direct GRPO across Qwen3 scales, MATH and AIME (avg@16, %). The 1.7B row is the cold-RL baseline that the teacher-first pipeline must beat.                                        
+
+> Model MATH AIME 2024 AIME 2025 Qwen3-1.7B 75 .9±0.919 .8±1.417 .1±0.9
+> Qwen3-4B 85 .2±0.839 .2±1.434 .4±1.0
+> Qwen3-8B 88 .4±0.847 .7±1.536 .7±1.2
+> Qwen3-14B 89 .5±0.747 .1±1.239 .0±0.9
+
+Table 2 sets a strong direct-RL baseline. Larger Qwen3 models reach much stronger GRPO endpoints, so the low 1.7B endpoint is not a sign of a broken optimizer; it is the cost of applying sparse reward to the least capable policy. Three patterns in Table 3 support the main allocation result. 
+
+(i) Scale alone is not the cause. A raw 8B teacher distilled into the 1.7B student gives 71 .5% MATH, four points below direct GRPO. A raw 14B teacher gives 72 .8% . The deployment student is not simply waiting for a larger model to imitate; it needs a teacher whose behavior has been shaped by reward. The SFT-trained teacher rows make the same point more precisely. They are better transfer sources than raw teachers, reaching 76 .9% and 77 .6% MATH, but they still trail the RL-improved 8B/14B teachers. Supervised teacher improvement helps, but it does not replace teacher-side discovery from sparse reward. 
+
+(ii) Reward-shaped scale is the cause. Once the same 8B and 14B teachers have themselves been trained with sparse reward, the bridge moves the student to 79 .3% and 78 .6% MATH and 25 .2
+
+and 24 .6 AIME 2024. For the 8B teacher, this beats direct GRPO by 3.4 MATH points and 5.4
+
+AIME 2024 points; for the 14B teacher, the gains are 2.7 and 4.8 points. The labeled examples are the same examples a direct-RL run would have used; only their placement changes. 
+
+(iii) Even same-size matters. An RL’d 1.7B teacher distilled into a fresh 1.7B student reaches 
+
+76 .5% MATH and 20 .6 AIME 2024, beating direct GRPO on those two metrics and matching it on AIME 2025. This isolates the dense-reward effect from teacher scale: the same labeled training data produces more useful supervision when its product is a teacher distribution than when it directly updates the deployment student. The Llama family shows the same ordering with a single canonical teacher (Table 8 in Appendix D): raw-70B transfer underperforms direct GRPO on the 8B student ( 55 .4% vs. 59 .8% MATH), while RL’d-70B transfer outperforms it ( 62 .1% ). The conclusion is therefore not tied to Qwen alone. 6Table 3: Transfer-only endpoints at fixed deployment student (Qwen3-1.7B), without subsequent student-side RL. In the RL-improved rows, labeled training data is allocated to teacher RL; raw/SFT rows use the same transfer protocol without teacher-side sparse RL. The table includes raw, SFT-trained, and RL-improved teachers, plus one-stage transfer controls on the RL-improved teachers. At matched 8B/14B teacher scale, raw teachers underperform direct GRPO, SFT-trained teachers are intermediate, and RL-improved teachers are strongest. The 1.7B RL’d teacher is a same-size control.                                                                                                                                                 
+
+> Teacher checkpoint Transfer protocol MATH AIME 2024 AIME 2025 —Direct GRPO (cold student) 75 .9±0.919 .8±1.417 .1±0.9
+> raw Qwen3-8B two-stage bridge 71 .5±0.915 .0±1.510 .6±1.2
+> raw Qwen3-14B two-stage bridge 72 .8±0.816 .7±1.413 .5±1.3
+> SFT’d Qwen3-8B two-stage bridge 76 .9±0.922 .1±1.717 .6±1.4
+> SFT’d Qwen3-14B two-stage bridge 77 .6±0.823 .2±1.618 .4±1.5
+> RL’d Qwen3-1.7B two-stage bridge 76 .5±0.820 .6±1.517 .1±1.4
+> RL’d Qwen3-8B two-stage bridge 79 .3±0.725 .2±1.620 .2±1.3
+> RL’d Qwen3-14B two-stage bridge 78 .6±0.924 .6±1.520 .8±1.5
+> RL’d Qwen3-1.7B OPD only 75 .2±0.919 .1±1.512 .4±1.2
+> RL’d Qwen3-8B OPD only 77 .6±0.823 .0±1.418 .9±1.4
+> RL’d Qwen3-14B OPD only 77 .1±1.022 .8±1.518 .6±1.7
+> RL’d Qwen3-1.7B teacher-sample SFT 73 .6±0.916 .7±1.411 .4±1.0
+> RL’d Qwen3-8B teacher-sample SFT 76 .0±0.922 .4±1.519 .4±1.4
+> RL’d Qwen3-14B teacher-sample SFT 76 .5±1.121 .5±1.517 .0±1.1
+
+5.2 Transfer protocol ablation: FKL warmup, OPD, and SFT 
+
+Table 3 also isolates the bridge. Holding the RL-trained teacher and the labeled training data fixed, the two-stage bridge reaches 79 .3% MATH at the 8B teacher; OPD-only reaches 77 .6% ; teacher-sample SFT reaches 76 .0% . The 14B teacher gives the same MATH ordering ( 78 .6% > 77 .1% > 76 .5% ), and the same-size 1.7B controls follow the same ordering on MATH and AIME 2024 ( 76 .5% >
+
+75 .2% > 73 .6% on MATH). In this pre-Stage 3 transfer comparison, the two-stage bridge is also the best endpoint on AIME 2024 and AIME 2025 among the canonical 8B/14B teachers. This is the pattern predicted by Section 4. Teacher-sample SFT is off-policy and gives no signal on student-only states; OPD-only is on-policy but ill-conditioned at initialization. On MATH, teacher-sample SFT is the weakest variant and OPD-only is intermediate. Across the AIME cells, both one-stage variants trail the two-stage bridge before Stage 3, although their relative ordering varies. Section 5.4 shows that after Stage 3 the MATH ordering remains clear, while the AIME cells are closer and partly mixed. 
+
+5.3 Student RL after the bridge: half-split and replay controls 
+
+The first two results could still leave a narrower interpretation: perhaps the bridge is only a better initialization, and any later sparse-reward RL is wasted. We test this directly. Split the DAPO training set into two random halves, 1H and 2H. Train the teacher and the bridge on 1H. Hold the resulting 1.7B checkpoint fixed, then ask whether sparse student RL on 2H adds value over (a) the bridge alone, (b) cold direct GRPO, and (c) a matched replay control that reuses 1H for student RL. Table 4 reports the result with RL-trained teachers, Table 5 with SFT-trained teachers. Student-side sparse RL on the held-out second half lifts the bridge endpoint from 75 .4% to 78 .5% 
+
+MATH at the 8B teacher and from 76 .3% to 78 .7% at the 14B teacher. Both endpoints clear cold direct GRPO ( 75 .9% ). The replay control uses the same student-RL data count and update count on already-seen bridge data, yet never improves by more than 0.3 points and sometimes degrades. The gain is not extra updating; it is new labeled examples reaching a student that is now prepared to use them. The SFT-teacher table shows the same fresh-data-vs-replay pattern, but with weaker MATH endpoints than the RL-teacher pipeline ( 77 .2% vs. 78 .5% ; 76 .9% vs. 78 .7% ), as the teacher-first allocation predicts: an unshaped teacher gives a weaker bridge. 7Table 4: Student-side sparse RL on fresh labeled data lifts the bridge endpoint above both direct GRPO and a matched replay control. The teacher and bridge are trained on the first DAPO half; student GRPO uses the held-out second half. RL-trained Qwen3 teachers, Qwen3-1.7B student; avg@16 (%).                                                           
+
+> Teacher Student stage MATH AIME 2024 AIME 2025 RL’d Qwen3-8B After two-stage bridge (1H) 75 .4±0.822 .0±1.616 .7±1.4
+> + GRPO on held-out 2H 78 .5±0.923 .7±1.518 .5±1.2
+> + GRPO replay on 1H 75 .7±0.721 .6±1.317 .0±1.2
+> RL’d Qwen3-14B After two-stage bridge (1H) 76 .3±1.122 .7±1.717 .3±1.2
+> + GRPO on held-out 2H 78 .7±1.123 .1±1.719 .2±1.3
+> + GRPO replay on 1H 75 .6±1.022 .4±1.517 .6±1.0
+
+Table 5: The same student-side sparse-RL pattern holds when the teacher is SFT-trained instead of RL-trained, but with lower MATH and AIME 2025 endpoints. Qwen3-1.7B student; avg@16 (%).                                                           
+
+> Teacher Student stage MATH AIME 2024 AIME 2025 SFT’d Qwen3-8B After two-stage bridge (1H) 74 .3±1.021 .8±1.514 .5±1.2
+> + GRPO on held-out 2H 77 .2±1.022 .9±1.318 .4±1.0
+> + GRPO replay on 1H 74 .0±0.822 .1±1.114 .2±1.0
+> SFT’d Qwen3-14B After two-stage bridge (1H) 75 .8±0.922 .0±1.515 .1±1.4
+> + GRPO on held-out 2H 76 .9±0.823 .2±1.318 .6±1.1
+> + GRPO replay on 1H 75 .6±0.722 .3±1.214 .9±1.2
+
+5.4 Where should the held-out half of the data go? 
+
+The previous two subsections establish two facts: teacher-side allocation beats cold student RL, and student-side RL becomes useful after the bridge. The remaining allocation question is simpler than it may appear: after using the first half of DAPO (1H) to train the teacher and bridge, where should the second half (2H) go? We compare two placements of the same 2H data. The teacher-side route (R3-full) uses both 1H and 2H upstream: the full DAPO set trains the teacher and the two-stage bridge, and the resulting student receives no Stage 3 GRPO. The student-side route (R5-half) uses only 1H upstream, holds 2H out from teacher RL and transfer, and then applies 2H as post-bridge student GRPO. Thus both routes use the same total labeled data; the difference is whether 2H is consumed before transfer or after transfer. The teacher-side endpoint is the full-DAPO bridge from Table 3 (79 .3% MATH at the RL’d 8B teacher). The student-side endpoint is the half-bridge-plus-held-out-GRPO pipeline from Table 4 ( 78 .5% MATH at the same teacher). This is the central fixed-data allocation contrast. The teacher-side route wins, but the margin is small ( 0.8 MATH points; AIME points are within standard error): upstream use of labeled data is slightly better, while post-bridge student RL recovers most of its value. When teacher-side compute is the binding constraint, the student-side route remains a competitive lower-cost alternative. 
+
+Table 6: Bridge controls under the student-side route. Each row uses the same RL-trained Qwen3 teacher and the same held-out GRPO data; only the transfer protocol before Stage 3 differs. Qwen3-1.7B student; avg@16 (%).                                                           
+
+> Teacher Transfer protocol MATH AIME 2024 AIME 2025 RL’d Qwen3-8B two-stage bridge 78 .5±0.923 .7±1.518 .5±1.2
+> OPD only 77 .8±0.822 .8±1.216 .6±1.3
+> teacher-sample SFT 77 .3±0.822 .5±1.416 .9±1.4
+> RL’d Qwen3-14B two-stage bridge 78 .7±1.123 .1±1.719 .2±1.3
+> OPD only 77 .5±0.921 .9±1.519 .5±1.2
+> teacher-sample SFT 77 .2±1.221 .6±1.819 .0±1.4
+
+The fixed-data contrast above uses the two-stage bridge. Table 6 checks whether that bridge choice matters inside the student-side route. It does: the two-stage bridge remains the best MATH starting point for student-side GRPO. The AIME cells are closer and partly mixed: removing either the 8forward-KL warmup or the on-policy dense stage weakens AIME 2024, while AIME 2025 has one small OPD-only exception at the 14B teacher. This is how the two-stage recipe mitigates OPD failure modes highlighted in recent analyses: the forward-KL warmup first reduces the student-sampling coverage mismatch, so the subsequent OPD stage is less like a cold-start reverse-KL update on low-quality student states [Li et al., 2026, Hou et al., 2026]. 
+
+# 6 Discussion 
+
+What changes operationally. The standard reading of the post-training literature is a menu of competing methods: SFT, RL, distillation. The reward-density principle turns that menu into an allocation problem. Once OPD is viewed as a local implicit-reward update (Eq. 5), the design choice is not only which method to run, but which model should receive which density of signal, and in what order. Direct sparse-reward RL on the deployment model is inefficient placement on both axes: sparse reward is given to the policy least prepared to use it. 
+
+Implication for model-family training. The practical recipe is clearest when a lab trains or maintains a model family rather than a single deployment checkpoint. A larger teacher and a smaller deployment student can be pretrained on the same data distribution, preferably with a shared tokenizer, and kept as parallel post-training targets. The reward-density principle then says that labeled post-training data should be allocated preferentially to the larger model first, because it can convert sparse reward into a better reward-shaped distribution. The smaller model should receive that distribution through the dense FKL-to-OPD bridge, with student-side sparse RL reserved for held-out labeled data after the bridge. 
+
+Why the bridge is two-stage. An off-policy stage alone cannot teach the student to recover on its own prefixes; an on-policy stage alone is poorly conditioned at initialization. The two-stage bridge covers both sides. Table 3 shows the clean pre-Stage 3 ordering; Table 6 shows that after Stage 3 the bridge remains best on MATH, with closer and partly mixed AIME cells. 
+
+Why student-side reward still matters. The post-bridge student-RL result (Section 5.3) keeps the recipe from becoming a rigid “never train the student” rule. After the bridge, sparse reward on the student gives a real 2–3-point lift on MATH and is strictly better than running more updates on bridge data. The right framing is teacher-first with post-bridge student RL; the weaker framing is either “RL the student” or “never RL the student.” 
+
+Limitations. The evidence is on verifiable math with two student-teacher families at relatively small deployment scale (1.7B and 8B students, with teachers up to 14B and 70B). Whether the teacher-first advantage persists, grows, or shrinks at larger scales—for example, a 70B student with a 400B+ teacher—remains open. The reward-density argument predicts persistence, but the marginal value of sparse reward on a stronger student may shift the allocation balance. The principle itself does not depend on the task; the bridge does require a shared tokenizer between teacher and student. Code, instruction following, and open-ended tasks would need their own verifier-density experiments, and we make no claim about an optimal way to blend sparse rewards with teacher-induced implicit rewards beyond the staged version in Eq. 8. The Llama block is deliberately narrower than the Qwen study: its role is to test the teacher-quality ordering in a second model family, while the half-split allocation, replay, OPD-only, teacher-sample SFT, and SFT-teacher controls remain future cross-family experiments, as noted in Appendix D. 
+
+# 7 Related Work 
+
+Post-training reshapes LLM behavior through feedback-based RL and teacher transfer: RLHF uses sparse preference or outcome rewards [Ouyang et al., 2022, Stiennon et al., 2020, Bai et al., 2022], while distillation transfers teacher behavior through dense supervised signals [Hinton et al., 2015]. We position this paper along both axes. Appendix B provides the per-paper detail. 
+
+Sparse-reward post-training. PPO, GRPO, and SFT-warmup-then-PPO recipes use labeled data to apply sparse reward directly to the deployment model [Schulman et al., 2017, Shao et al., 2024, 9Luong et al., 2024]. Verifier-filtered SFT uses the reward only as a data filter [Zelikman et al., 2022, Singh et al., 2024]. Recent work increases reward density through self-distillation [He et al., 2026, Yang et al., 2026] or reference-guided trajectories [Wu et al., 2026a]. These methods differ in how they use reward, but they still train the model being optimized on the labeled data. Our point is orthogonal: the same data is often more valuable upstream on a teacher and then densified through the bridge. 
+
+Distillation and OPD. Knowledge distillation transfers teacher behavior into smaller models [Hinton et al., 2015]; teacher-sample SFT is its off-policy form [Guo et al., 2025]. OPD corrects the student on its own rollouts [Agarwal et al., 2024] and has been framed as dense on-policy teacher-logprob reward [Lu and Thinking Machines Lab, 2025]. Self-distillation work gives a related trust-region/implicit-reward derivation for demonstration-conditioned teachers [Shenfeld et al., 2026]. Related work connects distillation to entropy-regularized or RL-aware objectives [Liu et al., 2025, Zhang et al., 2026b] and extends OPD through KL scheduling, token importance, chain compression, and offline caching [Xu et al., 2026a,b, Sang et al., 2026, Wu et al., 2026b]. Our Eq. 5 uses the same connection prescriptively: the dense implicit reward is only as good as the teacher proxy, so sparse reward should first improve the teacher. 
+
+Reasoning teachers and data allocation. DeepSeek-R1 showed that RL-improved models can teach smaller ones via SFT [Guo et al., 2025]; MiMo-V2-Flash extends this with multi-teacher OPD that integrates domain specialists through on-policy token-level rewards [Xiaomi LLM-Core Team, 2026]. Our focus is different: not whether an RL-improved model can teach, but where a fixed pool of labeled training data should be allocated—teacher-side or student-side. Table 7 (Appendix C) classifies representative methods along this axis. 
+
+# 8 Conclusion 
+
+Two axes structure LLM post-training: how dense the reward signal is, and which model receives it. Our experiments support a teacher-first allocation rule for verifiable math: use scarce labeled training data first where sparse reward is most informative, transfer the resulting behavior through the FKL-to-OPD bridge, and reserve student-side GRPO for held-out labeled examples after the bridge. This recipe beats direct student GRPO in the Qwen3-1.7B setting, preserves the teacher-quality ordering in the Llama family, and shows that post-bridge student RL adds value beyond replaying bridge data. The broader lesson is not to avoid student RL, but to apply it after dense transfer has made the deployment policy trainable. 
+
+# References 
+
+Rishabh Agarwal, Nino Vieillard, Yongchao Zhou, Piotr Stanczyk, Sabela Ramos, Matthieu Geist, and Olivier Bachem. On-policy distillation of language models: Learning from self-generated mistakes. In International Conference on Learning Representations , 2024. Yuntao Bai, Andy Jones, Kamal Ndousse, Amanda Askell, Anna Chen, Nova DasSarma, Dawn Drain, Stanislav Fort, Deep Ganguli, Tom Henighan, et al. Training a helpful and harmless assistant with reinforcement learning from human feedback. arXiv preprint arXiv:2204.05862 , 2022. Zhiqi Bai, Ken Deng, Jinyang Guo, Congnan Liu, Jiaheng Liu, Jie Liu, Lin Qu, Haoran Que, Wenbo Su, Jiakai Wang, Jiamang Wang, Yanan Wu, Chenchen Zhang, Ge Zhang, Yuanxing Zhang, and Bo Zheng. DDK: Distilling domain knowledge for efficient large language models. In Advances in Neural Information Processing Systems , 2024. Junfeng Fang, Zhepei Hong, Mao Zheng, Mingyang Song, Gengsheng Li, Houcheng Jiang, Dan Zhang, Haiyun Guo, Xiang Wang, and Tat-Seng Chua. Rubric-based on-policy distillation. arXiv preprint arXiv:2605.07396 , 2026a. Zhen Fang, Wenxuan Huang, Yu Zeng, Yiming Zhao, Shuang Chen, Kaituo Feng, Yunlong Lin, Lin Chen, Zehui Chen, Shaosheng Cao, and Feng Zhao. Flow-OPD: On-policy distillation for flow matching models. arXiv preprint arXiv:2605.08063 , 2026b. 10 Yao Fu, Hao Peng, Litu Ou, Ashish Sabharwal, and Tushar Khot. Specializing smaller language models towards multi-step reasoning. arXiv preprint arXiv:2301.12726 , 2023. Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, et al. The Llama 3 herd of models. arXiv preprint arXiv:2407.21783 , 2024. Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Peiyi Wang, Qihao Zhu, Runxin Xu, Ruoyu Zhang, Shirong Ma, Xiao Bi, Xiaokang Zhang, Xingkai Yu, et al. DeepSeek-R1 incentivizes reasoning in LLMs through reinforcement learning. Nature , 645:633–638, 2025. Yinghui He, Simran Kaur, Adithya Bhaskar, Yongjin Yang, Jiarui Liu, Narutatsu Ri, Liam Fowl, Abhishek Panigrahi, Danqi Chen, et al. Self-distillation zero: Self-revision turns binary rewards into dense supervision. arXiv preprint arXiv:2604.12002 , 2026. Geoffrey Hinton, Oriol Vinyals, and Jeff Dean. Distilling the knowledge in a neural network. arXiv preprint arXiv:1503.02531 , 2015. Wenjin Hou, Shangpin Peng, Weinong Wang, Zheng Ruan, Yue Zhang, Zhenglin Zhou, Mingqi Gao, Yifei Chen, Kaiqi Wang, et al. Uni-OPD: Unifying on-policy distillation with a dual-perspective recipe. arXiv preprint arXiv:2605.03677 , 2026. Cheng-Yu Hsieh, Chun-Liang Li, Chih-Kuan Yeh, Hootan Nakhost, Yasuhisa Fujii, Alexander Ratner, Ranjay Krishna, Chen-Yu Lee, and Tomas Pfister. Distilling step-by-step! Outperforming larger language models with less training data and smaller model sizes. In Findings of the Association for Computational Linguistics: ACL 2023 , 2023. Hyunseok Lee, Soheil Abbasloo, Jihoon Tack, and Jinwoo Shin. Beyond correctness: Learning robust reasoning via transfer. arXiv preprint arXiv:2602.08489 , 2026. Shiyang Li, Jianshu Chen, Yelong Shen, Zhiyu Chen, Xinlu Zhang, Zekun Li, Hong Wang, Jing Qian, Baolin Peng, Yi Mao, Wenhu Chen, and Xin Xie. Explanations from large language models make small reasoners better. arXiv preprint arXiv:2210.06726 , 2022. Yaxuan Li, Yuxin Zuo, Bingxiang He, Jinqian Zhang, Chaojun Xiao, Cheng Qian, Tianyu Yu, Huan-ang Gao, et al. Rethinking on-policy distillation of large language models: Phenomenology, mechanism, and recipe. arXiv preprint arXiv:2604.13016 , 2026. Kun Liang, Clive Bai, Xin Xu, Chenming Tang, Sanwoo Lee, Weijie Liu, Saiyong Yang, and Yunfang Wu. ORBIT: On-policy exploration-exploitation for controllable multi-budget reasoning. arXiv preprint arXiv:2601.08310 , 2026. Guanlin Liu, Anand Ramachandran, Tanmay Gangwani, Yan Fu, and Abhinav Sethy. Knowledge distillation with training wheels. arXiv preprint arXiv:2502.17717 , 2025. Kevin Lu and Thinking Machines Lab. On-policy distillation. Thinking Machines Lab: Con-nectionism , 2025. doi: 10.64434/tml.20251026. https://thinkingmachines.ai/blog/ on-policy-distillation/ .Trung Quoc Luong, Xinbo Zhang, Zhanming Jie, Peng Sun, Xiaoran Jin, and Hang Li. ReFT: Rea-soning with reinforced fine-tuning. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics , 2024. Lucie Charlotte Magister, Jonathan Mallinson, Jakub Adamek, Eric Malmi, and Aliaksei Severyn. Teaching small language models to reason. In Proceedings of the 61st Annual Meeting of the Association for Computational Linguistics (Volume 2: Short Papers) , pages 1773–1781, 2023. Long Ouyang, Jeffrey Wu, Xu Jiang, Diogo Almeida, Carroll Wainwright, Pamela Mishkin, Chong Zhang, Sandhini Agarwal, Katarina Slama, Alex Ray, et al. Training language models to follow instructions with human feedback. In Advances in Neural Information Processing Systems ,volume 35, pages 27730–27744, 2022. Rafael Rafailov, Archit Sharma, Eric Mitchell, Stefano Ermon, Christopher D. Manning, and Chelsea Finn. Direct preference optimization: Your language model is secretly a reward model. In Advances in Neural Information Processing Systems , volume 36, 2023. 11 Hejian Sang, Yuanda Xu, Zhengze Zhou, Ran He, Zhipeng Wang, and Jiachen Sun. CRISP: Compressed reasoning via iterative self-policy distillation. arXiv preprint arXiv:2603.05433 , 2026. John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. Proximal policy optimization algorithms. arXiv preprint arXiv:1707.06347 , 2017. Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan Zhang, Y.K. Li, Y. Wu, and Daya Guo. DeepSeekMath: Pushing the limits of mathematical reasoning in open language models. arXiv preprint arXiv:2402.03300 , 2024. Idan Shenfeld, Mehul Damani, Jonas Hübotter, and Pulkit Agrawal. Self-distillation enables continual learning. arXiv preprint arXiv:2601.19897 , 2026. Guangming Sheng, Chi Zhang, Zilingfeng Ye, Xibin Wu, Wang Zhang, Ru Zhang, Yanghua Peng, Haibin Lin, and Chuan Wu. HybridFlow: A flexible and efficient RLHF framework. arXiv preprint arXiv:2409.19256 , 2024. Avi Singh, John D. Co-Reyes, Rishabh Agarwal, Ankesh Anand, Piyush Patil, Xavier Garcia, Peter J. Liu, James Harrison, Jaehoon Lee, Kelvin Xu, et al. Beyond human data: Scaling self-training for problem-solving with language models. Transactions on Machine Learning Research , 2024. Mingyang Song and Mao Zheng. A survey of on-policy distillation for large language models. arXiv preprint arXiv:2604.00626 , 2026. Nisan Stiennon, Long Ouyang, Jeff Wu, Daniel M. Ziegler, Ryan Lowe, Chelsea Voss, Alec Radford, Dario Amodei, and Paul Christiano. Learning to summarize from human feedback. In Advances in Neural Information Processing Systems , volume 33, 2020. Hao Wang, Guozhi Wang, Han Xiao, Yufeng Zhou, Yue Pan, Jichao Wang, Ke Xu, Yafei Wen, Xiaohu Ruan, Xiaoxin Chen, and Honggang Qi. Skill-SD: Skill-conditioned self-distillation for multi-turn LLM agents. arXiv preprint arXiv:2604.10674 , 2026a. Jiaqi Wang, Wenhao Zhang, Weijie Shi, Yaliang Li, and James Cheng. TCOD: Exploring tem-poral curriculum in on-policy distillation for multi-turn autonomous agents. arXiv preprint arXiv:2604.24005 , 2026b. Yangzhen Wu, Shanda Li, Zixin Wen, Xin Zhou, Ameet Talwalkar, Yiming Yang, Wenhao Huang, and Tianle Cai. Learn hard problems during RL with reference guided fine-tuning. arXiv preprint arXiv:2603.01223 , 2026a. Yecheng Wu, Song Han, and Hai Cai. Lightning OPD: Efficient post-training for large reasoning models with offline on-policy distillation. arXiv preprint arXiv:2604.13010 , 2026b. Xiaomi LLM-Core Team. MiMo-V2-Flash technical report, 2026. URL https://arxiv.org/ abs/2601.02780 .Yuanda Xu, Hejian Sang, Zhengze Zhou, Ran He, and Zhipeng Wang. PACED: Distillation and on-policy self-distillation at the frontier of student competence. arXiv preprint arXiv:2603.11178 ,2026a. Yuanda Xu, Hejian Sang, Zhengze Zhou, Ran He, Zhipeng Wang, and Alborz Geramifard. TIP: Token importance in on-policy distillation. arXiv preprint arXiv:2604.14084 , 2026b. An Yang, Beichen Zhang, Binyuan Hui, Bofei Gao, Bowen Yu, Chengyuan Li, Dayiheng Liu, Jian-hong Tu, Jingren Zhou, Junyang Lin, et al. Qwen2.5-Math technical report: Toward mathematical expert model via self-improvement. arXiv preprint arXiv:2409.12122 , 2024. An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, et al. Qwen3 technical report. arXiv preprint arXiv:2505.09388 , 2025. Chenxu Yang, Chuanyu Qin, Qingyi Si, Minghui Chen, Naibin Gu, Dingyu Yao, Zheng Lin, Weiping Wang, Jiaqi Wang, et al. Self-distilled RLVR. arXiv preprint arXiv:2604.03128 , 2026. Tianzhu Ye, Li Dong, Zewen Chi, Xun Wu, Shaohan Huang, and Furu Wei. Black-box on-policy distillation of large language models. arXiv preprint arXiv:2511.10643 , 2025. 12 Tianzhu Ye, Li Dong, Xun Wu, Shaohan Huang, and Furu Wei. On-policy context distillation for language models. arXiv preprint arXiv:2602.12275 , 2026. Qiying Yu, Zheng Sun, Xiang Shen, Liang Gao, Ziyi Pan, et al. DAPO: An open-source llm reinforcement learning system. arXiv preprint arXiv:2503.14476 , 2025. Eric Zelikman, Yuhuai Wu, Jesse Mu, and Noah D. Goodman. STaR: Bootstrapping reasoning with reasoning. Advances in Neural Information Processing Systems , 35, 2022. Jiaxin Zhang, Xiangyu Peng, Qinglin Chen, Qinyuan Ye, Caiming Xiong, and Chien-Sheng Wu. The illusion of certainty: Decoupling capability and calibration in on-policy distillation. arXiv preprint arXiv:2604.16830 , 2026a. Zhaoyang Zhang, Shuli Jiang, Yantao Shen, Yuting Zhang, Dhananjay Ram, Shuo Yang, Zhuowen Tu, Wei Xia, and Stefano Soatto. Reinforcement-aware knowledge distillation for LLM reasoning. 
+
+arXiv preprint arXiv:2602.22495 , 2026b. 
+
+# A OPD as a Local Implicit-Reward Update 
+
+For a fixed prompt x, reverse-KL OPD minimizes 
+
+LOPD (θ) = KL( πθ ∥πT ) = Ey∼πθ [log πθ (y | x) − log πT (y | x)] . (9) Let πk = πθk be the current student, and define the fixed implicit reward 
+
+eRkT (x, y ) = β [log πT (y | x) − log πk(y | x)] . (10) The policy-gradient update that maximizes this reward has gradient 
+
+∇θ Ey∼πθ [ eRkT (x, y )] θk
+
+= Ey∼πk
+
+h eRkT (x, y )∇θ log πθ (y | x)
+
+i
+
+> θk
+
+. (11) The negative reverse-KL gradient gives the same gradient: 
+
+−β∇θ LOPD (θ) θk
+
+= βEy∼πk [(log πT (y | x) − log πk(y | x)) ∇θ log πθ (y | x)] θk , (12) where the +1 term from differentiating log πθ has zero expectation against the score function. Using the autoregressive factorization log π(y | x) = P 
+
+> t
+
+log π(yt | st), the sequence reward decomposes into 
+
+eRkT (x, y ) = X
+
+> t
+
+β log πT (yt | st)
+
+πk(yt | st) . (13) Thus OPD can be interpreted locally as policy-gradient learning with a dense teacher-student likelihood-ratio reward. This is a local equivalence around πk, not a claim that OPD globally optimizes the original sparse task reward. 
+
+# B Extended Related Work 
+
+This appendix provides the per-paper detail that the shorter related-work section omits. 
+
+Sparse-reward post-training. In sparse-reward policy optimization, the reward directly updates the policy through PPO, GRPO, or SFT-warmup-then-PPO recipes such as ReFT [Schulman et al., 2017, Shao et al., 2024, Luong et al., 2024]. Systems work such as verl/HybridFlow makes these RLHF dataflows practical by combining flexible algorithm representation with efficient distributed execution [Sheng et al., 2024]. In verifier-filtered SFT, the reward is a data-construction rule: sample candidate traces, keep correct ones, and then run supervised imitation [Zelikman et al., 2022, Singh et al., 2024, Yang et al., 2024]. DPO and related derivations make explicit the link between reward optimization and KL-regularized policy targets [Rafailov et al., 2023]. Recent RLVR work moves beyond final-answer correctness by training on more informative intermediate reasoning behavior [Lee et al., 2026]. A related line uses self-distillation to convert sparse binary RLVR rewards into dense token-level supervision [He et al., 2026, Yang et al., 2026]. Reference-guided fine-tuning targets the zero-reward hard-problem regime: partial human reference solutions elicit model-generated positive trajectories before DAPO-style RL, raising the density of rewarding samples on problems the base model cannot initially solve [Wu et al., 2026a]. 13 Distillation and OPD. Knowledge distillation transfers behavior from stronger models into smaller models [Hinton et al., 2015]. Reasoning-distillation work shows that intermediate traces can be more useful than final answers alone [Fu et al., 2023, Li et al., 2022, Magister et al., 2023, Hsieh et al., 2023]. Domain-aware distillation methods adapt transfer to domain knowledge and teacher-student capability gaps [Bai et al., 2024]. Teacher-sample SFT is the off-policy form of this idea: imitate teacher-generated traces, including the DeepSeek-R1 distilled models [Guo et al., 2025]. OPD instead corrects the student on its own rollout distribution rather than only on teacher-generated states [Agarwal et al., 2024]; related variants extend this idea to context distillation and black-box teacher access [Ye et al., 2026, 2025]. Rubric-based OPD pushes the black-box direction further by inducing prompt-specific rubrics from teacher-student contrasts and using weighted rubric pass rates as on-policy rewards [Fang et al., 2026a]. Recent practitioner evidence frames OPD as dense on-policy teacher-logprob reward and reports large compute-efficiency gains over sparse RL and extended off-policy distillation [Lu and Thinking Machines Lab, 2025]. Liu et al. [2025] formulate KD as entropy-regularized value optimization with on-policy and off-policy demonstrations, while Zhang et al. [2026b] propose RL-aware distillation through advantage-aware selective imitation during PPO/GRPO-style updates. Further OPD work studies a forward-then-reverse KL schedule [Xu et al., 2026a], analyzes which student-state tokens carry the strongest learning signal [Xu et al., 2026b], applies on-policy self-distillation to compress overlong reasoning chains [Sang et al., 2026], introduces temporal curricula and skill-conditioned self-distillation for multi-turn agents [Wang et al., 2026b,a], and explores offline OPD through precomputed teacher log-probabilities [Wu et al., 2026b]. Concurrent analyses dissect when OPD succeeds or fails and propose unified recipes across LLM and MLLM settings [Li et al., 2026, Hou et al., 2026], while Flow-OPD adapts OPD-style dense multi-teacher supervision to flow-matching text-to-image alignment [Fang et al., 2026b]. Zhang et al. [2026a] highlight that OPD can systematically miscalibrate confidence even when accuracy improves; for a taxonomy of OPD feedback signals, teacher access regimes, and loss granularity, see Song and Zheng [2026]. 
+
+Reasoning teachers and data allocation. DeepSeek-R1 showed that large-scale RL can elicit strong reasoning behavior and that smaller models can inherit it through supervised fine-tuning on DeepSeek-R1-generated traces [Guo et al., 2025]. ORBIT studies a different control dimension: it uses multi-stage RL under context-length constraints to discover Pareto-frontier reasoning-effort policies, then fuses those policies by OPD into one controllable model [Liang et al., 2026]. Our allocation question is different: where should scarce labeled training data enter the post-training pipeline? MiMo-V2-Flash makes the OPD connection explicit through Multi-Teacher On-Policy Distillation (MOPD) [Xiaomi LLM-Core Team, 2026]. Its post-training pipeline first runs SFT, then trains domain-specialized teachers through RL or SFT, and finally integrates those teachers by having the student sample from its own on-policy distribution while receiving token-level reverse-KL rewards from the teacher selected for each prompt domain. The formulation is aligned with our reward-density principle: the teacher log-probability ratio becomes a dense per-token advantage. In our taxonomy, MOPD is a scalable multi-teacher OPD mechanism for capability integration, while our paper studies how scarce labeled training data should be allocated before and after such dense transfer. 
+
+# C Method Classification D Llama Cross-Family Validation 
+
+The Llama block repeats the teacher-quality ordering in a second model family: raw-teacher transfer 
+
+< direct GRPO < RL-teacher transfer. A 9× larger raw teacher is still worse than direct RL; the same teacher after RL is the best source. This supports the paper’s central distinction between teacher size and reward-shaped teacher quality. The corresponding Llama half-split, replay, OPD-only, teacher-sample SFT, and SFT-teacher controls remain future work. 
+
+# E Implementation Details 
+
+All route comparisons keep the deployment-student size fixed. In the Qwen3 block, the student is Qwen3-1.7B and the teacher checkpoints are the raw, SFT-trained, and RL-trained Qwen3 checkpoints 14 Table 7: Representative methods classified by where sparse reward enters and what signal is used for transfer. Paper names are examples of method classes; route labels such as R2 or R5-half are complete pipelines built from these classes.                               
+
+> Method / reference Sparse reward use Transfer signal Student endpoint InstructGPT [Ouyang et al., 2022] preference reward none RLHF policy GRPO /DeepSeekMath [Shao et al., 2024] answer RL none RL policy ReFT / PPO after SFT [Lu-ong et al., 2024] answer RL after SFT none RL policy Verifier-filtered SFT [Ze-likman et al., 2022, Singh et al., 2024] verifier as filter accepted traces SFT policy Step-by-step distillation [Fu et al., 2023] none rationales distilled policy GKD /OPD [Agarwal et al., 2024] teacher-dependent teacher logits OPD policy DeepSeek-R1 distilled models [Guo et al., 2025] teacher-side RL SFT on teacher-generated traces distilled policy MiMo-V2-Flash / MOPD [Xiaomi LLM-Core Team, 2026] specialized teacher RL/SFT plus optional outcome reward multi-teacher OPD logits unified post-trained model This work allocated teacher/stu-dent RL FKL-to-OPD transfer allocation-aware stu-dent endpoint
+
+Table 8: Llama replication (Student = Llama-3.1-8B-Instruct, Teacher = Llama-3.3-70B-Instruct), avg@16 (%).                                   
+
+> Configuration MATH AIME 2024 AIME 2025 Direct GRPO (cold student) 59 .8±0.912 .5±1.27.2±1.1
+> Two-stage bridge ←raw 70B 55 .4±0.88.8±1.53.1±1.2
+> Two-stage bridge ←RL’d 70B 62 .1±0.814 .9±1.89.2±1.4
+
+listed in Tables 2–4. In the Llama block, the student is Llama-3.1-8B-Instruct and the teacher is Llama-3.3-70B-Instruct. OPD is only run within a model family, because the token-level KL in Eq. 7 requires a shared tokenizer and vocabulary. 
+
+Data splits. The Qwen allocation experiment uses a fixed random split of the DAPO-Math-17K training set [Yu et al., 2025] into two equal halves. The first half (1H) is the teacher-RL and bridge data pool for the half-split rows, and also the replay data pool for the R7 control. The second half (2H) is held out from teacher RL and transfer, then used for Stage 3 GRPO in R5-half. R5-half and R7 therefore start from the same bridge checkpoint and use the same Stage 3 data count and update count; they differ only in whether Stage 3 uses new labeled examples from 2H or replay examples from 1H. R3-full instead trains teacher RL and the bridge on the full DAPO set and has no final student GRPO. All rows are evaluated on MATH-500, AIME 2024, and AIME 2025, not on either DAPO training half. The SFT-teacher rows use the same first-half/second-half construction, replacing only the source teacher. 
+
+Matched training protocol. Direct GRPO, Stage 3 GRPO, and replay GRPO use the same verifier reward, advantage normalization, optimizer family, batch size, rollout count per prompt, length limit, learning-rate schedule, KL settings, and update count within each matched contrast. In particular, R5-half and R7 are matched in checkpoint initialization, data count, rollout count, update count, and sequence-length limit. R2 keeps the RL-trained teacher and 2H Stage 3 GRPO fixed but replaces the 15 bridge with teacher-sample SFT. R8 keeps the RL-trained teacher and 2H Stage 3 GRPO fixed but removes the forward-KL warmup. 
+
+Bridge protocol. The two-stage bridge runs a forward-KL warmup on cached teacher rollouts followed by OPD on student rollouts. The forward stage uses cached teacher rollouts and teacher next-token distributions on those rollouts. The OPD stage queries the frozen teacher on the student’s sampled prefixes, so the teacher signal is computed on-policy with respect to the current student distribution. Implementation caches may store these logits for audit and replay, but the teacher checkpoint is not updated. Unless otherwise stated, the forward and OPD stages use the same maximum sequence length and tokenizer as the corresponding student/teacher family, and all teacher-logit temperatures and KL coefficients are fixed across rows inside a contrast. 
+
+Evaluation and error bars. All reported accuracies are avg@16. For each evaluation problem, the model samples 16 independent completions under the same decoding configuration; the problem score is the mean correctness over those completions, and the table entry is the mean over problems. The reported ± values are standard errors over evaluation problems, not standard deviations across independently retrained checkpoints. Data-split seeds, decoding seeds, training seeds, rollout counts, learning rates, KL coefficients, OPD temperatures, maximum prompt and response lengths, and exact checkpoint identifiers are recorded with the run configuration for each table row, so the route contrasts can be reproduced without changing non-ablation hyperparameters. Table 9: Key GRPO training hyperparameters for direct-RL and Stage 3 student-RL runs. Matched route contrasts use the same settings unless a row explicitly ablates the training stage or data source.                                            
+
+> Group Parameter Value Algorithm Framework VERL Algorithm Estimator GRPO Optimizer Optimizer AdamW Optimizer Learning rate 1×10 −6
+> Update GRPO epochs 10
+> Update Mini-batch size 8
+> Update Micro-batch per GPU 1
+> Length Max prompt tokens 3072
+> Length Max response tokens 16384
+> Loss Clip ratio 0.2
+> Loss Gradient clip 1.0
+> KL KL coefficient 5×10 −4
+> Data Validation sets MATH-500, AIME 2024, AIME 2025 Compute Precision bfloat16 Compute GPUs 2×8×NVIDIA H200 Compute Rollout engine sglang Compute Tensor parallel size 16
+
+16 Table 10: Key OPD/transfer-stage hyperparameters. The table reports the result-relevant settings from the VERL transfer run configuration; internal checkpoint, profiler, QAT, and logging fields are omitted. 
+
+Group Parameter Value Algorithm Framework VERL Algorithm Estimator GRPO-style actor rollout Optimizer Optimizer AdamW Optimizer Learning rate 1 × 10 −6
+
+Training setup Rollouts per prompt 8
+
+Update Epochs 1
+
+Update Mini-batch size 64 
+
+Update Micro-batch per GPU 4
+
+Length Max prompt tokens 2048 
+
+Length Max response tokens 16384 
+
+Sampling Temperature / top-p / top-k 1.0 / 1.0 / −1
+
+Data Validation sets MATH-500, AIME 2024, AIME 2025 Compute Precision bfloat16 Compute GPUs 2 × 8× NVIDIA H200 Compute Rollout engine / TP size sglang / 2
+
+17
