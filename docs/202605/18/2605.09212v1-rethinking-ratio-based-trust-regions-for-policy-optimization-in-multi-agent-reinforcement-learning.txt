@@ -1,0 +1,1728 @@
+Title: Rethinking Ratio-Based Trust Regions for Policy Optimization in Multi-Agent Reinforcement Learning
+
+URL Source: https://arxiv.org/pdf/2605.09212v1
+
+Published Time: Tue, 12 May 2026 01:13:58 GMT
+
+Number of Pages: 23
+
+Markdown Content:
+# Rethinking Ratio-Based Trust Regions for Policy Optimization in Multi-Agent Reinforcement Learning 
+
+Chulabhaya Wijesundara 1,2 Andrea Baisero 3 Zhongheng Li 2
+
+Gregory Castañón 2 Alan Carlin 2 Christopher Amato 11Northeastern University, 2STR, 3University of California, Irvine 
+
+Abstract 
+
+Centralized training with decentralized execution (CTDE) is a standard framework for cooperative multi-agent policy-gradient reinforcement learning, allowing agents to learn from joint information while acting from local observations. Ratio-based trust-region methods such as Multi-Agent Proximal Policy Optimization (MAPPO) and Multi-Agent Simple Policy Optimization (MASPO) update decentralized actors using per-agent probability ratios weighted by joint advantage estimates. Teammate non-stationarity increases the variance of these advantages, which in turn increases the variance in the local ratio updates. This exposes two method-specific failure modes: MAPPO’s additive clipping removes gradients for outlier samples and weakens recovery from policy drift, while MASPO’s soft quadratic penalty can allow probability collapse. We introduce Multi-Agent Ratio Symmetry (MARS), a novel policy optimization objective that replaces these additive ratio-based trust-region mechanisms with a multiplicatively symmetric geometric barrier. MARS preserves corrective gradients while assigning unbounded cost as probability ratios approach zero. Across 47 tasks spanning eight multi-agent environments, including novel JAX benchmarks PaxMen and AeroJAX, MARS matches or exceeds MAPPO and MASPO in aggregate environment-level performance. Ablations show that these gains arise from the geometry of the symmetric barrier rather than from flexible trust-region boundaries alone. 
+
+1 Introduction 
+
+Deep Multi-Agent Reinforcement Learning (MARL) has enabled agents to learn coordinated be-havior in domains ranging from games (Ellis et al., 2023) to swarm robotics (Liu et al., 2024) and transportation infrastructure (Saifullah et al., 2024). A common framework for cooperative MARL is centralized training with decentralized execution (CTDE), where actors are trained using cen-tralized information but execute from local observations. Within CTDE, ratio-based trust-region policy-gradient methods such as Multi-Agent Proximal Policy Optimization (MAPPO) (Yu et al., 2022) and Multi-Agent Simple Policy Optimization (MASPO) (Selmonaj et al., 2025) are widely used because they are simple and empirically robust. CTDE creates a distinct challenge for ratio-based policy updates. In MAPPO and MASPO, each decentralized actor is updated using a per-agent probability ratio, while the update direction is weighted by an advantage estimate from a centralized critic. Because this critic evaluates outcomes under simultaneously changing teammate policies, its advantage estimates can have high variance (Lyu et al., 2023; Foerster et al., 2018). These high-variance joint advantages are then applied directly to local ratio updates, producing large increases or decreases in individual action probabilities.                                    
+
+> Preprint.
+> arXiv:2605.09212v1 [cs.LG] 9 May 2026 0.00 0.25 0.50 0.75 1.00 1.25 1.50 1.75 2.00
+> Probability Ratio rt()
+> Surrogate Objective  LPPO  A> 0
+> Gradient Truncation
+> (Zero Slope)
+> MAPPO
+> (Symmetric Additive Clipping)
+> 0.00 0.25 0.50 0.75 1.00 1.25 1.50 1.75 2.00
+> Probability Ratio rt()
+> Penalty Magnitude  Finite Penalty
+> Risk of collapse as rt()0
+> MASPO
+> (Soft Quadratic Penalty)
+> 0.00 0.25 0.50 0.75 1.00 1.25 1.50 1.75 2.00
+> Probability Ratio rt()
+> Penalty Magnitude
+> Infinite Barrier
+> (Prevents Collapse)
+> Symmetric ( r1/ r)
+> MARS (Ours)
+> (Symmetric Geometric Barrier)
+
+Figure 1: Comparison of ratio-based trust region mechanisms. MAPPO’s additive clipping creates zero-gradient regions after ratio outliers cross the clipping bounds. MASPO restores gradient flow with a soft quadratic penalty, but its cost remains finite as r → 0. MARS replaces additive ratio control with a multiplicatively symmetric geometric barrier that preserves gradients on r > 0 and diverges as r → 0, making probability extinction non-optimal for the per-sample ratio surrogate. Existing additive trust-region mechanisms are brittle in this regime. MAPPO clips per-agent ratios to a fixed interval around the old policy. When a sample crosses the clipping boundary in the improving direction, its policy-gradient contribution is zeroed. In CTDE, this can remove corrective information from precisely the samples most affected by high-variance joint advantages, allowing policy drift to accumulate across minibatch updates. MASPO addresses this truncation by replacing hard clipping with a soft quadratic penalty, so samples outside the nominal trust region continue to provide gradients. However, because the penalty is defined by additive distance from the old policy, it remains finite as the probability ratio approaches zero, corresponding to probability extinction for the sampled action. A large negative joint advantage can therefore dominate the penalty and continue decreasing the probability of a sampled action, even when that negative signal reflects teammate exploration or a transient coordination failure. This can reduce exploration over actions that remain useful for coordination (Agarwal et al., 2021a). The shared limitation is that MAPPO and MASPO measure ratio changes additively around one, even though probability ratios represent relative changes in action probability. Additive bounds treat equal numerical changes above and below one as symmetric, but expansion and contraction are naturally symmetric only as multiplicative inverses. In MAPPO, this makes the clipping thresholds geometrically asymmetric: contraction can proceed farther than expansion before truncation. In MASPO, the same additive geometry appears as a quadratic penalty whose cost remains finite as the probability ratio approaches zero. Under high-variance joint advantages, noisy negative signals can suppress useful actions more aggressively than intended, while the objective provides either no corrective gradient after clipping or only finite resistance near probability collapse. We introduce Multi-Agent Ratio Symmetry (MARS) , a CTDE policy optimization objective that replaces additive ratio control with a multiplicatively symmetric geometric barrier. MARS preserves smooth gradients over the valid ratio domain and assigns unbounded cost as probability ratios approach zero. It therefore retains gradient information from outlier samples while allowing negative-advantage actions to be down-weighted without making ratio extinction optimal. 
+
+Contributions. We contribute: (i) MARS, a CTDE-focused full-gradient trust-region objective for cooperative MARL based on a multiplicatively symmetric geometric barrier; (ii) theoretical results showing that MARS preserves corrective gradients and imposes an infinite barrier as probability ratios approach zero; (iii) two JAX-native benchmarks, PaxMen for coordinated exploration and AeroJAX for continuous 3D aerial combat; and (iv) an eight-environment, 47-task evaluation showing that MARS matches or exceeds MAPPO and MASPO in aggregate environment-level performance, with ablations attributing the gains to the curvature of the symmetric barrier rather than flexible trust-region boundaries alone. 22 Background 
+
+2.1 Problem Formulation 
+
+We model cooperative MARL as a decentralized partially observable Markov decision process (Dec-POMDP) (Oliehoek & Amato, 2016) M = ⟨I , S, {A i}i∈I , {O i}i∈I , T, O, R, b 0, γ ⟩. Here, 
+
+I = {1, . . . , n } is the set of agents, S is the state space, and each agent i has action and observation spaces Ai and Oi. At timestep t, agents take a joint action at = ( a1,t , . . . , a n,t ), the environment transitions according to st+1 ∼ T (st, at), and each agent receives a local observation oi,t +1 . All agents share the reward rt = R(st, at).The objective is to learn decentralized policies πi(ai,t | hi,t ), where hi,t is agent i’s local action-observation history, that maximize J = E[P∞ 
+
+> t=0
+
+γtrt]. In centralized training with decentralized execution (CTDE), actors condition only on local histories at execution time, while training may use centralized information to estimate value functions or advantages. 
+
+2.2 Multi-Agent Proximal Policy Optimization 
+
+Multi-Agent Proximal Policy Optimization (MAPPO) (Yu et al., 2022) adapts the clipped ratio objective of PPO (Schulman et al., 2017) to CTDE by combining decentralized actors with a centralized critic. For each agent i, MAPPO forms the per-agent probability ratio 
+
+ri,t (θ) = πθ (ai,t | hi,t )
+
+πθold (ai,t | hi,t ) , (1) and weights the policy update by a joint advantage estimate bAt. The per-agent MAPPO objective is 
+
+LMAPPO  
+
+> i,t
+
+(θ) = min 
+
+
+
+ri,t (θ) bAt, clip( ri,t (θ), 1 − ϵ, 1 + ϵ) bAt
+
+
+
+, (2) where ϵ controls the clipping range. 
+
+2.3 Multi-Agent Simple Policy Optimization 
+
+Multi-Agent Simple Policy Optimization (MASPO) (Selmonaj et al., 2025) extends the soft-penalty objective of Simple Policy Optimization (SPO) (Xie et al., 2025) to CTDE MARL. Using the same per-agent ratio ri,t (θ) and joint advantage estimate bAt, MASPO replaces clipping with an additive quadratic penalty: 
+
+LMASPO  
+
+> i,t
+
+(θ) = ri,t (θ) bAt − | bAt|
+
+2ϵ (ri,t (θ) − 1) 2 . (3) The quadratic term softly penalizes deviations of the per-agent ratio from one while retaining gradient flow outside the nominal trust region. 
+
+3 Multi-Agent Ratio Symmetry 
+
+3.1 Motivation: Joint Advantage Variance Exposes Ratio-Control Failures 
+
+The preceding section defined MAPPO and MASPO as per-agent ratio objectives weighted by a joint advantage estimate. This combination is central to CTDE policy optimization: each decentralized actor is updated through a local probability ratio, while the learning signal reflects the joint behavior of all agents. As teammates adapt, the same local action can receive different advantage estimates across updates because the critic evaluates outcomes under a non-stationary joint policy (Lyu et al., 2023; Foerster et al., 2018). Thus, high-variance joint advantage estimates are applied directly to per-agent probability ratios. 
+
+3.1.1 Gradient Truncation in MAPPO 
+
+In MAPPO, the additive trust region is enforced through hard clipping bounds [1 − ϵ, 1 + ϵ], as shown in Figure 1. The clipped objective removes gradients when a sample crosses the clipping boundary in 3the improving direction. For the per-agent, single-step clipped objective, the ratio-gradient is 
+
+∂LMAPPO 
+
+> i,t
+
+∂r i,t 
+
+=
+
+( bAt, if |ri,t (θ) − 1| < ϵ or sign( bAt)( ri,t (θ) − 1) < 0,
+
+0, otherwise . (4) See Appendix B.1 for the derivation. In CTDE, this truncation is consequential because ratio outliers are often produced by high-variance joint advantage estimates. Once a transition is clipped, its objective term no longer provides a gradient that pulls the ratio back toward the trust region. Since policy parameters are shared across transitions in a minibatch, updates from other active samples can still move the clipped ratio further from the old policy. Without a smooth restoring signal for clipped outliers to counteract this drift, MAPPO allows the policy to drift arbitrarily far from the constraint, undermining the monotonic improvement guarantee (Wang et al., 2020; Xie et al., 2025; Engstrom et al., 2019). 
+
+3.1.2 Finite Penalty in MASPO 
+
+MASPO removes MAPPO’s hard clipping and restores gradient flow by replacing the clipped objective with a soft quadratic penalty, 
+
+ψMASPO (r) = ( r − 1) 2. (5) This penalty is defined using additive distance from one. As a result, it assigns finite cost to probability extinction: 
+
+lim 
+
+> r→0+
+
+(r − 1) 2 = 1 . (6) Thus, MASPO maintains gradients outside the nominal trust region, but its penalty remains bounded as the probability ratio approaches zero. This bounded cost matters under joint advantage noise. A large negative joint advantage can dominate the finite penalty and continue decreasing the probability of the sampled action. Because the joint advantage may reflect teammate exploration or temporary coordination failure, this update can prematurely suppress actions that remain useful for future coordination, contributing to near-deterministic policies (Agarwal et al., 2021a). 
+
+3.1.3 Additive Ratio Geometry as a Common Structure 
+
+MAPPO and MASPO fail through different mechanisms, but both regulate probability-ratio change using additive distance from r = 1 . In MAPPO, the additive interval [1 − ϵ, 1 + ϵ] determines where clipping occurs. This interval is symmetric as a numerical distance from one, but it is not symmetric as a relative change in probability. For example, with ϵ = 0 .2, the lower bound 0.8 corresponds to a 
+
+20% contraction, whose inverse expansion is 1/0.8 = 1 .25 , while the upper bound permits expansion only to 1.2. Thus, before clipping occurs, MAPPO permits a stronger multiplicative contraction than expansion. Once the lower boundary is crossed for a negative-advantage sample, the clipped objective removes the gradient, so the same additive boundary both permits geometrically uneven contraction and then removes the corrective signal after the sample becomes an outlier. MASPO uses the same additive parameterization in soft form: its quadratic penalty depends on distance from r = 1 . This restores gradient flow outside the nominal trust region, but the penalty remains finite as r → 0. As a result, a sufficiently large negative joint advantage can continue pushing the sampled-action ratio toward zero. Thus, MAPPO’s truncation and MASPO’s collapse are distinct failures, but both arise from controlling relative probability changes through additive distance around 
+
+r = 1 .The geometric issue is clearer in log-ratio space. Probability ratios encode relative change: expansion by r is naturally inverted by contraction by 1/r . These inverse changes are symmetric in u = log r,since r and 1/r become u and −u. Additive neighborhoods around one do not preserve this symmetry, while the collapse limit r → 0 corresponds to u → −∞ . This motivates replacing additive ratio control with a regularizer defined by multiplicative symmetry rather than numerical distance from one. 
+
+3.2 The Symmetric Ratio Objective 
+
+The preceding analysis suggests three criteria for a CTDE-compatible ratio regularizer: 41. Smooth corrective gradients: The objective should remain differentiable across the valid ratio domain so that outlier samples continue to provide gradient information rather than being removed by clipping. 2. Unbounded extinction barrier: The penalty should diverge as r → 0+, ensuring that no finite negative joint advantage can make probability extinction optimal. 3. Multiplicative symmetry: The penalty should satisfy ψ(r) = ψ(1 /r ), treating expansion and contraction as inverse changes in probability rather than as unequal additive deviations from one. 
+
+3.2.1 The Multi-Agent Ratio Symmetry Penalty 
+
+Many ratio penalties could satisfy these criteria. We choose a geometric symmetrization of MASPO’s additive quadratic penalty because it aligns with the multiplicative geometry of probability ratios while keeping the construction directly comparable to MASPO. In particular, the geometric mean treats a ratio and its inverse as paired deviations, preserves local quadratic behavior near r = 1 , and changes the penalty primarily by replacing additive distance with multiplicative symmetry. Concretely, we construct the Multi-Agent Ratio Symmetry (MARS) penalty by symmetrizing the MASPO quadratic penalty under the transformation r 7 → 1/r . Applying geometric symmetrization to (r − 1) 2 yields 
+
+ψMARS (r) = r + 1
+
+r − 2. (7) See Appendix B.2 for the derivation. This penalty is zero at r = 1 , smooth for all r > 0, and symmetric under inversion by design. The linear term penalizes unbounded expansion as r → ∞ ,while the reciprocal term creates an unbounded barrier as r → 0+.The derivative of the penalty with respect to the ratio is 
+
+ddr ψMARS (r) = 1 − 1
+
+r2 . (8) As r → 0+, the reciprocal-gradient term dominates. Therefore, when a large negative joint advantage pushes a sampled-action ratio downward, the MARS penalty contributes an increasingly strong opposing term in ratio space. Now consider the per-agent, one-step ratio surrogate 
+
+LMARS  
+
+> i,t
+
+(θ) = ri,t (θ) bAt − αtψMARS 
+
+ ri,t (θ), (9) where αt > 0 controls the penalty strength. The ratio-gradient is 
+
+∂LMARS 
+
+> i,t
+
+∂r i,t 
+
+= bAt − αt
+
+
+
+1 − 1
+
+ri,t (θ)2
+
+
+
+. (10) Equation 10 shows the key barrier mechanism. For negative joint advantages, the linear surrogate can favor reducing the sampled-action ratio, but as r → 0+ the reciprocal term in the MARS penalty dominates any finite advantage. Thus, MARS can reduce ratios for negative-advantage samples while preventing ratio extinction from becoming optimal. Proposition 3.1 formalizes this limit behavior. 
+
+Proposition 3.1 (Barrier Against Probability Extinction) . Let r > 0 and consider the per-agent, one-step MARS surrogate 
+
+L(r) = r bA − αψ MARS (r),
+
+with α > 0 and ψMARS (r) = r + 1 
+
+> r
+
+− 2. Then 
+
+lim  
+
+> r→0+
+
+L(r) = −∞ , lim 
+
+> r→0+
+
+∂L
+
+∂r = + ∞.
+
+Consequently, probability extinction is never an optimizer of the per-sample ratio surrogate, and the ratio-gradient points away from zero in a neighborhood of r = 0 . Full proof in Appendix B.3. 
+
+Having established the barrier behavior near r = 0 , we now consider the second desired property: preserving gradient information for ratio outliers rather than creating clipped zero-gradient regions. 5Proposition 3.2 (No Gradient Truncation) . Let r > 0, α > 0, and bA ∈ R be finite. For the MARS surrogate 
+
+L(r) = r bA − αψ MARS (r), ψMARS (r) = r + 1
+
+r − 2,
+
+the ratio-gradient 
+
+∂L
+
+∂r = bA − α
+
+
+
+1 − 1
+
+r2
+
+
+
+has no zero-gradient interval on (0 , ∞). Full proof in Appendix B.4. 
+
+Proposition 3.2 shows that the MARS trust-region mechanism does not create MAPPO-style gradient truncation. Gradients may vanish at isolated stationary points, but there is no interval of ratios for which outlier samples stop contributing gradient information solely because they crossed a clipping boundary. Together, Propositions 3.1 and 3.2 show that MARS assigns unbounded cost as probability ratios approach zero while avoiding gradient truncation. 
+
+3.2.2 Trust Region Alignment 
+
+The MARS penalty defines the shape of the ratio regularizer, while the scalar penalty weight αt
+
+determines how strongly that penalty is applied. We choose αt so that the advantage term and penalty term balance at the prescribed target ratio, making that ratio the stationary point of the one-step surrogate. This target plays the same role as the clipping boundary in MAPPO or the ϵ-aligned optimum in MASPO, but is specified directly in multiplicative ratio space rather than through additive bounds around one. This distinction matters because additive bounds of the form (1 ± ϵ) are not multiplicatively symmetric: the lower and upper bounds are not reciprocal. We therefore define separate target ratios for expansion and contraction: • Expansion target ( Bupper > 1): the intended boundary for up-weighting actions with 
+
+bAt ≥ 0.• Contraction target ( Blower < 1): the intended boundary for down-weighting actions with 
+
+bAt < 0.
+
+Target-ratio alignment for αt. Let rtarget = Bupper for bAt ≥ 0 and rtarget = Blower otherwise. We set αt by requiring the ratio-gradient of the one-step surrogate to vanish at rtarget . Since 
+
+∂LMARS 
+
+> i,t
+
+∂r i,t 
+
+= bAt − αt 1 − 1
+
+r2
+
+> i,t
+
+!
+
+, ∂LMARS 
+
+> i,t
+
+∂r i,t ri,t =rtarget 
+
+= 0 ,
+
+we obtain 
+
+αt = bAt
+
+1 − r−2target 
+
+=
+
+
+
+> bAt
+> 1−B−2upper
+
+if bAt ≥ 0,
+
+> bAt
+> 1−B−2lower
+
+if bAt < 0. (11) When Bupper > 1 and Blower < 1, this yields αt ≥ 0 in both regimes. The standard ϵ-aligned MASPO scaling is recovered as the additive special case rtarget = 1 + sign( bAt)ϵ; see Appendix B.5. 
+
+Final objective. We now have the two ingredients needed to instantiate the MARS surrogate: a multiplicatively symmetric penalty shape and a penalty weight αt calibrated to the desired expansion or contraction target. Combining the penalty in Equation (7) and the aligned weight in Equation (11) with the base ratio surrogate in Equation (9) gives the final per-agent MARS objective: 
+
+LMARS  
+
+> i,t
+
+(θ) = ri,t (θ) bAt − αt
+
+
+
+ri,t (θ) + 1
+
+ri,t (θ) − 2
+
+
+
+. (12) Thus, MARS keeps the standard ratio-weighted policy-gradient term but replaces additive clipping or additive quadratic penalties with a calibrated multiplicatively symmetric barrier. The full actor objective averages this surrogate over agents and timesteps in the same CTDE training loop as MAPPO and MASPO. 6MAPPO MASPO MARS (Ours) (a) AeroJAX  (b) JaxNav  (c) MPE  (d) PaxMen    
+
+> (e) RWARE (f) Search and Rescue (g) SMAX (h) Connector
+
+Figure 2: Aggregated learning performance and probability of improvement. Results are aggregated across all tasks within each environment using per-task min-max normalization. Main plots depict the mean across 10 independent random seeds (shaded regions denote 95% confidence intervals). Inset plots show the aggregate probability that MARS improves upon baselines; if the probability of improvement is higher than 0.5 and the confidence intervals do not contain 0.5, then the results are statistically significant (Agarwal et al., 2021b). 
+
+4 Results 
+
+4.1 Experimental Setup 
+
+We use the JAX-based Mava library (de Kock et al., 2021) to compare MARS against standard MAPPO and MASPO. To isolate whether MARS gains arise from the symmetric barrier itself rather than from allowing separate expansion and contraction limits, we include four boundary-flexibility ablations. The asymmetric MAPPO ablation replaces the standard clipping interval 
+
+[1 − ϵ, 1 + ϵ] with [1 − ϵlower , 1 + ϵupper ]. The asymmetric MASPO ablation keeps the MASPO quadratic penalty but scales it using a sign-dependent target, rtarget = 1 + ϵupper for bAt ≥ 0 and 
+
+rtarget = 1 − ϵlower otherwise. The MARS ablations keep the MARS barrier fixed but constrain the target ratios: multiplicatively symmetric MARS uses Blower = 1 /B upper , while additively symmetric MARS uses Bupper = 1 + ϵ and Blower = 1 − ϵ. Exact objectives and search spaces are given in Appendix D.3.2. All comparisons therefore keep the simultaneous per-agent actor-update structure fixed and vary only the ratio objective or its trust-region targets. Sequential-update methods such as HATRPO and HAPPO (Kuba et al., 2022) modify the agent update order and factorize the multi-agent policy improvement step, making them complementary to the ratio-geometry question studied here rather than direct controls for this objective-level comparison. All methods share the same common hyperparameter search space, with trust-region parameters tuned separately using Optuna’s Tree-structured Parzen Estimator (Akiba et al., 2019). Methods with one tunable trust-region parameter receive 40 trials per task, while methods with separate upper and lower ratio bounds receive 80 trials per task to account for the larger search space. Agents share policy parameters and observe their agent ID; full hyperparameter ranges and training lengths are given in Appendix D. We evaluate across 47 cooperative MARL tasks spanning eight environments. Six are drawn from established JAX-based benchmark suites: SMAX, RWARE, Connector, MPE, JaxNav, and Search and Rescue (Bonnet et al., 2024; Rutherford et al., 2024b). We additionally introduce two JAX-native benchmarks designed to stress different multi-agent failure modes: PaxMen , a coordinated exploration benchmark with variable team sizes and stochastic maze layouts, and AeroJAX , a continuous-control aerial combat benchmark with attitude-dependent sensing and nonlinear 3D flight dynamics. Appendix C details each environment and how PaxMen and AeroJAX differ from the prior benchmarks on which they build. 7Table 1: Aggregate performance by environment. We report the interquartile mean (IQM) of per-task min-max normalized absolute episode returns (Gorsane et al., 2022), bounded by 95% stratified bootstrap confidence intervals. Scores are aggregated across all tasks within each environment using per-task min-max normalization, then IQM is computed over 10 independent seeds. Bold entries denote the top score for each environment. An asterisk (*) marks results where the confidence interval overlaps with that of the highest score. 
+
+Environment MAPPO MASPO MARS AeroJAX 0.82 (0 .79 ,0.85) 0.82 (0 .79 ,0.84) 0.91 (0 .90 ,0.91) 
+
+Connector 0.95 ∗ 
+
+> (0 .94 ,0.95)
+
+0.93 (0 .93 ,0.93) 0.95 ∗
+
+> (0 .95 ,0.95)
+
+JaxNav 0.88 (0 .87 ,0.89) 0.89 ∗ 
+
+> (0 .89 ,0.89)
+
+0.89 ∗
+
+> (0 .88 ,0.90)
+
+MPE 0.89 (0 .88 ,0.89) 0.88 (0 .88 ,0.89) 0.91 (0 .91 ,0.92) 
+
+PaxMen 0.49 (0 .43 ,0.54) 0.34 (0 .32 ,0.36) 0.72 (0 .59 ,0.79) 
+
+RWARE 0.36 (0 .34 ,0.40) 0.60 (0 .58 ,0.61) 0.71 (0 .69 ,0.72) 
+
+S & R 0.97 (0 .97 ,0.97) 0.94 (0 .94 ,0.94) 0.98 (0 .98 ,0.98) 
+
+SMAX 0.89 (0 .89 ,0.90) 0.82 (0 .81 ,0.82) 0.92 (0 .92 ,0.92) 
+
+4.2 Multi-Agent Benchmark Performance 
+
+Across 47 tasks in eight cooperative MARL environments, MARS matches or exceeds MAPPO and MASPO in aggregate performance, as shown in Table 1. Figure 2 summarizes environment-level learning curves and probability-of-improvement estimates, while Appendix F provides per-task learning curves for all 47 tasks. The probability-of-improvement insets in Figure 2 indicate statistically significant improvements over both baselines in six of the eight environments. These gains are most pronounced in two regimes: high-variance continuous control and discrete coordination tasks requiring sustained exploration. 
+
+Stability in continuous control. In continuous-control environments, MARS shows improved training stability, particularly in AeroJAX and JaxNav, where policy updates interact with high-variance dynamics and dense ratio changes. In Figure 2a–b, MAPPO and MASPO exhibit late-training degradation or plateauing, while MARS maintains higher returns through the end of training. Similar but smaller gains appear in MPE and Search and Rescue. These results are consistent with the mechanism proposed in Section 3: preserving ratio-space gradients while imposing a barrier near probability extinction can reduce instability from high-variance joint advantages. 
+
+Coordination in discrete control. In discrete coordination tasks, MARS performs especially well in sparser-reward environments such as PaxMen and RWARE, where agents must discover coordinated action sequences before receiving useful feedback. Because the MARS penalty assigns unbounded cost near probability extinction, it discourages premature removal of sampled actions from the policy support. This is consistent with the stronger performance observed in Figure 2d–e. In denser tasks such as SMAX and Connector, MARS also matches or improves over the baselines, suggesting that the same ratio-control mechanism remains useful even when rewards provide more frequent feedback. 
+
+4.3 Ablating Boundary Flexibility and Barrier Geometry 
+
+To separate objective geometry from boundary flexibility, we run long-horizon ablations on two high-variance continuous-control domains: AeroJAX 8v8 and JaxNav 11x11x4a. These tasks provide complementary diagnostics: AeroJAX combines continuous flight dynamics with multi-agent combat coordination, while JaxNav requires decentralized collision avoidance under local sensing. Figure 3 reports learning curves together with maximum- and minimum-ratio diagnostics for the ablation variants defined in Section 4.1. 
+
+Objective geometry. We first test whether MARS gains come from the geometric barrier rather than simply from using separately tuned expansion and contraction limits. In both domains, MARS maintains higher or more stable returns than the asymmetric baselines (Figures 3a and 3d). The ratio diagnostics show that asymmetric MASPO develops declining minimum ratios and large maximum-ratio spikes, especially in AeroJAX (Figures 3b–3c), while asymmetric MAPPO exhibits degradation 8MARS Asymmetric MAPPO Asymmetric MASPO Multiplicative Symmetric MARS Additive Symmetric MARS 0 2 4 6 8 
+
+> Timesteps 1e8
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Normalized mean episode return
+
+(a) AeroJAX: returns 0 2 4 6 8  
+
+> Timesteps 1e8
+> 0.0
+> 2.5
+> 5.0
+> 7.5
+> 10.0
+> 12.5
+> 15.0
+> 17.5
+> Mean Maximum Ratio
+
+(b) AeroJAX: max ratios 0 2 4 6 8  
+
+> Timesteps 1e8
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Mean Minimum Ratio
+
+(c) AeroJAX: min ratios 0.0 0.2 0.4 0.6 0.8 1.0 1.2 1.4  
+
+> Timesteps 1e9
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Normalized mean episode return
+
+(d) JaxNav: returns 0.0 0.2 0.4 0.6 0.8 1.0 1.2 1.4   
+
+> Timesteps 1e9
+> 0
+> 50
+> 100
+> 150
+> 200
+> 250
+> 300
+> Mean Maximum Ratio
+
+(e) JaxNav: max ratios 0.0 0.2 0.4 0.6 0.8 1.0 1.2 1.4   
+
+> Timesteps 1e9
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> Mean Minimum Ratio
+
+(f) JaxNav: min ratios 
+
+Figure 3: Ablation analysis across two continuous-control domains. We compare MARS against boundary-flexibility controls: asymmetric MAPPO, asymmetric MASPO, and two MARS target-parameterization variants. Across AeroJAX 8v8 and JaxNav 11x11x4a, MARS variants maintain more stable ratio dynamics than the asymmetric baselines: minimum and maximum ratios spike in asymmetric MASPO, while asymmetric MAPPO’s minimum ratios degrade. These failures are consistent with asymmetric MASPO’s finite resistance to vanishing ratios and asymmetric MAPPO’s clipped-gradient recovery failure. The stability of the MARS variants indicates that the geometric barrier is the main source of ratio stability, while flexible expansion and contraction targets primarily affect learning efficiency. in minimum ratios despite avoiding the largest upward spikes. In JaxNav, asymmetric MAPPO shows a sharper early minimum-ratio drop, while MASPO develops later ratio instability (Figures 3e–3f). In contrast, the MARS variants maintain more stable ratio dynamics across both environments. These results support the claim that the MARS penalty shape, not only boundary flexibility, contributes to stability. 
+
+Domain-specific failure modes. The two environments show different versions of the same ratio-control problem. In AeroJAX, asymmetric MASPO shows maximum-ratio spikes together with decreasing minimum ratios, consistent with finite resistance as ratios approach zero. Asymmetric MAPPO degrades more gradually, consistent with clipped samples losing corrective gradients after leaving the nominal trust region. In JaxNav, the MAPPO failure is sharper: minimum ratios drop early in training, while MASPO learns initially but has unstable ratios. Thus, the MARS barrier stabilizes ratio dynamics across environments even when the baseline failure mode differs. 
+
+Boundary symmetry and parameterization. Finally, we compare MARS with target-parameterization ablations that keep the MARS penalty fixed while restricting how expansion and contraction targets are chosen. Multiplicatively symmetric MARS maintains stable ratio dynamics in both domains, especially in the minimum-ratio panels (Figures 3c and 3f), indicating that the symmetric barrier is sufficient to avoid the most severe ratio pathologies. Additively symmetric MARS is also stable but learns more slowly, especially in AeroJAX (Figure 3a), suggesting that additive target choices are less efficient even with the MARS barrier. MARS with independently tuned expansion and contraction targets can learn faster or reach slightly higher returns, particularly in AeroJAX (Figure 3a), so target-ratio flexibility mainly affects learning speed rather than ratio stability. 
+
+5 Conclusion 
+
+We introduced Multi-Agent Ratio Symmetry (MARS), a policy optimization objective for CTDE cooperative MARL. MARS addresses two limitations of additive ratio-based trust-region methods: clipped objectives can remove corrective gradients for ratio outliers, while finite additive penalties can allow probability collapse under large negative joint advantages. By replacing additive ratio 9control with a multiplicatively symmetric geometric barrier, MARS preserves ratio-space gradients and makes probability extinction non-optimal for the per-sample surrogate. Aggregating performance across 47 tasks in eight environments, MARS matches or outperforms MAPPO and MASPO, with ablations indicating that the curvature of the symmetric barrier is the primary source of stability. These results suggest that aligning ratio regularization with multiplicative probability geometry is a useful direction for robust multi-agent policy optimization. 
+
+References 
+
+Agarwal, A., Kakade, S. M., Lee, J. D., and Mahajan, G. On the theory of policy gradient methods: Optimality, approximation, and distribution shift. Journal of Machine Learning Research , 22(98): 1–76, 2021a. Agarwal, R., Schwarzer, M., Castro, P. S., Courville, A. C., and Bellemare, M. Deep reinforcement learning at the edge of the statistical precipice. Advances in neural information processing systems ,34:29304–29320, 2021b. Akiba, T., Sano, S., Yanase, T., Ohta, T., and Koyama, M. Optuna: A next-generation hyperparameter optimization framework. In Proceedings of the 25th ACM SIGKDD international conference on knowledge discovery & data mining , pp. 2623–2631, 2019. Bonnet, C., Luo, D., Byrne, D., Surana, S., Abramowitz, S., Duckworth, P., et al. Jumanji: a diverse suite of scalable reinforcement learning environments in JAX. In Proceedings of the International Conference on Learning Representations (ICLR) , 2024. de Kock, R., Mahjoub, O., Abramowitz, S., Khlifi, W., Tilbury, C. R., Formanek, C., Smit, A., and Pretorius, A. Mava: a research library for distributed multi-agent reinforcement learning in jax. 
+
+arXiv preprint arXiv:2107.01460 , 2021. Ellis, B., Cook, J., Moalla, S., Samvelyan, M., Sun, M., Mahajan, A., Foerster, J., and Whiteson, S. Smacv2: An improved benchmark for cooperative multi-agent reinforcement learning. Advances in Neural Information Processing Systems , 36:37567–37593, 2023. Engstrom, L., Ilyas, A., Santurkar, S., Tsipras, D., Janoos, F., Rudolph, L., and Madry, A. Implemen-tation matters in deep rl: A case study on ppo and trpo. In International conference on learning representations , 2019. Foerster, J., Farquhar, G., Afouras, T., Nardelli, N., and Whiteson, S. Counterfactual multi-agent policy gradients. In Proceedings of the AAAI conference on artificial intelligence , volume 32, 2018. Gorsane, R., Mahjoub, O., de Kock, R. J., Dubb, R., Singh, S., and Pretorius, A. Towards a standardised performance evaluation protocol for cooperative marl. Advances in Neural Information Processing Systems , 35:5510–5521, 2022. Kuba, J. G., Chen, R., Wen, M., Wen, Y., Sun, F., Wang, J., and Yang, Y. Trust region policy optimisation in multi-agent reinforcement learning. In International Conference on Learning Representations , 2022. Lechner, M., Seyde, T., Wang, T.-H. J., Xiao, W., Hasani, R., Rountree, J., Rus, D., et al. Gigastep-one billion steps per second multi-agent reinforcement learning. Advances in Neural Information Processing Systems , 36:155–170, 2023. Li, C., Wang, T., Wu, C., Zhao, Q., Yang, J., and Zhang, C. Celebrating diversity in shared multi-agent reinforcement learning. Advances in Neural Information Processing Systems , 34:3991–4002, 2021. Liu, H.-S., Kuroki, S., Kozuno, T., Sun, W.-F., and Lee, C.-Y. Language-guided pattern formation for swarm robotics with multi-agent reinforcement learning. In 2024 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS) , pp. 8998–9005. IEEE, 2024. Lyu, X., Baisero, A., Xiao, Y., Daley, B., and Amato, C. On centralized critics in multi-agent reinforcement learning. Journal of Artificial Intelligence Research , 77:295–354, 2023. 10 Mahjoub, O., Abramowitz, S., de Kock, R. J., Khlifi, W., Toit, S. V. D., Daniel, J., Nessir, L. B., Beyers, L., Formanek, J. C., Clark, L., and Pretorius, A. Sable: a performant, efficient and scalable sequence model for MARL. In Forty-second International Conference on Machine Learning ,2025. Oliehoek, F. A. and Amato, C. A concise introduction to decentralized POMDPs , volume 1. Springer, 2016. Rutherford, A., Beukman, M., Willi, T., Lacerda, B., Hawes, N., and Foerster, J. No regrets: Investigating and improving regret approximations for curriculum discovery. Advances in Neural Information Processing Systems , 37:16071–16101, 2024a. Rutherford, A., Ellis, B., Gallici, M., Cook, J., Lupu, A., Ingvarsson Juto, G., Willi, T., Hammond, R., Khan, A., Schroeder de Witt, C., et al. Jaxmarl: Multi-agent rl environments and algorithms in jax. Advances in Neural Information Processing Systems , 37:50925–50951, 2024b. Saifullah, M., Papakonstantinou, K., Andriotis, C., and Stoffels, S. Multi-agent deep reinforcement learning with centralized training and decentralized execution for transportation infrastructure management. arXiv preprint arXiv:2401.12455 , 2024. Schulman, J., Wolski, F., Dhariwal, P., Radford, A., and Klimov, O. Proximal policy optimization algorithms. arXiv preprint arXiv:1707.06347 , 2017. Selmonaj, A., Del Rio, G., Schneider, A., and Antonucci, A. Coordinated strategies in realistic air combat by hierarchical multi-agent reinforcement learning. arXiv preprint arXiv:2510.11474 ,2025. Wang, Y., He, H., and Tan, X. Truly proximal policy optimization. In Uncertainty in artificial intelligence , pp. 113–122. PMLR, 2020. Xie, Z., Zhang, Q., Yang, F., Hutter, M., and Xu, R. Simple policy optimization. In Forty-second International Conference on Machine Learning , 2025. Yu, C., Velu, A., Vinitsky, E., Gao, J., Wang, Y., Bayen, A., and Wu, Y. The surprising effectiveness of ppo in cooperative multi-agent games. Advances in neural information processing systems , 35: 24611–24624, 2022. 
+
+A Limitations 
+
+MARS is designed for cooperative CTDE policy-gradient reinforcement learning with decentralized actors and joint advantage estimates. Its theoretical results characterize the per-sample ratio surrogate in ratio space, showing that the objective avoids clipped gradient plateaus and makes probability-ratio extinction non-optimal. These results do not constitute a global convergence guarantee for nonlinear neural-network training or a monotonic improvement guarantee for full multi-agent policy updates. Our experiments focus on cooperative MARL settings with shared rewards and centralized critics. Although the benchmark suite spans 47 tasks across eight environments, it does not cover compet-itive, mixed-motive, or open-ended multi-agent settings. The behavior of MARS in settings with independent rewards, learned communication, population-based training, or very large heterogeneous agent populations remains an open question. MARS also introduces target ratio parameters for expansion and contraction. We tune these parame-ters using the same protocol as the baselines and include ablations to separate objective geometry from boundary flexibility, but the method still requires selecting appropriate target ranges. Future work could study adaptive target selection, extensions to other multi-agent training paradigms, and stronger theoretical guarantees for full policy updates. 11 B Proofs and Derivations 
+
+B.1 MAPPO Clipped Objective Gradient 
+
+The per-agent MAPPO clipped surrogate is 
+
+LMAPPO  
+
+> i,t
+
+(θ) = min 
+
+
+
+ri,t (θ) bAt, clip( ri,t (θ), 1 − ϵ, 1 + ϵ) bAt
+
+
+
+, (13) where 
+
+ri,t (θ) = πθ (ai,t | hi,t )
+
+πθold (ai,t | hi,t )
+
+is the per-agent probability ratio and bAt is the joint advantage estimate. We derive the derivative of this objective with respect to ri,t away from the clipping kink points. At the clipping boundaries, the derivative can be interpreted using subgradients; these measure-zero cases do not affect the truncation argument. 
+
+Inside the trust region. If |ri,t (θ) − 1| ≤ ϵ, then 
+
+clip( ri,t (θ), 1 − ϵ, 1 + ϵ) = ri,t (θ).
+
+Therefore, 
+
+LMAPPO  
+
+> i,t
+
+= ri,t (θ) bAt, ∂LMAPPO 
+
+> i,t
+
+∂r i,t 
+
+= bAt. (14) 
+
+Above the trust region. If ri,t (θ) > 1 + ϵ, then the clipped ratio is 1 + ϵ, and 
+
+LMAPPO  
+
+> i,t
+
+= min 
+
+
+
+ri,t bAt, (1 + ϵ) bAt
+
+
+
+.
+
+If bAt > 0, the clipped term is smaller, so the objective is constant with respect to ri,t and the derivative is zero. If bAt < 0, the unclipped linear term is smaller, so the derivative is bAt.
+
+Below the trust region. If ri,t (θ) < 1 − ϵ, then the clipped ratio is 1 − ϵ, and 
+
+LMAPPO  
+
+> i,t
+
+= min 
+
+
+
+ri,t bAt, (1 − ϵ) bAt
+
+
+
+.
+
+If bAt > 0, the unclipped linear term is smaller, so the derivative is bAt. If bAt < 0, the clipped term is smaller, so the objective is constant with respect to ri,t and the derivative is zero. Combining these cases gives 
+
+∂LMAPPO 
+
+> i,t
+
+∂r i,t 
+
+=
+
+( bAt, if |ri,t (θ) − 1| < ϵ or sign( bAt)( ri,t (θ) − 1) < 0,
+
+0, otherwise . (15) Thus, MAPPO removes the ratio-gradient exactly for samples that cross the clipping boundary in the advantage-improving direction. 
+
+B.2 Symmetric Penalty Derivation 
+
+MASPO uses an additive quadratic penalty on the probability ratio, 
+
+ψMASPO (r) = ( r − 1) 2. (16) For probability ratios, the natural inverse of expansion by r is contraction by 1/r . To construct a penalty invariant under ratio inversion, we symmetrize the MASPO penalty by taking the geometric mean of the penalty evaluated at r and at 1/r :
+
+ψMARS (r) = pψMASPO (r)ψMASPO (1 /r ), r > 0. (17) Now, 
+
+ψMASPO (1 /r ) = 
+
+ 1
+
+r − 1
+
+2
+
+=
+
+ 1 − rr
+
+2
+
+= (r − 1) 2
+
+r2 . (18) 12 Substituting, 
+
+ψMARS (r) = 
+
+r
+
+(r − 1) 2 (r − 1) 2
+
+r2 =
+
+r (r − 1) 4
+
+r2 . (19) Since r > 0 and (r − 1) 2 ≥ 0, r (r − 1) 4
+
+r2 = (r − 1) 2
+
+r . (20) Expanding yields 
+
+ψMARS (r) = (r − 1) 2
+
+r = r2 − 2r + 1 
+
+r = r + 1
+
+r − 2. (21) This penalty is zero at r = 1 , symmetric under inversion, and diverges as r → 0+.
+
+B.3 Proof of Proposition 3.1: Barrier Against Probability Extinction 
+
+Let r ∈ (0 , ∞), let bA ∈ R be finite, and let α > 0. Consider 
+
+L(r) = r bA − αψ MARS (r), ψMARS (r) = r + 1
+
+r − 2. (22) Substituting the penalty gives 
+
+L(r) = r bA − αr − αr + 2 α. (23) 
+
+Objective limit. As r → 0+, the terms r bA and −αr vanish, and the constant 2α remains finite. The dominant term is −α/r . Since α > 0,
+
+lim 
+
+> r→0+
+
+− αr = −∞ . (24) Therefore, 
+
+lim  
+
+> r→0+
+
+L(r) = −∞ . (25) 
+
+Gradient limit. Differentiating with respect to r,
+
+∂L
+
+∂r = bA − α
+
+
+
+1 − 1
+
+r2
+
+
+
+= bA − α + αr2 . (26) As r → 0+, the finite terms bA − α are dominated by α/r 2. Since α > 0,
+
+lim 
+
+> r→0+
+
+αr2 = + ∞. (27) Hence, 
+
+lim 
+
+> r→0+
+
+∂L
+
+∂r = + ∞. (28) Thus, probability extinction is not an optimizer of the per-sample ratio surrogate, and in a neighbor-hood of r = 0 the ratio-gradient points toward increasing r.
+
+B.4 Proof of Proposition 3.2: No Gradient Truncation 
+
+Let r ∈ (0 , ∞), let bA ∈ R be finite, and let α > 0. The MARS surrogate is 
+
+L(r) = r bA − α
+
+
+
+r + 1
+
+r − 2
+
+
+
+. (29) 
+
+Smoothness. The function L is a linear combination of polynomial terms and the rational term 1/r .The only singularity of 1/r occurs at r = 0 , which is outside the domain (0 , ∞). Therefore, L is C∞
+
+on (0 , ∞).13 No gradient truncation. The ratio-gradient is 
+
+∂L
+
+∂r = bA − α + αr2 . (30) Suppose the gradient vanishes. Then 
+
+bA − α + αr2 = 0 , (31) which implies αr2 = α − bA. (32) If α − bA ≤ 0, this equation has no solution on r > 0. If α − bA > 0, then 
+
+r =
+
+r αα − bA , (33) which gives exactly one positive stationary point. Therefore, the zero-gradient set is either empty or a singleton. In particular, there is no nontrivial interval on which ∂L/∂r = 0 . Hence, unlike a clipped objective, the MARS trust-region mechanism introduces no gradient truncation in ratio space. 
+
+B.5 Trust Region Boundaries 
+
+The MARS ratio-gradient for agent i at timestep t is 
+
+∂LMARS 
+
+> i,t
+
+∂r i,t 
+
+= bAt − αt 1 − 1
+
+r2
+
+> i,t
+
+!
+
+. (34) To align the stationary point with an intended trust-region boundary, we choose a target ratio 
+
+rtarget > 0 with rtarget ̸ = 1 and enforce 
+
+∂LMARS 
+
+> i,t
+
+∂r i,t ri,t =rtarget 
+
+= 0 . (35) This gives 
+
+0 = bAt − αt
+
+ 1 − r−2target 
+
+ , (36) and therefore 
+
+αt = bAt
+
+1 − r−2target 
+
+. (37) 
+
+Additive ϵ-aligned target. If the target is expressed using the standard additive boundary, 
+
+rtarget = 1 + sign( bAt)ϵ, (38) then 
+
+αt = bAt
+
+1 −
+
+
+
+1 + sign( bAt)ϵ
+
+−2 . (39) 
+
+Multiplicative target ratios. For MARS, we specify the expansion and contraction targets directly: 
+
+rtarget =
+
+(
+
+Bupper , bAt ≥ 0,Blower , bAt < 0. (40) This yields 
+
+αt =
+
+bAt
+
+1 − B−2upper 
+
+, bAt > 0,
+
+bAt
+
+1 − B−2lower 
+
+, bAt < 0.
+
+(41) When Bupper > 1 and Blower < 1, αt > 0 in both nonzero-advantage regimes. For bAt > 0,the numerator and denominator are both positive. For bAt < 0, the numerator is negative and the denominator is negative because B−2lower > 1. If bAt = 0 , the corresponding policy-gradient term is zero; in implementation, this sample can be skipped for the actor update or assigned αt = 0 .14 C Environments 
+
+C.1 AeroJAX 
+
+Figure 4: Rendering of a two versus two dogfighting AeroJAX scenario. AeroJAX is a JAX-native multi-agent aerial combat environment built from the Gigastep frame-work (Lechner et al., 2023). Whereas Gigastep emphasizes high-throughput, arcade-style multi-agent simulation, AeroJAX increases the fidelity of the control problem by introducing decoupled 3D flight dynamics and attitude-dependent combat sensing. Agents must manage six-degree-of-freedom maneuvering, energy loss, lift-induced drag, turn coordination, and throttle control while engaging heuristic opponents in continuous 3D dogfighting scenarios. A key distinction from the original Gigastep setting is that sensing and combat are tied to aircraft attitude. AeroJAX uses view and weapons cones that rotate with each aircraft’s roll and pitch, so maintaining target lock requires coordinated control of orientation, speed, and relative position rather than planar pursuit alone. This makes the benchmark distinct from simplified kinematic environments such as MPE, JaxNav, and Search and Rescue: the learning problem combines continuous control, nonlinear flight coupling, partial observability, and multi-agent combat coordination. As a result, AeroJAX provides a high-variance stress test for policy optimization stability under dense ratio changes and complex dynamics. 
+
+Observation space. Each agent observes the environment through a limited view cone defined by specific horizontal and vertical angles and a maximum depth. The observation vector includes ego-specific flight data (roll, pitch, angle of attack, flight path angle) and a sorted list of detected entities. Observed attributes for these entities include relative position, heading, speed, health, team alignment, and unit type. Detection is stochastic based on distance, but agents can share target information with allies within a defined communication range. 
+
+Action space. The environment utilizes a continuous multi-dimensional action space representing aircraft control surfaces. Agents output a 3-dimensional vector corresponding to aileron command (roll rate), elevator command (angle of attack rate), and throttle (thrust fraction). 
+
+Reward. Agents achieve sparse rewards for killing enemies and sparse penalties for ally deaths. Winning the engagement (ending the episode with more allies alive than enemies) also provides a sparse reward. 15 C.2 PaxMen 
+
+Figure 5: Rendering of an example six-agent PaxMen layout. PaxMen is a JAX-native cooperative exploration benchmark based on the PacMen environment (Li et al., 2021). The original PacMen task uses a shared multi-agent setting in which agents coordinate to collect dots in a structured maze. PaxMen extends this setting by supporting larger team sizes, including four-, five-, and six-agent configurations, and by introducing stochastic layout variation across episodes. Rather than training on a single static map, agents encounter a fixed set of maze topologies with varying corridor orientations and lengths. This design makes PaxMen a diagnostic benchmark for decentralized coordinated exploration. Agents begin in a central hub and must disperse into branching corridors to maximize coverage without ex-plicit communication. Because agents are homogeneous and share rewards, successful policies must break symmetry and adopt complementary roles; policies that send multiple agents down the same corridor waste exploration capacity. This distinguishes PaxMen from combat micro-management tasks such as SMAX and routing or transport benchmarks such as RWARE and Connector. Pax-Men instead isolates the challenge of sustained exploration and role differentiation under partial observability. 
+
+Observation space. Each agent observes a partial, local view of the environment defined by a 5 × 5
+
+grid centered on the agent. The observation is a flattened vector containing values representing walls, empty space, other agents, and dots. 
+
+Action space. The action space is discrete and consists of five actions: four cardinal movement directions (Up, Down, Left, Right) and a dedicated Eat action. Movement into walls is invalid and results in no position change. 
+
+Reward. Agents receive a global reward calculated as the sum of all individual agent contributions at each timestep. A positive reward of +1.0 is generated for consuming a dot; if multiple agents consume the same dot simultaneously, the reward is split such that the total team gain remains +1.0. A small step penalty of -0.025 is applied to encourage efficient exploration. The dots respawn once all have been consumed. 16 C.3 JaxNav 
+
+Figure 6: Rendering of an example three-agent JaxNav navigation scenario. JaxNav is a JAX-based continuous 2D navigation environment for differential-drive robots, originally introduced by Rutherford et al. (2024a) and included in the JaxMARL suite (Rutherford et al., 2024b). The environment tasks agents with navigating to specific goal regions while avoiding collisions with static obstacles and other dynamic agents. It relies exclusively on local range sensing without inter-agent communication, requiring agents to learn decentralized collision avoidance strategies. 
+
+Observation space. Each agent observes a local vector comprising three primary components: a set of 200 LiDAR range readings from a 360 ◦ scan (normalized by the maximum range of 6m), the agent’s current linear and angular velocities, and the relative goal direction in polar coordinates. The goal distance is clipped to the maximum LiDAR range to preserve local-only sensing constraints. 
+
+Action space. The environment features a continuous 2D action space governing differential-drive dynamics. Agents output a vector specifying the target linear velocity ( v) and angular velocity ( ω), which are executed subject to acceleration limits and kinematic constraints. 
+
+Reward. Agents receive a dense shaped reward based on their progress toward the goal (weighted at 0.25) combined with a sparse bonus of +4.0 for successfully reaching the target radius (0.3m). To ensure safety, penalties are applied for collisions (-4.0) and for breaching a minimum safety distance (LiDAR proximity < 0.3m). A small step penalty of -0.01 is applied to encourage time-optimal paths. In the multi-agent setting, the final reward is a convex combination of the agent’s individual reward and the collective team reward ( λ = 0 .5). 17 C.4 Search and Rescue 
+
+Figure 7: Rendering of an example four-agent Search and Rescue scenario. Search and Rescue is a continuous-space multi-agent coordination task from the Jumanji suite (Bonnet et al., 2024). A team of homogeneous searchers operates within a 2D square arena featuring wrap-around (toroidal) boundaries. The objective is to locate a set of potentially moving targets within a fixed time horizon. A target is considered "found" when a searcher navigates within a specific contact radius while having the target within its view cone. 
+
+Observation space. Agents perceive the environment through a segmented, ray-based local view. The primary observation is a multi-channel ray array where each ray encodes the normalized distance to the nearest entity along that vector. Channels separate entity types into other searchers, found targets, and unfound targets. Additionally, the observation vector includes lightweight scalar context, such as the fraction of targets remaining and the current timestep fraction. 
+
+Action space. Agents operate in a continuous multi-dimensional action space. Each agent outputs a 2-dimensional vector determining its change in heading ( ∆θ) and velocity ( ∆v). These commands are scaled by environment parameters to update the searcher’s position and orientation, with speed clipped to a fixed operational interval. 
+
+Reward. Rewards are strictly event-based and issued for new detections. An agent receives a reward of +1.0 when it detects a target that was previously unfound. If multiple agents discover the same target simultaneously, the reward is split evenly to maintain a constant team utility. By default, the magnitude of these rewards decays linearly over the episode duration to encourage rapid discovery. 
+
+C.5 Other environments 
+
+We refer to the Appendix in Mahjoub et al. (2025) for thorough descriptions of the other environments we use (Connector, MPE, RWARE, and SMAX) rather than re-writing them here. 
+
+D Hyperparameters 
+
+D.1 Overview 
+
+We use Optuna (Akiba et al., 2019), a Bayesian optimization framework, to systematically search for optimal hyperparameters across all algorithms. Our tuning procedure covers MARS, MAPPO, MASPO, and their ablation variants. 18 We employ the Tree-structured Parzen Estimator (TPE) sampler. MARS, asymmetric MAPPO, and asymmetric MASPO are allocated 80 trials for their tuning budget, while MAPPO, MASPO, and additive symmetric MARS and multiplicative symmetric MARS are allocated 40 trials for their tuning budget. This larger tuning budget accounts for the additional trust-region parameter in methods with independently tuned upper and lower bounds. 
+
+D.2 Evaluation Protocol 
+
+Each trial follows a rigorous multi-seed evaluation protocol to ensure statistical reliability: 1. Seeds: Five fixed seeds are used for each trial 2. Sequential evaluation: Seeds are evaluated one at a time with intermediate pruning checks 3. Performance metric: Mean evaluation return averaged over the final 20% of evaluation steps, which smooths end-of-training noise while focusing on final convergence quality 4. Trial objective: Mean performance across all 5 seeds 5. Optimization direction: Maximize evaluation return 
+
+D.3 Hyperparameter Search Spaces D.3.1 Common Hyperparameters 
+
+Table 2 shows the common hyperparameters tuned across all algorithms, inspired by the hyperparam-eter search space used by Mahjoub et al. (2025). Table 2: Common hyperparameters tuned across all algorithms. 
+
+Hyperparameter Search Space 
+
+Actor learning rate {10 −4, 2.5 × 10 −4, 5 × 10 −4}
+
+Critic learning rate {10 −4, 2.5 × 10 −4, 5 × 10 −4}
+
+Entropy coefficient {0.0, 10 −5, 10 −2}
+
+Value clipping epsilon {0.05 , 0.1, 0.2}
+
+Number of minibatches {2, 4, 8}
+
+PPO epochs {2, 4, 8}
+
+D.3.2 Algorithm-Specific Hyperparameters 
+
+All ablation variants use the same rollout, critic, optimizer, and shared-policy training loop as their corresponding base method. They differ only in the ratio objective or in how the trust-region target ratios are parameterized. 
+
+MARS. MARS uses the per-agent surrogate 
+
+LMARS  
+
+> i,t
+
+(θ) = ri,t (θ) bAt − αt
+
+
+
+ri,t (θ) + 1
+
+ri,t (θ) − 2
+
+
+
+,
+
+with independently tuned expansion and contraction targets 
+
+rtarget =
+
+(
+
+Bupper , bAt ≥ 0,Blower , bAt < 0, αt = bAt
+
+1 − r−2target 
+
+.
+
+We tune 
+
+Bupper ∈ { 1.05 , 1.1, 1.2, 2, 4, 6, 8, 10 }, Blower ∈ { 0.95 , 0.9, 0.8, 0.7, 0.5, 0.3, 0.1}.
+
+Multiplicatively symmetric MARS. This ablation keeps the MARS loss unchanged but constrains the target ratios to be reciprocal. For a single tuned target b > 1,
+
+Bupper = b, Blower = 1
+
+b .
+
+Thus expansion and contraction targets are multiplicative inverses. We tune 
+
+b ∈ { 1.05 , 1.1, 1.2, 1.5, 1.9}.
+
+19 Additively symmetric MARS. This ablation also keeps the MARS loss unchanged but constrains the target ratios using MAPPO-style additive symmetry. For a single tuned target b > 1, equivalently 
+
+ϵ = b − 1,
+
+Bupper = b = 1 + ϵ, Blower = 2 − b = 1 − ϵ. 
+
+Thus the only difference from MARS is the target-ratio parameterization used to compute αt. We tune 
+
+b ∈ { 1.05 , 1.1, 1.2, 1.5, 1.9}.
+
+MAPPO. Standard MAPPO uses the clipping interval [1 − ϵ, 1 + ϵ]:
+
+LMAPPO  
+
+> i,t
+
+(θ) = min 
+
+
+
+ri,t (θ) bAt, clip( ri,t (θ), 1 − ϵ, 1 + ϵ) bAt
+
+
+
+.
+
+We tune 
+
+ϵ ∈ { 0.05 , 0.1, 0.2}.
+
+Asymmetric MAPPO. For the asymmetric MAPPO ablation, we replace the standard symmetric clipping interval with independently tuned lower and upper clipping bounds: 
+
+clip ( ri,t (θ), 1 − ϵlower , 1 + ϵupper ) .
+
+The objective is otherwise identical to MAPPO. We tune 
+
+ϵupper ∈ { 0.05 , 0.1, 0.2, 1.0, 3.0, 5.0, 7.0, 9.0}, ϵlower ∈ { 0.05 , 0.1, 0.2, 0.3, 0.5, 0.7, 0.9}.
+
+MASPO. Standard MASPO uses the quadratic penalty 
+
+LMASPO  
+
+> i,t
+
+(θ) = ri,t (θ) bAt − | bAt|
+
+2ϵ (ri,t (θ) − 1) 2 .
+
+We tune the same single trust-region parameter as standard MAPPO: 
+
+ϵ ∈ { 0.05 , 0.1, 0.2}.
+
+Asymmetric MASPO. For the asymmetric MASPO ablation, we keep the MASPO quadratic penalty but choose its scale using a sign-dependent target ratio: 
+
+rtarget =
+
+(
+
+1 + ϵupper , bAt ≥ 0,
+
+1 − ϵlower , bAt < 0.
+
+Equivalently, the quadratic penalty coefficient is chosen so that the one-step MASPO surrogate has its stationary point at the corresponding upper or lower target: 
+
+Lasym -MASPO  
+
+> i,t
+
+(θ) = ri,t (θ) bAt − bAt
+
+2( rtarget − 1) (ri,t (θ) − 1) 2 .
+
+This coefficient is positive for both bAt > 0 and bAt < 0 because rtarget > 1 in the positive-advantage case and rtarget < 1 in the negative-advantage case. We tune the same independently selected upper and lower values used for asymmetric MAPPO. 
+
+Ablation Fairness. For fairness in our ablation study in Section 4.3, we re-tune MARS using the exact same asymmetric clipping bounds (converted to their target ratio forms as described in Appendix Section B.5) as asymmetric MAPPO and asymmetric MASPO; in other words, all algorithms share an identical hyperparameter search space. This ensures that, within the boundary-flexibility ablation, the differentiating factor between the three objectives is the objective itself. 
+
+D.4 Fixed Hyperparameters 
+
+To focus the hyperparameter search, we fix the following parameters across all trials (Table 3). 20 Table 3: Fixed hyperparameters across all tuning experiments. 
+
+Hyperparameter Value 
+
+Agent ID encoding True Update batch size 2Rollout length 128 Max gradient norm 0.5 GAE λ 0.95 Discount factor ( γ) 0.99 Value function coefficient 0.5 Learning rate decay False 
+
+D.5 Training/Tuning Lengths 
+
+We run each seed of each trial of each task for every environment except AeroJAX and JaxNav for approximately 40 million timesteps. Due to the higher complexity of AeroJAX and JaxNav, we allow for additional training time for those seeds, approximately 120 million timesteps. Final evaluation runs using tuned hyperparameters are run for twice the tuning length: approximately 240 million timesteps for AeroJAX and JaxNav and approximately 80 million timesteps for all other environments. Ablation runs in Section 4.3 are run for approximately one billion timesteps to evaluate long-horizon stability. 
+
+E Algorithm Pseudocode 
+
+Below is pseudocode for MARS in the same CTDE training loop used by MAPPO and MASPO, replacing only the actor objective. Although the pseudocode denotes the centralized critic as state-based, history-dependent critics such as V (h) and V (h, s ) can offer theoretical advantages (Lyu et al., 2023). However, computational constraints in large-scale tasks often necessitate state-based critics V (s). Our work utilizes a variety of critic inputs, depending on what was provided by the environment and the scale of the task. Additionally, the pseudocode writes the actor objective as a loss to be minimized, so the MARS surrogate and entropy bonus appear inside a leading negative sign. 21 Algorithm 1 Recurrent Multi-Agent Ratio Symmetry (MARS) with CTDE 
+
+1: Input: Initial policy parameters θ, critic parameters ϕ
+
+2: Hyperparameters: Expansion target Bupper > 1, Contraction target Blower < 1, learning rates 
+
+ηθ , η ϕ
+
+3: while training not converged do 
+
+4: Data Collection (Decentralized Rollout): 
+
+5: Collect batch D by running policies πθ (ai,t |hi,t ) for all agents i ∈ { 1, . . . , N }.
+
+6: Store trajectories τ = {(st, ht, at, r t, π old )}Tt=0 .
+
+7: // Note: Actors use local histories hi,t ; Critic uses global state st.
+
+8: Advantage Estimation (Centralized): 
+
+9: Compute joint advantages ˆAt and value targets Rt using GAE and centralized critic Vϕ(st).
+
+10: Optimization Loop: 
+
+11: for each epoch, minibatch b ∈ D do 
+
+12: Re-evaluate policies to get πθ (ai,t |hi,t ) and ratios ri,t (θ) = πθ (ai,t |hi,t )
+
+πold (ai,t |hi,t ) .
+
+13: 1. Trust Region Alignment: 
+
+14: rtarget ←
+
+Bupper if ˆAt ≥ 0
+
+Blower if ˆAt < 0
+
+15: 2. Target-aligned penalty weight and barrier: 
+
+16: // Shared penalty weight derived from the joint advantage and target ratio 
+
+17: αt ← ˆAt
+
+1−(rtarget )−2
+
+18: // Per-agent geometric barrier 
+
+19: ψMARS (ri,t ) ← ri,t + 1
+
+ri,t − 2
+
+20: 3. Independent Updates: 
+
+21: // Actor Update (Uses History hi,t and Joint Advantage ˆAt)
+
+22: LActor (θ) = −E
+
+h 1
+
+N
+
+PNi=1 
+
+
+
+ri,t (θ) ˆAt − αtψMARS (ri,t (θ)) + βH(πθ (·| hi,t )) 
+
+i 
+
+23: θ ← θ − ηθ ∇θ LActor 
+
+24: // Critic Update (Uses State st)
+
+25: LCritic (ϕ) = E (Vϕ(st) − Rt)2
+
+26: ϕ ← ϕ − ηϕ∇ϕLCritic 
+
+27: end for 
+
+28: end while 
+
+F Per-Task Performance 
+
+Below we provide a learning curve breakdown at the per-task level: MAPPO MASPO MARS (Ours) 0.0 0.5 1.0 1.5 2.0  
+
+> Timesteps 1e8
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Normalized mean episode return
+
+AeroJAX Dogfight 2v2 0.0 0.5 1.0 1.5 2.0   
+
+> Timesteps 1e8
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Normalized mean episode return
+
+AeroJAX Dogfight 4v4 0.0 0.5 1.0 1.5 2.0   
+
+> Timesteps 1e8
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> Normalized mean episode return
+
+AeroJAX Dogfight 8v8 0.0 0.5 1.0 1.5 2.0   
+
+> Timesteps 1e8
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> Normalized mean episode return
+
+JaxNav 11x11x4a 0.0 0.5 1.0 1.5 2.0   
+
+> Timesteps 1e8
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> Normalized mean episode return
+
+JaxNav 9x9x3a 0.0 0.5 1.0 1.5 2.0  
+
+> Timesteps 1e8
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Normalized mean episode return
+
+JaxNav 8x8x2a 0 1 2 3 4 5 6 7 8  
+
+> Timesteps 1e7
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> Normalized mean episode return
+
+MPE Simple Spread 10ag 0 1 2 3 4 5 6 7 8  
+
+> Timesteps 1e7
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Normalized mean episode return
+
+MPE Simple Spread 5ag 0 1 2 3 4 5 6 7 8  
+
+> Timesteps 1e7
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> 1.0
+> Normalized mean episode return
+
+MPE Simple Spread 3ag 0 1 2 3 4 5 6 7 8  
+
+> Timesteps 1e7
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> Normalized mean episode return
+
+PaxMen 4a 0 1 2 3 4 5 6 7 8 
+
+> Timesteps 1e7
+> 0.0
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> Normalized mean episode return
+
+PaxMen 5a 0 1 2 3 4 5 6 7 8  
+
+> Timesteps 1e7
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> Normalized mean episode return
+
+PaxMen 6a 0 1 2 3 4 5 6 7 8  
+
+> Timesteps 1e7
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> Normalized mean episode return
+
+RWARE Large 4ag 0 1 2 3 4 5 6 7 8  
+
+> Timesteps 1e7
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> Normalized mean episode return
+
+RWARE Large 4ag Hard 0 1 2 3 4 5 6 7 8  
+
+> Timesteps 1e7
+> 0.0
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> Normalized mean episode return
+
+RWARE Large 8ag 
+
+22 0 1 2 3 4 5 6 7 8
+
+Timesteps 1e7 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+> Normalized mean episode return
+
+RWARE Large 8ag Hard 0 1 2 3 4 5 6 7 8
+
+Timesteps 1e7 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8  
+
+> Normalized mean episode return
+
+RWARE Medium 4ag 0 1 2 3 4 5 6 7 8
+
+Timesteps 1e7 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8  
+
+> Normalized mean episode return
+
+RWARE Medium 4ag Hard 0 1 2 3 4 5 6 7 8
+
+Timesteps 1e7 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8  
+
+> Normalized mean episode return
+
+RWARE Medium 6ag 0 1 2 3 4 5 6 7 8
+
+Timesteps 1e7 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8  
+
+> Normalized mean episode return
+
+RWARE Small 4ag 0 1 2 3 4 5 6 7 8
+
+Timesteps 1e7 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+> Normalized mean episode return
+
+RWARE Small 4ag Hard 0 1 2 3 4 5 6 7 8
+
+Timesteps 1e7 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8  
+
+> Normalized mean episode return
+
+RWARE Tiny 2ag 0 1 2 3 4 5 6 7 8
+
+Timesteps 1e7 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0  
+
+> Normalized mean episode return
+
+RWARE Tiny 2ag Hard 0 1 2 3 4 5 6 7 8
+
+Timesteps 1e7 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8  
+
+> Normalized mean episode return
+
+RWARE Tiny 4ag 0 1 2 3 4 5 6 7 8
+
+Timesteps 1e7 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8  
+
+> Normalized mean episode return
+
+RWARE Tiny 4ag Hard 0 1 2 3 4 5 6 7 8
+
+Timesteps 1e7 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+> Normalized mean episode return
+
+RWARE XLarge 4ag 0 1 2 3 4 5 6 7 8
+
+Timesteps 1e7 
+
+0.0 
+
+0.1 
+
+0.2 
+
+0.3 
+
+0.4  
+
+> Normalized mean episode return
+
+RWARE XLarge 4ag Hard 0.0 0.5 1.0 1.5 2.0 2.5 3.0 3.5 4.0 
+
+Timesteps 1e7 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0  
+
+> Normalized mean episode return
+
+Search and Rescue 100tg 2ag 0.0 0.5 1.0 1.5 2.0 2.5 3.0 3.5 4.0 
+
+Timesteps 1e7 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0  
+
+> Normalized mean episode return
+
+Search and Rescue 200tg 4ag 0.0 0.5 1.0 1.5 2.0 2.5 3.0 3.5 4.0 
+
+Timesteps 1e7 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0  
+
+> Normalized mean episode return
+
+Search and Rescue 300tg 6ag 0.0 0.5 1.0 1.5 2.0 2.5 3.0 3.5 4.0 
+
+Timesteps 1e7 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> Normalized mean episode return
+
+Search and Rescue 400tg 8ag 0 1 2 3 4 5 6 7 8
+
+Timesteps 1e7 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8  
+
+> Normalized mean episode return
+
+SMAX 10m vs 11m 0 1 2 3 4 5 6 7 8
+
+Timesteps 1e7 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0  
+
+> Normalized mean episode return
+
+SMAX 27m vs 30m 0 1 2 3 4 5 6 7 8
+
+Timesteps 1e7 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0  
+
+> Normalized mean episode return
+
+SMAX 2s3z 0 1 2 3 4 5 6 7 8
+
+Timesteps 1e7 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0  
+
+> Normalized mean episode return
+
+SMAX 3s vs 5z 0 1 2 3 4 5 6 7 8
+
+Timesteps 1e7 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> Normalized mean episode return
+
+SMAX 3s5z 0 1 2 3 4 5 6 7 8
+
+Timesteps 1e7 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0  
+
+> Normalized mean episode return
+
+SMAX 3s5z vs 3s6z 0 1 2 3 4 5 6 7 8
+
+Timesteps 1e7 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8  
+
+> Normalized mean episode return
+
+SMAX 5m vs 6m 0 1 2 3 4 5 6 7 8
+
+Timesteps 1e7 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0  
+
+> Normalized mean episode return
+
+SMAX 6h vs 8z 0 1 2 3 4 5 6 7 8
+
+Timesteps 1e7 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8  
+
+> Normalized mean episode return
+
+SMAX SMACv2 10 Units 0 1 2 3 4 5 6 7 8
+
+Timesteps 1e7 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+> Normalized mean episode return
+
+SMAX SMACv2 20 Units 0 1 2 3 4 5 6 7 8
+
+Timesteps 1e7 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8  
+
+> Normalized mean episode return
+
+SMAX SMACv2 5 Units 0 1 2 3 4 5 6 7 8
+
+Timesteps 1e7 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0  
+
+> Normalized mean episode return
+
+Connector 10x10x10a 0 1 2 3 4 5 6 7 8
+
+Timesteps 1e7 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0  
+
+> Normalized mean episode return
+
+Connector 15x15x23a 0 1 2 3 4 5 6 7 8
+
+Timesteps 1e7 
+
+0.0 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0  
+
+> Normalized mean episode return
+
+Connector 18x18x33a 0 1 2 3 4 5 6 7 8
+
+Timesteps 1e7 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0 
+
+> Normalized mean episode return
+
+Connector 5x5x3a 0 1 2 3 4 5 6 7 8
+
+Timesteps 1e7 
+
+0.2 
+
+0.4 
+
+0.6 
+
+0.8 
+
+1.0  
+
+> Normalized mean episode return
+
+Connector 7x7x5a 
+
+Figure 9: Per-task learning performance. Plots depict the mean across 10 independent random seeds (shaded regions denote 95% confidence intervals). Per-task min-max normalization is used. 23
