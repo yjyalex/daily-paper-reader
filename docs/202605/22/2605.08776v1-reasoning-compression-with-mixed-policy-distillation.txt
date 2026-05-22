@@ -1,0 +1,428 @@
+Title: Reasoning Compression with Mixed-Policy Distillation
+
+URL Source: https://arxiv.org/pdf/2605.08776v1
+
+Published Time: Tue, 12 May 2026 00:44:17 GMT
+
+Number of Pages: 22
+
+Markdown Content:
+# Reasoning Compression with Mixed-Policy Distillation 
+
+Han Yang 1,2 ∗ Mingyan Wu 3∗ Bailan He 4,5 Zeyu Cao 6 Sikuan Yan 4
+
+Kevin Qinghong Lin 7 Zifeng Ding 6,8 ∗† 
+
+> 1
+
+Technical University of Munich, 2GESIS – Leibniz Institute for the Social Sciences, 
+
+> 3
+
+Northeastern University, 4LMU Munich, 5Siemens AG, 
+
+> 6
+
+University of Cambridge, 7University of Oxford, 8Mina AI 
+
+zifeng@mina-ai.co 
+
+# Abstract 
+
+Reasoning-centric large language models (LLMs) achieve strong performance by generating intermediate reasoning trajectories, but often incur excessive token us-age and high inference-time decoding cost. We observe that, when solving the same problems, larger reasoning models can often produce more concise traces, whereas smaller reasoning models tend to generate longer and more redundant trajectories. This is especially problematic in real-world deployment, where memory, latency, and serving-cost constraints often favor smaller models. Our observations suggest that reasoning compression can be transferred from large models to small ones rather than enforced through explicit length constraints. Based on this insight, we propose Mixed-Policy Distillation (MPD), a reasoning compression framework that transfers concise reasoning behavior from a larger-sized teacher to a smaller student by distilling teacher-compressed student trajectories. Unlike on-policy distillation, which aligns the student with teacher distributions over verbose student trajectories, or off-policy distillation, which relies on teacher-generated trajectories and may suffer from distribution mismatch, MPD combines the strengths of both. Given a student-sampled trajectory, the teacher rewrites it into a more concise rea-soning trace, and the student is trained via KL-based alignment on the compressed trajectory. This preserves student-policy exploration while injecting teacher-guided compression. Experiments on Qwen3-1.7B show that MPD reduces token usage by up to 27.1% while improving performance across multiple reasoning benchmarks, demonstrating an effective approach to efficient small-model reasoning. 
+
+# 1 Introduction 
+
+LLMs exhibit improved reasoning performance when equipped with explicit chain-of-thought (CoT) traces [ 1, 2]. Recent reasoning-centric models, such as OpenAI o1, DeepSeek-R1[ 3], and newer systems like GPT-5.5 and DeepSeek-V4, push this paradigm further by generating intermediate reasoning trajectories that often span tens of thousands of tokens per query. While such extended rea-soning improves accuracy, it also incurs substantial inference-time decoding cost, since computation scales with the length of the generated trace. This motivates the need for new paradigms that improve reasoning efficiency by reducing token usage, i.e., through reasoning compression. Reasoning inefficiency is especially pronounced in smaller models. We observe that, when solving the same reasoning problems, smaller reasoning models tend to produce longer traces with more redundant intermediate steps, whereas larger models often reach correct answers with substantially fewer tokens. For example, Qwen3-32B reduces token usage by around 23% compared with Qwen3-1.7B on the same problems (Fig. 1). This creates a practical tension: real-world deployment often  
+
+> ∗Equal contribution.
+> †Corresponding author. Preprint.
+> arXiv:2605.08776v1 [cs.AI] 9 May 2026 (a) Performance. (b) Token Consumption.
+
+Figure 1: Reasoning performance (a) and token usage (b) across models of different sizes from the same family. Evaluated on GSM8K, AIME24, and AIME25 using Pass@4 as the evaluation metric. favors smaller models because of memory, latency, and serving-cost constraints, yet these are precisely the models that suffer most from redundant reasoning. At the same time, the concision of larger models suggests a natural source of supervision: concise reasoning behavior can be transferred from a larger model to a smaller one, rather than imposed through explicit length penalties. Existing reasoning compression methods mainly fall into three categories. Training-free methods modify prompts or decoding strategies to elicit shorter traces [ 4, 5, 6, 7], but are prompt-sensitive and provide only shallow control over reasoning length. SFT- and RL-based methods directly optimise models for concise reasoning: SFT trains on externally shortened traces [ 8 , 9 , 10 ], creating a train-inference discrepancy because the student does not learn from its own reasoning behaviour, while RL [ 11 , 12 , 13 , 14 ] penalises length through reward design, often requiring ground-truth answers and risking suppression of useful exploration. More recently, CRISP [ 15 ] applies on-policy self-distillation to train on the student’s own generations and avoid distribution shift. However, it relies on a prompted variant of the student itself rather than actual generations from a stronger teacher, limiting compression quality. In this paper, we propose Mixed-Policy Distillation (MPD), a framework that combines on-policy student generation with external-teacher compression. Given a reasoning trajectory generated by the student, a larger-sized teacher rewrites it into a more concise version, and the student is trained to align with the rewritten trajectory via token-level KL divergence. This creates a mixed-policy signal: the trajectory structure comes from the student, while the compressed content comes from the teacher. Unlike previous methods, MPD preserves the student’s own problem-solving strategy while using the teacher to compress and refine that strategy into a more concise reasoning trace. MPD is designed for real-world deployment settings, where smaller models are often preferred, and reasoning compression is most needed for these less capable yet more practical models. We summarize our contributions as follows: • We propose Mixed-Policy Distillation, a reasoning compression framework that aligns a student with teacher-compressed versions of its own reasoning trajectories, preserving the student’s problem-solving strategy while using a larger-sized teacher to enable concise reasoning. • We instantiate MPD on OpenMathInstruct-2 [ 16 ] with Qwen3-1.7B [ 17 ] as the student and Qwen3-8B as the teacher, training without ground-truth supervision, reward models, or length penalties. On in-domain mathematical reasoning, MPD reduces inference tokens by 27.1% on Qwen3-1.7B while maintaining or improving accuracy. • We further evaluate MPD on out-of-domain reasoning tasks, including code reasoning and long-context reasoning. MPD consistently reduces token usage with improved performance, demonstrating that the compressed reasoning behavior generalizes beyond the training domain. 22 Related Work and Preliminaries 
+
+2.1 Related Work 
+
+We discuss notable related work on reasoning trace compression for reasoning-centric LLMs. 
+
+Training-Free Reasoning Compression. Large Language Models (LLMs) have demonstrated strong reasoning ability on complex tasks such as mathematics, code generation, and long-context reasoning [ 3, 18 , 19 , 20 , 21 ]. However, reasoning-centric LLMs often suffer from overthinking, producing unnecessarily verbose reasoning trajectories that increase decoding cost and latency [ 22 ,4 , 23 ]. A direct way to reduce reasoning length is to prompt models to produce only essential intermediate steps [ 4, 5 ]. Concise Chain-of-Thought [ 6 ] encourages shorter CoT traces, while Chain-of-Draft [ 7] asks models to capture only key information. Although simple and broadly applicable, these methods are sensitive to prompt design and remain far from the theoretical efficiency frontier [24]. 
+
+SFT and RL-Based Compression. Another line of work directly optimises models for concise reasoning. SFT-based methods train LLMs on shortened reasoning trajectories [ 8]. TokenSkip [ 9]learns controllable CoT compression by omitting non-essential tokens, while LiteCoT [ 10 ] fine-tunes models on pre-refined concise traces. However, because these compression targets are constructed externally, SFT introduces a train-inference discrepancy: the student learns from curated traces rather than its own reasoning behaviour, and is therefore not explicitly trained to compress or recover from the trajectories it will produce at inference time. RL-based methods instead encourage concise reasoning through length penalties or token budgets [ 11 , 12 ]. L1 [ 13 ] jointly optimises accuracy and token efficiency, while THINKPRUNE [ 14 ] trains long-thinking models under a strict token budget. Although effective in reducing reasoning length, these methods often require ground-truth answers to define correctness rewards and may suppress useful exploratory reasoning by directly penalising length. To address these limitations, MPD learns concise reasoning without ground-truth answers, externally curated compression targets, or manually designed length rewards, using the student’s own reasoning traces as the basis for training. 
+
+Distillation for Concise Reasoning. Distillation offers a natural way to learn reasoning compression by transferring efficient reasoning behaviour from teacher models to students. Off-policy distillation trains the student on teacher-generated reasoning trajectories, which can provide concise and high-quality traces, but may suffer from distribution mismatch because these trajectories do not come from the student’s own policy. On-policy distillation instead trains on student-generated trajectories, reducing exposure bias and better matching inference-time reasoning behaviour [ 25 , 26 , 27 , 28 ]. A recent work, i.e., CRISP [ 15 ], applies on-policy self-distillation to reasoning compression by inducing conciseness with explicit brevity instructions. However, it does not leverage the natural compression advantage of larger models. Motivated by our observation that larger models often solve the same problems with substantially shorter traces (Fig. 1), MPD further turns the teacher into a trajectory compressor, allowing concise reasoning behaviour to be transferred while keeping training grounded in the student’s own inference-time distribution. 
+
+2.2 Preliminaries: Off-Policy vs. On-Policy Distillation 
+
+We formalize off-policy and on-policy distillation for reasoning trajectory learning. We consider transferring reasoning behaviour from a stronger teacher model πt(· | x; ϕ) to a weaker student model πs(· | x; θ) with learnable parameters θ, where ϕ denotes the fixed teacher parameters. Given a question x ∼ D, let y = ( y1, . . . , y n) denote a reasoning trajectory together with the final answer. Distillation trains the student to match the teacher’s predictive behaviour along such trajectories, typically by minimizing a divergence Div( ·∥· ) between the student and teacher distributions. A key distinction between off-policy and on-policy distillation is the source of the training trajectories. Off-policy distillation trains on trajectories sampled from the teacher, yielding the objective 
+
+Loff = Ex∼D, y ∼πt(·| x;ϕ)
+
+" nX
+
+> i=1
+
+Div ( πs(· | x, y <i ; θ) ∥ πt(· | x, y <i ; ϕ)) 
+
+#
+
+. (1) 3Teacher-generated trajectories are often of higher quality, but they create a train-inference mismatch: the student is optimized under teacher-induced contexts rather than the contexts produced by its own generations [ 27 ]. Consequently, the student is not trained to recover from its own mistakes. At inference time, the student must reason over unseen questions under its own generated contexts. Since off-policy distillation trains it only on teacher-generated trajectories, the student is not explicitly exposed to the kinds of imperfect intermediate states it may produce itself, making recovery difficult and allowing errors to accumulate across reasoning steps. In contrast, on-policy distillation samples trajectories from the student model: 
+
+Lon = Ex∼D, y ∼πs(·| x;θ)
+
+" nX
+
+> i=1
+
+Div ( πs(· | x, y <i ; θ) ∥ πt(· | x, y <i ; ϕ)) 
+
+#
+
+. (2) This brings a key advantage: the student is aligned with the teacher under its own trajectory distribu-tion. Instead of learning only from teacher-induced contexts, the student is trained on the reasoning states it is likely to encounter during inference. This reduces the mismatch between training and inference, making the distillation objective better aligned with the student’s actual inference-time behaviour. In the context of reasoning compression, a teacher should be a model that reasons more efficiently, while the student is more prone to redundant and inefficient intermediate reasoning. Rooting from our observation in Fig. 1, we argue that a smaller reasoning model can be naturally supervised by its larger variant within the same model family, since the larger model provides useful signals for both task performance and token efficiency. We next introduce MPD, a distillation-based framework that mixes on- and off-policy learning: it samples trajectories from the student to preserve the student’s inference-time distribution, while using the larger teacher to compress these trajectories into concise reasoning traces. We then show in Sec. 4.2 with empirical evidence to explain why this mixed-policy design outperforms both standard on-policy and off-policy distillation. 
+
+# 3 Reasoning Compression with Mixed-Policy Distillation 
+
+Figure 2: Overview of MPD. We provide the overview of our proposed MPD in Fig. 2. MPD consists of three stages. First, given a question x ∼ D, the student model samples a reasoning trajectory with the final answer, 
+
+y ∼ πs(· | x; θ). Second, the larger teacher model compresses this student-generated trajectory into a compressed, semantically equivalent trace, denoted as ˜y = (˜ y1, . . . , ˜ym). Third, the student is trained on the compressed trajectory by minimizing the divergence between the student and teacher distributions conditioned on each prefix ˜y<i , using πt(· | x, ˜y<i ; ϕ) as the distillation target. Motivated by our observation that larger models often use substantially fewer tokens than smaller students when solving the same problems, MPD uses a larger teacher as the source of reasoning compression. Specifically, as shown in Table 1, the teacher is given the same question x together with the student-generated reasoning trace y, and is instructed to rewrite the trace into a more concise form. The compression prompt I is designed to preserve the student’s reasoning signal while allowing the teacher to improve its expression. We ask the teacher to remain faithful to the original student-generated reasoning, avoid introducing new solution paths or additional information, and keep only the steps necessary for answering the question. In this way, the compressed trajectory is not an independently generated teacher solution. Instead, it is a teacher-compressed version of the student’s own trajectory, which preserves the student’s problem-solving path and therefore 
+
+4Table 1: Compression prompt I for the teacher model. 
+
+> Compression Prompt for Teacher
+> Based on the provided reasoning, write a summary. The summary should integrate all relevant information from the original text that can help answer the specified question and form a coherent paragraph. Ensure that the summary includes all useful information from the original text for answering the question. Do not add new information. Question: { x}Reasoning: { y}Please provide the summary:
+
+keeps the training signal tied to the student policy. At the same time, the compression process is performed by the larger teacher under its own policy. When deciding which intermediate steps are necessary, which redundant parts can be removed, and how the remaining reasoning should be rewritten, the teacher injects its stronger ability to organise and express reasoning concisely. 
+
+Therefore, the resulting compressed trace ˜y combines two desirable properties: it remains aligned with the student-generated trajectory y, while reflecting the teacher’s stronger compression capability. This is the core mechanism that allows MPD to retain the distributional benefit of student-generated trajectories while transferring concise reasoning behaviour from a larger model. To verify whether teacher-compressed reasoning traces preserve the student’s reasoning strategy, we randomly sample 100 questions from OpenMathInstruct-2 [ 16 ]. For each question, we use Qwen3-1.7B as the student to generate an initial reasoning trajectory, and Qwen3-8B as the teacher to compress it. We then compute sentence embeddings for both the original student trajectory and the teacher-compressed trajectory using Sentence-BERT [ 29 ], and measure their cosine similarity. As a reference, we also compute the cosine similarity between each student-generated trajectory and another student-generated trajectory from a different randomly selected question within the same set of 100 questions. To further isolate the effect of using a larger teacher, we repeat the same compression procedure using also Qwen3-1.7B with the same compression prompt, and report the corresponding embedding similarity. In both teacher-compression and student-compression settings, we also record the compression rate (relative reduction in token usage). This allows us to evaluate whether compression preserves the semantic content of the student’s reasoning while reducing trajectory length. From Table 2, we can observe that our compression prompt substantially shortens the student-Table 2: Compression effect using different sizes of models with our prompt.          
+
+> Compressor Comp. Rate Sim. w. Init Sim. w. Rnd
+> Qwen3-1.7B 87.5% 0.8102 0.1660 Qwen3-8B 93.0% 0.8098 0.1659
+
+generated reasoning traces while preserving their se-mantic content. Qwen3-8B achieves a higher com-pression rate (Comp. Rate) than Qwen3-1.7B, re-ducing the trace length by 93.0% compared with 87.5%, which verifies that larger models are better at expressing reasoning concisely, even when the student is identical to the compressor in the Qwen3-1.7B compression setting. Meanwhile, both compressed traces remain highly similar to the initial student trajectory, with cosine similarity (Sim. w. Init) around 0.81, while their similarity to random trajectories (Sim. w. Rnd) is only around 0.16. This verifies that our compression prompt does not push the compressed trace far away from the original reasoning signal, but mainly removes redundant steps. After obtaining the compressed trajectory ˜y, we perform distillation on this trajectory. The MPD training objective is therefore defined as: 
+
+LMPD = Ex∼D, y ∼πs(·| x;θ), ˜y∼πt(·| x,y,I ;ϕ)
+
+" mX
+
+> i=1
+
+Div KL (πs(· | x, ˜y<i ; θ) ∥ πt(· | x, ˜y<i ; ϕ)) 
+
+#
+
+, (3) where Div KL (·∥· ) denotes the KL divergence. In this way, the student can benefit from the minimal distributional shift of trajectories derived from its own policy, while also leveraging the teacher’s policy to provide concise reasoning supervision. We further provide an algorithm of MPD in Alg. 1. 5Algorithm 1 Mixed-Policy Distillation 
+
+Require: Teacher model πt(·; ϕ), student model πs(·; θ), input dataset D
+
+Require: Compression instruction I, learning rate η, batch size B, number of training steps K 
+
+> 1:
+
+for each training step k = 1 , . . . , K do  
+
+> 2:
+
+Sample a batch of questions {xb}Bb=1 ∼ D 
+
+> 3:
+
+for each question xb do  
+
+> 4:
+
+Sample an on-policy reasoning trajectory from the student: yb ∼ πs(· | xb; θ) 
+
+> 5:
+
+Compress the student trajectory with the teacher: ˜yb ∼ πt(· | xb, y b, I ; ϕ) 
+
+> 6:
+
+end for  
+
+> 7:
+
+Update θ by minimizing the MPD objective: 
+
+θ ← θ − η∇θ
+
+1
+
+B
+
+> B
+
+X
+
+> b=1
+> |˜yb|
+
+X
+
+> i=1
+
+Div KL (πs(· | xb, ˜yb,<i ; θ) ∥ πt(· | xb, ˜yb,<i ; ϕ))  
+
+> 8:
+
+end for 
+
+# 4 Experiments 
+
+4.1 Experimental Setup Datasets & Evaluation Metrics. We use OpenMathInstruct-2 3, a massive, open-source mathemat-ical reasoning dataset, and adopt its train_1M split as the training data. For evaluation, following [ 10 ], we use three mathematical reasoning benchmarks: GSM8K [ 19 ], AIME24 [ 30 ], and AIME25 [ 31 ]. To evaluate generalization beyond math, we additionally use CodeMMLU [ 20 ] for code reasoning and LongBench-v2 [ 21 ] for long-context reasoning. We report Pass@4 (P@4) to measure reasoning performance, defined as whether at least one of four sampled generations answers the question correctly, and the average number of generated tokens (#Tok) to measure compression extent. 
+
+MPD Implementation Details. We use Qwen3-8B [ 17 ] as the teacher model and Qwen3-1.7B as the student model. During training, the student first generates a reasoning trajectory and final answer with a maximum length of 27,000 tokens. The teacher then compresses this trajectory into a concise reasoning trace with a maximum length of 10,000 tokens. All other generation-related hyperparameters follow the default settings of the original Qwen models. We train the student for 200 steps with a batch size of 8 on 4 NVIDIA H100 GPUs. More implementation details, including the complete hyperparameter settings, are provided in App. A. All results are averaged over three runs with different random seeds. 
+
+Baselines. We compare MPD with five baselines. First, we consider three training-free methods: Vanilla LLM, where Qwen3-1.7B directly answers the question without explicit compression; Direct Compression (Direct Comp.), which prompts the model to reason concisely (see Table 8 for the full prompt); and Chain-of-Draft[ 7], which prompts the model to keep only concise intermediate thoughts. Second, we compare with LiteCoT [ 10 ], an SFT-based method that refines reasoning trajectories and fine-tunes the Qwen3-1.7B on the resulting concise traces. Third, we consider CRISP [ 15 ], an on-policy self-distillation method for concise reasoning that uses the same model as both student and teacher, with the teacher conditioned on a “be concise” instruction and the student aligned on self-generated trajectories via reverse KL. Since CRISP is originally formulated as self-distillation, we adapt it to our teacher-student setting by using Qwen3-8B as the teacher and Qwen3-1.7B as the student, ensuring a fair comparison with MPD. All reported results are averaged over three runs with different random seeds. We provide implementation details of baseline methods in App. A.2. 
+
+4.2 Comparative Results Main Results. As shown in Table 3, we have several key findings: (1) MPD outperforms almost all baselines across diverse reasoning tasks 4. Compared with Vanilla LLM, MPD achieves a 4.5% 
+
+> 3https://huggingface.co/datasets/nvidia/OpenMathInstruct-2
+> 4MPD does not achieve the best overall rank on GSM8K because GSM8K is a relatively easy benchmark, where performance is already saturated even for the Vanilla LLM baseline.
+
+6Table 3: Overall performance and token usage. Colors represent the relative improvement ( Green ) or regression ( Red ) compared to the Vanilla LLM baseline.                                                                                                      
+
+> Method GSM8K AIME24 AIME25 CodeMMLU LongBench2 Avg.
+> P@4 #Tok P@4 #Tok P@4 #Tok P@4 #Tok P@4 #Tok P@4 #Tok
+> Vanilla LLM 94.5 2.1k 63.3 16.8k 53.3 17.7k 81.2 3.6k 48.7 0.9k 68.2 8.2k Direct Comp. 94.1 1.2k 70.0 14.5k 50.0 15.2k 82.0 2.4k 48.1 0.8k 68.9 6.9k Chain-of-Draft 42.8 0.6k 63.3 11.8k 50.0 13.0k 79.0 2.0k 40.8 1.8k 55.1 5.9k LiteCoT 52.0 1.2k 66.7 15.6k 46.7 14.6k 82.1 3.4k 36.6 2.0k 56.8 7.3k CRISP 94.3 1.7k 70.0 14.8k 56.6 16.3k 82.7 4.1k 49.9 1.0k 70.7 7.6k
+> MPD (Ours) 94.2 1.4k 73.3 13.4k 56.7 12.9k 82.8 2.3k 50.3 0.7k 71.3 6.1k
+> MPD Rank 3rd 4th 1st 2nd 1st 1st 1st 2nd 1st 1st 1st 2nd
+
+Table 4: Ablation study on different policy variants. Colors represent the relative improvement ( Green ) or regression ( Red ) compared to the Vanilla LLM baseline.                                                                                          
+
+> Method GSM8K AIME24 AIME25 CodeMMLU LongBench2 Avg.
+> P@4 #Tok P@4 #Tok P@4 #Tok P@4 #Tok P@4 #Tok P@4 #Tok
+> Off-Policy 94.2 2.8k 70.0 22.9k 53.3 21.9k 82.4 5.4k 51.7 1.0k 70.3 10.6k Off-Policy (C) 94.6 2.7k 66.6 20.8k 56.6 20.5k 82.2 4.5k 49.0 0.9k 69.8 9.9k On-Policy 94.0 3.1k 73.3 20.9k 53.3 21.9k 84.2 5.2k 47.9 1.0k 70.5 11.8k On-Policy (C) 94.1 2.1k 70.0 15.8k 56.7 17.0k 82.8 3.6k 48.3 1.0k 70.5 7.9k
+> MPD (Ours) 94.2 1.4k 73.3 13.4k 56.7 12.9k 82.8 2.3k 50.3 0.7k 71.3 6.1k
+> MPD Rank 2rd 1st 1st 1st 1st 1st 2nd 1st 2nd 1st 1st 1st
+
+relative improvement in Pass@4 and a 25.6% relative reduction in token usage on average, showing that reasoning compression can improve efficiency without sacrificing performance. We attribute this to concise reasoning reducing unnecessary iterative reflection, making the model less likely to overthink and allowing it to follow a more direct reasoning path. (2) Training-free compression methods can reduce token usage but often hurt reasoning quality. Chain-of-Draft substantially lowers token usage, but suffers from severe performance degradation, even underperforming Direct Comp., suggesting that forcing the model to produce sparse, “draft-like” intermediate thoughts can disrupt the continuous logical reasoning needed for problem solving [ 32 ]. (3) Fine-tuning on pre-refined traces provides only limited gains. Although LiteCoT performs slightly better than Chain-of-Draft, it still suffers from distribution mismatch caused by static off-policy supervision, since the student is not trained to compress its own reasoning trajectories. (4) On-policy distillation is helpful but insufficient without teacher-guided compression. Our adapted CRISP achieves a competitive Pass@4, benefiting from on-policy training over student-generated trajectories. However, it still trails MPD in both performance and compression because its compression signal mainly comes from brevity prompting rather than teacher-compressed student trajectories. In contrast, MPD distills over teacher-compressed versions of the student’s own reasoning traces, combining the inference-time alignment of on-policy learning with the compression advantage of the stronger teacher. 
+
+Ablation Studies. To better demonstrate MPD’s advantage, we perform ablation studies and report results in Table 4 on four controlled variants: Off-Policy denotes standard off-policy distillation, where the Qwen3-8B teacher generates full reasoning trajectories and the Qwen3-1.7B student is trained to match the teacher on these teacher-generated traces. On-Policy denotes standard on-policy distillation, where the Qwen3-1.7B student generates its own reasoning trajectories and is then trained to match the Qwen3-8B teacher under these student-generated traces. We also consider compressed variants using the same compression prompt as MPD. Off-Policy (C) denotes compressed off-policy distillation, where the teacher both generates and compresses the trajectories before the student is trained on the compressed teacher traces. On-Policy (C) denotes compressed on-policy distillation, where the student generates and compresses its own trajectories and is then trained to match the teacher on the resulting compressed traces. We have several findings: (1) On-Policy achieves good performance by training on the student’s own trajectory distribution, but it also produces the highest token usage. This suggests that on-policy learning reduces distribution mismatch, but 7(a) Comparison among different training methods. (b) MPD learning path. 
+
+Figure 3: Perplexity analysis of generated reasoning traces from different training methods under vanilla Qwen models. directly learning from verbose student trajectories can reinforce redundant reasoning patterns. (2) Off-Policy uses shorter teacher-generated trajectories, but does not outperform On-Policy, confirming the mismatch between teacher trajectories and the student’s own inference-time behaviour limits effective learning. (3) Explicit compression using MPD’s compression prompt consistently reduces token usage compared with the corresponding verbose variants. However, On-Policy (C) relies on the weaker student to compress its own trajectories, which can potentially remove useful reasoning steps and weaken performance, while Off-Policy (C) benefits from teacher compression but still suffers from off-policy supervision. (4) MPD achieves the best trade-off between performance and conciseness by combining the two necessary components: student-generated trajectories provide the on-policy reasoning backbone, and teacher-guided compression removes redundancy while preserving the underlying reasoning structure. 
+
+Why MPD Outperforms: a Perplexity Perspective. To better understand the effect of MPD, we analyze the perplexity of generated reasoning trajectories under the vanilla Qwen3-1.7B and Qwen3-8B. Specifically, we sample the same 100 questions from OpenMathInstruct-2 and let different trained models generate their own reasoning traces. We then evaluate each set of traces by computing the average perplexity across all questions under vanilla models. We also include the human-inspected reference solutions from OpenMathInstruct-2, which are expected to be non-redundant. As shown in Fig. 3a, the reference solutions do not have the lowest perplexity under either vanilla model, suggesting that concise, human-inspected reasoning is not simply the most likely continuation under the original model distributions. Standard On-Policy and Off-Policy trajectories have much lower perplexity under both vanilla models, indicating that they remain close to typical model-generated reasoning, but they are also far from the reference region. After explicit compression, both On-Policy (C) and Off-Policy (C) move toward the reference, showing that compression helps shift generated traces toward more concise reasoning. However, they do so differently. On-Policy (C) has high perplexity under both vanilla models, likely because the weaker student both generates and compresses its own traces. This can produce compressed trajectories that deviate from ordinary student generations while still lacking the teacher’s stronger ability to organize concise reasoning, making them less natural to both vanilla models. Off-Policy (C), in contrast, stays closer to vanilla Qwen3-8B than On-Policy (C), since both generation and compression are performed by the teacher. However, since its trajectories are generated entirely from the teacher policy, they remain less aligned with the vanilla Qwen3-1.7B distribution. MPD is closest to the reference among all variants: it uses student-generated traces to preserve the student-side distributional signal, while applying teacher compression to move the traces toward concise, reference-like reasoning. Finally, Fig. 3b shows the MPD learning path across training checkpoints. As training progresses from Step 20 to Step 100, the generated trajectories gradually move toward the reference solutions. This indicates that MPD provides a consistent learning signal that shifts the student away from redundant reasoning traces and toward more concise, reference-like reasoning behaviour. 8Table 5: Case study comparing MPD with On-Policy, On-Policy (C), and Off-Policy (C). Text in red 
+
+marks inefficient or incorrect reasoning, while text in blue marks MPD’s key correct reasoning. 
+
+Case: MPD vs. On-Policy, On-Policy (C), and Off-Policy (C). 
+
+Question: Let A, B, C, and D be points on the hyperbola x2 
+
+> 20
+
+− y2 
+
+> 24
+
+= 1 such that ABCD is a rhombus whose diagonals intersect at the origin. Find the greatest real number that is less than 
+
+BD 2 for all such rhombi. 
+
+Ground-Truth: 480 
+
+On-Policy Response (13.3k tokens, correct but verbose): Okay, so I need to solve this problem about a rhombus inscribed in a hyperbola. . . . Wait, so BD 2 can take various values, and we need to find the greatest number that is less than BD 2 for all such rhombi. That is, the infimum of BD 2? Wait, no. . . . After a long derivation, OPD obtains BD 2 = 480 · tt− 600 11 
+
+.Now, as t → ∞ , the expression approaches 480 . Thus, the infimum of BD 2 is 480 , and since 
+
+BD 2 > 480 for all such rhombi, the greatest real number less than BD 2 for all such rhombi is 
+
+480 .
+
+On-Policy (C) Response (7.7k tokens, incorrect): Okay, so I need to solve this problem about a rhombus inscribed in the hyperbola x2/20 − y2/24 = 1 . . . . Therefore, BD 2 = 4( r2 + s2) = 80 + 22 3 s2. So, since s2 is non-negative, BD 2 is at least 80 . Therefore, the minimal BD 2 is 
+
+80 . . . . Therefore, boxed answer is 80 .Off-Policy (C) Response (22.2k tokens, incorrect): Okay, so I need to solve this problem about a rhombus inscribed in a hyperbola. . . . This is very confusing. Given that the problem states such a rhombus exists, I must have made a mistake in my reasoning. . . . Therefore, BD 2 = 4 /k ,where k ∈ [−1/24 , 1/20] . Since k is in this range, and BD 2 = 4 /k , when k is negative, BD 2
+
+is negative, which is impossible. . . . Therefore, the answer is 80 , which is 80 .MPD Response (6.2k tokens, correct): Okay, let’s try to tackle this problem. . . . BD 2 is 
+
+16(5 sec 2 ϕ + 6 tan 2 ϕ). The diagonals are perpendicular, giving sin θ sin ϕ = −5/6. . . . 
+
+Therefore, BD 2 = 16(5 + 11 tan 2 ϕ). If tan 2 ϕ ≥ 25 /11 , then 5 + 11 tan 2 ϕ ≥ 30 , so 
+
+BD 2 ≥ 16 · 30 = 480 . Therefore, the answer is 480 .
+
+Case Study. We present a case study on an AIME24 question comparing MPD with On-Policy, On-Policy (C), and Off-Policy (C), with more examples in App.B. As shown in Table 5, MPD is the only method that is both correct and concise. Compared with On-Policy, which eventually reaches the correct answer but spends 13.3k tokens with repeated verification and unnecessary detours, MPD obtains the same answer using only 6.2k tokens, reducing the reasoning length by 53.38%. On-Policy (C) shortens the response to 7.7k tokens, but drops a crucial geometric constraint and incorrectly concludes that the answer is 80 . Off-Policy (C) is even longer, using 22.2k tokens, and still fails by following a confusing parametrization that leads to the same wrong answer. These failures show that compression without reliable reasoning can remove essential structure, while teacher-generated compressed traces alone may not align well with the student’s own problem-solving process. MPD combines student-side exploration with teacher-guided compression, thus achieving concise reasoning without discarding the key intermediate structure needed for correctness. 
+
+# 5 Conclusion 
+
+We propose Mixed-Policy Distillation (MPD), a reasoning compression framework that transfers concise reasoning behaviour from a larger teacher model to a smaller student model without requiring ground-truth answers, reward models, length penalties, or externally curated compressed traces. Motivated by the observation that larger reasoning models often solve the same problems with shorter traces, MPD samples trajectories from the student and uses the larger teacher to rewrite them into more concise reasoning traces. The student is then trained on these teacher-compressed student trajectories through KL-based distillation. Experiments across mathematical reasoning, code reasoning, and long-context reasoning benchmarks show that MPD consistently reduces token usage while maintaining or improving performance. Further analysis demonstrates that MPD’s advantage comes from combining student-side exploration with teacher-guided compression, enabling concise reasoning without discarding the key intermediate structure needed for correctness. Overall, MPD provides a practical path toward efficient small-model reasoning, reducing latency and computational cost while preserving strong problem-solving ability. 96 Limitations & Future Directions 
+
+MPD provides an efficient learning signal by aligning training with the student’s reasoning patterns while making trajectories concise. However, it does not explicitly optimize for correctness, so incorrect student-teacher trajectories may still be learned; adding correctness-aware signals could improve performance. MPD also requires full trajectories for teacher compression, which may be difficult under limited context windows. Future work can explore multi-step compression, where the teacher iteratively refines partial trajectories. See extended discussion in App. C. 
+
+Acknowledgment. We sincerely thank Prof. Andreas Vlachos for his valuable feedback and continuous support of Zifeng throughout this work. Han Yang received funding from the Deutsche Forschungsgemeinschaft (DFG) under grant number: MA 3964/15-3 (SocioHub project). Han Yang received additional funding from the European Union under the Horizon Europe grant OMINO – Overcoming Multilevel INformation Overload 5 under grant number 101086321 [33]. 
+
+# References 
+
+[1] Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Brian Ichter, Fei Xia, Ed H. Chi, Quoc V. Le, and Denny Zhou. Chain-of-thought prompting elicits reasoning in large language models. In Sanmi Koyejo, S. Mohamed, A. Agarwal, Danielle Belgrave, K. Cho, and A. Oh, editors, Advances in Neural Information Processing Systems 35: Annual Conference on Neural Information Processing Systems 2022, NeurIPS 2022, New Orleans, LA, USA, November 28 - December 9, 2022 , 2022. [2] Takeshi Kojima, Shixiang Shane Gu, Machel Reid, Yutaka Matsuo, and Yusuke Iwasawa. Large language models are zero-shot reasoners. In Sanmi Koyejo, S. Mohamed, A. Agarwal, Danielle Belgrave, K. Cho, and A. Oh, editors, Advances in Neural Information Processing Systems 35: Annual Conference on Neural Information Processing Systems 2022, NeurIPS 2022, New Orleans, LA, USA, November 28 - December 9, 2022 , 2022. [3] DeepSeek-AI. Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement learning. CoRR ,abs/2501.12948, 2025. [4] Yang Sui, Yu-Neng Chuang, Guanchu Wang, Jiamu Zhang, Tianyi Zhang, Jiayi Yuan, Hongyi Liu, Andrew Wen, Shaochen Zhong, Na Zou, Hanjie Chen, and Xia Hu. Stop overthinking: A survey on efficient reasoning for large language models. Trans. Mach. Learn. Res. , 2025, 2025. [5] Chenlong Wang, Yuanning Feng, Dongping Chen, Zhaoyang Chu, Ranjay Krishna, and Tianyi Zhou. Wait, we don’t need to "wait"! removing thinking tokens improves reasoning efficiency. In Christos Christodoulopoulos, Tanmoy Chakraborty, Carolyn Rose, and Violet Peng, editors, Findings of the Association for Computational Linguistics: EMNLP 2025, Suzhou, China, November 4-9, 2025 , pages 7459–7482. Association for Computational Linguistics, 2025. [6] Matthew Renze and Erhan Guven. The benefits of a concise chain of thought on problem-solving in large language models. In 2nd International Conference on Foundation and Large Language Models, FLLM 2024, Dubai, United Arab Emirates, November 26-29, 2024 , pages 476–483. IEEE, 2024. [7] Silei Xu, Wenhao Xie, Lingxiao Zhao, and Pengcheng He. Chain of draft: Thinking faster by writing less. 
+
+CoRR , abs/2502.18600, 2025. [8] Yu Kang, Xianghui Sun, Liangyu Chen, and Wei Zou. C3ot: Generating shorter chain-of-thought without compromising effectiveness. In Toby Walsh, Julie Shah, and Zico Kolter, editors, Thirty-Ninth AAAI Conference on Artificial Intelligence, Thirty-Seventh Conference on Innovative Applications of Artificial Intelligence, Fifteenth Symposium on Educational Advances in Artificial Intelligence, AAAI 2025, Philadelphia, PA, USA, February 25 - March 4, 2025 , pages 24312–24320. AAAI Press, 2025. [9] Heming Xia, Chak Tou Leong, Wenjie Wang, Yongqi Li, and Wenjie Li. Tokenskip: Controllable chain-of-thought compression in llms. In Christos Christodoulopoulos, Tanmoy Chakraborty, Carolyn Rose, and Violet Peng, editors, Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing, EMNLP 2025, Suzhou, China, November 4-9, 2025 , pages 3351–3363. Association for Computational Linguistics, 2025. [10] Yifan Wu, Jingze Shi, Bingheng Wu, Jiayi Zhang, Xiaotian Lin, Nan Tang, and Yuyu Luo. Concise reasoning, big gains: Pruning long reasoning trace with difficulty-aware prompting. CoRR , abs/2505.19716, 2025. 
+
+> 5https://ominoproject.eu/
+
+10 [11] Zhensheng Jin, Xinze Li, Yifan Ji, Chunyi Peng, Zhenghao Liu, Qi Shi, Yukun Yan, Shuo Wang, Furong Peng, and Ge Yu. Recut: Balancing reasoning length and accuracy in llms via stepwise trails and preference optimization. In Christos Christodoulopoulos, Tanmoy Chakraborty, Carolyn Rose, and Violet Peng, editors, Findings of the Association for Computational Linguistics: EMNLP 2025, Suzhou, China, November 4-9, 2025 , pages 14269–14282. Association for Computational Linguistics, 2025. [12] Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Mingchuan Zhang, Y. K. Li, Y. Wu, and Daya Guo. Deepseekmath: Pushing the limits of mathematical reasoning in open language models. 
+
+CoRR , abs/2402.03300, 2024. [13] Pranjal Aggarwal and Sean Welleck. L1: controlling how long A reasoning model thinks with reinforcement learning. CoRR , abs/2503.04697, 2025. [14] Bairu Hou, Yang Zhang, Jiabao Ji, Yujian Liu, Kaizhi Qian, Jacob Andreas, and Shiyu Chang. Thinkprune: Pruning long chain-of-thought of llms via reinforcement learning. Trans. Mach. Learn. Res. , 2026, 2026. [15] Hejian Sang, Yuanda Xu, Zhengze Zhou, Ran He, Zhipeng Wang, and Jiachen Sun. CRISP: Compressed reasoning via iterative self-policy distillation. arXiv preprint arXiv:2603.05433 , 2026. [16] Shubham Toshniwal, Wei Du, Ivan Moshkov, Branislav Kisacanin, Alexan Ayrapetyan, and Igor Gitman. Openmathinstruct-2: Accelerating AI for math with massive open-source instruction data. In The Thir-teenth International Conference on Learning Representations, ICLR 2025, Singapore, April 24-28, 2025 .OpenReview.net, 2025. [17] Qwen Team. Qwen3 technical report. CoRR , abs/2505.09388, 2025. [18] OpenAI. Openai o1 system card. CoRR , abs/2412.16720, 2024. [19] Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian, Mark Chen, Heewoo Jun, Lukasz Kaiser, Matthias Plappert, Jerry Tworek, Jacob Hilton, Reiichiro Nakano, Christopher Hesse, and John Schulman. Training verifiers to solve math word problems. CoRR , abs/2110.14168, 2021. [20] Dung Manh Nguyen, Thang Chau Phan, Nam Le Hai, Tien-Thong Doan, Nam V. Nguyen, Quang Pham, and Nghi D. Q. Bui. Codemmlu: A multi-task benchmark for assessing code understanding & reasoning capabilities of codellms. In The Thirteenth International Conference on Learning Representations, ICLR 2025, Singapore, April 24-28, 2025 . OpenReview.net, 2025. [21] Yushi Bai, Shangqing Tu, Jiajie Zhang, Hao Peng, Xiaozhi Wang, Xin Lv, Shulin Cao, Jiazheng Xu, Lei Hou, Yuxiao Dong, Jie Tang, and Juanzi Li. Longbench v2: Towards deeper understanding and reasoning on realistic long-context multitasks. In Wanxiang Che, Joyce Nabende, Ekaterina Shutova, and Mohammad Taher Pilehvar, editors, Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers), ACL 2025, Vienna, Austria, July 27 - August 1, 2025 ,pages 3639–3664. Association for Computational Linguistics, 2025. [22] Xingyu Chen, Jiahao Xu, Tian Liang, Zhiwei He, Jianhui Pang, Dian Yu, Linfeng Song, Qiuzhi Liu, Mengfei Zhou, Zhuosheng Zhang, Rui Wang, Zhaopeng Tu, Haitao Mi, and Dong Yu. Do NOT think that much for 2+3=? on the overthinking of o1-like llms. CoRR , abs/2412.21187, 2024. [23] Zorik Gekhman, Roee Aharoni, Eran Ofek, Mor Geva, Roi Reichart, and Jonathan Herzig. Thinking to recall: How reasoning unlocks parametric knowledge in llms. CoRR , abs/2603.09906, 2026. [24] Ayeong Lee, Ethan Che, and Tianyi Peng. How well do llms compress their own chain-of-thought? A token complexity approach. CoRR , abs/2503.01141, 2025. [25] Rishabh Agarwal, Nino Vieillard, Yongchao Zhou, Piotr Stanczyk, Sabela Ramos Garea, Matthieu Geist, and Olivier Bachem. On-policy distillation of language models: Learning from self-generated mistakes. In 
+
+The Twelfth International Conference on Learning Representations, ICLR 2024, Vienna, Austria, May 7-11, 2024 . OpenReview.net, 2024. [26] Yuxian Gu, Li Dong, Furu Wei, and Minlie Huang. Minillm: Knowledge distillation of large language models. In The Twelfth International Conference on Learning Representations, ICLR 2024, Vienna, Austria, May 7-11, 2024 . OpenReview.net, 2024. [27] Kevin Lu and Thinking Machines Lab. On-policy distillation. https://thinkingmachines.ai/blog/ on-policy-distillation/ , 2025. [28] Tianzhu Ye, Li Dong, Xun Wu, Shaohan Huang, and Furu Wei. On-policy context distillation for language models. CoRR , abs/2602.12275, 2026. 
+
+11 [29] Nils Reimers and Iryna Gurevych. Sentence-bert: Sentence embeddings using siamese bert-networks. In Kentaro Inui, Jing Jiang, Vincent Ng, and Xiaojun Wan, editors, Proceedings of the 2019 Conference on Empirical Methods in Natural Language Processing and the 9th International Joint Conference on Natural Language Processing, EMNLP-IJCNLP 2019, Hong Kong, China, November 3-7, 2019 , pages 3980–3990. Association for Computational Linguistics, 2019. [30] Yifan Zhang and Team Math-AI. American invitational mathematics examination (aime) 2024, 2024. [31] Yifan Zhang and Team Math-AI. American invitational mathematics examination (aime) 2025, 2025. [32] Yuanda Xu, Hejian Sang, Zhengze Zhou, Ran He, and Zhipeng Wang. Overconfident errors need stronger correction: Asymmetric confidence penalties for reinforcement learning. CoRR , abs/2602.21420, 2026. [33] Janusz A Hołyst, Philipp Mayr, Michael Thelwall, Ingo Frommholz, Shlomo Havlin, Alon Sela, Yoed N Kenett, Denis Helic, Aljoša Rehar, Sebastijan R Maˇ cek, et al. Protect our environment from information overload. Nature Human Behaviour , 8(3):402–403, 2024. [34] Adam Paszke, Sam Gross, Francisco Massa, Adam Lerer, James Bradbury, Gregory Chanan, Trevor Killeen, Zeming Lin, Natalia Gimelshein, Luca Antiga, Alban Desmaison, Andreas Köpf, Edward Z. Yang, Zachary DeVito, Martin Raison, Alykhan Tejani, Sasank Chilamkurthy, Benoit Steiner, Lu Fang, Junjie Bai, and Soumith Chintala. Pytorch: An imperative style, high-performance deep learning library. In Hanna M. Wallach, Hugo Larochelle, Alina Beygelzimer, Florence d’Alché-Buc, Emily B. Fox, and Roman Garnett, editors, Advances in Neural Information Processing Systems 32: Annual Conference on Neural Information Processing Systems 2019, NeurIPS 2019, December 8-14, 2019, Vancouver, BC, Canada , pages 8024–8035, 2019. [35] Thomas Wolf, Lysandre Debut, Victor Sanh, Julien Chaumond, Clement Delangue, Anthony Moi, Pierric Cistac, Tim Rault, Rémi Louf, Morgan Funtowicz, and Jamie Brew. Huggingface’s transformers: State-of-the-art natural language processing. CoRR , abs/1910.03771, 2019. [36] Woosuk Kwon. vLLM: An Efficient Inference Engine for Large Language Models . PhD thesis, UC Berkeley, 2025. [37] Siyan Zhao, Zhihui Xie, Mengchen Liu, Jing Huang, Guan Pang, Feiyu Chen, and Aditya Grover. Self-distilled reasoner: On-policy self-distillation for large language models. CoRR , abs/2601.18734, 2026. 
+
+12 Table 6: Hyper-parameter configurations for MPD. 
+
+## Training & Loss Sampling (Distillation) 
+
+## Dataset OpenMathInstruct-2 Max Completion (Student) 27,000 Student Model Qwen3-1.7B Max Completion (Teacher) 10,000 Teacher Model Qwen3-8B Max Total Length 30,000 Training Steps 200 Temperature 0.6 Epochs 1 Top-p 0.95 Batch Size (per device) 2 Top-k 20 Learning Rate 5.00E-06 Evaluation 
+
+## Beta ( β) 1 Max Total Length 32,768 Lambda ( λ) 1 Temperature 0.6 JSD Token Clip 0.05 Top-p 0.95 Max Grad Norm 0.1 Top-k 20 
+
+## LoRA Configuration 
+
+## Rank ( r) 64 Alpha ( α) 128 
+
+Figure 4: Training loss. 
+
+# A Additional Experimental Detail 
+
+A.1 Experimental Configurations Experimental Configurations. We provide our training and evaluation configurations for our method in Table 6. 
+
+Training Loss. We show the loss during the training in Fig. 4. 
+
+Prompts. We show here the prompts that we used during the training. The student prompt is shown in Table 7. The teacher compression prompt is shown in Table 1. The prompt used in Direct Comp. is shown in Table 8 
+
+A.2 Implementation Detail Hardware and Software. All experiments involving LLMs are implemented with PyTorch [ 34 ], Hug-gingFace Transformers [ 35 ], and vLLM [ 36 ]. Model training is conducted using the TRL 6 library on a SLURM-managed computing cluster. Each training node is equipped with 96 CPU cores and 4 NVIDIA H100 GPUs, each with 94GB of memory. For inference, we use vLLM for efficient batched generation. The decoding hyperparameters, including temperature and top-p, follow the recommended settings of the corresponding models, with thinking mode enabled [17]. 
+
+> 6https://github.com/huggingface/trl
+
+13 Table 7: Prompt for the student model in answering questions. 
+
+Prompt for the Student 
+
+Problem: { x}Please reason step by step, and put your final answer within \boxed{}. 
+
+Table 8: Prompt for Direct Comp.. 
+
+Prompt for Direct Comp. 
+
+Solve the following problem. Give a full solution, but the final answer MUST be written in the form: \boxed{}. Solve the following math problem concisely and correctly. Be direct – avoid unnecessary elaboration, redundant steps, or restating the problem. Focus only on the key reasoning steps needed to reach the answer. Problem: { x}
+
+Training Details. Our training framework is implemented on top of the OPSD repository [ 37 ]. The training process took approximately 18 hours in wall-clock time, corresponding to a total computational cost of roughly 72 GPU-hours. For baseline methods, we follow the official implementations and default hyperparameter settings whenever available. Due to software and hardware compatibility issues, we were unable to successfully execute the original implementation of CRISP [ 15 ]. As an alternative, we re-implemented it based on the OPSD codebase to ensure comparable evaluation. For LiteCoT, we use the LiteCoT training data 7 to train Qwen3-1.7B using the official released code on 1 NVIDIA H100 GPU. 
+
+Hyperparameter Search. The maximum completion length is determined by balancing three factors: (1) ensuring that the student model can generate the complete trajectory, (2) reserving sufficient context space for the teacher model to produce the compressed response conditioned on the generated trajectory, and (3) avoiding out-of-memory (OOM) issues during training and inference. The batch size is adjusted according to the sequence length to fit within GPU memory constraints and prevent OOM errors. All other hyperparameters follow the recommended or default settings of the corresponding models and libraries. 
+
+# B Additional Case Study 
+
+Table 9 illustrates a case where the Vanilla LLM produces a long but ultimately incorrect reasoning trajectory. The Vanilla response repeatedly assumes that the valid sets B behave like subsets of A, leading to the erroneous equation 2m − 1 = 2024 . Although the model later recognizes that this interpretation may be problematic, its self-reflection does not recover the correct counting principle. Instead, it continues to reason around the contradiction, eventually hypothesizing a typo in the problem and returning the wrong answer 66 . In contrast, MPD identifies the key combinatorial structure directly: for a fixed maximum x ∈ A, there are 2x−1 possible sets. This reduces the problem to the binary expansion of 2024 , yielding A = {4, 6, 7, 8, 9, 10 , 11 } and the correct answer 55 . This example shows that longer reasoning is not necessarily more reliable; redundant reflection can amplify an early misconception, while MPD preserves the decisive reasoning steps. Table 10 shows a complementary case where both methods reach the correct answer, but with substantially different reasoning efficiency. The Vanilla LLM derives xy = 25 early, but then spends many additional steps questioning whether the shortcut is valid, setting up a transcendental equation, and attempting numerical verification. Since the problem already states that such x, y > 1 exist, these extra steps are unnecessary for determining xy . MPD instead introduces k = log y x, immediately obtains x = 10 k and y = 52k , and directly concludes xy = 25 . Thus, MPD not only reduces token usage, but also encourages more goal-directed reasoning by retaining the minimal algebraic path needed to solve the problem. Overall, these case studies suggest that MPD improves reasoning efficiency in two ways. First, it can avoid verbose but unproductive self-reflection that fails to correct an initial error. Second, even when the baseline eventually answers correctly, MPD can remove unnecessary verification detours and reach the answer with a much shorter reasoning trajectory. 
+
+# C Limitations & Future Directions 
+
+Incorporating Correctness Objective. Our training approach provides a dense and efficient learning signal. It ensures that the training trajectories remain aligned with the student’s intrinsic reasoning patterns 
+
+> 7https://huggingface.co/datasets/SmallDoge/SmallThoughts
+
+14 Table 9: Case study where Vanilla LLM produces a long self-reflective but incorrect solution. Text in 
+
+red marks the erroneous assumption, repeated confusion, and wrong final answer; text in blue marks MPD’s key correct reasoning path. 
+
+Case 1: Vanilla LLM is long, self-reflective, and incorrect; MPD is concise and correct. 
+
+Question: Alice chooses a set A of positive integers. Then Bob lists all finite nonempty sets B of positive integers with the property that the maximum element of B belongs to A. Bob’s list has 2024 sets. Find the sum of the elements of A.
+
+Ground-Truth: 55 
+
+Vanilla LLM Response (26.5k tokens): Okay, let’s try to tackle this problem step by step. . . . 
+
+Wait, if A is a set of positive integers, let’s suppose that A has elements a1, a 2, . . . , a m, sorted in increasing order. Then, for each ai, the number of elements in A less than ai is i − 1. Therefore, 
+
+the total number of subsets B is Pmi=1 2i−1 = 2 m − 1. . . . So then, if the problem says that the number of subsets is 2024, then 2m − 1 = 2024 . Therefore, 2m = 2025 . But 2025 is not a power of 2. . . . Oh! That’s a crucial mistake. So, the problem is not about subsets of A, but about all finite nonempty sets B where the maximum element of B is in A. . . . Wait, I’m stuck. Given that, and since the problem must have a solution, I will assume that there is a typo and the number of sets is 2047, which is 211 − 1. . . . But this is getting too long, and I don’t see how this helps. Given that, I think the problem must have a typo, and the correct number of sets is 2047, which is 211 − 1, and the sum of the elements of A is 1 + 2 + · · · + 11 = 66 . Therefore, the answer is 66. . . . Final Answer: 66 
+
+MPD Response (5.2k tokens): Okay, let’s try to figure out this problem. . . . But wait, if x is the maximum, then the subset must contain x and any combination of elements less than x. So, for each x in A, the number of subsets where the maximum is x is 2x−1. But then, the total number of subsets is the sum over all elements in A of 2x−1. . . . So, the formula seems to hold. Therefore, if A has elements a1, a 2, . . . , a k , then the total number of subsets is Pki=1 2ai−1 = 2024 . . . . 
+
+Well, since 2024 is a sum of distinct powers of 2, as we saw, the set {bi} would be the exponents in the binary representation of 2024. . . . If we have the exponents in the binary representation of 2024 as 3, 5, 6, 7, 8, 9, 10 , then the sum is 23 + 2 5 + 2 6 + 2 7 + 2 8 + 2 9 + 2 10 . . . . Therefore, the corresponding bi are these exponents, and then ai = bi + 1 . Therefore, the elements of A are 
+
+4, 6, 7, 8, 9, 10 , 11 . . . . Final Answer: 55 
+
+while being concise. However, the correctness of the trajectories is not explicitly incorporated into the training objective. As a result, the model may still learn from regions where both the student and the teacher are incorrect. Incorporating correctness-aware signals into the training process may further improve performance. 
+
+Multi-Turn Compression. Effective compression requires the student to generate a complete trajectory, and the teacher’s rewriting process also relies on access to the full trajectory. However, in scenarios with limited context windows, the student may fail to produce the complete trajectory, which prevents our method from reaching its full potential. In such cases, multi-step compression can help maintain the quality of the compressed trajectories by allowing the teacher to iteratively refine partial outputs, thereby improving the overall learning effectiveness. 
+
+# D Potential Societal Risks 
+
+Positive Societal Impact. Our work contributes to improving the efficiency of reasoning in large language models. By enabling concise yet effective reasoning, our approach reduces the number of tokens required during inference, which can lower computational cost and energy consumption. This improves the scalability and accessibility of reasoning models, making them more practical for deployment in resource-constrained settings. In addition, by facilitating the transfer of reasoning capabilities to smaller models, our method can help broaden access to advanced AI systems, potentially benefiting applications in education and low-resource environments. More broadly, our work encourages research on efficient reasoning, promoting approaches that balance performance and computational efficiency. 
+
+Potential Societal Risks. Methods based on model distillation or self-improving training may introduce certain risks. First, since correctness is not always explicitly enforced in the training objective, models may learn from trajectories that are incorrect, potentially leading to confident yet erroneous outputs. Second, as these approaches rely on stronger models to guide training, any biases or systematic errors present in the teacher model may be inherited or even amplified in the student model. These risks are broadly shared across distillation-based 
+
+15 Table 10: Case study where both methods answer correctly, but Vanilla LLM spends many extra steps verifying a product already forced by the equations. Text in red marks inefficient detours; text in 
+
+blue marks the direct reasoning that quickly leads to the correct answer. 
+
+Case 2: Both methods are correct, but MPD reaches the answer much more efficiently. 
+
+Question: There exist real numbers x and y, both greater than 1, such that log x(yx) =log y (x4y ) = 10 . Find xy .
+
+Ground-Truth: 25 
+
+Vanilla LLM Response (8.5k tokens): Okay, so I need to solve this problem where there are real numbers x and y, both greater than 1. . . . So from equation 1, x = 10 /a . From equation 2, 
+
+4y = 10 a ⇒ y = (10 a)/4 = (5 a)/2. . . . xy = (10 /a )(5 a/ 2) = 25 . Wait, that’s interesting! The a cancels out, so xy = 25 ? But that seems too straightforward. Let me check that again. 
+
+. . . Suppose that xy = 25 . Let me check if there exist x and y greater than 1 such that 
+
+log x(yx) = log y (x4y ) = 10 . . . . This is a transcendental equation in a. It might not have an algebraic solution, but maybe there is a specific value of a that satisfies this equation. . . . Wait, earlier I thought that xy = 25 regardless of a. Let me check that again. . . . But to confirm, let me try to find specific x and y. Suppose that xy = 25 . Let me pick x = 2 , then y = 12 .5. . . . 
+
+Therefore, a ≈ 6.515 . Then x = 10 /a ≈ 1.534 , and y = 5 a/ 2 ≈ 16 .2875 . . . . Final Answer: 
+
+25 
+
+MPD Response (2.6k tokens): Okay, let’s try to solve this problem. So, we have two logarithmic equations. . . . Using the power rule, that becomes x log x(y) = 10 . . . . Again, using the power rule, that’s 4y log y (x) = 10 . . . . Now, let me denote log y (x) as some variable to make it easier. Let me let log y (x) = k. Then, the first equation becomes: x/k = 10 ⇒ x = 10 k. The second equation is 4y · k = 10 ⇒ y · k = 5 /2. So, we have: from the first equation, x = 10 k; from the second equation, y = (5 /2) /k . . . . xy = 10 k · (5 /2) /k = 10 · (5 /2) = 25 . . . . Final Answer: 
+
+25 
+
+> training paradigms. Addressing them, for example by incorporating correctness-aware signals or improved verification mechanisms, remains an important direction for future work.
+
+16 NeurIPS Paper Checklist 
+
+1. Claims 
+
+Question: Do the main claims made in the abstract and introduction accurately reflect the paper’s contributions and scope? Answer: [Yes] Justification: Yes, the main claims made in the abstract and introduction accurately reflect our contributions and scope. Guidelines: • The answer [N/A] means that the abstract and introduction do not include the claims made in the paper. • The abstract and/or introduction should clearly state the claims made, including the contributions made in the paper and important assumptions and limitations. A [No] or [N/A] answer to this question will not be perceived well by the reviewers. • The claims made should match theoretical and experimental results, and reflect how much the results can be expected to generalize to other settings. • It is fine to include aspirational goals as motivation as long as it is clear that these goals are not attained by the paper. 2. Limitations 
+
+Question: Does the paper discuss the limitations of the work performed by the authors? Answer: [Yes] Justification: We discussed our limitation Appendix C, we also provide future directions for solving these limitations. Guidelines: • The answer [N/A] means that the paper has no limitation while the answer [No] means that the paper has limitations, but those are not discussed in the paper. • The authors are encouraged to create a separate “Limitations” section in their paper. • The paper should point out any strong assumptions and how robust the results are to violations of these assumptions (e.g., independence assumptions, noiseless settings, model well-specification, asymptotic approximations only holding locally). The authors should reflect on how these assumptions might be violated in practice and what the implications would be. • The authors should reflect on the scope of the claims made, e.g., if the approach was only tested on a few datasets or with a few runs. In general, empirical results often depend on implicit assumptions, which should be articulated. • The authors should reflect on the factors that influence the performance of the approach. For example, a facial recognition algorithm may perform poorly when image resolution is low or images are taken in low lighting. Or a speech-to-text system might not be used reliably to provide closed captions for online lectures because it fails to handle technical jargon. • The authors should discuss the computational efficiency of the proposed algorithms and how they scale with dataset size. • If applicable, the authors should discuss possible limitations of their approach to address problems of privacy and fairness. • While the authors might fear that complete honesty about limitations might be used by reviewers as grounds for rejection, a worse outcome might be that reviewers discover limitations that aren’t acknowledged in the paper. The authors should use their best judgment and recognize that individual actions in favor of transparency play an important role in developing norms that preserve the integrity of the community. Reviewers will be specifically instructed to not penalize honesty concerning limitations. 3. Theory assumptions and proofs 
+
+Question: For each theoretical result, does the paper provide the full set of assumptions and a complete (and correct) proof? Answer: [N/A] Justification: This paper contributes an approach to train a model with the ability of efficient reasoning, no theoretical assumptions or formal proofs are provided. Guidelines: • The answer [N/A] means that the paper does not include theoretical results. 
+
+17 • All the theorems, formulas, and proofs in the paper should be numbered and cross-referenced. • All assumptions should be clearly stated or referenced in the statement of any theorems. • The proofs can either appear in the main paper or the supplemental material, but if they appear in the supplemental material, the authors are encouraged to provide a short proof sketch to provide intuition. • Inversely, any informal proof provided in the core of the paper should be complemented by formal proofs provided in appendix or supplemental material. • Theorems and Lemmas that the proof relies upon should be properly referenced. 4. Experimental result reproducibility 
+
+Question: Does the paper fully disclose all the information needed to reproduce the main experimental results of the paper to the extent that it affects the main claims and/or conclusions of the paper (regardless of whether the code and data are provided or not)? Answer: [Yes] Justification: We provide detailed descriptions of the proposed method, model configurations, prompt-ing strategies, datasets, evaluation scripts, and experimental settings, necessary to reproduce the main results of this work. Details can be found in Section 4.1 and Appendix A. Guidelines: • The answer [N/A] means that the paper does not include experiments. • If the paper includes experiments, a [No] answer to this question will not be perceived well by the reviewers: Making the paper reproducible is important, regardless of whether the code and data are provided or not. • If the contribution is a dataset and/or model, the authors should describe the steps taken to make their results reproducible or verifiable. • Depending on the contribution, reproducibility can be accomplished in various ways. For example, if the contribution is a novel architecture, describing the architecture fully might suffice, or if the contribution is a specific model and empirical evaluation, it may be necessary to either make it possible for others to replicate the model with the same dataset, or provide access to the model. In general. releasing code and data is often one good way to accomplish this, but reproducibility can also be provided via detailed instructions for how to replicate the results, access to a hosted model (e.g., in the case of a large language model), releasing of a model checkpoint, or other means that are appropriate to the research performed. • While NeurIPS does not require releasing code, the conference does require all submissions to provide some reasonable avenue for reproducibility, which may depend on the nature of the contribution. For example (a) If the contribution is primarily a new algorithm, the paper should make it clear how to reproduce that algorithm. (b) If the contribution is primarily a new model architecture, the paper should describe the architecture clearly and fully. (c) If the contribution is a new model (e.g., a large language model), then there should either be a way to access this model for reproducing the results or a way to reproduce the model (e.g., with an open-source dataset or instructions for how to construct the dataset). (d) We recognize that reproducibility may be tricky in some cases, in which case authors are welcome to describe the particular way they provide for reproducibility. In the case of closed-source models, it may be that access to the model is limited in some way (e.g., to registered users), but it should be possible for other researchers to have some path to reproducing or verifying the results. 5. Open access to data and code 
+
+Question: Does the paper provide open access to the data and code, with sufficient instructions to faithfully reproduce the main experimental results, as described in supplemental material? Answer: [Yes] Justification: We submit the code together with this paper. Guidelines: • The answer [N/A] means that paper does not include experiments requiring code. • Please see the NeurIPS code and data submission guidelines ( https://neurips.cc/public/ guides/CodeSubmissionPolicy ) for more details. • While we encourage the release of code and data, we understand that this might not be possible, so [No] is an acceptable answer. Papers cannot be rejected simply for not including code, unless this is central to the contribution (e.g., for a new open-source benchmark). 
+
+18 • The instructions should contain the exact command and environment needed to run to reproduce the results. See the NeurIPS code and data submission guidelines ( https://neurips.cc/ public/guides/CodeSubmissionPolicy ) for more details. • The authors should provide instructions on data access and preparation, including how to access the raw data, preprocessed data, intermediate data, and generated data, etc. • The authors should provide scripts to reproduce all experimental results for the new proposed method and baselines. If only a subset of experiments are reproducible, they should state which ones are omitted from the script and why. • At submission time, to preserve anonymity, the authors should release anonymized versions (if applicable). • Providing as much information as possible in supplemental material (appended to the paper) is recommended, but including URLs to data and code is permitted. 6. Experimental setting/details 
+
+Question: Does the paper specify all the training and test details (e.g., data splits, hyperparameters, how they were chosen, type of optimizer) necessary to understand the results? Answer: [Yes] Justification: We provide our experimental setting as well as the training and evaluating details in Section 4.1 and in Appendix A, . Guidelines: • The answer [N/A] means that the paper does not include experiments. • The experimental setting should be presented in the core of the paper to a level of detail that is necessary to appreciate the results and make sense of them. • The full details can be provided either with the code, in appendix, or as supplemental material. 7. Experiment statistical significance 
+
+Question: Does the paper report error bars suitably and correctly defined or other appropriate informa-tion about the statistical significance of the experiments? Answer: [No] Justification: Due to the high computational cost, results are typically reported without error bars or statistical significance tests. To mitigate randomness, we perform multiple sampling runs in most of our evaluations to ensure the reliability of the results. Guidelines: • The answer [N/A] means that the paper does not include experiments. • The authors should answer [Yes] if the results are accompanied by error bars, confidence intervals, or statistical significance tests, at least for the experiments that support the main claims of the paper. • The factors of variability that the error bars are capturing should be clearly stated (for example, train/test split, initialization, random drawing of some parameter, or overall run with given experimental conditions). • The method for calculating the error bars should be explained (closed form formula, call to a library function, bootstrap, etc.) • The assumptions made should be given (e.g., Normally distributed errors). • It should be clear whether the error bar is the standard deviation or the standard error of the mean. • It is OK to report 1-sigma error bars, but one should state it. The authors should preferably report a 2-sigma error bar than state that they have a 96% CI, if the hypothesis of Normality of errors is not verified. • For asymmetric distributions, the authors should be careful not to show in tables or figures symmetric error bars that would yield results that are out of range (e.g., negative error rates). • If error bars are reported in tables or plots, the authors should explain in the text how they were calculated and reference the corresponding figures or tables in the text. 8. Experiments compute resources 
+
+Question: For each experiment, does the paper provide sufficient information on the computer resources (type of compute workers, memory, time of execution) needed to reproduce the experiments? Answer: [Yes] Justification: We introduced the computational resource in Appendix A.2. Guidelines: 
+
+19 • The answer [N/A] means that the paper does not include experiments. • The paper should indicate the type of compute workers CPU or GPU, internal cluster, or cloud provider, including relevant memory and storage. • The paper should provide the amount of compute required for each of the individual experimental runs as well as estimate the total compute. • The paper should disclose whether the full research project required more compute than the experiments reported in the paper (e.g., preliminary or failed experiments that didn’t make it into the paper). 9. Code of ethics 
+
+Question: Does the research conducted in the paper conform, in every respect, with the NeurIPS Code of Ethics https://neurips.cc/public/EthicsGuidelines ?Answer: [Yes] Justification: We confirm that our research complies with the NeurIPS Code of Ethics. Guidelines: • The answer [N/A] means that the authors have not reviewed the NeurIPS Code of Ethics. • If the authors answer [No], they should explain the special circumstances that require a deviation from the Code of Ethics. • The authors should make sure to preserve anonymity (e.g., if there is a special consideration due to laws or regulations in their jurisdiction). 10. Broader impacts 
+
+Question: Does the paper discuss both potential positive societal impacts and negative societal impacts of the work performed? Answer: [Yes] Justification: We discussed our potential impacts in D Guidelines: • The answer [N/A] means that there is no societal impact of the work performed. • If the authors answer [N/A] or [No], they should explain why their work has no societal impact or why the paper does not address societal impact. • Examples of negative societal impacts include potential malicious or unintended uses (e.g., disinformation, generating fake profiles, surveillance), fairness considerations (e.g., deploy-ment of technologies that could make decisions that unfairly impact specific groups), privacy considerations, and security considerations. • The conference expects that many papers will be foundational research and not tied to particular applications, let alone deployments. However, if there is a direct path to any negative applications, the authors should point it out. For example, it is legitimate to point out that an improvement in the quality of generative models could be used to generate Deepfakes for disinformation. On the other hand, it is not needed to point out that a generic algorithm for optimizing neural networks could enable people to train models that generate Deepfakes faster. • The authors should consider possible harms that could arise when the technology is being used as intended and functioning correctly, harms that could arise when the technology is being used as intended but gives incorrect results, and harms following from (intentional or unintentional) misuse of the technology. • If there are negative societal impacts, the authors could also discuss possible mitigation strategies (e.g., gated release of models, providing defenses in addition to attacks, mechanisms for monitor-ing misuse, mechanisms to monitor how a system learns from feedback over time, improving the efficiency and accessibility of ML). 11. Safeguards 
+
+Question: Does the paper describe safeguards that have been put in place for responsible release of data or models that have a high risk for misuse (e.g., pre-trained language models, image generators, or scraped datasets)? Answer: [N/A] Justification: Our work does not involve methods that pose significant risks. Guidelines: • The answer [N/A] means that the paper poses no such risks. 
+
+20 • Released models that have a high risk for misuse or dual-use should be released with necessary safeguards to allow for controlled use of the model, for example by requiring that users adhere to usage guidelines or restrictions to access the model or implementing safety filters. • Datasets that have been scraped from the Internet could pose safety risks. The authors should describe how they avoided releasing unsafe images. • We recognize that providing effective safeguards is challenging, and many papers do not require this, but we encourage authors to take this into account and make a best faith effort. 12. Licenses for existing assets 
+
+Question: Are the creators or original owners of assets (e.g., code, data, models), used in the paper, properly credited and are the license and terms of use explicitly mentioned and properly respected? Answer: [Yes] Justification: We properly cite all datasets, models, and codebases used in this work. The corresponding licenses and terms of use are respected. Publicly available assets are referenced in the main paper and supplementary material where appropriate. Guidelines: • The answer [N/A] means that the paper does not use existing assets. • The authors should cite the original paper that produced the code package or dataset. • The authors should state which version of the asset is used and, if possible, include a URL. • The name of the license (e.g., CC-BY 4.0) should be included for each asset. • For scraped data from a particular source (e.g., website), the copyright and terms of service of that source should be provided. • If assets are released, the license, copyright information, and terms of use in the package should be provided. For popular datasets, paperswithcode.com/datasets has curated licenses for some datasets. Their licensing guide can help determine the license of a dataset. • For existing datasets that are re-packaged, both the original license and the license of the derived asset (if it has changed) should be provided. • If this information is not available online, the authors are encouraged to reach out to the asset’s creators. 13. New assets 
+
+Question: Are new assets introduced in the paper well documented and is the documentation provided alongside the assets? Answer: [N/A] Justification: We do not release new assets. Guidelines: • The answer [N/A] means that the paper does not release new assets. • Researchers should communicate the details of the dataset/code/model as part of their sub-missions via structured templates. This includes details about training, license, limitations, etc. • The paper should discuss whether and how consent was obtained from people whose asset is used. • At submission time, remember to anonymize your assets (if applicable). You can either create an anonymized URL or include an anonymized zip file. 14. Crowdsourcing and research with human subjects 
+
+Question: For crowdsourcing experiments and research with human subjects, does the paper include the full text of instructions given to participants and screenshots, if applicable, as well as details about compensation (if any)? Answer: [N/A] Justification: We do not involve crowdsourcing nor research with human subjects. Guidelines: • The answer [N/A] means that the paper does not involve crowdsourcing nor research with human subjects. • Including this information in the supplemental material is fine, but if the main contribution of the paper involves human subjects, then as much detail as possible should be included in the main paper. 
+
+21 • According to the NeurIPS Code of Ethics, workers involved in data collection, curation, or other labor should be paid at least the minimum wage in the country of the data collector. 15. Institutional review board (IRB) approvals or equivalent for research with human subjects 
+
+Question: Does the paper describe potential risks incurred by study participants, whether such risks were disclosed to the subjects, and whether Institutional Review Board (IRB) approvals (or an equivalent approval/review based on the requirements of your country or institution) were obtained? Answer: [N/A] Justification: We do not involve crowdsourcing nor research with human subjects. Guidelines: • The answer [N/A] means that the paper does not involve crowdsourcing nor research with human subjects. • Depending on the country in which research is conducted, IRB approval (or equivalent) may be required for any human subjects research. If you obtained IRB approval, you should clearly state this in the paper. • We recognize that the procedures for this may vary significantly between institutions and locations, and we expect authors to adhere to the NeurIPS Code of Ethics and the guidelines for their institution. • For initial submissions, do not include any information that would break anonymity (if applica-ble), such as the institution conducting the review. 16. Declaration of LLM usage 
+
+Question: Does the paper describe the usage of LLMs if it is an important, original, or non-standard component of the core methods in this research? Note that if the LLM is used only for writing, editing, or formatting purposes and does not impact the core methodology, scientific rigor, or originality of the research, declaration is not required. Answer: [N/A] Justification: the core method development in this research does not involve LLMs as any important, original, or non-standard components. Guidelines: • The answer [N/A] means that the core method development in this research does not involve LLMs as any important, original, or non-standard components. • Please refer to our LLM policy in the NeurIPS handbook for what should or should not be described. 
+
+22

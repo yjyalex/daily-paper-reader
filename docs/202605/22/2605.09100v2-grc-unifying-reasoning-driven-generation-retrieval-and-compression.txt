@@ -1,0 +1,770 @@
+Title: GRC: Unifying Reasoning-Driven Generation, Retrieval and Compression
+
+URL Source: https://arxiv.org/pdf/2605.09100v2
+
+Published Time: Wed, 13 May 2026 01:03:47 GMT
+
+Number of Pages: 22
+
+Markdown Content:
+# GRC: Unifying Reasoning-Driven Generation, Retrieval and Compression 
+
+Zhongtao Miao ∗ Qiyu Wu † Yoshimasa Tsuruoka 
+
+The University of Tokyo 
+
+{miao, tsuruoka}@logos.t.u-tokyo.ac.jp 
+
+Abstract 
+
+Text embedding and generative tasks are usually trained separately based on large language models (LLMs) nowadays. This causes a large amount of training cost and deployment effort. Context compression is also a challenging and pressing task, which is vital to reasoning-driven generation, and agentic tasks requiring long context and continual learning. In this paper, we explore how to unify reasoning-driven generation, reasoning-enhanced text representation and context compression tasks in one forward pass for LLMs. Through meta latent tokens and a unified generative, representative and compressive tuning approach, we propose a training framework named GRC that bridges the three tasks. The trained models can accomplish three objectives in a single forward pass while maintaining modular, LEGO-style flexibility during inference. This design greatly reduces the deployment effort for retrieval-augmented generation (RAG) and achieves efficient inference and three times data utilization during training. Furthermore, this framework design enables a new paradigm for text embedding: self-reason-latent embeds , and a new generation paradigm, latent memory-augmented generation ,where compressed and internalized KV cache with O(1) length is used as the updatable memory. We also propose hybrid paged attention to speed up the inference of our models. Extensive experiments on reasoning-intensive retrieval benchmarks, generative tasks, document compression, latency evaluation, and RAG settings demonstrate the effectiveness of our method and may shed light on the truly unified model that can handle reasoning-driven generation, embedding and compression tasks seamlessly 3.
+
+1 Introduction 
+
+Large language models (LLMs) [ 1, 2] are increasingly expected to support multiple abilities beyond next token generation. Besides producing answers, they often need to represent text as semantic vectors for retrieval [ 3– 8] and compress long documents or interaction histories into compact states for context management and reduced computational and storage cost [ 9– 11 ]. These abilities are important in many modern LLM applications, including retrieval-augmented generation (RAG) [ 12 ], long context reasoning and agentic workflows. However, they are usually handled by separate models or separate modules. An embedding model produces retrieval vectors, a compressor shortens long contexts and a generator produces the final text. This separated design makes the system complicated and inefficient. Since these modules use different internal representations, their hidden states or KV cache cannot be directly reused and the same text may be processed multiple times across different stages.  
+
+> ∗Tsuruoka Lab.
+> †Independent Researcher.
+> 3The code will be available at https://github.com/gpgg/grclm .Preprint.
+> arXiv:2605.09100v2 [cs.CL] 12 May 2026
+
+The rise of reasoning language models [ 13 –18 ] makes this issue more important. Reasoning before answering has been shown to improve generation quality on complex tasks such as math and coding [ 19 – 23 ]. At the same time, reasoning can also help retrieval, since a query with explicit reasoning or decomposition may better capture the real information need [ 24 , 25 ]. However, reasoning traces are often long, which increases the pressure on inference cost and makes compression necessary. These facts suggest that reasoning-driven generation, retrieval and compression are closely connected. Some recent works [ 26 – 28 ] try to unify part of this picture. For example, GritLM [ 26 ] trains one model for both generation and text embedding. However, it still uses different attention masks for the two modes, that is, bidirectional attention for embedding and causal attention for generation. This makes the two modes less natural to combine in one forward process. More importantly, these methods mainly focus on generation and embedding, while context compression and reusable latent memory are not directly studied. As a result, current systems still often need separate compressors, separate embedding models or expensive document level cache storage. Based on the above observations, we explore how to unify three distinct yet related tasks, reasoning-driven generation, text embedding and context compression, in one forward pass for LLMs and propose a training framework named GRC. Our model can serve as the retriever, generator and context compressor simultaneously in the RAG settings with the causal attention mask. This model greatly reduces the deployment effort and makes it possible to reuse the KV cache of different tasks for each other. It also makes a step towards a truly unified and reasoning-enhanced model leveraging the same internalized representations for three distinct tasks. To support this process, we build a specialized KV cache server for storing and retrieving compressed document memories, and propose hybrid paged attention to manage two types of KV cache, regular prefix and dynamic KV cache, and compressed KV cache of meta latent tokens in the constructed inference engine. We highlight our main contributions as follows: • First, we train one decoder only LLM to support text generation, embedding generation and context compression under the same causal attention mask. This provides a simple way to unify three abilities that are usually trained and deployed separately. Our approach may shed light on the direction of a unified representation learning and inference paradigm for efficient latent memory-augmented generation and continual learning in which generation, semantic retrieval and context compression are conducted with the same internal representation of a single model. • Second, we introduces a new paradigm for text embeddings which contains mixed text and latent-based reasoning process, self-reason-latent-embed, where the model first gen-erates text-based reasoning tokens, then switches to producing latent representations and finally generates the text representation by pooling the latent representations. This training framework also enables a new generation paradigm for RAG, latent memory-augmented generation, where the context is compressed, updatable latent memory/KV cache of meta latent tokens rather than raw long document texts. • We also propose hybrid paged attention (HPA) to construct a new inference engine for our models. This new engine combines the idea of paged attention [ 29 ] and our flexible inference paradigm enabled by our training framework. This renders it a versatile LLM serving engine, capable of executing three tasks within a single forward pass while sustaining high throughput. As shown in Table 15, our new LLM inference engine achieves a 10× speedup over the baseline implementation on the same GPU. 
+
+2 GRC: unified representation learning for generation, retrieval and compression 
+
+In this work, we aim to develop a model that unifies reasoning-driven generative, embedding and compression tasks in one forward pass with flexibility. The training framework is shown in Figure 1. We use trainable meta latent tokens {ri}mi=1 , r i ∈ Rd to bridge three training tasks: text generation, context compression and text embedding where d is the hidden dimension. {ri}mi=1 are a small number of trainable parameters. Unlike gisting [ 30 ] and other previous works [ 10 ], the meta latent tokens are non-intrusive for the language model (we do not insert meta latent tokens into the model vocabulary). This design not only reduces the likelihood of models producing gibberish tokens in 2Attention Direction                             
+
+> Inst. + Input
+> pooling
+> Rec. Inst. Recovered Content
+> LM Head
+> Adapter Layer
+> Output (Rea. -Ans.)
+> ❶➌
+> Text Embedding
+> ❶+❷: compression segment, regular causal attention.
+> ❷+➌: recovery segment, 𝑞 in ➌cannot attend to 𝑘 in ❶.
+> Meta Tokens Meta Latent Tokens
+> Transformer Layer
+> Unified Reasoning -Driven Generative,
+> Representative and Compressive Tuning
+> Attention sublayer
+> Forbidden Attention Direct.
+> Symbols and corresponding meaning
+> Inst. User Instruction
+> cross -entropy loss (generation)
+> InfoNCE loss (text embedding)
+> cross -entropy loss (reconstruction)
+> Rec. Inst. Reconstruction Instruction
+> 𝑁
+> Attention Sublayer
+> 𝑞 𝑘 𝑣 𝑞 𝑘 𝑣 𝑞 𝑘 𝑣
+> ❶❷➌
+> ×
+> 𝑥 𝑦 r𝑝 𝑐 𝑢
+
+Figure 1: GRC training framework. One forward pass of a single model can fulfill three objectives: (1) generating output (reasoning-answers); (2) compressing user-assistant chat history into compact representations/KV cache of meta latent tokens through attentions; (3) obtaining reasoning-enhanced text embeddings of context by pooling the token representations of meta latent tokens. edge cases but also affords considerable flexibility at inference time. This design further decouples the token embedding space, enabling each meta token to learn its own parameter weights during training. As shown in Figure 1, the representations of intermediate layers corresponding to meta latent tokens are used for context compression and reconstruction. The last hidden states corresponding to meta latent tokens are further transformed by an adapter layer A and a pooling operation to obtain text representation. All these operations are conducted in a single forward pass. These tokens play a role analogous to registers in computer architectures, caching small yet critical information to accelerate inference while exerting minimal impact on generative capability. 
+
+Training data. The original training dataset D consists of two main types of data: Dg and De. The first one Dg is reasoning-driven generative data, that is, user-assistant chat history with reasoning traces. The training examples can be denoted as (u, x, y ) where u and x are the user instruction and query and y is the model response including thinking and answer. The second one De is text retrieval data in which there are user instruction u, user query x and a positive document dp related to the query and a list of negative documents {djn} where 1 ≤ j ≤ M − 1 and suppose we have M
+
+documents for this x in total. For the second type of data, we use LLMs to generate reasoning traces 
+
+y for each query because we focus on the reasoning-driven paradigm. Thus, the user instruction u and query x are augmented into (u, x, y ). To make each training example serve as three training signals, that is, generative, embedding and compression training signals, We make several adaptations to both types of training data. 
+
+Preparation for compression task. For the original generative data Dg , the original user-assistant chat history (u, x, y ) serves as the first segment ❶ in Figure 1. We append latent register tokens 
+
+{ri}mi=1 and a reconstruction instruction rp and recovered context c into the sequence. rp and c
+
+constitute the second segment ❸ in Figure 1. rp is randomly selected from a prompt set as shown in Table 6, such as “What were we discussing earlier?”. Recovered context c is the user instruction, query and model response (u, x, y ) in this case. Thus, the token sequence of a generative training example is (u, x, y, {ri}mi=1 , r p, c ).For the original embedding data De, we also append meta latent tokens {ri}mi=1 and a reconstruction instruction rp and recovered context c after reasoning enhanced queries (u, x, y ), positive document 
+
+dp and a list of negative document {djn}. The token sequences of a query, positive document and negative documents are (u, x, y, {ri}mi=1 , r p, c ), (u, d p, y, {ri}mi=1 , r p, c ), (u, d n, y, {ri}mi=1 , r p, c )
+
+respectively in which u in document instances is a different user instruction, such as “Represent this text” and y is usually “None”. The contexts c for queries and positive and negative documents are 
+
+(u, x, y ), dp, and dn respectively. 
+
+Preparation for retrieval task. Now that, we have augmented the training data Dg and De for the compression task. To reuse Dg for text retrieval training, we need to prepare positive and negative documents for each generative training example (u, x, y, {ri}mi=1 , r p, c ). Following the unsupervised sentence embedding [ 3], we use the training example itself (u, x, y, {ri}mi=1 , r p, c ) as the positive 3document. The other in-batch training examples that could be a augmented generative training example or embedding training example, are utilized as negative documents. Through the above preparations, we have unified the two types of data into a unified format: each training example x have one query instance q, and a positive instance dp and negative instances {dn}.For unified generation training data, the training example itself is used as the query and positive instances, the negative instances are randomly selected from the mini-batch of the training dataset during training. The embedding training data requires no further modification. Given an hidden state sequence (u1, . . . , xw, . . . , yk) and latent register tokens {ri}mi=1 where u, x
+
+and y are user instruction, user input and assistant response token representations, the input hidden state sequence of our model is: 
+
+(u1, . . . , uw, xw+1 , . . . , xj , yj+1 , . . . , yk
+
+| {z } 
+
+> first segment: ❶
+
+, rk+1 , . . . , rk+m
+
+| {z } 
+
+> latent register tokens: ❷
+
+, qk+m+1 , . . . , qp, cp+1 , . . . , cn
+
+| {z } 
+
+> second segment: ❸
+
+), (1) where q, c are reconstruction instruction and ideal recovered context token representations. For generative training, we use the cross-entropy loss on the output hidden states of the first segment except the meta latent tokens {ri}mi=1 , which can be expressed as follows: 
+
+LGen = − 1
+
+k − j
+
+> k
+
+X
+
+> i=j+1
+
+log P (fθ,η (y(i))|fθ,η (u, x, y (<i ))) , (2) where fθ,η is the GRC model with model parameters θ and language head η. Note that LGen is also applied to positive and negative documents, where u is the user instruction (e.g., “Represent this text: {doc}”), x is the document, and y is the model response, which is set to “None”. For compression and reconstruction tasks, we mask out the k vectors in the first segment ❶ when computing attention scores from the segment ❸ so that q vectors in segment ❸ only attend to the k vectors of meta latent tokens {ri}mi=1 in segment ❷ while q vectors of meta latent tokens can attend to the k vectors in segment ❶:
+
+LRecons = − 1
+
+n − p
+
+> n
+
+X
+
+> i=p+1
+
+log P (fθ,η (c(i))|fθ,η (mask (segment ❶), {r}, q, c (<i ))) . (3) Note that LRecons is also trained for positive and negative documents in which c denotes the documents. By masking out the token representations in segment ❶ in attention computation, the model need to learn how to reconstruct the segment ❶ by probing k and v representations of meta latent tokens in segment ❷. Through this process, we compress the semantic information in segment ❶ into the k
+
+and v representations of meta latent tokens. Note that the LGen and LRecons can be computed in one forward and backward pass with a customized causal attention mask simultaneously, unlike previous studies [10] using LLMs as the encoder and decoder separately. For embedding training, we extract the last hidden states hri , i ∈ [k + 1 , k + m] of meta latent tokens {ri} and apply an adapter layer A to them: ari = A(hri ). Then we use the mean pooling and normalization operation to obtain the final text embedding: e = norm (pooling (ari )) . Unlike GritLM that trains embedding and generative tasks with two separate training datasets, we also utilize the training data for generative tasks for embedding training. Thus, we have a unified training data example that consists of query q, positive instance dp and negative instances {dn} for both generative and embedding training data. We can apply contrastive learning [ 31 , 3] on the text embedding representations: 
+
+LRep = − 1
+
+M
+
+> M
+
+X
+
+> i=1
+
+log exp( τ · σ(eiq , e idp )) 
+
+PMj=1 exp( τ · σ(eiq , e jd)) , (4) where d ∈ { dp, d n} and τ represents a temperature hyperparameter. σ corresponds to the cosine similarity operation. We extract the hidden states hri of meta latent tokens that already have the compressed semantic information of the segment ❶ which is obtained by the masking operation and reconstruction loss Lrecons . We then apply an adapter layer A with a pooling operation on the hri
+
+to obtain the final text embedding e. In this way, we preserve the semantic information of the first 4segment through LRecons and further transform it into the final text embedding through LRep , which achieves almost perfect compatibility between context compression and contrastive representation learning. Another benefit is that the token representations for generative tasks are not affected by the embedding training anymore. The training loss will be: 
+
+L = α · L Gen + β · L Recons + γ · L Rep . (5) 
+
+3 Flexible inference 
+
+A single GRC model can enable flexible inference across four generation patterns as shown in Figure 2. Three tasks (generation, embedding and compression) are seamlessly conducted into one forward pass in a flexible way with the same causal attention mask via meta latent tokens. The naive inference implementation of GRC models are described in Appendix B. Latent Memory -Augmented Gen Generation 
+
+> Document Embedding
+> Query Embedding
+> Regular Response Generation
+> KV Cache Retrieval Server
+> Key:
+> User query tokens
+> Model response tokens (text)
+> Compressed KV cache (latent) Text embedding for semantic search
+> 1
+> Value:
+> 2
+> 3
+> 4
+> Retrieve
+> Relevant KV cache Store
+
+Figure 2: Four diverse generation patterns: (1) regular generation; (2) self-reason-latent-based query embedding; (3) docu-ment embedding and (4) latent memory-augmented generation. 
+
+Difference with GritLM. The actual inference im-plementation of GritLM loads AutoModel version for embedding tasks and AutoModelForCusalLM for gen-erative tasks 4, which means that we need to host two model replica in device memory if we want to obtain the response and text embedding for a user query. Though this problem might be mitigated by carefully modify-ing the code, GritLM can only generate either a text response or vector for embedding in one forward pass because of the attention difference of GritLM between the generation and embedding modes (bidirectional for text embedding and unidirectional for text generation). Our models use the causal mask for both cases and can finish three tasks in one forward pass at any position in the sequence. 
+
+KV cache cost. One advantage of our method is the reduced storage cost of document KV cache. The KV cache size for GritLM is computed as: 
+
+KV size = 2 × L × Hkv × dh × N × bytes , (6) where L denotes the number of transformer layers, Hkv the number of key-value heads, dh the head dimension, N the sequence length, and bytes the number of bytes per element (e.g., 2 for bfloat16). The factor of 2 accounts for storing both keys and values. Suppose we use the Qwen3-1.7B model architecture, that is, L is 28 , Hkv is 8, dh is 128 , and bytes is 2 (bfloat16), thus the relationship of KV cache size Y (MiB) with the sequence length N is 114688 N 
+
+> 1024 2
+
+. The document is compressed into the KV cache of latent register tokens in our method, the number of latent register tokens is Nr which is a fixed number, for example, 128 . The KV cache size will be 114688 ×Nr 
+
+> 1024 2
+
+. This KV cache size also reduces the computational cost. The comparison of the KV cache storage cost between GRC and GritLM under different document lengths is shown in Figure 3 where the number of meta latent tokensis 128. 0 1K 2K 4K 6K 8K    
+
+> Sequence Length (tokens)
+> 0
+> 200
+> 400
+> 600
+> 800
+> 1000
+> KV Cache Size (MB)
+> 64 ×smaller
+> 896 MB
+> 14.0 MB (constant)
+> GritLM (N)
+> Ours (1)
+
+Figure 3: Comparison of doc-ument KV cache storage size. 
+
+Hybrid paged attention for LLM serving. To further speed up the inference, we propose hybrid paged attention (HPA) to construct a new inference engine. This proposed method is based on paged attention [ 29 ]. Paged attention is an attention algorithm inspired by the virtual memory and paging techniques in operating systems for LLM serving. It achieves high throughput serving by pre-allocating KV cache in the device memory and partitioning them into fixed-size non-continuous blocks. In our model’s inference, the context can be compressed into compressed KV cache with O(1) length. Thus, we have two types of KV cache. One is regular KV cache including prefix KV cache for user prompts and regular dynamic KV cache 
+
+> 4
+
+https://github.com/ContextualAI/gritlm/blob/971068105a8508bca421841c59fddba7f6596402/ gritlm/gritlm.py#L24 
+
+5for model responses. The other is the compressed KV cache for the context as shown in Figure 4. In our HPA approach, we not only put the prefix and regular dynamic KV cache into the blocks, but also store the KV cache of meta latent tokens, that is, the compressed KV cache, into the corresponding blocks via Triton operations. This approach allows us to retain the benefits of paged blocks during model serving and our models are still capable of carrying out the three tasks in one forward pass on our new inference engine. 
+
+4 Experiments 
+
+4.1 Experimental setting Latent RAG    
+
+> Regular Infer
+> Compressed KV cache of register tokens, e.g., 64
+> Regular Prefix KV Cache, e.g., 128 input tokens
+> Divide two types of KV cache into small KV Blocks , e.g., one block contains KV cache of 16 tokens
+> KV Cache Management with Hybrid Paged Attention
+> Logical sequences Block 0
+> Block 1
+> Block 2
+> Block 3
+> Block 4
+> Regular Dynamic KV Cache, e.g., 517 output tokens
+> Block Table
+> Physical KV Blocks
+> (GPU DRAM)
+> Generation direction
+> Scheduler Block Manager Generating
+> Block 5
+> Block 6
+> Block 7
+> KV cache
+> writes
+> via Triton
+> seq1
+> seq2
+
+Figure 4: KV cache management with the proposed hybrid paged attention for speed-ing up inference. 
+
+Training data. Various reasoning-based question-answering (QA) and retrieval data are utilized for the model training. The training dataset consists of gen-eral reasoning-based QA pairs, reasoning-intensive queries with positive and negative documents, minor agentic data. We collected approximately 600K train-ing examples, of which only around 20% were used during training. More details can be found in Ap-pendix A. 
+
+Models. Qwen3-1.7B-Base and Qwen3-4B-Base [ 2]are utilized as base models for training. More training details can be found in Appendix A. 
+
+Evaluation. We evaluate our models across the fol-lowing task categories: for retrieval, we use the BRIGHT benchmark [ 24 ]; for generation, the GSM8K [ 32 ] and BBH [ 33 ] benchmarks; and for document compression, the PwC dataset [ 10 ]together with a newly curated set of Wikipedia-based markdown documents. The latter were con-structed from articles dated between January 1 and March 1, 2026 to minimize the risk of data contamination. We also test our models on the RAG setting and our new generation paradigm, latent memory-augmented generation with the Natural Question (NQ) dataset [ 34 ] and its BEIR NQ corpus [ 35 ]. Furthermore, we conduct latency evaluation for comparison between the naive inference implementation and our HPA-based inference engine. 
+
+4.2 Experimental results 4.2.1 Reasoning-intensive retrieval tasks 
+
+BRIGHT [ 24 ] is a challenging text retrieval benchmark that requires intensive reasoning to retrieve relevant documents. We report nDCG@10 scores as the main metric. For user queries, we use the query prompt in Table 9 to encourage the model to generate reasoning tokens first. We then use the mean pooling operation on the representations of meta latent tokens to obtain the embedding. For documents, we use the document prompt in Table 10 and directly obtain the embedding via the mean pooling operation on the representations of meta latent tokens. Table 1 demonstrates that even our small model (1.7B) can beat ReasonIR-8B [ 25 ], demonstrating the effective of our new embedding generation paradigm. We further investigate the impact of reasoning lengths and 128 
+
+> 256
+> 512
+> 1024
+> 2048
+> 4096
+> 8192
+> 0.1
+> 0.2
+> 0.3
+> 0.4
+> NDCG@10
+> biology
+> 128
+> 256
+> 512
+> 1024
+> 2048
+> 4096
+> 8192
+> earth_science
+> 128
+> 256
+> 512
+> 1024
+> 2048
+> 4096
+> 8192
+> economics
+> 128
+> 256
+> 512
+> 1024
+> 2048
+> 4096
+> 8192
+> pony
+> 128
+> 256
+> 512
+> 1024
+> 2048
+> 4096
+> 8192
+> psychology
+> 128
+> 256
+> 512
+> 1024
+> 2048
+> 4096
+> 8192
+> robotics
+> 128
+> 256
+> 512
+> 1024
+> 2048
+> 4096
+> 8192
+> sustainable_living
+> 128
+> 256
+> 512
+> 1024
+> 2048
+> 4096
+> 8192
+> theoremqa_theorems
+> 0.2
+> 0.4
+> 0.6
+> 0.8
+> Temperature
+> Sequence length
+
+Figure 5: NDCG@10 scores of GRC-1.7B with different max new tokens (128, 256, 512, 1024, 2048, 4096 and 8192) and varying temperatures (0.2, 0.4, 0.6, 0.8) on BRIGHT retrieval tasks. sampling temperatures during reasoning on the performance as shown in Figure 5. The model’s score 6Table 1: Retrieval performance on the BRIGHT benchmark. No external tools/modules are used. The scores of nDCG@10 metric are reported for all datasets: Biology (Bio.), Earth Science (Earth.), Economics (Econ.), Psychology (Psy.), Robotics (Rob.), Stack Overflow (Stack.), Sustainable Living (Sus.), LeetCode (Leet.), Pony, AoPS, TheoremQA with question retrieval (TheoQ.) and with theorem retrieval (TheoT.). Models are introduced in Table 7. GRC query prompt is available in Table 9.                                                                                                                                                                                                       
+
+> Model Size StackExchange Coding Theorem-based Avg. Bio. Earth. Eco. Psy. Rob. Stack. Sus. Leet. Pony AoPS TheoQ. TheoT.
+> BM25 N/A 18.9 27.2 14.9 12.5 13.6 18.4 15.0 24.4 7.9 6.2 10.4 4.9 14.5
+> Proprietary models
+> OpenAI N/A 23.3 26.7 19.5 27.6 12.8 14.3 20.5 23.6 2.4 8.5 23.5 11.7 17.9 Cohere N/A 18.7 28.4 20.4 21.6 16.3 18.3 17.6 26.8 1.9 6.3 15.7 7.2 16.6 Google N/A 22.7 34.8 19.6 27.8 15.7 20.1 17.1 29.6 3.6 9.3 23.8 15.9 20.0 Voyage N/A 23.1 25.4 19.9 24.9 10.8 16.8 15.4 30.6 1.5 7.5 27.4 11.6 17.9
+> Open-sourced models
+> Inst-XL 1.5B 21.6 34.3 22.4 27.4 18.2 21.2 19.1 27.5 5.0 8.5 15.6 5.9 18.9 E5 7.1B 18.6 26.0 15.5 15.8 16.3 11.2 18.1 28.7 4.9 7.1 26.1 26.8 17.9 SFR 7.1B 19.1 26.7 17.8 19.0 16.3 14.4 19.2 27.4 2.0 7.4 24.3 26.0 18.3 Qwen 7.7B 30.6 36.4 17.8 24.6 13.2 22.2 14.8 25.5 9.9 14.4 27.8 32.9 22.5 ReasonIR-8B 8B 26.2 31.4 23.3 30.3 18.0 23.9 20.5 35.0 10.5 14.7 31.9 27.2 24.4 GritLM-7B 7.1B 24.8 32.3 18.9 19.8 17.1 13.6 17.8 29.9 22.0 8.8 25.2 21.2 21.0 GRC-1.7B (T0.6, 4K) 1.7B 37.5 37.6 24.5 31.3 18.9 23.1 25.7 26.2 11.2 9.0 37.3 26.0 25.7 GRC-4B (T0.6, 4K) 4B 33.5 32.0 26.4 30.6 19.6 28.2 24.8 38.3 4.1 11.3 44.2 33.9 27.2
+
+increases as the number of generated tokens grows, especially for the biology, psychology and earth science tasks. However, once generated tokens reach a certain length, the performance plateaus as shown in Figure 5. This indicates that self-generated reasoning traces are beneficial for the retrieval performance but overthinking does not contribute much. We also find that the performance is better if we do not add <eos> token before the pooling operation to obtain the final text embedding. 
+
+4.2.2 Generative tasks 
+
+We utilize BIG-Bench Hard (BBH) [ 36 , 33 ] and GSM8K [ 32 ] for evaluating the generative perofor-mance of models. BBH is a diverse evaluation benchmark based on BIG-Bench for evaluating the general reasoning capabilities of LLMs, which consists of 23 challenging tasks. GSM8K contains a set of math problems that require reasoning to solve. As shown in Table 4, our models maintains competitive performance on generative tasks requiring reasoning. 
+
+4.2.3 Document compression. 
+
+We use the test set of the PwC 5 dataset [ 10 ] for document compression. The PwC dataset consists of (context, prompt, responses) triples, built for training and testing the context compression performance of models. Note that GRC models do not use the training set of the PwC dataset in the training stage. Thus this evaluation can be considered as the out-of-domain testing. We report various metrics including sacrebleu, rouge and chrF. Table 2 presents the reconstruction results on the documents of the PwC test set of different models. The other document compression evaluation task is based on the Wikipedia documents. Figure 6 shows the reconstruction scores of the Wikipedia document Table 2: The results of PwC document compression and reconstruction task. 
+
+sacrebleu rouge1 rouge2 rougeL rougeLsum chrF 
+
+AutoCompressor-7B [9] 0.84 0.09 0.01 0.07 0.09 17.72 ICAE-v2-7B [10] 17.98 0.55 0.33 0.39 0.50 44.67 GRC-1.7B 18.34 0.41 0.25 0.31 0.38 47.37 GRC-4B 38.06 0.63 0.48 0.53 0.60 66.63 
+
+compression task under different sampling temperatures, model sizes and document lengths. Our findings are as follows: (1) the 4B model significantly outperforms the 1.7B model across all metrics and sequence lengths, with the performance gap being most pronounced in the short-length regime; (2) as sequence length increases, all metrics decline; however, SacreBLEU and ChrF exhibit the steepest 
+
+> 5
+
+https://huggingface.co/datasets/sggetao/PwC 
+
+7[0, 128)                    
+
+> [128, 256)
+> [256, 512)
+> [512, 1024)
+> 20
+> 30
+> 40
+> 50
+> 60
+> 70
+> 80
+> SacreBLEU
+> [0, 128)
+> [128, 256)
+> [256, 512)
+> [512, 1024)
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> 0.8
+> ROUGE-1
+> [0, 128)
+> [128, 256)
+> [256, 512)
+> [512, 1024)
+> 0.2
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> ROUGE-2
+> [0, 128)
+> [128, 256)
+> [256, 512)
+> [512, 1024)
+> 0.3
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> ROUGE-L
+> [0, 128)
+> [128, 256)
+> [256, 512)
+> [512, 1024)
+> 0.4
+> 0.5
+> 0.6
+> 0.7
+> 0.8
+> ROUGE-Lsum
+> [0, 128)
+> [128, 256)
+> [256, 512)
+> [512, 1024)
+> 40
+> 50
+> 60
+> 70
+> 80
+> 90
+> ChrF
+> Metric score
+> Sampling temperature
+> τ= 0.1 τ= 0.2 τ= 0.4 τ= 0.6 τ= 0.8
+> Sampling temperature
+> τ= 0.1 τ= 0.2 τ= 0.4 τ= 0.6 τ= 0.8
+> Model size
+> 1.7B model 4B model
+
+Figure 6: Reconstruction scores of GRC models on the wikipedia markdown documents compression task. The X-axis denotes the document length ranges. Table 3: Comparison of different methods on the RAG setting using the Natural Question (NQ) dataset. We suppose the document sequence length is N . Best results are highlighted in bold .
+
+Method NQ (%) Doc KV cache size 
+
+GritLM-7B (no doc) 21.40 0GritLM-7B 31.60 O(N )
+
+GRC-1.7B (no doc) 26.20 0GRC-1.7B (w/. compressed doc) 29.00 O(1) 
+
+GRC-1.7B (w/. plain text doc) 33.60 O(N )
+
+GRC-4B (no doc) 35.40 0GRC-4B (w/. compressed doc) 40.40 O(1) 
+
+GRC-4B (w/. plain text doc) 45.80 O(N )
+
+Table 4: Performance on generative tasks. 
+
+Model GSM8K BBH 
+
+GPT-4-0613 95.0 89.1 GPT-J 6B 2.5 30.2 Llama 2 Chat 70B 59.0 49.0 Zephyr 7B β 28.0 44.9 Mistral 7B 44.5 55.6 Mixtral 8x7B Instruct 65.0 55.9 GritLM-7B 57.5 54.8 GRC-1.7B 61.79 43.03 GRC-4B 67.40 64.27 
+
+decreases; (3) the effect of temperature is relatively modest; τ = 0 .8 shows the most pronounced degradation in the long-context regime, as expected. 
+
+4.2.4 RAG 
+
+Following previous studies [ 26 ], we use Natural Questions dataset [ 34 ] with the splitting method 6
+
+of GritLM and randomly select 500 examples from the test split for the following evaluation. The 2,681,468 documents from BEIR NQ corpus [ 35 ] are utilized as the retrieval source. For evaluation metrics, we use the “match” metric 7. For GRC, temperature is set to 0.1 in all cases. When computing query embeddings, the max new tokens is set to 4096 while the max new tokens is set to 16 for computing document embeddings. The max new tokens is set to 1024 when the model generates answers given the retrieved documents for NQ dataset. The result is shown in Table 3. “No doc” denotes standard response generation without retrieval. “w/. compressed doc” indicates that the context is provided as a compressed KV cache of meta latent tokens. “w/. plain text doc” corresponds to the standard RAG setting. We find that the result of RAG setting with regular retrieved document with GRC-4B model is better than GritLM-7B though we do not finetune our models on the embedding training data like NQ or E5 [ 37 ]. This demonstrates the generalization ability of our training method. The result in Table 3 also indicates that the latent memory, that is, the compressed KV cache indeed carries document information and can be identified and utilized by our models. 
+
+4.2.5 Hybrid paged attention performance 
+
+Figure 7 presents the latency evaluation result with the naive and HPA inference on different genera-tion patterns with varying maximum generation lengths. The hybrid paged attention significantly speeds up the inference speed of our models, especially when the max new tokens is set to a large number. The difference between 1.7B and 4B models when using HPA is not so large. The detailed actual inference time can be found in Table 15, Appendix B. 
+
+> 6
+
+https://github.com/ContextualAI/gritlm/blob/main/rag/prepare_qa.py 
+
+> 7
+
+https://github.com/ContextualAI/gritlm/blob/main/rag/tasks/evaluation.py 
+
+8128 256 512 1024             
+
+> Max New Tokens
+> 0
+> 10
+> 20
+> 30
+> 40
+> Latency (s)
+> (a) Regular Gen./Self-Reason-Latent Emb.
+> 128 256 512 1024
+> Max New Tokens
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> (b) Document Embedding
+> 128 256 512 1024
+> Max New Tokens
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> 30
+> 35
+> (c) Regular RAG
+> 128 256 512 1024
+> Max New Tokens
+> 0
+> 5
+> 10
+> 15
+> 20
+> 25
+> 30
+> 35
+> 40
+> (d) Latent Mem.-Augmented Gen.
+> Naive (1.7B) Naive (4B) HPA (1.7B) HPA (4B)
+
+Figure 7: Comparison of latency (average consumed time (s) for one user query). Note that the latency of regular generation pattern is the same as the one for self-reason-latent embedding (reasoning-enhanced query embedding) because we use the same user queries and inference implementation for both patterns. Our implementation can return both generated response and query embeddings simultaneously. Document embedding can be considered as a non-reasoning-enhanced embedding. This test is conducted on one NVIDIA A100 GPU with 80GB device memory. The batch size is set to 1 for naive inference implementation. The hyperparameters used in the HPA-based LLM servering system is presented in Table 14, Appendix B. Detailed actual inference time can be found in Table 15. 
+
+5 Related work 
+
+Unifying generation and embedding. Text retrieval [ 38 , 39 ] and generation are inherently com-plementary, which has motivated substantial research effort into improving their interplay [ 40 ], RAG being a prominent example [ 12 ], where information retrieved from external sources is leveraged to supplement or correct potential errors in the text generation process. However, these two tasks are typically handled by two distinct LLMs, trained with different objectives: retrieval models commonly employ bidirectional attention with contrastive learning [ 3, 31 , 4], whereas generative models rely on causal attention and cross-entropy loss. Moreover, the training data for the two tasks generally differ as well. GritLM [ 26 ] makes a direct attempt to unify these two disparate tasks within a single LLM by using different attention masks and separately curated training data for each, achieving promising results. However, it also suffers from the following problems: (1) sub-optimal training data utilization : the generative data and embedding are prepared and trained separately. (2) heterogeneous attention mechanisms for generative and embedding tasks. This causes the one forward pass can only finish one type of tasks, either generative tasks or embedding tasks. (3) prohibitive O(N ) storage cost of KV cache for document caching in RAG ; (4) reasoning is not explored in the unified training case. There are also some other works focusing on combining reasoning and embedding [ 27 , 28 ]. However, these studies usually omit the context compression perspective, especially when the reasoning traces are long. 
+
+Context compression. Context compression [ 41 , 42 ] reduces inference cost and is often essential for managing context in agentic and reasoning tasks [ 11 ]. Existing approaches [ 41 , 9, 10 ] can be broadly categorized into text-level compression [ 43 , 44 ] and latent-space compression [ 9, 10 ]. Text-level compression is typically achieved through prompting, whereas latent-based context compression methods usually consists of an encoder and a decoder, in which, the encoder converts context into the last hidden states of memory tokens and the decoder receives the last hidden state and continually generates text. This line of studies include using another language model (encoder-based or decoder-based) [ 45 , 46 ], image encoders [ 47 ] to compress context. Our work focuses more on using attention to compress context and how to reuse the KV cache in one forwad pass for the three tasks that we are unifying, which is more aligned with gisting [48]. 
+
+6 Conclusion 
+
+In this paper, we explore the possibility of unifying three objectives in one forward pass so that reasoning-driven generation, semantic retrieval and context compression can be conducted by the unified representation from a single model. We use meta latent tokens to decouple the dual-roles of regular tokens in previous studies. The intermediate representations of meta latent tokens are utilized to store the compressed semantic information of the context. The representation from the top Transformer block of meta latent tokens is leveraged for extracting text embedding. Furthermore, we use the same causal attention mask for all three tasks except that we mask out segment ❶
+
+when computing attention weights for segment ❸. This design enables the flexible LEGO-style 9inference. Extensive experiments spanning reasoning-intensive retrieval, generative tasks, document compression, latency analysis, and RAG settings validate the effectiveness of our approach. We believe our approach takes a meaningful step toward the long-standing vision of a unified model capable of addressing nearly all NLP tasks, a direction we will continue to pursue. 
+
+Limitations. In our current implementation, we extract the last hidden states of meta latent tokens from the final Transformer block and apply an adapter layer and a pooling operation to obtain the final text embedding. There might be a conflict that may affect the quality of text embeddings when we use the last token pooling. The reason is that, in this case, the hidden state of last meta latent token is also used to prediction the next token, which is usually a BOS token. These two objectives may affect each other and introduce instability. 
+
+Author Contributions 
+
+Author contributions are described below using the CRediT taxonomy. 
+
+Zhongtao Miao: Conceptualization, Methodology, Software, Validation, Investigation, Data curation, Visualization, Writing – original draft. 
+
+Qiyu Wu: Writing – review & editing. 
+
+Yoshimasa Tsuruoka: Supervision, Funding acquisition. 
+
+References 
+
+[1] Aaron Grattafiori, Abhimanyu Dubey, Abhinav Jauhri, Abhinav Pandey, Abhishek Kadian, Ahmad Al-Dahle, Aiesha Letman, Akhil Mathur, Alan Schelten, Alex Vaughan, et al. The llama 3 herd of models. arXiv preprint arXiv:2407.21783 , 2024. [2] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et al. Qwen3 technical report. arXiv preprint arXiv:2505.09388 , 2025. [3] Tianyu Gao, Xingcheng Yao, and Danqi Chen. SimCSE: Simple contrastive learning of sentence embeddings. In Marie-Francine Moens, Xuanjing Huang, Lucia Specia, and Scott Wen-tau Yih, editors, Proceedings of the 2021 Conference on Empirical Methods in Natural Language Processing , pages 6894–6910, Online and Punta Cana, Dominican Republic, November 2021. Association for Computational Linguistics. doi: 10.18653/v1/2021.emnlp-main.552. URL 
+
+https://aclanthology.org/2021.emnlp-main.552/ .[4] Parishad BehnamGhader, Vaibhav Adlakha, Marius Mosbach, Dzmitry Bahdanau, Nicolas Chapados, and Siva Reddy. LLM2vec: Large language models are secretly powerful text encoders. In First Conference on Language Modeling , 2024. URL https://openreview. net/forum?id=IW1PR7vEBf .[5] Yanzhao Zhang, Mingxin Li, Dingkun Long, Xin Zhang, Huan Lin, Baosong Yang, Pengjun Xie, An Yang, Dayiheng Liu, Junyang Lin, et al. Qwen3 embedding: Advancing text embedding and reranking through foundation models. arXiv preprint arXiv:2506.05176 , 2025. [6] Fangxiaoyu Feng, Yinfei Yang, Daniel Cer, Naveen Arivazhagan, and Wei Wang. Language-agnostic BERT sentence embedding. In Smaranda Muresan, Preslav Nakov, and Aline Villavicencio, editors, Proceedings of the 60th Annual Meeting of the Association for Com-putational Linguistics (Volume 1: Long Papers) , pages 878–891, Dublin, Ireland, May 2022. Association for Computational Linguistics. doi: 10.18653/v1/2022.acl-long.62. URL 
+
+https://aclanthology.org/2022.acl-long.62/ .[7] Zhongtao Miao, Qiyu Wu, Kaiyan Zhao, Zilong Wu, and Yoshimasa Tsuruoka. Enhancing cross-lingual sentence embedding for low-resource languages with word alignment. In Kevin Duh, Helena Gomez, and Steven Bethard, editors, Findings of the Association for Computational Linguistics: NAACL 2024 , pages 3225–3236, Mexico City, Mexico, June 2024. Association for Computational Linguistics. doi: 10.18653/v1/2024.findings-naacl.204. URL https: //aclanthology.org/2024.findings-naacl.204/ .10 [8] Niklas Muennighoff, Nouamane Tazi, Loic Magne, and Nils Reimers. MTEB: Massive text embedding benchmark. In Andreas Vlachos and Isabelle Augenstein, editors, Proceedings of the 17th Conference of the European Chapter of the Association for Computational Lin-guistics , pages 2014–2037, Dubrovnik, Croatia, May 2023. Association for Computational Linguistics. doi: 10.18653/v1/2023.eacl-main.148. URL https://aclanthology.org/ 2023.eacl-main.148/ .[9] Alexis Chevalier, Alexander Wettig, Anirudh Ajith, and Danqi Chen. Adapting language models to compress contexts. In Houda Bouamor, Juan Pino, and Kalika Bali, editors, Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing , pages 3829–3846, Singapore, December 2023. Association for Computational Linguistics. doi: 10.18653/v1/2023. emnlp-main.232. URL https://aclanthology.org/2023.emnlp-main.232/ .[10] Tao Ge, Hu Jing, Lei Wang, Xun Wang, Si-Qing Chen, and Furu Wei. In-context autoencoder for context compression in a large language model. In The Twelfth International Conference on Learning Representations , 2024. URL https://openreview.net/forum?id=uREj4ZuGJE .[11] Qizheng Zhang, Changran Hu, Shubhangi Upasani, Boyuan Ma, Fenglu Hong, Vamsidhar Kamanuru, Jay Rainton, Chen Wu, Mengmeng Ji, Hanchen Li, Urmish Thakker, James Zou, and Kunle Olukotun. Agentic context engineering: Evolving contexts for self-improving language models. In The Fourteenth International Conference on Learning Representations ,2026. URL https://openreview.net/forum?id=eC4ygDs02R .[12] Patrick Lewis, Ethan Perez, Aleksandra Piktus, Fabio Petroni, Vladimir Karpukhin, Naman Goyal, Heinrich Küttler, Mike Lewis, Wen-tau Yih, Tim Rocktäschel, Sebastian Riedel, and Douwe Kiela. Retrieval-augmented generation for knowledge-intensive nlp tasks. In H. Larochelle, M. Ranzato, R. Hadsell, M.F. Balcan, and H. Lin, editors, Advances in Neural Information Processing Systems , volume 33, pages 9459–9474. Curran Associates, Inc., 2020. URL https://proceedings.neurips.cc/paper_files/paper/2020/file/ 6b493230205f780e1bc26945df7481e5-Paper.pdf .[13] Jie Huang and Kevin Chen-Chuan Chang. Towards reasoning in large language models: A survey. In Anna Rogers, Jordan Boyd-Graber, and Naoaki Okazaki, editors, Findings of the Association for Computational Linguistics: ACL 2023 , pages 1049–1065, Toronto, Canada, July 2023. Association for Computational Linguistics. doi: 10.18653/v1/2023.findings-acl.67. URL 
+
+https://aclanthology.org/2023.findings-acl.67/ .[14] Aaron Jaech, Adam Kalai, Adam Lerer, Adam Richardson, Ahmed El-Kishky, Aiden Low, Alec Helyar, Aleksander Madry, Alex Beutel, Alex Carney, et al. Openai o1 system card. arXiv preprint arXiv:2412.16720 , 2024. [15] Fengli Xu, Qianyue Hao, Chenyang Shao, Zefang Zong, Yu Li, Jingwei Wang, Yunke Zhang, Jingyi Wang, Xiaochong Lan, Jiahui Gong, Tianjian Ouyang, Fanjin Meng, Yuwei Yan, Qing-long Yang, Yiwen Song, Sijian Ren, Xinyuan Hu, Jie Feng, Chen Gao, and Yong Li. Toward large reasoning models: A survey of reinforced reasoning with large language models. Patterns ,6(10):101370, 2025. ISSN 2666-3899. doi: https://doi.org/10.1016/j.patter.2025.101370. URL 
+
+https://www.sciencedirect.com/science/article/pii/S2666389925002181 .[16] Niklas Muennighoff, Zitong Yang, Weijia Shi, Xiang Lisa Li, Li Fei-Fei, Hannaneh Hajishirzi, Luke Zettlemoyer, Percy Liang, Emmanuel Candes, and Tatsunori Hashimoto. s1: Simple test-time scaling. In Christos Christodoulopoulos, Tanmoy Chakraborty, Carolyn Rose, and Violet Peng, editors, Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing , pages 20286–20332, Suzhou, China, November 2025. Association for Computational Linguistics. ISBN 979-8-89176-332-6. doi: 10.18653/v1/2025.emnlp-main. 1025. URL https://aclanthology.org/2025.emnlp-main.1025/ .[17] Dacheng Li, Shiyi Cao, Chengkun Cao, Xiuyu Li, Shangyin Tan, Kurt Keutzer, Jiarong Xing, Joseph E. Gonzalez, and Ion Stoica. S*: Test time scaling for code generation. In Christos Christodoulopoulos, Tanmoy Chakraborty, Carolyn Rose, and Violet Peng, editors, Findings of the Association for Computational Linguistics: EMNLP 2025 , pages 15964–15978, Suzhou, China, November 2025. Association for Computational Linguistics. ISBN 979-8-89176-335-7. doi: 10.18653/v1/2025.findings-emnlp.865. URL https://aclanthology.org/2025. findings-emnlp.865/ .11 [18] Zhiyuan Zeng, Qinyuan Cheng, Zhangyue Yin, Yunhua Zhou, and Xipeng Qiu. Revisiting the test-time scaling of o1-like models: Do they truly possess test-time scaling capabilities? In Wanxiang Che, Joyce Nabende, Ekaterina Shutova, and Mohammad Taher Pilehvar, editors, 
+
+Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 4651–4665, Vienna, Austria, July 2025. Association for Computational Linguistics. ISBN 979-8-89176-251-0. doi: 10.18653/v1/2025.acl-long.232. URL https://aclanthology.org/2025.acl-long.232/ .[19] Hunter Lightman, Vineet Kosaraju, Yuri Burda, Harrison Edwards, Bowen Baker, Teddy Lee, Jan Leike, John Schulman, Ilya Sutskever, and Karl Cobbe. Let’s verify step by step. In The Twelfth International Conference on Learning Representations , 2024. URL https: //openreview.net/forum?id=v8L0pN6EOi .[20] Zhongtao Miao, Kaiyan Zhao, and Yoshimasa Tsuruoka. Improving arithmetic reasoning ability of large language models through relation tuples, verification and dynamic feedback. arXiv preprint arXiv:2406.17873 , 2024. [21] Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, brian ichter, Fei Xia, Ed H. Chi, Quoc V Le, and Denny Zhou. Chain of thought prompting elicits reasoning in large language models. In Alice H. Oh, Alekh Agarwal, Danielle Belgrave, and Kyunghyun Cho, editors, 
+
+Advances in Neural Information Processing Systems , 2022. URL https://openreview.net/ forum?id=_VjQlMeSB_J .[22] Zhongtao Miao, Kaiyan Zhao, Masaaki Nagata, and Yoshimasa Tsuruoka. Neoamt: Neologism-aware agentic machine translation with reinforcement learning. arXiv preprint arXiv:2601.03790 , 2026. [23] Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Peiyi Wang, Qihao Zhu, Runxin Xu, Ruoyu Zhang, Shirong Ma, Xiao Bi, et al. Deepseek-r1 incentivizes reasoning in llms through reinforcement learning. Nature , 645(8081):633–638, 2025. [24] Hongjin SU, Howard Yen, Mengzhou Xia, Weijia Shi, Niklas Muennighoff, Han yu Wang, Liu Haisu, Quan Shi, Zachary S Siegel, Michael Tang, Ruoxi Sun, Jinsung Yoon, Sercan O Arik, Danqi Chen, and Tao Yu. BRIGHT: A realistic and challenging benchmark for reasoning-intensive retrieval. In The Thirteenth International Conference on Learning Representations ,2025. URL https://openreview.net/forum?id=ykuc5q381b .[25] Rulin Shao, Rui Qiao, Varsha Kishore, Niklas Muennighoff, Xi Victoria Lin, Daniela Rus, Bryan Kian Hsiang Low, Sewon Min, Wen tau Yih, Pang Wei Koh, and Luke Zettlemoyer. ReasonIR: Training retrievers for reasoning tasks. In Second Conference on Language Modeling ,2025. URL https://openreview.net/forum?id=kkBCNLMbGj .[26] Niklas Muennighoff, Hongjin SU, Liang Wang, Nan Yang, Furu Wei, Tao Yu, Amanpreet Singh, and Douwe Kiela. Generative representational instruction tuning. In The Thirteenth International Conference on Learning Representations , 2025. URL https://openreview. net/forum?id=BC4lIvfSzv .[27] Jianting Tang, Dongshuai Li, Tao Wen, Fuyu Lv, Dan Ou, and Linli Xu. Large reasoning embedding models: Towards next-generation dense retrieval paradigm. In Proceedings of the ACM Web Conference 2026 , WWW ’26, page 8115–8126, New York, NY, USA, 2026. Association for Computing Machinery. ISBN 9798400723070. doi: 10.1145/3774904.3792826. URL https://doi.org/10.1145/3774904.3792826 .[28] Zhibin Lan, Liqiang Niu, Fandong Meng, Jie Zhou, and Jinsong Su. UME-r1: Exploring reasoning-driven generative multimodal embeddings. In The Fourteenth International Con-ference on Learning Representations , 2026. URL https://openreview.net/forum?id= 2ius36JQUJ .[29] Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph Gonzalez, Hao Zhang, and Ion Stoica. Efficient memory management for large language model serving with pagedattention. In Proceedings of the 29th Symposium on Operating Systems Principles , SOSP ’23, page 611–626, New York, NY, USA, 2023. Association for Computing Machinery. ISBN 9798400702297. doi: 10.1145/3600006.3613165. URL https: //doi.org/10.1145/3600006.3613165 .12 [30] Jesse Mu, Xiang Lisa Li, and Noah Goodman. Learning to compress prompts with gist tokens. In Thirty-seventh Conference on Neural Information Processing Systems , 2023. URL 
+
+https://openreview.net/forum?id=2DtxPCL3T5 .[31] Ting Chen, Simon Kornblith, Mohammad Norouzi, and Geoffrey Hinton. A simple framework for contrastive learning of visual representations. In Hal Daumé III and Aarti Singh, editors, 
+
+Proceedings of the 37th International Conference on Machine Learning , volume 119 of Pro-ceedings of Machine Learning Research , pages 1597–1607. PMLR, 13–18 Jul 2020. URL 
+
+https://proceedings.mlr.press/v119/chen20j.html .[32] Karl Cobbe, Vineet Kosaraju, Mohammad Bavarian, Mark Chen, Heewoo Jun, Lukasz Kaiser, Matthias Plappert, Jerry Tworek, Jacob Hilton, Reiichiro Nakano, et al. Training verifiers to solve math word problems. arXiv preprint arXiv:2110.14168 , 2021. [33] Mirac Suzgun, Nathan Scales, Nathanael Schärli, Sebastian Gehrmann, Yi Tay, Hyung Won Chung, Aakanksha Chowdhery, Quoc Le, Ed Chi, Denny Zhou, and Jason Wei. Challenging BIG-bench tasks and whether chain-of-thought can solve them. In Anna Rogers, Jordan Boyd-Graber, and Naoaki Okazaki, editors, Findings of the Association for Computational Linguistics: ACL 2023 , pages 13003–13051, Toronto, Canada, July 2023. Association for Computational Linguistics. doi: 10.18653/v1/2023.findings-acl.824. URL https://aclanthology.org/ 2023.findings-acl.824/ .[34] Tom Kwiatkowski, Jennimaria Palomaki, Olivia Redfield, Michael Collins, Ankur Parikh, Chris Alberti, Danielle Epstein, Illia Polosukhin, Jacob Devlin, Kenton Lee, Kristina Toutanova, Llion Jones, Matthew Kelcey, Ming-Wei Chang, Andrew M. Dai, Jakob Uszkoreit, Quoc Le, and Slav Petrov. Natural questions: A benchmark for question answering research. Transactions of the Association for Computational Linguistics , 7:452–466, 2019. doi: 10.1162/tacl_a_00276. URL 
+
+https://aclanthology.org/Q19-1026/ .[35] Nandan Thakur, Nils Reimers, Andreas Rücklé, Abhishek Srivastava, and Iryna Gurevych. BEIR: A heterogeneous benchmark for zero-shot evaluation of information retrieval models. In 
+
+Thirty-fifth Conference on Neural Information Processing Systems Datasets and Benchmarks Track (Round 2) , 2021. URL https://openreview.net/forum?id=wCu6T5xFjeJ .[36] Aarohi Srivastava, Abhinav Rastogi, Abhishek Rao, Abu Awal Md Shoeb, Abubakar Abid, Adam Fisch, Adam R. Brown, Adam Santoro, Aditya Gupta, Adrià Garriga-Alonso, Agnieszka Kluska, Aitor Lewkowycz, Akshat Agarwal, Alethea Power, Alex Ray, Alex Warstadt, Alexan-der W. Kocurek, Ali Safaya, Ali Tazarv, Alice Xiang, Alicia Parrish, Allen Nie, Aman Hussain, Amanda Askell, Amanda Dsouza, Ambrose Slone, Ameet Rahane, Anantharaman S. Iyer, Anders Johan Andreassen, Andrea Madotto, Andrea Santilli, Andreas Stuhlmüller, Andrew M. Dai, Andrew La, Andrew Kyle Lampinen, Andy Zou, Angela Jiang, Angelica Chen, Anh Vuong, Animesh Gupta, Anna Gottardi, Antonio Norelli, Anu Venkatesh, Arash Gholamidavoodi, Arfa Tabassum, Arul Menezes, Arun Kirubarajan, Asher Mullokandov, Ashish Sabharwal, Austin Herrick, Avia Efrat, Aykut Erdem, Ayla Karaka¸ s, B. Ryan Roberts, Bao Sheng Loe, Barret Zoph, Bartłomiej Bojanowski, Batuhan Özyurt, Behnam Hedayatnia, Behnam Neyshabur, Benjamin Inden, Benno Stein, Berk Ekmekci, Bill Yuchen Lin, Blake Howald, Bryan Orinion, Cameron Diao, Cameron Dour, Catherine Stinson, Cedrick Argueta, Cesar Ferri, Chandan Singh, Charles Rathkopf, Chenlin Meng, Chitta Baral, Chiyu Wu, Chris Callison-Burch, Christopher Waites, Christian Voigt, Christopher D Manning, Christopher Potts, Cindy Ramirez, Clara E. Rivera, Clemencia Siro, Colin Raffel, Courtney Ashcraft, Cristina Garbacea, Damien Sileo, Dan Gar-rette, Dan Hendrycks, Dan Kilman, Dan Roth, C. Daniel Freeman, Daniel Khashabi, Daniel Levy, Daniel Moseguí González, Danielle Perszyk, Danny Hernandez, Danqi Chen, Daphne Ippolito, Dar Gilboa, David Dohan, David Drakard, David Jurgens, Debajyoti Datta, Deep Ganguli, Denis Emelin, Denis Kleyko, Deniz Yuret, Derek Chen, Derek Tam, Dieuwke Hupkes, Diganta Misra, Dilyar Buzan, Dimitri Coelho Mollo, Diyi Yang, Dong-Ho Lee, Dylan Schrader, Ekaterina Shutova, Ekin Dogus Cubuk, Elad Segal, Eleanor Hagerman, Elizabeth Barnes, Eliza-beth Donoway, Ellie Pavlick, Emanuele Rodolà, Emma Lam, Eric Chu, Eric Tang, Erkut Erdem, Ernie Chang, Ethan A Chi, Ethan Dyer, Ethan Jerzak, Ethan Kim, Eunice Engefu Manyasi, Evgenii Zheltonozhskii, Fanyue Xia, Fatemeh Siar, Fernando Martínez-Plumed, Francesca Happé, Francois Chollet, Frieda Rong, Gaurav Mishra, Genta Indra Winata, Gerard de Melo, 13 Germàn Kruszewski, Giambattista Parascandolo, Giorgio Mariani, Gloria Xinyue Wang, Gon-zalo Jaimovitch-Lopez, Gregor Betz, Guy Gur-Ari, Hana Galijasevic, Hannah Kim, Hannah Rashkin, Hannaneh Hajishirzi, Harsh Mehta, Hayden Bogar, Henry Francis Anthony Shevlin, Hinrich Schuetze, Hiromu Yakura, Hongming Zhang, Hugh Mee Wong, Ian Ng, Isaac Noble, Jaap Jumelet, Jack Geissinger, Jackson Kernion, Jacob Hilton, Jaehoon Lee, Jaime Fernández Fisac, James B Simon, James Koppel, James Zheng, James Zou, Jan Kocon, Jana Thompson, Janelle Wingfield, Jared Kaplan, Jarema Radom, Jascha Sohl-Dickstein, Jason Phang, Jason Wei, Jason Yosinski, Jekaterina Novikova, Jelle Bosscher, Jennifer Marsh, Jeremy Kim, Jeroen Taal, Jesse Engel, Jesujoba Alabi, Jiacheng Xu, Jiaming Song, Jillian Tang, Joan Waweru, John Burden, John Miller, John U. Balis, Jonathan Batchelder, Jonathan Berant, Jörg Frohberg, Jos Rozen, Jose Hernandez-Orallo, Joseph Boudeman, Joseph Guerr, Joseph Jones, Joshua B. Tenenbaum, Joshua S. Rule, Joyce Chua, Kamil Kanclerz, Karen Livescu, Karl Krauth, Karthik Gopalakrishnan, Katerina Ignatyeva, Katja Markert, Kaustubh Dhole, Kevin Gimpel, Kevin Omondi, Kory Wallace Mathewson, Kristen Chiafullo, Ksenia Shkaruta, Kumar Shridhar, Kyle McDonell, Kyle Richardson, Laria Reynolds, Leo Gao, Li Zhang, Liam Dugan, Lianhui Qin, Lidia Contreras-Ochando, Louis-Philippe Morency, Luca Moschella, Lucas Lam, Lucy Noble, Ludwig Schmidt, Luheng He, Luis Oliveros-Colón, Luke Metz, Lütfi Kerem Senel, Maarten Bosma, Maarten Sap, Maartje Ter Hoeve, Maheen Farooqi, Manaal Faruqui, Mantas Mazeika, Marco Baturan, Marco Marelli, Marco Maru, Maria Jose Ramirez-Quintana, Marie Tolkiehn, Mario Giulianelli, Martha Lewis, Martin Potthast, Matthew L Leavitt, Matthias Hagen, Mátyás Schubert, Medina Orduna Baitemirova, Melody Arnaud, Melvin McElrath, Michael An-drew Yee, Michael Cohen, Michael Gu, Michael Ivanitskiy, Michael Starritt, Michael Strube, Michał Sw˛ edrowski, Michele Bevilacqua, Michihiro Yasunaga, Mihir Kale, Mike Cain, Mimee Xu, Mirac Suzgun, Mitch Walker, Mo Tiwari, Mohit Bansal, Moin Aminnaseri, Mor Geva, Mozhdeh Gheini, Mukund Varma T, Nanyun Peng, Nathan Andrew Chi, Nayeon Lee, Neta Gur-Ari Krakover, Nicholas Cameron, Nicholas Roberts, Nick Doiron, Nicole Martinez, Nikita Nangia, Niklas Deckers, Niklas Muennighoff, Nitish Shirish Keskar, Niveditha S. Iyer, Noah Constant, Noah Fiedel, Nuan Wen, Oliver Zhang, Omar Agha, Omar Elbaghdadi, Omer Levy, Owain Evans, Pablo Antonio Moreno Casares, Parth Doshi, Pascale Fung, Paul Pu Liang, Paul Vicol, Pegah Alipoormolabashi, Peiyuan Liao, Percy Liang, Peter W Chang, Peter Eckers-ley, Phu Mon Htut, Pinyu Hwang, Piotr Miłkowski, Piyush Patil, Pouya Pezeshkpour, Priti Oli, Qiaozhu Mei, Qing Lyu, Qinlang Chen, Rabin Banjade, Rachel Etta Rudolph, Raefer Gabriel, Rahel Habacker, Ramon Risco, Raphaël Millière, Rhythm Garg, Richard Barnes, Rif A. Saurous, Riku Arakawa, Robbe Raymaekers, Robert Frank, Rohan Sikand, Roman Novak, Roman Sitelew, Ronan Le Bras, Rosanne Liu, Rowan Jacobs, Rui Zhang, Russ Salakhutdinov, Ryan Andrew Chi, Seungjae Ryan Lee, Ryan Stovall, Ryan Teehan, Rylan Yang, Sahib Singh, Saif M. Mohammad, Sajant Anand, Sam Dillavou, Sam Shleifer, Sam Wiseman, Samuel Gruet-ter, Samuel R. Bowman, Samuel Stern Schoenholz, Sanghyun Han, Sanjeev Kwatra, Sarah A. Rous, Sarik Ghazarian, Sayan Ghosh, Sean Casey, Sebastian Bischoff, Sebastian Gehrmann, Sebastian Schuster, Sepideh Sadeghi, Shadi Hamdan, Sharon Zhou, Shashank Srivastava, Sherry Shi, Shikhar Singh, Shima Asaadi, Shixiang Shane Gu, Shubh Pachchigar, Shubham Toshniwal, Shyam Upadhyay, Shyamolima Shammie Debnath, Siamak Shakeri, Simon Thormeyer, Simone Melzi, Siva Reddy, Sneha Priscilla Makini, Soo-Hwan Lee, Spencer Torene, Sriharsha Hatwar, Stanislas Dehaene, Stefan Divic, Stefano Ermon, Stella Biderman, Stephanie Lin, Stephen Prasad, Steven Piantadosi, Stuart Shieber, Summer Misherghi, Svetlana Kiritchenko, Swaroop Mishra, Tal Linzen, Tal Schuster, Tao Li, Tao Yu, Tariq Ali, Tatsunori Hashimoto, Te-Lin Wu, Théo Desbordes, Theodore Rothschild, Thomas Phan, Tianle Wang, Tiberius Nkinyili, Timo Schick, Timofei Kornev, Titus Tunduny, Tobias Gerstenberg, Trenton Chang, Trishala Neeraj, Tushar Khot, Tyler Shultz, Uri Shaham, Vedant Misra, Vera Demberg, Victoria Nyamai, Vikas Raunak, Vinay Venkatesh Ramasesh, vinay uday prabhu, Vishakh Padmakumar, Vivek Srikumar, William Fedus, William Saunders, William Zhang, Wout Vossen, Xiang Ren, Xiaoyu Tong, Xinran Zhao, Xinyi Wu, Xudong Shen, Yadollah Yaghoobzadeh, Yair Lakretz, Yangqiu Song, Yasaman Bahri, Yejin Choi, Yichi Yang, Sophie Hao, Yifu Chen, Yonatan Belinkov, Yu Hou, Yufang Hou, Yuntao Bai, Zachary Seid, Zhuoye Zhao, Zijian Wang, Zijie J. Wang, Zirui Wang, and Ziyi Wu. Beyond the imitation game: Quantifying and extrapolating the capabilities of language models. Transactions on Machine Learning Research , 2023. ISSN 2835-8856. URL 
+
+https://openreview.net/forum?id=uyTL5Bvosj . Featured Certification. 14 [37] Liang Wang, Nan Yang, Xiaolong Huang, Linjun Yang, Rangan Majumder, and Furu Wei. Multilingual e5 text embeddings: A technical report. arXiv preprint arXiv:2402.05672 , 2024. [38] Wayne Xin Zhao, Jing Liu, Ruiyang Ren, and Ji-Rong Wen. Dense text retrieval based on pretrained language models: A survey. ACM Trans. Inf. Syst. , 42(4), February 2024. ISSN 1046-8188. doi: 10.1145/3637870. URL https://doi.org/10.1145/3637870 .[39] Vladimir Karpukhin, Barlas Oguz, Sewon Min, Patrick Lewis, Ledell Wu, Sergey Edunov, Danqi Chen, and Wen-tau Yih. Dense passage retrieval for open-domain question answering. In Bonnie Webber, Trevor Cohn, Yulan He, and Yang Liu, editors, Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing (EMNLP) , pages 6769– 6781, Online, November 2020. Association for Computational Linguistics. doi: 10.18653/v1/ 2020.emnlp-main.550. URL https://aclanthology.org/2020.emnlp-main.550/ .[40] Kelvin Guu, Kenton Lee, Zora Tung, Panupong Pasupat, and Mingwei Chang. Retrieval augmented language model pre-training. In Hal Daumé III and Aarti Singh, editors, Proceedings of the 37th International Conference on Machine Learning , volume 119 of Proceedings of Machine Learning Research , pages 3929–3938. PMLR, 13–18 Jul 2020. URL https:// proceedings.mlr.press/v119/guu20a.html .[41] Yucheng Li, Bo Dong, Frank Guerin, and Chenghua Lin. Compressing context to enhance inference efficiency of large language models. In Houda Bouamor, Juan Pino, and Kalika Bali, editors, Proceedings of the 2023 Conference on Empirical Methods in Natural Language Processing , pages 6342–6353, Singapore, December 2023. Association for Computational Linguistics. doi: 10.18653/v1/2023.emnlp-main.391. URL https://aclanthology.org/ 2023.emnlp-main.391/ .[42] Zongqian Li, Yinhong Liu, Yixuan Su, and Nigel Collier. Prompt compression for large language models: A survey. In Luis Chiruzzo, Alan Ritter, and Lu Wang, editors, Proceedings of the 2025 Conference of the Nations of the Americas Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume 1: Long Papers) , pages 7182–7195, Albuquerque, New Mexico, April 2025. Association for Computational Linguistics. ISBN 979-8-89176-189-6. doi: 10.18653/v1/2025.naacl-long.368. URL https://aclanthology. org/2025.naacl-long.368/ .[43] Huiqiang Jiang, Qianhui Wu, Chin-Yew Lin, Yuqing Yang, and Lili Qiu. LLMLingua: Com-pressing prompts for accelerated inference of large language models. In Houda Bouamor, Juan Pino, and Kalika Bali, editors, Proceedings of the 2023 Conference on Empirical Meth-ods in Natural Language Processing , pages 13358–13376, Singapore, December 2023. As-sociation for Computational Linguistics. doi: 10.18653/v1/2023.emnlp-main.825. URL 
+
+https://aclanthology.org/2023.emnlp-main.825/ .[44] Zhuoshi Pan, Qianhui Wu, Huiqiang Jiang, Menglin Xia, Xufang Luo, Jue Zhang, Qingwei Lin, Victor Rühle, Yuqing Yang, Chin-Yew Lin, H. Vicky Zhao, Lili Qiu, and Dongmei Zhang. LLMLingua-2: Data distillation for efficient and faithful task-agnostic prompt compression. In Lun-Wei Ku, Andre Martins, and Vivek Srikumar, editors, Findings of the Association for Computational Linguistics: ACL 2024 , pages 963–981, Bangkok, Thailand, August 2024. Association for Computational Linguistics. doi: 10.18653/v1/2024.findings-acl.57. URL 
+
+https://aclanthology.org/2024.findings-acl.57/ .[45] Xin Cheng, Xun Wang, Xingxing Zhang, Tao Ge, Si-Qing Chen, Furu Wei, Huishuai Zhang, and Dongyan Zhao. xrag: Extreme context compression for retrieval-augmented generation with one token. In A. Globerson, L. Mackey, D. Belgrave, A. Fan, U. Pa-quet, J. Tomczak, and C. Zhang, editors, Advances in Neural Information Processing Sys-tems , volume 37, pages 109487–109516. Curran Associates, Inc., 2024. doi: 10.52202/ 079017-3476. URL https://proceedings.neurips.cc/paper_files/paper/2024/ file/c5cf13bfd3762821ef7607e63ee90075-Paper-Conference.pdf .[46] Fanfan Liu and Haibo Qiu. Context cascade compression: Exploring the upper limits of text compression. arXiv preprint arXiv:2511.15244 , 2025. [47] Haoran Wei, Yaofeng Sun, and Yukun Li. Deepseek-ocr: Contexts optical compression. arXiv preprint arXiv:2510.18234 , 2025. 15 [48] Jesse Mu, Xiang Li, and Noah Goodman. Learning to compress prompts with gist tokens. In A. Oh, T. Naumann, A. Globerson, K. Saenko, M. Hardt, and S. Levine, editors, Advances in Neural Information Processing Systems , volume 36, pages 19327–19352. Curran Associates, Inc., 2023. URL https://proceedings.neurips.cc/paper_files/paper/2023/file/ 3d77c6dcc7f143aa2154e7f4d5e22d68-Paper-Conference.pdf .[49] Yanli Zhao, Andrew Gu, Rohan Varma, Liang Luo, Chien-Chin Huang, Min Xu, Less Wright, Hamid Shojanazeri, Myle Ott, Sam Shleifer, Alban Desmaison, Can Balioglu, Pritam Damania, Bernard Nguyen, Geeta Chauhan, Yuchen Hao, Ajit Mathews, and Shen Li. Pytorch fsdp: Experiences on scaling fully sharded data parallel. Proc. VLDB Endow. , 16(12):3848–3860, August 2023. ISSN 2150-8097. doi: 10.14778/3611540.3611569. URL https://doi.org/ 10.14778/3611540.3611569 .[50] Luyu Gao, Yunyi Zhang, Jiawei Han, and Jamie Callan. Scaling deep contrastive learning batch size under memory limited setup. In Anna Rogers, Iacer Calixto, Ivan Vuli´ c, Naomi Saphra, Nora Kassner, Oana-Maria Camburu, Trapit Bansal, and Vered Shwartz, editors, Proceedings of the 6th Workshop on Representation Learning for NLP (RepL4NLP-2021) , pages 316–321, Online, August 2021. Association for Computational Linguistics. doi: 10.18653/v1/2021.repl4nlp-1.31. URL https://aclanthology.org/2021.repl4nlp-1.31/ .[51] Thomas Wolf, Lysandre Debut, Victor Sanh, Julien Chaumond, Clement Delangue, Anthony Moi, Pierric Cistac, Tim Rault, Remi Louf, Morgan Funtowicz, Joe Davison, Sam Shleifer, Patrick von Platen, Clara Ma, Yacine Jernite, Julien Plu, Canwen Xu, Teven Le Scao, Sylvain Gugger, Mariama Drame, Quentin Lhoest, and Alexander Rush. Transformers: State-of-the-art natural language processing. In Qun Liu and David Schlangen, editors, Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing: System Demonstrations ,pages 38–45, Online, October 2020. Association for Computational Linguistics. doi: 10.18653/ v1/2020.emnlp-demos.6. URL https://aclanthology.org/2020.emnlp-demos.6/ .[52] Han Zhao, Haotian Wang, Yiping Peng, Sitong Zhao, Xiaoyu Tian, Shuaiting Chen, Yunjie Ji, and Xiangang Li. 1.4 million open-source distilled reasoning dataset to empower large language model training. arXiv preprint arXiv:2503.19633 , 2025. [53] Ivan Moshkov, Darragh Hanley, Ivan Sorokin, Shubham Toshniwal, Christof Henkel, Benedikt Schifferer, Wei Du, and Igor Gitman. Aimo-2 winning solution: Building state-of-the-art math-ematical reasoning models with openmathreasoning dataset. arXiv preprint arXiv:2504.16891 ,2025. [54] Jianlyu Chen, Junwei Lan, Chaofan Li, Defu Lian, and Zheng Liu. Reasonembed: Enhanced text embeddings for reasoning-intensive document retrieval. arXiv preprint arXiv:2510.08252 ,2025. [55] Rulin Shao, Akari Asai, Shannon Zejiang Shen, Hamish Ivison, Varsha Kishore, Jingming Zhuo, Xinran Zhao, Molly Park, Samuel G Finlayson, David Sontag, et al. Dr tulu: Reinforcement learning with evolving rubrics for deep research. arXiv preprint arXiv:2511.19399 , 2025. [56] Yueqi Song, Ketan Ramaneti, Zaid Sheikh, Ziru Chen, Boyu Gou, Tianbao Xie, Yiheng Xu, Danyang Zhang, Apurva Gandhi, Fan Yang, et al. Agent data protocol: Unifying datasets for diverse, effective fine-tuning of llm agents. arXiv preprint arXiv:2510.24702 , 2025. [57] Alec Radford, Jeffrey Wu, Rewon Child, David Luan, Dario Amodei, Ilya Sutskever, et al. Language models are unsupervised multitask learners. OpenAI blog , 1(8):9, 2019. URL https://cdn.openai.com/better-language-models/language_models_ are_unsupervised_multitask_learners.pdf .16 A Training details 
+
+Hardware. We use 32 computing nodes, each equipped with an NVIDIA GH200 Grace Hopper Superchip. 
+
+Software. We use PyTorch (2.9.0+cu128) FSDP [ 49 ], transformers (4.57.1), datasets (4.3.0) and accelerate (1.11.0) for training. We write our training code referring to the following codebases: GradCache 8 [50], GritLM 9 [26] and the HuggingFace transformers (4.57.1) 10 trainer [51]. The hyperparameters and implementation details about GRC are described in Table 5. The consumed GPU device memory will explode if we directly use the training loss L to train LLMs, even smaller ones like 1.7B with eight A100s 80GB because of the computation of contrastive learning and our training examples are relative long due to the incorporation of reasoning traces. To solve the problem, we utilize GradCache [ 50 ] for LRep and gradient accumulation for LGen and 
+
+LRecons during training. Table 5: Hyperparameters and hardware accelerators for training GRC models. 
+
+Hyperparameter GRC-1.7B GRC-4B 
+
+Batch size (per device) 8 8Num of register tokens per sequence 128 128 Run / total training steps 550 / 2483 440/2016 Total training size 635,752 516,336 Warm-up ratio 0 0 % Learning rate 5e-5 5e-5 Text embedding pooling mean pooling mean pooling Num of positives 1 1Num of negatives 1 1Optimizer adamw_torch adamw_torch Mixed precision training bf16 bf16 Temperature for InfoNCE loss 0.02 0.02 Maximum sequence length 14,336 10,240 Base model Qwen3-1.7B-Base Qwen3-4B-Base Hardware accelerator NVIDIA GH200 NVIDIA GH200 Num of GPUs 32 32 Num of GPU hours 32 * 40 32 * 40 
+
+Training Data. The sources of training data are listed as follows: • General Reasoning : GeneralThought 11 and 0.9M DeepSeek-R1 reasoning traces [52]. • Math Reasoning : OpenMathReasoning [53]. • Reasoning-enhanced Retrieval : ReasonEmbed [54]. • High Reasoning Coverage Agentic Data : DR-Tulu-SFT [55], ADP Dataset V1 [56]. We randomly sample examples from the above dataset as our training data. For the 1.7B model, the total number of training data is 635,752. For the 4B model, we sampled 516,336 training examples. Note that our models were trained on only a subset of the sampled training dataset as shown in Table 5. 
+
+B Evaluation details 
+
+Text retrieval. BRIGHT [ 24 ] is a comprehensive and difficult text retrieval benchmark covering 12 domains/datasets where queries usually require intensive reasoning to find relevant documents. Thus 
+
+> 8https://github.com/luyug/GradCache
+> 9https://github.com/ContextualAI/gritlm
+> 10 https://github.com/huggingface/transformers/tree/v4.57.1
+> 11 https://huggingface.co/datasets/RJT1990/GeneralThoughtArchive
+
+17 Table 6: Reconstruction prompt set. 
+
+Reconstruction prompts "What was discussed in the previous conversation?", "What did we talk about in the last conversation?", "What did we cover in our last discussion?", "What were the key points of the previous conversation?", "Can you give an overview of what we talked about earlier?", "Remind me what our last conversation was about.", "What were we discussing earlier?", "What did we go over in the previous chat?" it is utilized to evaluate the text retrieval performance. BRIGHT benchmark (version) evaluation is conducted on the same server with 8 NVIDIA A100 GPUs with 80 GB memory. Table 7: Models benchmarked in experiments. This table is from the BRIGHT paper [24].                                                                                                    
+
+> Size Architecture Max |Q|Max |D|Instruction Version License
+> Sparse model BM25 N/A Sparse ∞∞No gensim 12 LGPL-2.1-only
+> Open-sourced models (<1B)
+> SBERT 109M Encoder 512 512 No all-mpnet-base-v2 Apache-2.0 BGE 335M Encoder 512 512 No bge-large-en-v1.5 MIT Inst-L 335M Encoder 2048 2048 Yes instructor-large Apache-2.0
+> Open-sourced models (>1B)
+> Inst-XL 1.5B Encoder 2048 2048 Yes instructor-xl Apache-2.0 E5 7.1B Decoder 4096 4096 Yes e5-mistral-7b-instruct MIT GritLM 7.1B Decoder 256 2048 Yes GritLM-7B Apache-2.0 SFR 7.1B Decoder 4096 4096 Yes SFR-Embedding-Mistral CC-BY-NC-4.0 Qwen 7.7B Decoder 8192 8192 Yes gte-Qwen1.5-7B-instruct Apache-2.0
+> Proprietary models
+> Cohere N/A Dense 512 512 No Cohere-embed-english-v3.0 Company Google 1.2B Dense 2000 2000 Yes text-embedding-preview-0409, dimension=768 Company OpenAI N/A Dense 8191 8191 No text-embedding-3-large Company Voyage N/A Dense 16000 16000 Yes voyage-large-2-instruct Company
+
+Document compression. Document compression evaluation is conducted on a server with 2 NVIDIA RTX PRO 6000 GPUs. Table 8: Statistics of the Wikipedia markdown documents grouped by document-length intervals. Token counts are computed using the GPT-2 tokenizer [57]. 
+
+Length range # Documents 
+
+[0 , 128) 962 
+
+[128 , 256) 755 
+
+[256 , 512) 719 
+
+[512 , 1024) 333 
+
+[0 , ∞) 2952 
+
+Generative tasks. Generative task evaluation is conducted on a server with 2 NVIDIA RTX PRO 6000 GPUs. 18 Table 9: GRC query prompt used to extract query embeddings. 
+
+Query prompt Given a question, your mission is to follow the instructions below: 1. Identify the essential problem. 2. Think step by step to reason and describe what information could be relevant and helpful to address the questions in detail. 3. Draft an answer with as many thoughts as you have. The given question: {query} Table 10: GRC document prompt. 
+
+Document prompt Represent this text: "{document}" 
+
+RAG. RAG evaluation is conducted on a server with 8 NVIDIA A100 GPUs with 80GB device memory. 
+
+Hybrid paged attention. The latency testing of hybrid paged attention is also conducted on a server with one NVIDIA A100 GPU with 80GB device memory. 
+
+Prompt templates. Table 9, 10, 11, 12 and 13 present various prompt templates used in our experiments. 
+
+Latency testing details. For the hybrid paged attention-based LLM serving system, the hyperpa-rameters are shown in Table 14. The detailed actual inference time of the latency testing experiments is shown in Table 15. 
+
+Naive inference implementation. We adapted the huggingface generation implementation to fit the needs of GRC models. Specifically, the first step is to generate tokens like regular LLMs. After that, the second step is to use meta latent tokens as the input to obtain their KV cache (compressed KV cache of the context) and text embedding via the mean pooling operation on the last hidden states. The optional final step is to augment the next user query with the compressed KV cache and the position ids to conduct conditional generation, that is, latent memory-augmented generation. We set the batch size to 1 for all cases when using the naive inference implementation. We run naive inference implementation on one NVIDIA A100 GPU. Table 11: GRC QA prompt. 
+
+QA prompt To answer the following question, you first think about the reasoning process and then provide the user with the answer. The reasoning process and answer are enclosed within <think> and <answer> tags, respectively, i.e., <think> reasoning process here </think><answer> answer here </answer>. Question: {user_question} 19 Table 12: GRC RAG prompt (regular document). 
+
+GRC RAG prompt <|im_start|>user {Documents} To answer the following question, you first think about the reasoning process and then provide the user with the answer. The reasoning process and answer are enclosed within <think> and <answer> tags, respectively, i.e., <think> reasoning process here </think><answer> answer here </answer>. Question: {user_question} <|im_end|> <|im_start|>assistant Table 13: GritLM RAG prompt. 
+
+GritLM RAG prompt <|user|> {title} {text} {query} Answer the prior query while optionally using the context prior to it <|assistant|> The answer is The naive implementation of regular generation, RAG, query embedding and document embedding is shown in Figure 8: 
+
+Hybrid paged attention implementation. Our hybrid paged attention implementation builds upon nano-vllm 13 , a compact and efficient paged attention implementation. 
+
+> 13 https://github.com/GeeeekExplorer/nano-vllm
+
+20 Table 14: Hyperparameters used in hybrid paged attention-based LLM serving system when conduct-ing latency testing experiments. 
+
+Hyperparameter Value 
+
+tensor_parallel_size 1gpu_utilization 0.9 temperature 0.1 max_num_seqs 16 max_num_batched_tokens 16000 * 16 Table 15: Comparison of averaged actual inference time (s) per user query between the naive and HPA-based inference implementation. The batch size is set to 1 for naive implementation. The hyperparameters of HPA-based inference implementation are shown in Table 14. 
+
+Implementation Max new tokens Test dataset (number) 
+
+128 256 512 1024 
+
+Regular Gen. / Query Embedding 
+
+GRC-1.7B-Naive 7.50 10.97 18.75 32.36 BRIGHT Queries (200) GRC-1.7B-HPA 0.64 0.95 1.59 2.80 GRC-4B-Naive 9.59 14.53 23.91 41.18 GRC-4B-HPA 0.81 1.23 2.04 3.59 
+
+Document Embedding 
+
+GRC-1.7B-Naive 3.77 3.81 3.80 3.84 PwC Documents (200) GRC-1.7B-HPA 0.33 0.34 0.34 0.33 GRC-4B-Naive 4.93 5.01 5.02 5.06 GRC-4B-HPA 0.43 0.43 0.42 0.43 
+
+Regular RAG (regular document) 
+
+GRC-1.7B-Naive 7.63 11.47 18.14 24.92 PwC Queries and Documents (200) GRC-1.7B-HPA 0.65 0.97 1.57 2.21 GRC-4B-Naive 9.69 14.49 23.02 31.36 GRC-4B-HPA 0.83 1.24 1.99 2.62 
+
+Latent Memory-Augmented Generation (compressed document) 
+
+GRC-1.7B-Naive 6.17 9.90 17.54 31.25 PwC Queries and Documents (200) GRC-1.7B-HPA 0.32 0.63 1.25 2.49 GRC-4B-Naive 7.92 12.67 22.56 39.45 GRC-4B-HPA 0.41 0.81 1.59 3.22 21 12 class GRCGenerateMixin : 
+
+3 @torch . no_grad () 
+
+4 def generate_with_compress ( 
+
+5 self , 
+
+6 input_ids , 
+
+7 max_new_tokens =50 , 
+
+8 max_length = None , 
+
+9 temperature =1.0 , 
+
+10 top_k =0 , 
+
+11 top_p =1.0 , 
+
+12 repetition_penalty =1.0 , 
+
+13 logits_processor = None , 
+
+14 stopping_criteria = None , 
+
+15 pad_token_id = None , 
+
+16 eos_token_id = None , 
+
+17 use_cache = True , 
+
+18 ** model_kwargs , 
+
+19 ) : 
+
+20 batch_size , initial_len = input_ids . shape 
+
+21 22 out = self . generate_with_kv ( 
+
+23 input_ids = input_ids , 
+
+24 max_new_tokens = max_new_tokens , 
+
+25 max_length = max_length , 
+
+26 temperature = temperature , 
+
+27 top_k = top_k , 
+
+28 top_p = top_p , 
+
+29 repetition_penalty = repetition_penalty , 
+
+30 logits_processor = logits_processor , 
+
+31 stopping_criteria = stopping_criteria , 
+
+32 pad_token_id = pad_token_id , 
+
+33 eos_token_id = eos_token_id , 
+
+34 use_cache = use_cache , 
+
+35 )
+
+36 generated_ids = out [ " sequences " ] 
+
+37 38 past , last_hidden_state = self . append_register_tokens_with_kv ( 
+
+39 batch_size = batch_size , 
+
+40 past_key_values = out [ " past_key_values " ] , 
+
+41 eos_token_id = eos_token_id , 
+
+42 )
+
+43 raw_reps = last_hidden_state 
+
+44 45 embedded_raw_reps = self . embed_adapter ( raw_reps ) 
+
+46 47 if self . pooling_method == " lasttoken " : 
+
+48 embedding = embedded_raw_reps [: , -1 , :] 
+
+49 elif self . pooling_method == " register_token_mean " : 
+
+50 s = torch . sum ( embedded_raw_reps , dim =1) 
+
+51 embedding = s / raw_reps . shape [1] 
+
+52 53 if self . normalized : 
+
+54 embedding = torch . nn . functional . normalize ( embedding , p =2 , dim = -1) 
+
+55 56 return generated_ids , raw_reps , embedding , past 
+
+Figure 8: Naive inference implementation. 22
