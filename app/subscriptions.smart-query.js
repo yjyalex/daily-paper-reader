@@ -51,18 +51,52 @@ window.SubscriptionsSmartQuery = (function () {
     '}',
     'Requirements:',
     '1) keywords: output 5-12 objects; each item must include keyword and query, keyword_cn optional.',
-    '2) keywords are used for recall and should be atomic phrases (prefer 1-3 core words).',
-    '3) Keep keywords atomic and avoid packing multiple concepts into one phrase.',
-    '4) Do not include concrete example topics in the prompt.',
-    '5) intent_queries: output 1-4 actionable intent queries. Each item should include query and optional query_cn.',
-    '6) Do not output extra fields like must_have / optional / exclude / rewrite_for_embedding.',
-    '7) Return pure JSON only, no explanations.',
-    '8) intent_queries should be concise, timeless, and must not include years or year-like tokens.',
-    '9) Tag suggestion should be concise, preferably under 6 characters.',
-    '10) Tag suggestion must NOT include any year. Do not append or embed years (including digits like 2026/2025/2024 etc.) in tag.',
+    '2) keyword and query MUST be English retrieval text only. Do not put Chinese in keyword or query.',
+    '3) keyword_cn and query_cn MUST be Chinese translations/explanations when present.',
+    '4) keywords are used for recall and should be atomic phrases (prefer 1-3 core words).',
+    '5) Keep keywords atomic and avoid packing multiple concepts into one phrase.',
+    '6) Do not include concrete example topics in the prompt.',
+    '7) intent_queries: output 1-4 actionable intent queries. The query field MUST be English only; query_cn should be Chinese.',
+    '8) Do not output extra fields like must_have / optional / exclude / rewrite_for_embedding.',
+    '9) Return pure JSON only, no explanations.',
+    '10) intent_queries should be concise, timeless, and must not include years or year-like tokens.',
+    '11) Tag suggestion should be concise and descriptive. No fixed length limit.',
+    '12) Tag suggestion must NOT include any year. Do not append or embed years (including digits like 2026/2025/2024 etc.) in tag.',
+    '13) Tag suggestion must be English words or an English acronym only. Never output Chinese in tag.',
+    '14) Tag suggestion must use hyphen-separated words when multiple words are needed, for example "reinforcement-learning". Do not use spaces or underscores in tag.',
   ].join('\n');
 
   const normalizeText = (v) => String(v || '').trim();
+  const containsCjk = (v) => /[\u3400-\u9fff\uf900-\ufaff]/.test(String(v || ''));
+  const isEnglishRetrievalText = (v) => {
+    const text = normalizeText(v);
+    return !!text && !containsCjk(text);
+  };
+  const PAPER_SOURCE_ORDER = [
+    'arxiv',
+    'biorxiv',
+    'medrxiv',
+    'chemrxiv',
+    'neurips',
+    'iclr',
+    'icml',
+    'acl',
+    'emnlp',
+    'aaai',
+  ];
+  const VISIBLE_PAPER_SOURCES = ['arxiv', 'biorxiv'];
+  const PAPER_SOURCE_LABELS = {
+    arxiv: 'arXiv',
+    biorxiv: 'bioRxiv',
+    medrxiv: 'medRxiv',
+    chemrxiv: 'ChemRxiv',
+    neurips: 'NeurIPS',
+    iclr: 'ICLR',
+    icml: 'ICML',
+    acl: 'ACL',
+    emnlp: 'EMNLP',
+    aaai: 'AAAI',
+  };
   const getSelectionLimit = (kind) => (
     normalizeCandidateKind(kind) === 'intent'
       ? MAX_INTENT_QUERIES_PER_PROFILE
@@ -163,13 +197,51 @@ window.SubscriptionsSmartQuery = (function () {
       .replace(/[\s_-]*(?:19|20)\d{2}(?:年)[\s_-]*/g, '')
       .replace(/[\s_-]*(?:19|20)\d{2}[\s_-]*/g, '');
     tag = tag
-      .replace(/\+/g, ' ')
-      .replace(/\s+/g, ' ')
-      .replace(/[_-]+/g, ' ')
-      .replace(/[\s_-]+$/g, '')
-      .replace(/^[\s_-]+/g, '')
+      .replace(/\+/g, '-')
+      .replace(/[\s_]+/g, '-')
+      .replace(/[^A-Za-z0-9-]+/g, '')
+      .replace(/-+/g, '-')
+      .replace(/-+$/g, '')
+      .replace(/^-+/g, '')
       .trim();
-    return tag || base;
+    if (!/[A-Za-z]/.test(tag)) return '';
+    return tag;
+  };
+  const deriveTagFromCandidates = (candidates, fallbacks = []) => {
+    const values = [];
+    if (candidates && typeof candidates === 'object') {
+      values.push(candidates.tag);
+      const keywords = Array.isArray(candidates.keywords) ? candidates.keywords : [];
+      keywords.forEach((item) => {
+        if (typeof item === 'string') {
+          values.push(item);
+          return;
+        }
+        if (item && typeof item === 'object') {
+          values.push(item.keyword, item.query);
+        }
+      });
+      const intentQueries = Array.isArray(candidates.intent_queries)
+        ? candidates.intent_queries
+        : Array.isArray(candidates.intentQueries)
+          ? candidates.intentQueries
+          : [];
+      intentQueries.forEach((item) => {
+        if (typeof item === 'string') {
+          values.push(item);
+          return;
+        }
+        if (item && typeof item === 'object') {
+          values.push(item.query);
+        }
+      });
+    }
+    values.push(...(Array.isArray(fallbacks) ? fallbacks : [fallbacks]));
+    for (let idx = 0; idx < values.length; idx += 1) {
+      const tag = sanitizeAutoTag(values[idx]);
+      if (tag) return tag;
+    }
+    return '';
   };
   const toStableId = (value) => {
     const text = normalizeText(value).toLowerCase();
@@ -184,6 +256,111 @@ window.SubscriptionsSmartQuery = (function () {
     if (!profileOrTag) return '';
     if (typeof profileOrTag === 'string') return toStableId(profileOrTag);
     return toStableId(profileOrTag.tag) || '';
+  };
+
+  const filterVisiblePaperSources = (values) => {
+    const visible = new Set(VISIBLE_PAPER_SOURCES);
+    return (Array.isArray(values) ? values : []).filter((value) => visible.has(normalizeText(value).toLowerCase()));
+  };
+
+  const normalizePaperSources = (values, options = {}) => {
+    const fallbackToArxiv = options.fallbackToArxiv !== false;
+    const fallbackToAll = options.fallbackToAll === true;
+    const rawList = Array.isArray(values)
+      ? values
+      : (typeof values === 'string' && values ? [values] : []);
+    const seen = new Set();
+    const out = [];
+    rawList.forEach((value) => {
+      const key = normalizeText(value).toLowerCase();
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      out.push(key);
+    });
+    const visibleOut = filterVisiblePaperSources(out);
+    if (!visibleOut.length && fallbackToArxiv) {
+      return ['arxiv'];
+    }
+    if (!visibleOut.length && fallbackToAll) {
+      return getAvailablePaperSources();
+    }
+    return visibleOut;
+  };
+
+  const getAvailablePaperSources = () => {
+    const cfg = window.SubscriptionsManager.getDraftConfig ? window.SubscriptionsManager.getDraftConfig() : {};
+    const rawBackends = cfg && cfg.source_backends && typeof cfg.source_backends === 'object'
+      ? cfg.source_backends
+      : {};
+    const seen = new Set();
+    const out = [];
+    const runtimeCandidates = [];
+    if (window.DPR_RUNTIME_SOURCE_BACKENDS && typeof window.DPR_RUNTIME_SOURCE_BACKENDS === 'object') {
+      runtimeCandidates.push(...Object.keys(window.DPR_RUNTIME_SOURCE_BACKENDS || {}));
+    }
+    ['arxiv', ...Object.keys(rawBackends || {}), ...runtimeCandidates].forEach((value) => {
+      const key = normalizeText(value).toLowerCase();
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      out.push(key);
+    });
+    const visibleOut = filterVisiblePaperSources(out);
+    visibleOut.sort((a, b) => {
+      const idxA = PAPER_SOURCE_ORDER.indexOf(a);
+      const idxB = PAPER_SOURCE_ORDER.indexOf(b);
+      const rankA = idxA >= 0 ? idxA : Number.MAX_SAFE_INTEGER;
+      const rankB = idxB >= 0 ? idxB : Number.MAX_SAFE_INTEGER;
+      if (rankA !== rankB) return rankA - rankB;
+      return a.localeCompare(b);
+    });
+    return visibleOut;
+  };
+
+  const getPaperSourceLabel = (source) => {
+    const key = normalizeText(source).toLowerCase();
+    if (key === 'all') return 'all';
+    return PAPER_SOURCE_LABELS[key] || key || '未知源';
+  };
+
+  const renderPaperSourceChoices = (selectedSources) => {
+    const availableSources = getAvailablePaperSources();
+    const selected = new Set(normalizePaperSources(selectedSources, { fallbackToArxiv: false }));
+    const allChecked =
+      availableSources.length > 0 &&
+      availableSources.every((source) => selected.has(source));
+    const allItem = `
+      <label class="dpr-paper-source-item dpr-paper-source-item-all">
+        <input
+          type="checkbox"
+          data-action="toggle-paper-source-all"
+          ${allChecked ? 'checked' : ''}
+        />
+        <span>${escapeHtml(getPaperSourceLabel('all'))}</span>
+      </label>
+    `;
+    const sourceItems = availableSources.map((source) => {
+      const checked = selected.has(source) ? 'checked' : '';
+      return `
+        <label class="dpr-paper-source-item">
+          <input type="checkbox" data-action="toggle-paper-source" data-source="${escapeHtml(source)}" ${checked} />
+          <span>${escapeHtml(getPaperSourceLabel(source))}</span>
+        </label>
+      `;
+    }).join('');
+    return `${allItem}${sourceItems}`;
+  };
+
+  const renderProfileSourceChips = (selectedSources) => {
+    const availableSources = getAvailablePaperSources();
+    const normalized = normalizePaperSources(selectedSources, { fallbackToArxiv: false });
+    const allSelected =
+      normalized.length > 0 &&
+      availableSources.length > 0 &&
+      availableSources.every((source) => normalized.includes(source));
+    const visibleSources = allSelected ? ['all'] : normalized;
+    return visibleSources
+      .map((source) => `<span class="dpr-entry-source-chip">${escapeHtml(getPaperSourceLabel(source))}</span>`)
+      .join('');
   };
 
   const normalizeProfileKeywords = (profile) => {
@@ -310,7 +487,8 @@ window.SubscriptionsSmartQuery = (function () {
   };
 
   const ensureProfile = (profiles, tag, description) => {
-    const t = normalizeText(tag);
+    const t = sanitizeAutoTag(tag);
+    if (!t) return null;
     let profile = profiles.find((p) => getProfileKey(p) === getProfileKey(t));
     if (profile) {
       if (normalizeText(description) && !normalizeText(profile.description)) {
@@ -328,6 +506,10 @@ window.SubscriptionsSmartQuery = (function () {
     profiles.push(profile);
     return profile;
   };
+
+  const findCurrentProfile = (profileId) => (
+    (currentProfiles || []).find((profile) => getProfileKey(profile) === getProfileKey(profileId))
+  );
 
   const loadLlmConfig = () => {
     const secret = window.decoded_secret_private || {};
@@ -544,21 +726,28 @@ window.SubscriptionsSmartQuery = (function () {
     let keywords = rawKeywords
       .map((item, idx) => {
         if (!item) return null;
-        const keyword =
+        const rawKeyword =
           typeof item === 'string' ? normalizeText(item) : normalizeText(item.keyword || item.text || item.expr || '');
-        if (!keyword) return null;
+        if (!isEnglishRetrievalText(rawKeyword)) return null;
         const keywordCn = normalizeText(
           typeof item === 'string'
             ? ''
             : normalizeText(item.keyword_cn || item.keyword_zh || item.zh || ''),
         );
-        const query = normalizeText(
-          typeof item === 'string' ? keyword : normalizeText(item.query || item.rewrite || keyword),
+        const rawQuery = normalizeText(
+          typeof item === 'string' ? rawKeyword : normalizeText(item.query || item.rewrite || rawKeyword),
         );
+        const queryCn = normalizeText(
+          typeof item === 'string'
+            ? ''
+            : normalizeText(item.query_cn || item.query_zh || item.note || ''),
+        );
+        const query = isEnglishRetrievalText(rawQuery) ? rawQuery : rawKeyword;
         return {
-          keyword,
+          keyword: rawKeyword,
           keyword_cn: keywordCn,
-          query: query || keyword,
+          query: query || rawKeyword,
+          query_cn: queryCn || (containsCjk(rawQuery) ? rawQuery : ''),
         };
       })
       .filter(Boolean);
@@ -618,7 +807,9 @@ window.SubscriptionsSmartQuery = (function () {
     });
 
     const rawIntentQueries = normalizeIntentSource(data);
-    const intentQueries = normalizeIntentQueryEntries(rawIntentQueries);
+    const intentQueries = normalizeIntentQueryEntries(rawIntentQueries).filter((item) =>
+      isEnglishRetrievalText(item && item.query),
+    );
 
     return {
       tag: cleanedTag,
@@ -673,9 +864,6 @@ window.SubscriptionsSmartQuery = (function () {
         pushUnique(`${src}/chat/completions`);
       };
 
-      expandEndpoint('https://hk-api.gptbest.vip');
-      expandEndpoint('https://api.bltcy.ai');
-
       const raw = normalizeText(llm.baseUrl);
       if (!raw) {
         return out;
@@ -688,12 +876,25 @@ window.SubscriptionsSmartQuery = (function () {
       throw new Error('LLM 配置缺少 baseUrl。');
     }
 
+    const resolveJsonResponseMode = () => {
+      const utils = window.DPRLLMConfigUtils || {};
+      if (typeof utils.resolveJsonResponseMode === 'function') {
+        return utils.resolveJsonResponseMode({
+          baseUrl: llm.baseUrl,
+          model: llm.model,
+          preferSchema: false,
+        });
+      }
+      return 'json_object';
+    };
+    const jsonResponseMode = resolveJsonResponseMode();
+
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 120000);
-    const requestPayload = ({ useResponseFormat = true, includeTools = true }) => {
-      const payload = {
-        model: llm.model,
-        messages: [
+	    const requestPayload = ({ useResponseFormat = true } = {}) => {
+	      const payload = {
+	        model: llm.model,
+	        messages: [
           {
             role: 'system',
             content:
@@ -701,16 +902,22 @@ window.SubscriptionsSmartQuery = (function () {
               + 'The response must be fully based on the current user input and must not reference prior conversation history.',
           },
           { role: 'user', content: prompt },
-        ],
-        temperature: 0.1,
-      };
-      if (includeTools) {
-        payload.tools = [];
-        payload.tool_choice = 'none';
-      }
-      if (useResponseFormat) {
-        payload.response_format = { type: 'json_object' };
-      }
+	        ],
+	        temperature: 0.1,
+	      };
+	      const utils = window.DPRLLMConfigUtils || {};
+	      if (typeof utils.resolveMaxOutputTokens === 'function') {
+	        const maxTokens = utils.resolveMaxOutputTokens({
+	          baseUrl: llm.baseUrl,
+	          model: llm.model,
+	        });
+	        if (maxTokens) {
+	          payload.max_tokens = maxTokens;
+	        }
+	      }
+	      if (useResponseFormat && jsonResponseMode === 'json_object') {
+	        payload.response_format = { type: 'json_object' };
+	      }
       return payload;
     };
 
@@ -720,44 +927,21 @@ window.SubscriptionsSmartQuery = (function () {
       return '';
     };
 
-    const isFetchFailure = (e) => {
-      if (!e) return false;
-      if (e.name === 'AbortError') return false;
-      if (e.name === 'TypeError') return true;
-      const msg = (e.message || '').toLowerCase();
-      return msg.includes('failed to fetch') || msg.includes('network') || msg.includes('ERR_NETWORK');
-    };
-
     const doFetch = async (
       endpoint,
       options = { useResponseFormat: true, includeTools: true },
-      withApiKeyHeader = true,
     ) => {
       const headers = {
         'Content-Type': 'application/json',
         Accept: 'application/json',
         Authorization: `Bearer ${llm.apiKey}`,
       };
-      if (withApiKeyHeader) {
-        headers['x-api-key'] = llm.apiKey;
-      }
       return fetch(endpoint, {
         method: 'POST',
         headers,
         body: JSON.stringify(requestPayload(options)),
         signal: controller.signal,
       });
-    };
-
-    const doFetchWithFallbackHeader = async (endpoint, options) => {
-      try {
-        return await doFetch(endpoint, options, true);
-      } catch (e) {
-        if (!isFetchFailure(e)) {
-          throw e;
-        }
-        return doFetch(endpoint, options, false);
-      }
     };
 
     let res = null;
@@ -769,22 +953,14 @@ window.SubscriptionsSmartQuery = (function () {
         try {
           let current = null;
           let txt = '';
-          current = await doFetchWithFallbackHeader(endpoint, {
-            useResponseFormat: true,
-            includeTools: true,
+          current = await doFetch(endpoint, {
+            useResponseFormat: jsonResponseMode !== 'prompt_only',
           });
           if (current && !current.ok) {
             txt = await current.text().catch(() => '');
             if (current.status === 400 && /response[\s-]*format|json_object/i.test(txt)) {
-              current = await doFetchWithFallbackHeader(endpoint, {
+              current = await doFetch(endpoint, {
                 useResponseFormat: false,
-                includeTools: true,
-              });
-            }
-            if (current && !current.ok && current.status === 400 && /tool_choice|tools/i.test(txt)) {
-              current = await doFetchWithFallbackHeader(endpoint, {
-                useResponseFormat: false,
-                includeTools: false,
               });
             }
           }
@@ -830,12 +1006,12 @@ window.SubscriptionsSmartQuery = (function () {
     const parsed = loadJsonLenient(content);
     const candidates = normalizeGenerated(parsed);
     if (!candidates.keywords.length) {
-      throw new Error('模型未返回可用候选，请调整描述后重试。');
+      throw new Error('模型未返回可用英文候选，请调整描述后重试。');
     }
     return candidates;
   };
 
-  const applyCandidateToProfile = (tag, description, candidates) => {
+  const applyCandidateToProfile = (tag, description, paperSources, candidates) => {
     const selectedKeywords = (candidates.keywords || []).filter((x) => x._selected);
     const selectedIntentQueries = (candidates.intent_queries || []).filter((x) => x._selected);
     if (!selectedKeywords.length && !selectedIntentQueries.length) {
@@ -848,7 +1024,9 @@ window.SubscriptionsSmartQuery = (function () {
       if (!next.subscriptions) next.subscriptions = {};
       const subs = next.subscriptions;
       const profiles = Array.isArray(subs.intent_profiles) ? subs.intent_profiles.slice() : [];
-      const profile = ensureProfile(profiles, tag, description);
+      const safeTag = sanitizeAutoTag(tag) || deriveTagFromCandidates(candidates) || 'topic';
+      const profile = ensureProfile(profiles, safeTag, description);
+      if (!profile) return next;
       const kwList = normalizeProfileKeywords(profile).slice();
       const kwSeen = new Set(
         kwList
@@ -873,6 +1051,7 @@ window.SubscriptionsSmartQuery = (function () {
       });
 
       profile.description = normalizeText(profile.description || description || '');
+      profile.paper_sources = normalizePaperSources(paperSources, { fallbackToArxiv: false });
       profile.keywords = kwList;
       const mergedIntentQueries = [];
       const intentSeen = new Set();
@@ -903,7 +1082,7 @@ window.SubscriptionsSmartQuery = (function () {
     return true;
   };
 
-  const replaceProfileFromSelection = (profileId, tag, description, candidates) => {
+  const replaceProfileFromSelection = (profileId, tag, description, paperSources, candidates) => {
     const profileKey = getProfileKey(profileId);
     if (!profileKey) return false;
 
@@ -926,8 +1105,9 @@ window.SubscriptionsSmartQuery = (function () {
 
       profiles[idx] = {
         ...existedProfile,
-        tag: normalizeText(tag || existedProfile.tag || ''),
+        tag: sanitizeAutoTag(tag || existedProfile.tag || '') || deriveTagFromCandidates(candidates) || `profile-${idx + 1}`,
         description: normalizeText(description || existedProfile.description || ''),
+        paper_sources: normalizePaperSources(paperSources, { fallbackToArxiv: false }),
         keywords:
           selectedKeywords.length > 0
             ? selectedKeywords
@@ -1492,23 +1672,33 @@ window.SubscriptionsSmartQuery = (function () {
     displayListEl.innerHTML = currentProfiles
       .map((p) => {
         const isPaused = !!p.paused;
+        const isQuickRunOpen = !!p._quickRunOpen;
         const pauseLabel = isPaused ? '恢复' : '暂停';
         const pauseBtnClass = isPaused ? 'dpr-entry-resume-btn' : 'dpr-entry-pause-btn';
         const cardClass = 'dpr-entry-card' + (isPaused ? ' dpr-entry-card--paused' : '');
         const pausedBadge = isPaused ? '<span class="dpr-entry-paused-badge">已暂停</span>' : '';
+        const profileId = escapeHtml(getProfileKey(p) || '');
+        const runPanelClass = `dpr-entry-run-panel${isQuickRunOpen ? ' is-open' : ''}`;
         return `
-          <div class="${cardClass}" data-profile-id="${escapeHtml(getProfileKey(p) || '')}">
+          <div class="${cardClass}" data-profile-id="${profileId}">
             <div class="dpr-entry-top">
               <div class="dpr-entry-headline">
                 <span class="dpr-entry-title">${escapeHtml(p.tag || '')}</span>
                 ${pausedBadge}
                 <span class="dpr-entry-desc-inline">${escapeHtml(p.description || '（无描述）')}</span>
+                <span class="dpr-entry-source-inline">${renderProfileSourceChips(p.paper_sources)}</span>
               </div>
               <div class="dpr-entry-actions">
-                <button class="arxiv-tool-btn ${pauseBtnClass}" data-action="pause-profile" data-profile-id="${escapeHtml(getProfileKey(p) || '')}">${pauseLabel}</button>
-                <button class="arxiv-tool-btn dpr-entry-edit-btn" data-action="edit-profile" data-profile-id="${escapeHtml(getProfileKey(p) || '')}">修改</button>
-                <button class="arxiv-tool-btn dpr-entry-delete-btn" data-action="delete-profile" data-profile-id="${escapeHtml(getProfileKey(p) || '')}">删除</button>
+                <button class="arxiv-tool-btn dpr-entry-run-toggle-btn" data-action="toggle-profile-runs" data-profile-id="${profileId}">${isQuickRunOpen ? '收起运行' : '运行'}</button>
+                <button class="arxiv-tool-btn ${pauseBtnClass}" data-action="pause-profile" data-profile-id="${profileId}">${pauseLabel}</button>
+                <button class="arxiv-tool-btn dpr-entry-edit-btn" data-action="edit-profile" data-profile-id="${profileId}">修改</button>
+                <button class="arxiv-tool-btn dpr-entry-delete-btn" data-action="delete-profile" data-profile-id="${profileId}">删除</button>
               </div>
+            </div>
+            <div class="${runPanelClass}">
+              <button class="arxiv-tool-btn dpr-entry-run-btn" data-action="run-profile-10d" data-profile-id="${profileId}">10 天</button>
+              <button class="arxiv-tool-btn dpr-entry-run-btn" data-action="run-profile-30d-skims" data-profile-id="${profileId}">30 天速览</button>
+              <button class="arxiv-tool-btn dpr-entry-run-btn" data-action="run-profile-30d-standard" data-profile-id="${profileId}">30 天标准</button>
             </div>
           </div>
         `;
@@ -1518,9 +1708,7 @@ window.SubscriptionsSmartQuery = (function () {
 
   const openAddModal = (tag, description, candidates) => {
     const normalizedCandidates = parseCandidatesForState(candidates);
-    const suggestedTag = sanitizeAutoTag(
-      normalizeText(candidates && candidates.tag) || normalizeText(tag),
-    );
+    const suggestedTag = deriveTagFromCandidates(candidates, [tag]) || 'topic';
     const suggestedDesc = normalizeText(candidates && candidates.description) || normalizeText(description);
     modalState = {
       type: 'add',
@@ -1531,6 +1719,7 @@ window.SubscriptionsSmartQuery = (function () {
       customKeyword: '',
       customKeywordLogic: '',
       customQuery: '',
+      paper_sources: normalizePaperSources(candidates && candidates.paper_sources, { fallbackToAll: true }),
     };
     modalState.keywords = clampSelectionsByLimit(modalState.keywords, 'keyword');
     modalState.intent_queries = clampSelectionsByLimit(modalState.intent_queries, 'intent');
@@ -1556,8 +1745,9 @@ window.SubscriptionsSmartQuery = (function () {
         'intent',
       ),
       requestHistory: [],
-      inputTag: normalizeText(options.tag || ''),
+      inputTag: sanitizeAutoTag(options.tag || ''),
       inputDesc: normalizeText(options.description || ''),
+      paper_sources: normalizePaperSources(options.paper_sources, { fallbackToAll: true }),
       pending: false,
       chatStatus: '',
     };
@@ -1587,6 +1777,7 @@ window.SubscriptionsSmartQuery = (function () {
     const candidateBlocks = `${hasKeywords ? keywordBlock : ''}${hasKeywords && hasIntentQueries ? divider : ''}${
       hasIntentQueries ? intentBlock : ''
     }`;
+    const sourceChoices = renderPaperSourceChoices(modalState.paper_sources || []);
 
     modalPanel.innerHTML = `
       <div class="dpr-modal-head">
@@ -1617,6 +1808,10 @@ window.SubscriptionsSmartQuery = (function () {
           <span class="dpr-modal-field-label">中文描述</span>
           <input id="dpr-add-profile-desc" type="text" value="${escapeHtml(modalState.description || '')}" placeholder="请填写中文描述" />
         </label>
+        <div class="dpr-modal-field dpr-modal-field-sources">
+          <span class="dpr-modal-field-label">论文源</span>
+          <div class="dpr-paper-source-row">${sourceChoices}</div>
+        </div>
         <button class="arxiv-tool-btn" data-action="apply-add" style="background:#2e7d32;color:#fff;">保存查询</button>
       </div>
     `;
@@ -1624,16 +1819,22 @@ window.SubscriptionsSmartQuery = (function () {
 
   const applyAddModal = () => {
     if (!modalState || modalState.type !== 'add') return;
-    const nextTag = normalizeText(document.getElementById('dpr-add-profile-tag')?.value || '');
+    const rawNextTag = normalizeText(document.getElementById('dpr-add-profile-tag')?.value || '');
+    const nextTag = sanitizeAutoTag(rawNextTag) || deriveTagFromCandidates(modalState) || '';
     const nextDesc = normalizeText(document.getElementById('dpr-add-profile-desc')?.value || '');
 
     if (!nextTag || !nextDesc) {
-      setMessage('标签和描述不能为空。', '#c00');
+      setMessage('标签必须是英文、英文缩写或英文连字符短语，且描述不能为空。', '#c00');
       return;
     }
 
     modalState.tag = nextTag;
     modalState.description = nextDesc;
+    const nextPaperSources = normalizePaperSources(modalState.paper_sources, { fallbackToArxiv: false });
+    if (!nextPaperSources.length) {
+      setMessage('请至少勾选 1 个论文源。', '#c00');
+      return;
+    }
 
     const selectedKeywords = getSelectedItemsForSave(modalState.keywords || []);
     const selectedIntentQueries = getSelectedItemsForSave(modalState.intent_queries || []);
@@ -1648,13 +1849,14 @@ window.SubscriptionsSmartQuery = (function () {
           modalState.editProfileId,
           modalState.tag,
           modalState.description,
+          nextPaperSources,
           {
             ...modalState,
             keywords: selectedKeywords,
             intent_queries: selectedIntentQueries,
           },
         )
-      : applyCandidateToProfile(modalState.tag, modalState.description, {
+      : applyCandidateToProfile(modalState.tag, modalState.description, nextPaperSources, {
           ...modalState,
           keywords: selectedKeywords,
           intent_queries: selectedIntentQueries,
@@ -1690,6 +1892,7 @@ window.SubscriptionsSmartQuery = (function () {
     const hasIntentQueries =
       hasIntentSection && modalState.intent_queries.some((item) => !isDraftSlot(item));
     const hasCandidates = hasKeywords || hasIntentQueries;
+    const sourceChoices = renderPaperSourceChoices(modalState.paper_sources || []);
     const isFirstRound = !(Array.isArray(modalState.requestHistory) && modalState.requestHistory.length);
     const actionLabel = isFirstRound ? '生成候选' : '新增候选';
     const tipSection = isFirstRound
@@ -1762,6 +1965,10 @@ window.SubscriptionsSmartQuery = (function () {
           <span class="dpr-chat-label-text">中文描述</span>
           <input id="dpr-chat-required-desc" type="text" placeholder="请填写描述" value="${escapeHtml(modalState.inputDesc || '')}" />
         </label>
+        <div class="dpr-chat-label dpr-chat-inline-sources">
+          <span class="dpr-chat-label-text">论文源</span>
+          <div class="dpr-paper-source-row">${sourceChoices}</div>
+        </div>
         <button class="arxiv-tool-btn" data-action="apply-chat" style="background:#2e7d32;color:#fff;" ${hasCandidates ? '' : 'disabled'}>
           保存查询
         </button>
@@ -1794,14 +2001,20 @@ window.SubscriptionsSmartQuery = (function () {
     const hasItems = selectedKeywords.length || selectedIntentQueries.length;
     const validationError = validateProfileSelection(selectedKeywords, selectedIntentQueries);
     const desc = normalizeText(document.getElementById('dpr-chat-required-desc')?.value || '');
-    const tag = normalizeText(document.getElementById('dpr-chat-tag-input')?.value || modalState.inputTag || '');
+    const rawTag = normalizeText(document.getElementById('dpr-chat-tag-input')?.value || modalState.inputTag || '');
+    const tag = sanitizeAutoTag(rawTag) || deriveTagFromCandidates(modalState) || '';
+    const paperSources = normalizePaperSources(modalState.paper_sources, { fallbackToArxiv: false });
 
     if (!tag) {
-      setMessage('请先填写标签。', '#c00');
+      setMessage('请先填写英文标签、英文缩写或英文连字符短语。', '#c00');
       return;
     }
     if (!desc) {
       setMessage('请先填写中文描述。', '#c00');
+      return;
+    }
+    if (!paperSources.length) {
+      setMessage('请至少勾选 1 个论文源。', '#c00');
       return;
     }
     if (validationError) {
@@ -1813,12 +2026,12 @@ window.SubscriptionsSmartQuery = (function () {
     const profileTag = tag || `SR-${new Date().toISOString().slice(0, 10)}`;
     if (hasItems) {
       const ok = modalState.editProfileId
-        ? replaceProfileFromSelection(modalState.editProfileId, profileTag, desc, {
+        ? replaceProfileFromSelection(modalState.editProfileId, profileTag, desc, paperSources, {
             ...modalState,
             keywords: selectedKeywords,
             intent_queries: selectedIntentQueries,
           })
-        : applyCandidateToProfile(profileTag, desc, {
+        : applyCandidateToProfile(profileTag, desc, paperSources, {
             ...modalState,
             keywords: selectedKeywords,
             intent_queries: selectedIntentQueries,
@@ -1838,10 +2051,10 @@ window.SubscriptionsSmartQuery = (function () {
   const askChatOnce = async () => {
     if (!modalState || modalState.type !== 'chat') return;
     if (modalState.pending) return;
-    const tag = normalizeText(document.getElementById('dpr-chat-tag-input')?.value || '');
+    const tag = sanitizeAutoTag(document.getElementById('dpr-chat-tag-input')?.value || '');
     const desc = normalizeText(document.getElementById('dpr-chat-desc-input')?.value || '');
     const finalDesc = desc;
-    let finalTag = tag || `SR-${new Date().toISOString().slice(0, 10)}`;
+    let finalTag = tag || 'topic';
 
     if (!finalDesc) {
       setChatStatus('请先填写检索需求。', '#c00');
@@ -1872,7 +2085,7 @@ window.SubscriptionsSmartQuery = (function () {
         : nextCandidates.intent_queries;
       const suggestedTag = normalizeText(candidates.tag);
       const suggestedDesc = normalizeText(candidates.description);
-      const safeSuggestedTag = sanitizeAutoTag(suggestedTag);
+      const safeSuggestedTag = deriveTagFromCandidates(candidates);
       if (!tag && safeSuggestedTag) {
         finalTag = safeSuggestedTag;
       }
@@ -1946,6 +2159,7 @@ window.SubscriptionsSmartQuery = (function () {
       editProfileId: targetKey,
       tag: profile.tag || '',
       description: profile.description || '',
+      paper_sources: normalizePaperSources(profile.paper_sources, { fallbackToAll: true }),
       keywords: existingKeywords,
       intent_queries: existingIntentQueries,
     });
@@ -2068,6 +2282,42 @@ window.SubscriptionsSmartQuery = (function () {
   const handleModalChange = (e) => {
     const target = e.target;
     if (!target || !target.matches) return;
+    if (target.matches('input[type="checkbox"][data-action="toggle-paper-source-all"]')) {
+      if (!modalState) return;
+      const availableSources = getAvailablePaperSources();
+      const shouldSelectAll = !!target.checked;
+      modalState.paper_sources = shouldSelectAll ? availableSources.slice() : [];
+      if (modalPanel) {
+        modalPanel
+          .querySelectorAll('input[type="checkbox"][data-action="toggle-paper-source"]')
+          .forEach((input) => {
+            input.checked = shouldSelectAll;
+          });
+      }
+      return;
+    }
+    if (target.matches('input[type="checkbox"][data-action="toggle-paper-source"]')) {
+      if (!modalState) return;
+      const source = normalizeText(target.getAttribute('data-source') || '').toLowerCase();
+      if (!source) return;
+      const availableSources = getAvailablePaperSources();
+      const current = new Set(normalizePaperSources(modalState.paper_sources, { fallbackToArxiv: false }));
+      if (target.checked) {
+        current.add(source);
+      } else {
+        current.delete(source);
+      }
+      modalState.paper_sources = Array.from(current);
+      const allToggle = modalPanel
+        ? modalPanel.querySelector('input[type="checkbox"][data-action="toggle-paper-source-all"]')
+        : null;
+      if (allToggle) {
+        allToggle.checked =
+          availableSources.length > 0 &&
+          availableSources.every((item) => current.has(item));
+      }
+      return;
+    }
     if (!target.matches('input[type="checkbox"][data-action="toggle-chat-choice"]')) return;
     if (!modalState || modalState.type !== 'chat') return;
 
@@ -2129,9 +2379,9 @@ window.SubscriptionsSmartQuery = (function () {
   };
 
   const generateAndOpenAddModal = async () => {
-    const tag = normalizeText(tagInputEl?.value || '');
+    const tag = sanitizeAutoTag(tagInputEl?.value || '');
     const desc = normalizeText(descInputEl?.value || '');
-    const finalTag = tag || `SR-${new Date().toISOString().slice(0, 10)}`;
+    const finalTag = tag || 'topic';
     if (!desc) {
       setMessage('请先填写智能 Query 描述。', '#c00');
       return;
@@ -2158,12 +2408,42 @@ window.SubscriptionsSmartQuery = (function () {
     const profileId = actionEl.getAttribute('data-profile-id');
     if (!profileId) return;
     const action = actionEl.getAttribute('data-action');
+    if (action === 'toggle-profile-runs') {
+      currentProfiles = (currentProfiles || []).map((profile) => {
+        if (!profile || typeof profile !== 'object') return profile;
+        const sameProfile = getProfileKey(profile) === getProfileKey(profileId);
+        return {
+          ...profile,
+          _quickRunOpen: sameProfile ? !profile._quickRunOpen : false,
+        };
+      });
+      renderMain();
+      return;
+    }
+    if (action === 'run-profile-10d' || action === 'run-profile-30d-skims' || action === 'run-profile-30d-standard') {
+      const profile = findCurrentProfile(profileId);
+      if (!profile) return;
+      if (!window.SubscriptionsManager || typeof window.SubscriptionsManager.runProfileQuickFetch !== 'function') {
+        setMessage('后台管理运行器未加载，无法发起单词条抓取。', '#c00');
+        return;
+      }
+      if (action === 'run-profile-10d') {
+        window.SubscriptionsManager.runProfileQuickFetch(profile.tag || '', 10);
+        return;
+      }
+      if (action === 'run-profile-30d-skims') {
+        window.SubscriptionsManager.runProfileQuickFetch(profile.tag || '', 30, { fetchMode: 'skims' });
+        return;
+      }
+      window.SubscriptionsManager.runProfileQuickFetch(profile.tag || '', 30, { fetchMode: 'standard' });
+      return;
+    }
     if (action === 'edit-profile') {
       openEditModal(profileId);
       return;
     }
     if (action === 'pause-profile') {
-      const profile = (currentProfiles || []).find((p) => getProfileKey(p) === getProfileKey(profileId));
+      const profile = findCurrentProfile(profileId);
       if (!profile) return;
       const isPaused = !!profile.paused;
       const nextPaused = !isPaused;
@@ -2189,7 +2469,7 @@ window.SubscriptionsSmartQuery = (function () {
       return;
     }
     if (action === 'delete-profile') {
-      const profile = (currentProfiles || []).find((p) => getProfileKey(p) === getProfileKey(profileId));
+      const profile = findCurrentProfile(profileId);
       const tag = normalizeText(profile && profile.tag) || '该词条';
       const desc = normalizeText(profile && profile.description);
       const keywordCount = Array.isArray(profile && profile.keywords) ? profile.keywords.length : 0;
@@ -2275,5 +2555,14 @@ window.SubscriptionsSmartQuery = (function () {
     attach,
     render,
     clearPendingDeletedProfileIds,
+    __test: {
+      buildPromptFromTemplate,
+      defaultPromptTemplate,
+      containsCjk,
+      deriveTagFromCandidates,
+      isEnglishRetrievalText,
+      normalizeGenerated,
+      sanitizeAutoTag,
+    },
   };
 })();

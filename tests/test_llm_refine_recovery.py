@@ -72,20 +72,72 @@ class LlmRefineRecoveryTest(unittest.TestCase):
         self.assertIn((("p-1",), 1), calls)
         self.assertIn((("p-2",), 1), calls)
 
+    def test_recover_filter_results_splits_immediately_on_truncated_output(self):
+        docs = [
+            {"id": "p-1", "content": "doc1"},
+            {"id": "p-2", "content": "doc2"},
+        ]
+        calls = []
+
+        def runner(batch_docs, attempt, retry_note):
+            doc_ids = tuple(item["id"] for item in batch_docs)
+            calls.append((doc_ids, attempt))
+            if len(batch_docs) > 1:
+                raise self.mod.FilterOutputTruncatedError("unexpected finish_reason: length")
+            return [
+                {
+                    "id": batch_docs[0]["id"],
+                    "matched_requirement_index": 0,
+                    "score": 6,
+                }
+            ]
+
+        out = self.mod.recover_filter_results(docs, runner, max_attempts=3, debug_tag="length_test")
+
+        self.assertEqual([item["id"] for item in out], ["p-1", "p-2"])
+        self.assertEqual(calls.count((("p-1", "p-2"), 1)), 1)
+        self.assertNotIn((("p-1", "p-2"), 2), calls)
+        self.assertIn((("p-1",), 1), calls)
+        self.assertIn((("p-2",), 1), calls)
+
     def test_call_filter_repeats_user_prompt_with_separator(self):
         captured = {}
 
         class FakeClient:
             model = "gemini-3-flash-preview-nothinking"
 
-            def chat(self, messages, response_format):
+            def chat_structured(self, messages, schema_name, schema, strict, allow_json_object_fallback):
                 captured["messages"] = messages
-                captured["response_format"] = response_format
+                captured["schema_name"] = schema_name
+                captured["schema"] = schema
+                captured["strict"] = strict
+                captured["allow_json_object_fallback"] = allow_json_object_fallback
                 return {
                     "content": (
                         '{"results":[{"id":"p-1","matched_requirement_index":1,'
                         '"evidence_en":"ok","evidence_cn":"相关","tldr_en":"ok","tldr_cn":"相关","score":8}]}'
-                    )
+                    ),
+                    "parsed": {
+                        "results": [
+                            {
+                                "id": "p-1",
+                                "matched_requirement_index": 1,
+                                "evidence_en": "ok",
+                                "evidence_cn": "相关",
+                                "tldr_en": "ok",
+                                "tldr_cn": "相关",
+                                "title_zh": "中文标题",
+                                "motivation_cn": "研究动机",
+                                "method_cn": "方法概括",
+                                "result_cn": "结果概括",
+                                "conclusion_cn": "结论概括",
+                                "score": 8,
+                            }
+                        ]
+                    },
+                    "parse_error": None,
+                    "refusal": "",
+                    "finish_reason": "stop",
                 }
 
         out = self.mod.call_filter(
@@ -105,10 +157,17 @@ class LlmRefineRecoveryTest(unittest.TestCase):
         )
 
         self.assertEqual(out[0]["id"], "p-1")
+        self.assertEqual(out[0]["title_zh"], "中文标题")
+        self.assertEqual(out[0]["method_cn"], "方法概括")
         user_content = captured["messages"][1]["content"]
+        self.assertEqual(captured["schema_name"], "rerank_batch")
+        self.assertTrue(captured["strict"])
+        self.assertTrue(captured["allow_json_object_fallback"])
         self.assertIn("Let me repeat that:", user_content)
         self.assertEqual(user_content.count("User requirements list:"), 2)
         self.assertEqual(user_content.count("Papers:"), 2)
+        self.assertIn("method_cn", user_content)
+        self.assertIn("title_zh", user_content)
         self.assertTrue(user_content.rstrip().endswith("Output must be strict JSON only, no markdown, no fences, no extra text."))
 
 
