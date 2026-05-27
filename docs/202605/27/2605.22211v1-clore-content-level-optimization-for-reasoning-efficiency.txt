@@ -1,0 +1,767 @@
+Title: CLORE: Content-Level Optimization for Reasoning Efficiency
+
+URL Source: https://arxiv.org/pdf/2605.22211v1
+
+Published Time: Fri, 22 May 2026 00:52:22 GMT
+
+Number of Pages: 24
+
+Markdown Content:
+# CLORE: Content-Level Optimization for Reasoning Efficiency 
+
+Yuyang Wu 1∗ Qiyao Xue 3∗ Guanxing Lu 1∗ Weichen Liu 4
+
+Zihan Wang 2 Manling Li 2† Olexandr Isayev 1†
+
+> 1
+
+Carnegie Mellon University 2Northwestern University 
+
+> 3
+
+University of North Carolina, Chapel Hill 4University of Pittsburgh 
+
+## Abstract 
+
+Reinforcement learning post-training has improved the reasoning ability of large language models, but often produces unnecessarily long, repetitive, or seman-tically opaque reasoning traces. Existing efficient reasoning methods mainly regulate response length through explicit budgets or length-aware rewards, leav-ing intermediate reasoning content weakly supervised. We propose CLORE, a content-level optimization framework that improves reasoning efficiency by editing correct on-policy rollouts. CLORE uses an external augmentation model to delete repetitive segments, illegible or task-irrelevant content, and superfluous reasoning after the solution is established, while preserving the final answer. The resulting augmented–original pairs are optimized with an auxiliary reference-free DPO ob-jective alongside standard policy-gradient training. By restricting augmentation to correct trajectories and performing local deletion, CLORE keeps edited rollouts close to the policy distribution and mitigates off-policy mismatch. Experiments on DeepSeek-R1-Distill-Qwen-7B and Qwen2.5-Math-7B across five mathemat-ical reasoning benchmarks show that CLORE improves the accuracy–efficiency trade-off and remains compatible with GRPO, DAPO, Training Efficient, and ThinkPrune. Content-level analyses further show that CLORE reduces repetitive reasoning, illegible content, and post-answer exploration, supporting content-level supervision as a complementary direction to length-level control. 
+
+## 1 Introduction 
+
+Large Language Models (LLMs) have recently achieved remarkable progress on tasks requiring highly structured, multi-step reasoning, including mathematical problem solving [ 3] and competitive programming [ 9 ]. Recent systems such as OpenAI o1 [ 21 ] and DeepSeek-R1 [ 12 ] exemplify this trend by explicitly incentivizing models to produce extended Chain-of-Thought (CoT) traces at inference time [ 46 ]. These traces commonly incorporate fine-grained intermediate computations, iterative self-verification, and exploration of alternative solution paths [30, 55, 45]. However, emerging evidence suggests that excessively long reasoning trajectories can be counter-productive. Beyond incurring substantial computational overhead, extended chains often exhibit 
+
+overthinking , where additional steps yield diminishing utility and may even degrade accuracy due to the accumulation of uninformative or illegible intermediate reasoning [ 25 , 28 , 50 ]. In particular, we identify three recurring patterns in lengthy reasoning traces, which can be systematically categorized into three types, as illustrated in Figure 1: (1) repetitive reasoning segments [ 22 ], (2) uninterpretable or task-irrelevant content [ 23 ], and (3) superfluous exploration after the correct solution [ 36 , 7 ]. 3                         
+
+> ∗Equal contribution.
+> †Corresponding authors.
+> 3Detailed examples are provided in Appendix B. Preprint.
+> arXiv:2605.22211v1 [cs.AI] 21 May 2026 (a) Length budget based method
+> (b) Length reward based method
+> (1)Sample trajectories
+> (1)Sample multiple trajectories
+> (2)Prune to fit length budget
+> (2)Compute length reward
+> vs .reference length
+> vs. multi -sampling
+> relative length
+> (3)RL training
+> shorter
+> length
+> higher
+> reward
+> (3)RL training
+> encourage
+> budget
+> adherence
+> Still inefficient reasoning trajectory
+> Repetitive steps Illegible content Unnecessary exploration
+
+only regulate length but 
+
+not on reasoning content inefficient training & reasoning          
+
+> (1)Collect correct trajectories
+> (2)Augment correct trajectories
+> (3)RL training
+> more efficient reasoning
+> Current limitation & challenge
+> Our method: CLORE
+> Compatible with current method
+
+High reasoning quality 
+
+efficient training & reasoning 
+
+> CLORE
+> Length
+> budget
+> Length
+> reward
+> Better
+> efficiency
+> Better
+> performance
+
+Figure 1: Overview of CLORE. Existing length-based efficient reasoning methods regulate response length but fail to remove low-quality reasoning content. CLORE improves efficient reasoning by augmenting correct trajectories to delete repetitive, illegible, and uninformative reasoning segments, while remaining compatible with existing efficient RL training methods. These patterns characterize a form of redundant uninformative or illegible reasoning , where additional steps are poorly structured, weakly interpretable, and minimally contributive to problem solving. Such reasoning not only reduces inference efficiency but also introduces noisy supervision signals in RL-based training, leading to unstable optimization dynamics and suboptimal policy updates [ 23 , 56 ]. Consequently, removing or suppressing these low-quality reasoning components enables more concise and information-dense reasoning trajectories, improving both training and reasoning efficiency. Existing efforts to improve reasoning efficiency in LLMs largely focus on regulating the length of generated reasoning. This is typically achieved either by enforcing explicit length budgets [ 1, 13 ], where a predefined or adaptive constraint limits the reasoning trajectory, or by designing length-based rewards that encourage shorter outputs through comparisons with reference generations or relative length in trajectory samples [ 31 , 59 , 8, 57 ]. However, these approaches rely on coarse, sequence-level signals and primarily target reasoning length rather than the quality of intermediate reasoning content [ 49 , 23 ]. As a result, they overlook opportunities to directly improve efficiency by supervising reasoning content itself, and lack mechanisms to identify and regularize low-utility, illegible, or non-contributory segments within reasoning traces. To this end, we propose CLORE (Content-Level Optimization for Reasoning Efficiency), a response-quality-aware method that improves reasoning efficiency by optimizing the content of generated rationales rather than relying solely on sequence-level length control. Our method improves policy-gradient-based reasoning training with LLM-based augmentation of correct trajectories and preference optimization over augmented-original pairs. The framework directly targets low-quality reasoning content, mitigates the off-policy issue introduced by augmented trajectories through Direct Preference Optimization (DPO) [ 37 ], and remains fully compatible with both generic policy-gradient algorithms and existing response length level efficient reasoning methods. In summary, our contributions are as follows: • We propose CLORE, a content-level optimization framework for efficient reasoning. Instead of relying only on sequence-level length control, CLORE augments correct on-policy rollouts by deleting low-quality reasoning content and trains the policy with augmented–original preference pairs through an auxiliary reference-free DPO objective. • We evaluate CLORE on DeepSeek-R1-Distill-Qwen-7B and Qwen2.5-Math-7B across five mathematical reasoning benchmarks, showing consistent accuracy–efficiency gains and 2compatibility with different length-level efficient reasoning RL training methods, including GRPO, DAPO, Training Efficient, and ThinkPrune. • We provide detailed content-level reasoning analyses and ablation studies to explain the source of the efficiency gains. The analyses show that CLORE reduces repetitive reasoning, illegible or task-irrelevant content, and superfluous post-answer exploration, while the ablations validate the effects of the DPO weight and the robustness on augmentation model. 
+
+## 2 Preliminaries 
+
+Let x denote an input problem sampled from a data distribution D, and let a reasoning policy πθ
+
+generate a trajectory τ = ( y1, . . . , y T ) ∼ πθ (· | x). The trajectory contains both intermediate reasoning tokens and a final answer. In RL-based reasoning training, the policy is commonly optimized to maximize the expected return max θ Ex∼D Eτ ∼πθ (·| x) [R(x, τ )] using a task reward 
+
+R(x, τ ), where the reward is primarily determined by final-answer correctness. Although such training can improve reasoning performance, it does not supervise the quality of intermediate reasoning content. As a result, correct trajectories may still contain redundant, illegible, or non-contributory segments. Existing efficient reasoning methods mainly regulate the total amount of generated reasoning through length budgets or length-aware rewards. However, reducing length alone does not explicitly distin-guish high-quality reasoning from repetitive task-irrelevant or uninterpretable content. We therefore study the problem of effectively removing uninformative and illegible reasoning content during RL training , aiming to mitigate overthinking, improve reasoning efficiency, and enhance training efficiency without sacrificing model performance. 
+
+## 3 Methodology 
+
+3.1 Problem Formulation 
+
+In this work, we focus on three recurrent forms of low-quality reasoning that frequently appear in otherwise correct long-form trajectories: 1. Repetitive reasoning segments , which redundantly revisit equivalent intermediate states without introducing new problem-solving progress; 2. Illegible or task-irrelevant content , which weakens semantic coherence and reduces the inter-pretability of the reasoning process; 3. Superfluous exploration after the correct solution , which continues the reasoning trajectory despite the final answer already being determined. These patterns lengthen responses, reduce interpretability, and introduce noisy training signals. Under policy-gradient optimization, all generated tokens contribute to the update. As a result, non-contributory segments may receive credit alongside useful reasoning, reinforcing inefficient behaviors and destabilizing training process. A natural approach is to remove low-quality reasoning and train the policy to prefer the augmented trajectory. However, because the augmented trajectory is not sampled from the current policy, it introduces an off-policy distribution mismatch. Our goal is therefore to suppress such content while improving reasoning efficiency and training efficiency in a way that remains compatible with general policy-gradient and length-based efficient reasoning methods. 
+
+3.2 Method 
+
+Our framework augments standard policy-gradient-based RL training with offline-aware supervision on augmented rollouts. As shown in Figure 2, it uses LLM as augmentation model to remove low-quality reasoning content and then leverages the augmented trajectories as training signals to improve reasoning efficiency, while remaining complementary to response length level control. 
+
+Rollout Generation. Given a prompt x, we sample N trajectories {τi}Ni=1 from the current policy 
+
+πθ (· | x) and compute their rewards R(x, τ i). Let T cor (x) = {τi | R(x, τ i) = 1 } denote the subset 3(1) Receive prompt       
+
+> (2) Generate
+> rollouts
+> (3)Augment correct rollouts’ reasoning
+> Policy Model
+> (4)Calculate reward
+
+𝑅 !
+
+𝑅 "
+
+𝑅 #     
+
+> (5)Estimate advantage &calculate loss
+
+Policy Gradient Method                                            
+
+> (6)Update policy
+> Tom has 6apples and
+> buys 4more .He gives 3
+> to afriend .How many
+> apples does he have now?
+> Token: 217
+> …He gives 3apples to afriend,
+> so 10 +3=13 .Answer :13
+> MToken: 428
+> …,we generate the Python
+> code :…,then 10 -3=7.Answer :7
+> NToken: 373
+> ... ,ふしそうわふわ ,so 10 -3=7
+> Answer :7
+
+Reference -free DPO -+                      
+
+> Augmentation
+> Model
+> Prompt 11
+> …He gives 3apples to afriend,
+> so 10 +3=13 .Answer :13
+> 1Token: 217
+> MToken: 112
+> …,then 10 -3=7.Answer :7
+> NToken: 96
+> …,so 10 -3=7.Answer :7
+
+Figure 2: Overview of the CLORE framework. The policy model samples multiple reasoning tra-jectories, the correct ones are augmented to remove low-quality content, and the resulting preference pairs are optimized via a reference-free DPO objective jointly with policy-gradient training. of correct trajectories. We restrict augmentation to correct trajectories because they generally contain less low-quality reasoning than incorrect ones and therefore require fewer edits. Consequently, the augmented trajectories remain closer to the original policy samples, which helps mitigate the off-policy mismatch introduced by post-hoc augmentation. 
+
+Reasoning Augmentation. We apply augmentation only to correct trajectories. For each τ ∈T cor (x), an external augmentation model E removes low-quality reasoning content while preserving the correct solution. The editor is instructed to delete repetitive reasoning spans, illegible or task-irrelevant content, and superfluous reasoning that appears after the solution is already determined. Let eT cor (x) denote the union of edited and unedited correct responses, each ˜τ ∈ eT cor (x) is either an edited trajectory E(x, τ ) or the original trajectory τ when no valid modification is produced. For edited trajectories, ˜τ is expected to be a shorter, more legible, and more information-dense version of τ while maintaining the same final answer, which induces a natural preference pair ˜τ ≻ τ on efficient reasoning objective based on reasoning quality rather than answer correctness. To prevent invalid edits from introducing noisy supervision, we retain the pair only if ˜τ passes the correctness consistency check R(x, ˜τ ) ≥ R(x, τ ). This filtering step ensures that the induced preference reflects improved reasoning quality rather than accidental degradation of solution validity. 
+
+On-policy Trajectory Preference Learning. However, since the augmented trajectory ˜τ is obtained via post-hoc editing rather than direct sampling from the current policy πθ , it does not correspond to a standard on-policy rollout for policy-gradient optimization. Instead, it is treated as a derived trajectory that remains locally close to the original on-policy sample τ
+
+while not strictly following the generative distribution of πθ . To incorporate supervision from such augmented data, we optimize each (τ, ˜τ ) pair using a reference-free DPO-style objective 
+
+LDPO (x, τ, ˜τ ) = − log σ(β [log πθ (τ | x) − log πθ (˜ τ | x)]) , as introduced in [ 37 ], and apply it alongside an on-policy optimization regime in which the base trajectories τ are sampled from πθ .In contrast to standard DPO formulations, we do not employ an explicit reference policy. This is because ˜τ is constructed by locally deleting low-quality reasoning segments from τ , which preserves structural and distributional proximity to the original rollout and implicitly constrains deviation from the current policy. This enables stable preference optimization without requiring an additional reference model, while providing a lightweight mechanism for integrating augmentation signal into on-policy training. 
+
+Compatibility with Policy Gradient Methods. Our framework is agnostic to the specific policy-gradient backbone. Let LPG denote the underlying RL loss used to optimize πθ . In a standard advantage-weighted formulation, it takes the form LPG = −Ex∼D E˜τ ∼πθ (·| x) [A(x, ˜τ ) log πθ (˜ τ | x)] ,where A(x, ˜τ ) denotes the advantage estimation. The final training objective is L = LPG + λ LDPO ,where λ ≥ 0 controls the strength of the augmentation-induced preference signal, and LDPO is 4averaged over all augmented–original pairs. More generally, LPG may be instantiated as PPO-style clipping [ 40 , 35 ], REINFORCE-style updates [ 2, 19 ], GRPO-style group-relative objectives [ 41 , 58 ], or other policy-gradient variants. Our method does not alter the backbone optimizer itself, but adds an auxiliary preference-based supervision term on top of it. 
+
+Compatibility with Length-based Efficient Reasoning Methods. If the base training objective already includes an additional efficiency-oriented term Llen 4, induced by a length budget, a length reward, or a sampling-based length regularizer, our method can be incorporated without modification as L = LPG + Llen + λ LDPO . This decomposition reflects the complementarity of the two signals. Length-based objectives regulate the overall amount of reasoning at the trajectory length level, whereas our augmentation objective regulates reasoning quality at the trajectory content level. As a result, the proposed framework can strengthen existing efficient reasoning methods by removing low-quality content that response length level control alone cannot reliably identify, while also reducing credit assignment to non-contributory tokens and improving optimization efficiency. 
+
+## 4 Experimental Setup 
+
+Models and Datasets. We adopt DeepSeek-R1-Distill-Qwen-7B [ 12 ] and Qwen2.5-Math-7B [ 53 ] as the base reasoning models, and employ Qwen3-4B-Instruct-2507 [ 52 ] as the augmentation model. For clarity, we denote the resulting model after training as CLORE in the subsequent sections. We fine-tune the base model on DAPO-Math-17K [ 58 ], a curated collection of 17K mathematical problems spanning diverse difficulty levels and problem types. The dataset primarily focuses on competition-style mathematics, providing coverage from advanced high-school problems to Olympiad-level challenges. For evaluation, we assess generalization on a suite of challenging mathematical benchmarks. Specifically, we report results on OlympiadBench [ 15 ], Minerva [ 26 ], and MATH500 [ 17 ], which emphasize complex, multi-step reasoning, as well as competition-oriented datasets including AMC2023 and AIME2025. These benchmarks collectively test out-of-domain mathematical reasoning robustness across varying levels of difficulty and problem styles. 
+
+Baselines. To assess the efficiency of our method and its compatibility with existing length-based efficient reasoning methods, we compare the following baselines and apply our method to them: • GRPO [41]: A baseline without any explicit efficient reasoning mechanism. • ThinkPrune [ 18 ]: A pruning-based efficient reasoning method that enforces a predefined pruning-based length budget by explicitly removing reasoning steps that exceed the budget. • DAPO with Soft Overlong Punishment [58 ]: A scalable RL framework that incorporates budget-based length rewards into policy optimization. • Training Efficient [4]: A multi-sampling-based length reward approach that derives length-aware supervision from multiple sampled reasoning trajectories. 
+
+Evaluation. For evaluation, we generate a single response for each problem instance. For each benchmark, we report three metrics. Accuracy is defined as the fraction of correctly answered instances over the total number of evaluated problems. Output length measures generation cost, computed as the average number of tokens produced per instance across the benchmark. We also report the Accuracy-Efficiency (AE) Score [33 ], a composite metric that measures the trade-off between output compression and accuracy retention. A higher AE score denotes better reasoning efficiency, indicating that response length is reduced while preserving correctness more effectively. More detailed implementation details can be found in Appendix E 
+
+## 5 Research Questions and Empirical Analysis 
+
+5.1 Does CLORE Improve the Accuracy–Efficiency Trade-off? 
+
+Tables 1 show that applying CLORE generally improves AE scores across both DeepSeek-R1-Distill-Qwen-7B and Qwen2.5-Math-7B. The improvement is consistent across different optimization methods, including GRPO, DAPO, Training Efficient, and ThinkPrune. On DeepSeek-R1-Distill-Qwen-7B, applying CLORE improves the average AE score of most baselines by around 0.4 across the five benchmarks, with the largest gain appearing when CLORE is applied to ThinkPrune on   
+
+> 4Here, Llen is a simplified abstraction of length-based method supervision objective.
+
+5OlympiadBench Minerva MATH500 AMC2023 AIME2025 Acc. Len. AE Acc. Len. AE Acc. Len. AE Acc. Len. AE Acc. Len. AE DeepSeek-R1-Distill-Qwen-7B Base model (w/o training) 38.0 5007 - 24.6 2958 - 73.0 2600 - 75.9 2751 - 29.4 5740 -GRPO 42.1 4200 0.32 29.0 2066 1.21 74.8 2138 0.32 81.9 2171 0.55 33.0 4831 0.57 GRPO +CLORE 43.2 3245 0.76 26.9 1629 1.38 76.8 1514 0.92 82.7 1828 0.86 32.1 4084 0.81 DAPO 42.9 3333 0.70 29.0 1528 1.99 76.8 1694 0.71 82.6 1808 0.88 33.7 3941 1.02 DAPO +CLORE 42.9 2564 1.21 26.5 1255 2.32 74.8 1231 1.30 82.3 1526 1.21 30.0 3256 1.12                                                                                                                                                                                                    
+
+> Training Efficient 42.8 3802 0.49 25.7 1862 1.17 75.2 1879 0.51 83.8 2077 0.66 31.2 4459 0.61 Training Efficient +CLORE 41.5 3079 0.78 26.5 1657 1.52 74.6 1472 0.92 83.5 2229 0.54 32.0 4761 0.55 ThinkPrune 39.7 3694 0.42 26.8 1791 1.35 75.8 1829 0.57 80.0 1950 0.68 29.0 4353 0.54 ThinkPrune +CLORE 42.8 3002 0.88 29.4 1408 2.29 74.0 1394 1.01 82.7 1817 0.87 31.7 3887 0.88 Qwen2.5-Math-7B Base model (w/o training) 16.1 1116 -5.5 850 -39.8 958 -54.2 571 -3.3 824 -GRPO 32.5 1012 1.23 25.7 1199 2.31 68.0 602 1.72 76.5 897 -0.10 16.5 1104 2.73 GRPO +CLORE 38.3 631 3.21 27.2 542 6.76 74.2 514 2.47 73.4 661 0.17 15.2 637 4.67
+> DAPO 28.5 631 2.13 15.4 555 3.29 59.6 500 1.87 56.1 660 -0.10 7.0 680 1.57 DAPO +CLORE 35.7 604 3.10 25.4 513 6.65 73.6 494 2.59 75.9 588 0.36 9.5 640 2.71 Training Efficient 32.5 358 5.29 21.7 314 9.68 64.4 280 4.54 63.8 372 0.81 9.4 411 3.50 Training Efficient +CLORE 35.3 262 8.33 22.1 199 16.16 58.8 225 5.29 64.5 204 2.33 6.2 395 2.92 ThinkPrune 36.4 820 2.08 27.6 667 5.39 74.2 646 1.76 72.1 767 -0.01 10.0 873 1.86 ThinkPrune +CLORE 34.2 560 3.23 27.2 569 6.39 72.4 484 2.60 72.8 566 0.36 9.8 556 3.40
+
+Table 1: Evaluation result with DeepSeek-R1-Distill-Qwen-7B and Qwen2.5-Math-7B. For each model, we report accuracy, length, and AE score for CLORE and its combinations with efficient reasoning methods. The best and second-best results are highlighted in each model and metric. Training Steps 
+
+0 100 200 300 400 500 
+
+3k 
+
+4k 
+
+5k 
+
+6k 
+
+> Average Response Length Validation  Accuracy (%)
+
+42 
+
+38 
+
+34 
+
+0 100 200 300 400 500 0 100 200 300 400 500 
+
+70 
+
+72 
+
+74 
+
+76 
+
+0 100 200 300 400 500 
+
+24 
+
+28 
+
+32 
+
+GRPO 
+
+GRPO+CLORE 
+
+Training Efficient 
+
+Training Efficient+CLORE 
+
+ThinkPrune 
+
+ThinkPrune+CLORE 
+
+DAPO 
+
+DAPO+CLORE 
+
+Figure 3: DeepSeek-R1-Distill-Qwen-7B training dynamics, with average response length on DAPO-Math-17K and validation accuracy on OlympiadBench, MATH500, AMC2023 (left to right). Minerva. On Qwen2.5-Math-7B, the gains are more pronounced, with average AE improvements mostly exceeding 1.0 for GRPO, DAPO, and ThinkPrune. The largest improvement is observed when applying CLORE to GRPO on Minerva, where the AE score increases by more than 6 points. These results suggest that CLORE provides a general content-level efficiency signal rather than a model-sensitive or method-specific tuning effect. Another consistent pattern observed in Table 1 is that applying CLORE substantially reduces output length while maintaining competitive accuracy. On DeepSeek-R1-Distill-Qwen-7B, applying CLORE to GRPO, DAPO, and ThinkPrune reduces average response length by roughly 20 –30% 
+
+across most benchmarks, while still improving AE on nearly all paired comparisons. On Qwen2.5-Math-7B, the reasoning length reduction effect is even stronger, with length reductions often around 
+
+30 –50% when CLORE is applied to GRPO. Since these length reductions do not generally lead to systematic accuracy collapse, the results indicate that CLORE is not merely imposing a shorter reasoning length. Instead, it improves the density of reasoning by removing repetitive, illegible, or non-contributory segments from reasoning trajectories. 60 100 200 300 400 500                 
+
+> 750
+> 1000
+> 1250
+> 1500
+> Average Response Length
+> 500
+> Training Steps
+> Validation  Accuracy (%)
+> 50
+> 40
+> 30
+> 0100 200 300 400 500
+> 60
+> 70
+> 80
+> 0100 200 300 400 500
+> 60
+> 70
+> 80
+> GRPO
+> GRPO+CLORE
+> Training Efficient
+> Training Efficient+CLORE
+> ThinkPrune
+> ThinkPrune+CLORE
+> DAPO
+> DAPO+CLORE
+> 0100 200 300 400 500
+
+Figure 4: Qwen2.5-Math-7B training dynamics, with average response length on DAPO-Math-17K and validation accuracy on OlympiadBench, MATH500 and AMC2023 (left to right). 
+
+5.2 Is Content-Level Optimization Complementary to Length-Level Control? 
+
+The evaluation results in Table 1 show that efficient reasoning is not equivalent to minimizing response length alone. Although CLORE improves efficiency in most settings, the accuracy–efficiency frontier remains visible. In particular, applying CLORE to Training Efficient on Qwen2.5-Math-7B produces the shortest responses across all benchmarks, but it does not always achieve the highest accuracy. On MATH500, for example, this setting yields much shorter responses but noticeably lower accuracy than applying CLORE to GRPO or DAPO. This suggests that overly aggressive compression can remove reasoning steps that remain useful for correctness. Therefore, the goal of efficient reasoning should not be unconditional length minimization, but the preservation of high-quality reasoning while suppressing redundant or low-quality content. This observation explains why CLORE is most effective when combined with existing efficient reasoning objectives rather than used as a pure compression mechanism. The strongest AE results are usually obtained when CLORE is applied on top of length-level methods. On DeepSeek-R1-Distill-Qwen-7B, applying CLORE to DAPO yields the best AE score on most benchmarks, showing that content-level supervision can strengthen a length-reward-based RL objective. Applying CLORE to ThinkPrune also improves AE across all five benchmarks, indicating that the proposed method remains useful even when length-budget-based explicit pruning is already used. On Qwen2.5-Math-7B, applying CLORE to Training Efficient produces the shortest outputs and the best AE score on most benchmarks, while applying CLORE to DAPO gives a more balanced accuracy–efficiency trade-off. These trends support the intended complementarity: length-level objectives quantitatively regulate how much reasoning is generated, whereas CLORE qualitatively supervises which reasoning content is informative and worth retaining. Figures 3 and 4 further show that this complementarity emerges during training, not only at final evaluation. Across different training settings, models trained with CLORE tend to maintain shorter response lengths while keeping validation accuracy stable. This indicates that CLORE does not merely post-process outputs after generation. Instead, the augmented–original preference pairs provide a direct training signal that shifts the policy toward generating more concise and information-dense reasoning trajectories. Overall, the results support the central claim that efficient reasoning benefits from complementary optimization of both response length and reasoning content quality. 
+
+5.3 How Do the DPO Weight and Augmentation Model Affect CLORE Performance? 
+
+To answer the question, we use DeepSeek-R1-Distill-Qwen-7B training with GRPO as the base setting, and perform ablation on DPO loss weight and augmentation model. 
+
+Ablation on DPO Weight. We ablate the auxiliary preference weight by varying the DPO loss weight 
+
+λ. As shown in Figure 5, removing the DPO term yields the strongest length reduction, but leads to lower validation accuracy on most benchmarks. Increasing the weight to 0.2 maintains longer 75k                    
+
+> 4k
+> 3k
+> 0100200 300 400 500
+> 10
+> 30
+> 50
+> 70
+> MATH500
+> AIME25
+> AMC23
+> Minerva
+> Ol ympiad
+> Validation  Accuracy (%)
+> Average Response Length
+> Training Steps
+> Qwen3 -4B &𝜆 = 0.2 Qwen3 -1.7B & 𝜆 =0.05 Qwen3 -4B &𝜆 = 0.05 Qwen3 -4B &𝜆 = 0
+
+Figure 5: Ablation study on the DPO weight and augmentation model. responses and does not provide consistent additional accuracy improvement over 0.05 . These results indicate that a moderate DPO weight provides a better accuracy–length trade-off. 
+
+Ablation on Augmentation Model. We further replace the default Qwen3-4B augmentation model with Qwen3-1.7B. As shown in Figure 5, the smaller augmentation model remains effective, producing similar training dynamics and competitive validation accuracy. Still, Qwen3-4B yields slightly better results, suggesting that CLORE is not critically dependent on a large augmentation model, while a stronger editor can generate cleaner deletion-based preference pairs. 
+
+5.4 Does CLORE Really Suppress Low-Quality Reasoning Content? 
+
+To answer the question, we perform a content-level reasoning analysis using Qwen2.5-Math-7B, where CLORE shows more pronounced accuracy–efficiency improvements, and report metrics averaged across validation benchmarks. 
+
+Augmentation Analysis. We analyze the token-level behavior of the augmentation model during 20     
+
+> 40
+> 60
+> 80
+> 100
+> 100 200 0300 400
+> Modified Tokens (%)  Retained Removed Added
+> Training Steps
+
+Figure 6: Augmentation analysis. 
+
+training in Figure 6, with examples in Appendix C. Retained tokens dominate the augmented trajectories, removed tokens remain a smaller but persistent fraction, and added tokens are consistently negligible. This indicates that CLORE performs conservative, deletion-based augmentation rather than aggressive rewriting, preserving the structure of correct on-policy rollouts while selectively removing low-quality reasoning content. The increasing retention and decreasing removal trends further sug-gest that augmented rollouts remain close to the current policy distribution, providing a stable content-level supervision. 
+
+Repetitive Reasoning Analysis. As shown in Figure 7, we examine whether the proposed content-0   
+
+> 0.0 5
+> 0.1
+> 0.15
+> 0
+> 40
+> 80
+> 120
+> 160
+> w/o training GRPO GRPO+CLORE
+> Repetition Rate (%)
+> Longest Repetitive Length
+> rep -4rep -8
+
+Figure 7: Repetitive reasoning analysis. 
+
+level supervision reduces repetitive reasoning patterns. We compare the base model, GRPO, and GRPO with CLORE using repetition metrics rep-4, rep-8, and the longest re-peated span [ 47 ]. GRPO increases repetition relative to the base model, suggesting that rewards alone may rein-force redundant reasoning during RL training. In contrast, GRPO+CLORE reduces both local n-gram repetition and long repeated spans, indicating that CLORE improves rea-soning structure by removing repetitive content rather than merely condensing outputs. 
+
+Post-answer Reasoning Analysis. Figure 8 evaluates superfluous exploration after the correct 1   
+
+> 2
+> Base model w/o training
+> Method w/o CLORE
+> Method w/ CLORE
+> Post -answer Reasoning Rate (%)
+> 5.71
+> 2.32
+> 0.29 0.21 0.21
+> 1.12
+> 0.27
+> 2.01
+> 0.26
+> 3
+> 4
+> 5
+> 6
+> Base
+> GRPO
+> DAPO
+> Training Efficien t
+> ThinkPrune
+
+Figure 8: Post-answer reasoning analysis. 
+
+solution, measured as the fraction of generated reasoning that appears after the final answer has been reached, com-puted as the average percentage of post-answer tokens in responses. The base model frequently continues reasoning after reaching the solution, while RL training only par-tially reduces this post-answer content. Adding CLORE consistently suppresses this behavior across training objec-tives, suggesting that its content-level signal encourages the model to stop once the solution is established. 8Illegible Reasoning Analysis. The results in Figure 9 provide a complementary view of reasoning 5  
+
+> Base model w/o training
+> Method w/o CLORE
+> Method w/ CLORE
+> Illegible Reasoning Rate (%)
+> 17.9 18.2
+> 0.56
+> 5.44
+> 0.48
+> 5.63
+> 0.52
+> 11.12
+> 0.41
+> 10
+> 20
+> Base
+> GRPO
+> DAPO
+> Training Efficien t
+> ThinkPrune
+> 15
+> 0
+
+Figure 9: Illegible reasoning analysis. 
+
+quality by measuring the presence of uninterpretable or task-irrelevant content through averaged LLM-as-a-judge result over various strong commercial models 5. The base model and standard RL-trained methods still produce il-legible reasoning, showing that final-answer correctness alone does not sufficiently control intermediate reason-ing quality. CLORE consistently reduces such content across training objectives, yielding more interpretable and information-dense reasoning traces. 
+
+## 6 Related Work 
+
+LLM Reasoning. Building on the observation that explicit intermediate reasoning improves the performance of large language models, prior work has scaled test-time computation through chain-of-thought prompting, self-consistency, and tree-structured reasoning [ 46 , 45 , 55 ]. This direction has been further strengthened by RL-based post-training, which encourages longer and more structured reasoning processes [ 56 , 12 , 38 ]. However, these training objectives primarily optimize final-answer correctness and do not explicitly constrain the quality of intermediate reasoning steps [ 30 , 12 ]. As a result, models may generate and reinforce low-utility reasoning content, including redundant, spurious, or uninterpretable steps that do not contribute to the final prediction [ 23 , 22 , 36 , 7]. Such behavior leads to unnecessarily long reasoning chains, reduced inference efficiency, and noisier RL training signals [23, 56]. 
+
+Overthinking and Legibility. Overthinking has been widely observed as a failure mode of long-reasoning models, where models produce unnecessarily verbose or redundant reasoning traces, often for problems that do not require extensive deliberation [ 44 , 6, 60 ]. It is commonly characterized as computational inefficiency, increasing token usage, latency, and inference cost [ 34 , 43 , 14 ]. This issue is closely related to chain-of-thought legibility, which concerns whether intermediate reasoning remains understandable and monitorable for humans [ 10 , 24 ]. Recent studies show that LLMs can produce illegible reasoning despite correct final answers [ 23 , 39 ]. Such illegibility often arises from semantically ambiguous, irrelevant, disconnected, or uninterpretable content within the reasoning trace [ 10 , 54 , 48 ]. Since policy-gradient training assigns credit across the generated trajectory, such low-quality content can dilute informative gradients, reduce the signal-to-noise ratio, and destabilize optimization [61, 12, 32]. 
+
+Efficient Reasoning with RL. Recent work has explored efficient reasoning by controlling response length during LLM inference and RL training [ 1, 31 , 42 , 27 ]. One line of work imposes predefined or adaptive length budgets and trains models to satisfy these constraints through pruning or budget-aware optimization [ 51 , 29 , 20 ]. Another line shapes length-aware rewards using reference lengths, average sampled lengths, or relative comparisons among multiple generated trajectories [ 42 , 59 , 31 ]. Closely related multi-sampling strategies derive supervision from the distribution of sampled responses, for example by using the shortest response as a baseline [ 57 , 11 , 16 ]. Building on this idea, recent work further anchors rewards to the shortest correct reasoning trace, motivated by the observation that an optimal reasoning length may exist [ 43 , 5]. These methods regulate length but not intermediate reasoning quality, leaving low-utility, illegible, or non-contributory content weakly penalized and potentially reinforced during RL training. 
+
+## 7 Conclusion 
+
+We introduced CLORE, a content-level optimization framework for efficient reasoning in RL-trained language models. Rather than only controlling response length, CLORE edits correct on-policy rollouts to remove low-quality reasoning content and trains the policy with augmented–original preference pairs. Experimental results show that CLORE improves the accuracy–efficiency trade-off and complements current length-level efficient reasoning methods. Further analyses demonstrate that CLORE reduces repetitive reasoning, illegible or task-irrelevant content, and unnecessary post-answer exploration. These results suggest that efficient reasoning requires not only length-level control, but also direct supervision over the quality of intermediate reasoning content. 
+
+> 5Detailed settings are provided in Appendix F.
+
+9References 
+
+[1] Pranjal Aggarwal and Sean Welleck. L1: Controlling how long a reasoning model thinks with reinforcement learning. arXiv preprint arXiv:2503.04697 , 2025. [2] Arash Ahmadian, Chris Cremer, Matthias Gallé, Marzieh Fadaee, Julia Kreutzer, Olivier Pietquin, Ahmet Üstün, and Sara Hooker. Back to basics: Revisiting reinforce-style optimization for learning from human feedback in llms. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 12248–12267, 2024. [3] Janice Ahn, Rishu Verma, Renze Lou, Di Liu, Rui Zhang, and Wenpeng Yin. Large language models for mathematical reasoning: Progresses and challenges. arXiv preprint arXiv:2402.00157 , 2024. [4] Daman Arora and Andrea Zanette. Training language models to reason efficiently. arXiv preprint arXiv:2502.04463 , 2025. [5] Tingcheng Bian, Jinchang Luo, Mingquan Cheng, Jinyu Zhang, Xiaoling Xia, Ni Li, Yan Tao, and Haiwei Wang. Trims: Real-time tracking of minimal sufficient length for efficient reasoning via rl. arXiv preprint arXiv:2603.17449 , 2026. [6] Xingyu Chen, Jiahao Xu, Tian Liang, Zhiwei He, Jianhui Pang, Dian Yu, Linfeng Song, Qiuzhi Liu, Mengfei Zhou, Zhuosheng Zhang, et al. Do not think that much for 2+ 3=? on the overthinking of long reasoning models. In Forty-second International Conference on Machine Learning , 2025. [7] Jhouben Cuesta-Ramirez, Samuel Beaussant, and Mehdi Mounsif. Large reasoning mod-els are not thinking straight: on the unreliability of thinking trajectories. arXiv preprint arXiv:2507.00711 , 2025. [8] Muzhi Dai, Shixuan Liu, and Qingyi Si. Stable reinforcement learning for efficient reasoning. 
+
+arXiv preprint arXiv:2505.18086 , 2025. [9] Ahmed El-Kishky, Alexander Wei, Andre Saraiva, Borys Minaiev, Daniel Selsam, David Dohan, Francis Song, Hunter Lightman, Ignasi Clavera, Jakub Pachocki, et al. Competitive programming with large reasoning models. arXiv preprint arXiv:2502.06807 , 2025. [10] Scott Emmons, Roland S Zimmermann, David K Elson, and Rohin Shah. A pragmatic way to measure chain-of-thought monitorability. arXiv preprint arXiv:2510.23966 , 2025. [11] Wenkai Fang, Shunyu Liu, Yang Zhou, Kongcheng Zhang, Tongya Zheng, Kaixuan Chen, Mingli Song, and Dacheng Tao. Serl: Self-play reinforcement learning for large language models with limited data. arXiv preprint arXiv:2505.20347 , 2025. [12] Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Ruoyu Zhang, Runxin Xu, Qihao Zhu, Shirong Ma, Peiyi Wang, Xiao Bi, et al. Deepseek-r1: Incentivizing reasoning capability in llms via reinforcement learning. arXiv preprint arXiv:2501.12948 , 2025. [13] Tingxu Han, Zhenting Wang, Chunrong Fang, Shiyu Zhao, Shiqing Ma, and Zhenyu Chen. Token-budget-aware llm reasoning. In Findings of the Association for Computational Linguistics: ACL 2025 , pages 24842–24855, 2025. [14] Michael Hassid, Gabriel Synnaeve, Yossi Adi, and Roy Schwartz. Don’t overthink it. preferring shorter thinking chains for improved llm reasoning. arXiv preprint arXiv:2505.17813 , 2025. [15] Chaoqun He, Renjie Luo, Yuzhuo Bai, Shengding Hu, Zhen Thai, Junhao Shen, Jinyi Hu, Xu Han, Yujie Huang, Yuxiang Zhang, et al. Olympiadbench: A challenging benchmark for promoting agi with olympiad-level bilingual multimodal scientific problems. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 3828–3850, 2024. [16] Qianyu He, Siyu Yuan, Xuefeng Li, Mingxuan Wang, and Jiangjie Chen. Thinkdial: An open recipe for controlling reasoning effort in large language models. arXiv preprint arXiv:2508.18773 , 2025. 10 [17] Dan Hendrycks, Collin Burns, Saurav Kadavath, Akul Arora, Steven Basart, Eric Tang, Dawn Song, and Jacob Steinhardt. Measuring mathematical problem solving with the math dataset. 
+
+arXiv preprint arXiv:2103.03874 , 2021. [18] Bairu Hou, Yang Zhang, Jiabao Ji, Yujian Liu, Kaizhi Qian, Jacob Andreas, and Shiyu Chang. Thinkprune: Pruning long chain-of-thought of llms via reinforcement learning. arXiv preprint arXiv:2504.01296 , 2025. [19] Jian Hu, Jason Klein Liu, Haotian Xu, and Wei Shen. Reinforce++: An efficient rlhf algorithm with robustness to both prompt and reward models. arXiv preprint arXiv:2501.03262 , 1(3):5, 2025. [20] Shijue Huang, Hongru Wang, Wanjun Zhong, Zhaochen Su, Jiazhan Feng, Bowen Cao, and Yi R Fung. Adactrl: Towards adaptive and controllable reasoning via difficulty-aware budgeting. 
+
+arXiv preprint arXiv:2505.18822 , 2025. [21] Aaron Jaech, Adam Kalai, Adam Lerer, Adam Richardson, Ahmed El-Kishky, Aiden Low, Alec Helyar, Aleksander Madry, Alex Beutel, Alex Carney, et al. Openai o1 system card. arXiv preprint arXiv:2412.16720 , 2024. [22] Gangwei Jiang, Yahui Liu, Zhaoyi Li, Wei Bi, Fuzheng Zhang, Linqi Song, Ying Wei, and Defu Lian. What makes a good reasoning chain? uncovering structural patterns in long chain-of-thought reasoning. In Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing , pages 6501–6525, 2025. [23] Arun Jose. Reasoning models sometimes output illegible chains of thought. arXiv preprint arXiv:2510.27338 , 2025. [24] Jan Hendrik Kirchner, Yining Chen, Harri Edwards, Jan Leike, Nat McAleese, and Yuri Burda. Prover-verifier games improve legibility of llm outputs. arXiv preprint arXiv:2407.13692 , 2024. [25] Abhinav Kumar, Jaechul Roh, Ali Naseh, Marzena Karpinska, Mohit Iyyer, Amir Houmansadr, and Eugene Bagdasarian. Overthink: Slowdown attacks on reasoning llms. arXiv preprint arXiv:2502.02542 , 2025. [26] Aitor Lewkowycz, Anders Andreassen, David Dohan, Ethan Dyer, Henryk Michalewski, Vinay Ramasesh, Ambrose Slone, Cem Anil, Imanol Schlag, Theo Gutman-Solo, et al. Solving quan-titative reasoning problems with language models. Advances in neural information processing systems , 35:3843–3857, 2022. [27] Ruosen Li, Ziming Luo, Quan Zhang, Ruochen Li, Ben Zhou, Ali Payani, and Xinya Du. Aalc: Large language model efficient reasoning via adaptive accuracy-length control. arXiv preprint arXiv:2506.20160 , 2025. [28] Xiaomin Li, Zhou Yu, Zhiwei Zhang, Xupeng Chen, Ziji Zhang, Yingying Zhuang, Narayanan Sadagopan, and Anurag Beniwal. When thinking fails: The pitfalls of reasoning for instruction-following in llms. arXiv preprint arXiv:2505.11423 , 2025. [29] Zheng Li, Qingxiu Dong, Jingyuan Ma, Di Zhang, Kai Jia, and Zhifang Sui. Selfbudgeter: Adaptive token allocation for efficient llm reasoning. arXiv preprint arXiv:2505.11274 , 2025. [30] Hunter Lightman, Vineet Kosaraju, Yuri Burda, Harrison Edwards, Bowen Baker, Teddy Lee, Jan Leike, John Schulman, Ilya Sutskever, and Karl Cobbe. Let’s verify step by step. In The twelfth international conference on learning representations , 2023. [31] Wei Liu, Ruochen Zhou, Yiyun Deng, Yuzhen Huang, Junteng Liu, Yuntian Deng, Yizhe Zhang, and Junxian He. Learn to reason efficiently with adaptive length-based reward shaping. arXiv preprint arXiv:2505.15612 , 2025. [32] Yu Liu, Wenxiao Zhang, Cong Cao, Fangfang Yuan, Weizhuo Chen, Cheng Hu, Pin Xu, Yuling Yang, Kun Peng, Diandian Guo, et al. Craft: Calibrated reasoning with answer-faithful traces via reinforcement learning for multi-hop question answering. arXiv preprint arXiv:2602.01348 ,2026. 11 [33] Haotian Luo, Li Shen, Haiying He, Yibo Wang, Shiwei Liu, Wei Li, Naiqiang Tan, Xiaochun Cao, and Dacheng Tao. O1-pruner: Length-harmonizing fine-tuning for o1-like reasoning pruning. arXiv preprint arXiv:2501.12570 , 2025. [34] Sania Nayab, Giulio Rossolini, Marco Simoni, Andrea Saracino, Giorgio Buttazzo, Nicolamaria Manes, and Fabrizio Giacomelli. Concise thoughts: Impact of output length on llm reasoning and cost. arXiv preprint arXiv:2407.19825 , 2024. [35] Long Ouyang, Jeffrey Wu, Xu Jiang, Diogo Almeida, Carroll Wainwright, Pamela Mishkin, Chong Zhang, Sandhini Agarwal, Katarina Slama, Alex Ray, et al. Training language models to follow instructions with human feedback. Advances in neural information processing systems ,35:27730–27744, 2022. [36] Keqin Peng, Liang Ding, Yuanxin Ouyang, Meng Fang, and Dacheng Tao. Revisiting overthinking in long chain-of-thought from the perspective of self-doubt. arXiv preprint arXiv:2505.23480 , 2025. [37] Rafael Rafailov, Archit Sharma, Eric Mitchell, Christopher D Manning, Stefano Ermon, and Chelsea Finn. Direct preference optimization: Your language model is secretly a reward model. 
+
+Advances in neural information processing systems , 36:53728–53741, 2023. [38] Avinash Reddy, Souradip Chakraborty, and Amrit Singh Bedi. A principled approach to chain-of-thought monitorability in reasoning models. [39] Dani Roytburg, Shreya Sridhar, and Daphne Ippolito. Measuring reasoning trace legibility: Can those who understand teach? arXiv preprint arXiv:2603.20508 , 2026. [40] John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. Proximal policy optimization algorithms. arXiv preprint arXiv:1707.06347 , 2017. [41] Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan Zhang, YK Li, Yang Wu, et al. Deepseekmath: Pushing the limits of mathematical reasoning in open language models. arXiv preprint arXiv:2402.03300 , 2024. [42] Jinyan Su and Claire Cardie. Thinking fast and right: Balancing accuracy and reasoning length with adaptive rewards. arXiv preprint arXiv:2505.18298 , 2025. [43] Jinyan Su, Jennifer Healey, Preslav Nakov, and Claire Cardie. Between underthinking and overthinking: An empirical study of reasoning length and correctness in llms. arXiv preprint arXiv:2505.00127 , 2025. [44] Yang Sui, Yu-Neng Chuang, Guanchu Wang, Jiamu Zhang, Tianyi Zhang, Jiayi Yuan, Hongyi Liu, Andrew Wen, Shaochen Zhong, Na Zou, et al. Stop overthinking: A survey on efficient reasoning for large language models. arXiv preprint arXiv:2503.16419 , 2025. [45] Xuezhi Wang, Jason Wei, Dale Schuurmans, Quoc Le, Ed Chi, Sharan Narang, Aakanksha Chowdhery, and Denny Zhou. Self-consistency improves chain of thought reasoning in language models. arXiv preprint arXiv:2203.11171 , 2022. [46] Jason Wei, Xuezhi Wang, Dale Schuurmans, Maarten Bosma, Fei Xia, Ed Chi, Quoc V Le, Denny Zhou, et al. Chain-of-thought prompting elicits reasoning in large language models. 
+
+Advances in neural information processing systems , 35:24824–24837, 2022. [47] Sean Welleck, Ilia Kulikov, Stephen Roller, Emily Dinan, Kyunghyun Cho, and Jason Weston. Neural text generation with unlikelihood training. arXiv preprint arXiv:1908.04319 , 2019. [48] Siye Wu, Jian Xie, Jiangjie Chen, Tinghui Zhu, Kai Zhang, and Yanghua Xiao. How easily do irrelevant inputs skew the responses of large language models? arXiv preprint arXiv:2404.03302 ,2024. [49] Taiqiang Wu, Zenan Zu, Bo Zhou, and Ngai Wong. The art of efficient reasoning: Data, reward, and optimization. arXiv preprint arXiv:2602.20945 , 2026. [50] Yuyang Wu, Yifei Wang, Ziyu Ye, Tianqi Du, Stefanie Jegelka, and Yisen Wang. When more is less: Understanding chain-of-thought length in llms. arXiv preprint arXiv:2502.07266 , 2025. 12 [51] Violet Xiang, Chase Blagden, Rafael Rafailov, Nathan Lile, Sang Truong, Chelsea Finn, and Nick Haber. Just enough thinking: Efficient reasoning with adaptive length penalties reinforcement learning. arXiv preprint arXiv:2506.05256 , 2025. [52] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et al. Qwen3 technical report. arXiv preprint arXiv:2505.09388 , 2025. [53] An Yang, Beichen Zhang, Binyuan Hui, Bofei Gao, Bowen Yu, Chengpeng Li, Dayiheng Liu, Jianhong Tu, Jingren Zhou, Junyang Lin, et al. Qwen2. 5-math technical report: Toward mathematical expert model via self-improvement. arXiv preprint arXiv:2409.12122 , 2024. [54] Minglai Yang, Ethan Huang, Liang Zhang, Mihai Surdeanu, William Yang Wang, and Liang-ming Pan. How is llm reasoning distracted by irrelevant context? an analysis using a controlled benchmark. In Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing , pages 13340–13358, 2025. [55] Shunyu Yao, Dian Yu, Jeffrey Zhao, Izhak Shafran, Tom Griffiths, Yuan Cao, and Karthik Narasimhan. Tree of thoughts: Deliberate problem solving with large language models. Ad-vances in neural information processing systems , 36:11809–11822, 2023. [56] Edward Yeo, Yuxuan Tong, Morry Niu, Graham Neubig, and Xiang Yue. Demystifying long chain-of-thought reasoning in llms. arXiv preprint arXiv:2502.03373 , 2025. [57] Jingyang Yi, Jiazheng Wang, and Sida Li. Shorterbetter: Guiding reasoning models to find optimal inference length for efficient reasoning. arXiv preprint arXiv:2504.21370 , 2025. [58] Qiying Yu, Zheng Zhang, Ruofei Zhu, Yufeng Yuan, Xiaochen Zuo, Yu Yue, Weinan Dai, Tiantian Fan, Gaohong Liu, Lingjun Liu, et al. Dapo: An open-source llm reinforcement learning system at scale. arXiv preprint arXiv:2503.14476 , 2025. [59] Danlong Yuan, Tian Xie, Shaohan Huang, Zhuocheng Gong, Huishuai Zhang, Chong Luo, Furu Wei, and Dongyan Zhao. Efficient rl training for reasoning models via length-aware optimization. arXiv preprint arXiv:2505.12284 , 2025. [60] Xinliang Frederick Zhang, Anhad Mohananey, Alexandra Chronopoulou, Pinelopi Papalampidi, Somit Gupta, Tsendsuren Munkhdalai, Lu Wang, and Shyam Upadhyay. Do llms really need 10+ thoughts for" find the time 1000 days later"? towards structural understanding of llm overthinking. arXiv preprint arXiv:2510.07880 , 2025. [61] Zhanke Zhou, Rong Tao, Jianing Zhu, Yiwen Luo, Zengmao Wang, and Bo Han. Can language models perform robust reasoning in chain-of-thought prompting with noisy rationales? Advances in Neural Information Processing Systems , 37:123846–123910, 2024. 13 Appendix: Table of Contents 
+
+A. Limitations . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . Page 14 
+
+B. Inefficient and Low-Quality Reasoning Examples . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . Page 14 
+
+C. Comparison of CLORE Augmentation . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . Page 16 
+
+D. Theoretical Analysis . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . Page 18 
+
+E. Experiment Implementation Details . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . Page 19 
+
+F. Illegible Reasoning Analysis Setting . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . Page 20 
+
+G. Prompt for Augmentation Model . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . Page 21 
+
+H. Computation Cost . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . Page 22 
+
+## A Limitations. 
+
+This work focuses primarily on improving reasoning efficiency in mathematical problem-solving tasks, and our experiments are conducted on representative 7B-scale open-weight reasoning models. While these settings provide a controlled and widely used testbed for studying the accuracy-efficiency trade-off, future work could extend CLORE to broader reasoning domains, larger model families, and more diverse task formats such as coding, retrieval-augmented reasoning, and tool-use scenarios. In addition, our analysis emphasizes several measurable forms of low-quality reasoning, including repetition, illegible content, and post-answer exploration; extending the analysis to finer-grained notions of reasoning quality and human interpretability would further deepen the understanding of content-level optimization. 
+
+## B Inefficient and low-quality reasoning examples 
+
+To illustrate the kind of noise CLORE is designed to remove, we sample severs representative rollouts from a CLORE+DAPO training run on Qwen2.5-Math-7B, captured before the augmenting step. Together they cover the four most common pathologies we observe. 
+
+Case 1: Verbose code-augmented reasoning 
+
+The model produces the correct answer but routes the entire derivation through a Python program rather than direct symbolic reasoning. The natural-language plan, the code block, and the captured 
+
+output together inflate the rollout length without adding new content.                 
+
+> QUESTION (gt =318, acc =1). The sequence 12 ,15 ,18 ,21 ,51 ,81 , . . . consists of all positive multiples of 3that contain at least one digit that is a 1. What is the 50 th term of the sequence? ROLLOUT (EXCERPT ). The problem asks us to find the 50th term in the sequence of positive multiples of 3 that contain at least one digit that is a 1. To solve this, we will write a Python code to generate the multiples of 3, filter out those that contain the digit 1, and then find the 50th term in this filtered sequence.
+> ‘‘‘python def contains_digit_one(n): return ’1’ in str(n) def find_50th_valid_multiple(): valid_multiples = []; multiple_of_3 = 3 while len(valid_multiples) < 50:
+
+14 if contains_digit_one(multiple_of_3): valid_multiples.append(multiple_of_3) multiple_of_3 += 3 return valid_multiples[49] print(find_50th_valid_multiple()) 216 
+
+The 50th term . . . is 216 .
+
+Case 2: Code verification that contradicts a wrong analytical answer 
+
+The model derives an analytical answer ( 25 ), runs a one-line “Python verification” that simply prints the same incorrect number, and finally writes a different and also incorrect boxed answer ( 2500 ). The code block here is pure noise: it neither verifies the analytical claim nor catches the error. 
+
+QUESTION (gt =650, acc =0). Let V be the set of vertices of a regular 25 -sided polygon with center at point C. How many triangles have vertices in V and contain C in their interior? ROLLOUT (EXCERPT ). . . . Therefore, for each choice of the first vertex, there is exactly one valid choice for the third vertex. . . . This gives us 25 ways to choose the vertices (a, b, c ).
+
+number_of_sides = 25 number_of_triangles = number_of_sides print(number_of_triangles) 25 
+
+The number of triangles . . . is 2500 .
+
+Case 3: Multilingual gibberish and collapsed reasoning 
+
+Occasionally the model emits a short sentence mixing tokens from several languages with no actual reasoning. These rollouts are short but contribute strongly to the degeneration patterns measured by rep-n and the longest-repeated-substring metric. 
+
+QUESTION (gt =7, acc =0). Find the sum of the non-repeated roots of the polynomial 
+
+P (x) = x6 − 5x5 − 4x4 − 5x3 + 8 x2 + 7 x + 7 .ROLLOUT (VERBATIM ). The Poole 에ᄀ ᅦ являются 三個 choices for the final answer of the |deg(h(x))| to be no greater than 8, as said by, 综艺渺逃避 .
+
+Case 4: Long but incorrect chain-of-thought 
+
+The model writes out a multi-step natural-language analysis, attaches a Python brute-force simulation, and confidently picks the wrong answer despite the simulation enumerating all permutations. These are the longest rollouts in the batch and the ones the CE filter most often retains as candidates for deletion-only cleanup. 
+
+QUESTION (gt =127, acc =0). There are seven cards in a hat, and card k shows the number 
+
+2k−1 for k = 1 , . . . , 7. Solarin picks cards at random one at a time until the sum exceeds 
+
+124 . What is the most probable sum he can get? ROLLOUT (EXCERPT ). . . . The possible sums he can end up with are 125 , 126 , 127 . . . . The probability of ending with a sum of 127 is the probability of picking the card with value 127 
+
+first, which is 17 . . . . From the above analysis, the most probable sum is 126 , as it has the highest probability of occurring. 
+
+import itertools cards = [1, 2, 4, 8, 16, 32, 64] all_sequences = list(itertools.permutations(cards)) def find_sum(sequence): current_sum = 0 for card in sequence: current_sum += card if current_sum > 124: return current_sum sum_counts = {} 
+
+15 for sequence in all_sequences: end_sum = find_sum(sequence) sum_counts[end_sum] = sum_counts.get(end_sum, 0) + 1 most_probable_sum = max(sum_counts, key=sum_counts.get) 
+
+. . . The most probable sum is 126 .
+
+## C Comparison of CLORE augmentation 
+
+Since CLORE only cleans rollouts whose final answer is already correct, we now show three matched pairs of the same correct rollout before and after cleaning, taken from training step 21 of the Qwen2.5-Math-7B + DAPO + CLORE run. The boxed answer is identical in each pair; the augmented version removes content that is mechanical, redundant, or actively contradictory. 
+
+Case 1: Removing a redundant code-verification block. After deriving r = 62 /63 analytically and arriving at m + n = 125 , the rollout appends a SymPy verification block whose only purpose is to recompute the same answer. CLORE deletes the entire verification while preserving the analytical derivation and the boxed answer. QUESTION . An infinite geometric series has sum 2000. A new series, obtained by squaring each term, has sum 16 times the sum of the original. The common ratio is m/n in lowest terms; find 
+
+m + n.
+
+BEFORE CLORE (3,001 characters; tail of the response): 
+
+[. . . derivation arriving at r = 124 126 = 62 63 and m + n = 125 . . . ] Let’s confirm this with Python and sympy: 
+
+import sympy as sp a, r = sp.symbols(’a r’) sum_original = sp.Eq(a / (1 - r), 2000) a_expr = sp.solve(sum_original, a)[0] sum_new_series = sp.Eq(a**2 / (1 - r**2), 32000) sum_new_series_sub = sum_new_series.subs(a, a_expr) r_value = sp.solve(sum_new_series_sub, r) r_value = [sol.evalf() for sol in r_value if sol.is_real and sol > 0][0] common_ratio = sp.Rational(r_value).limit_denominator() m, n = common_ratio.as_numer_denom() print(m + n) ‘‘‘output 125 ‘‘‘ 
+
+The sum of the numerators and denominators of 62 63 is 125 .
+
+AFTER CLORE (2,221 characters; −780 chars, −26% ): 
+
+[. . . same derivation arriving at r = 62 63 . . . ] The common ratio r is 62 63 , where 62 and 63 are relatively prime. So m = 62 and n = 63 ,and m + n = 125 .
+
+Case 2: Removing a code block that contradicts the analytical solution. The model arrives at the correct answer 6 analytically, then runs a Python verification that returns False due to floating-point arithmetic, and spends another 2,000 characters trying to debug the verification before re-deriving the same answer by hand. CLORE removes the entire failed-verification chain. QUESTION . There exist positive integers A, B, C with no common factor > 1 such that A log 200 5 + 
+
+B log 200 2 = C. Find A + B + C.
+
+BEFORE CLORE (3,566 characters; tail of the response): 
+
+[. . . correct derivation: A = 2 C, B = 3 C, so with gcd( A, B, C ) = 1 we get A = 2 ,
+
+B = 3 , C = 1 and A + B + C = 6 . . . ] Let’s verify this with Python code to ensure the solution is correct. 
+
+16 import math A, B, C = 2, 3, 1 left_side = A * math.log(5, 200) + B * math.log(2, 200) right_side = C print((left_side == right_side, A + B + C)) ‘‘‘output (False, 6) ‘‘‘ 
+
+It appears there was an error in the verification. [. . . tries again with 
+
+math.log(5)/math.log(200) , gets (False, 6) again . . . ] It seems there is still a discrepancy. Let’s manually check. . . [re-derives the same analytical solution by hand] . . . Thus, A = 2 , B = 3 , C = 1 are correct, and A + B + C = 6 .
+
+AFTER CLORE (1,348 characters; −2,218 chars, −62% ): 
+
+[. . . augment analytical derivation . . . ] So the values of A, B, C are 2, 3, 1. Therefore A + B + C = 2 + 3 + 1 = 6 .
+
+Case 3: Removing multilingual and corrupted code. The model arrives at a partially-formed solution, then emits a long span of syntactically broken Python interleaved with unrelated tokens (Chinese fragments, proper names, __TIMEOUT__ , stray brackets) before recovering with a clean Python block that produces the correct answer. CLORE removes the corrupted span and keeps only the working code. QUESTION . Let N = 9 + 99 + 999 + · · · + 99 . . . 9| {z } 
+
+> 321 digits
+
+. Find the sum of the digits of N .
+
+BEFORE CLORE (2,192 characters; middle of the response): 
+
+[. . . set up Nk = 10 k − 1 . . . ] After calculating and taking the sum of the task, follow with 
+
+sum of the digits. 
+
+# Python code to perform the sum of the series def sum_of_series_mat[n_sum: int] ) sum(10**for in range(n_sumrov) + reindex\(10** 幼svg](n_sum)) return sumo\ Pablo Werner l a strateg. **[clarification link](problem/5 Petr\404hnske)\ 历 史 上
+
+最 denim of ABOVEAi clear? Our piteous 兰坷水泵 可乐\
+
+宣布.是 complimentary -> eu ... There is an error in the J(\ J\ T\SGPromise - \component rect Step} 
+
+萧越 - \ To the funds * of within\ of of chefs o ... ___TIMEOUT___ 套
+
+Donovan\ hoot ... Beaver # sum the series from one to 321 digits of 9 def calculate_sum_of_series(): total_sum = 0 for k in range(1, 322): total_sum += 10**k - 1 return total_sum N = calculate_sum_of_series() print(sum(int(d) for d in str(N))) ‘‘‘output 342 ‘‘‘ 
+
+The sum of the digits of N is 342 .
+
+AFTER CLORE (1,126 characters; −1,066 chars, −49% ): 
+
+[. . . same setup . . . ] After calculating and taking the sum of the task, follow with sum of the digits. 
+
+def calculate_sum_of_series(): total_sum = 0 for k in range(1, 322): total_sum += 10**k - 1 
+
+17 return total_sum N = calculate_sum_of_series() print(sum(int(d) for d in str(N))) ‘‘‘output 342 ‘‘‘     
+
+> The sum of the digits of Nis 342 .
+
+Summary of cleaning effect. Across these three cases, CLORE removes 780, 2,218, and 1,066 characters respectively, with mean reduction ≈ 46% without changing the final answer. 
+
+## D Theoretical Analysis 
+
+This section gives a brief theoretical perspective on why CLORE’s combination of a policy-gradient (PG) update on the cleaned trajectory ˜τ and a reference-free DPO regularizer over deletion-augmented preference pairs yields stable content-level supervision. The argument is intentionally elementary, and we rewrite the joint gradient as a weighted MLE in which PG carries the main reinforcement signal that raises πθ (˜ τ | x) while DPO contributes a bounded regularization term that re-engages 
+
+πθ (τ | x) through the contrastive log-ratio, then use this form to read off two properties that justify CLORE’s design. 
+
+Setup and notation. For prompt x ∼ D and policy πθ , let τ ∼ πθ (· | x) be an on-policy rollout with reward R(x, τ ) ∈ { 0, 1}. For each correct rollout, the augmenter E produces ˜τ = E(x, τ ) with advantage A(x, ˜τ ). Writing ∆ := β[log πθ (τ | x) − log πθ (˜ τ | x)] for the implied (reference-free) preference logit, the CLORE objective on a single (x, τ, ˜τ ) tuple is 
+
+L(x, τ, ˜τ ) = −A(x, ˜τ ) log πθ (˜ τ | x)
+
+| {z }
+
+> LPG
+
++ λ  − log σ(∆) | {z }
+
+> LDPO
+
+,
+
+with σ(z) = 1 /(1 + e−z ), preference strength β > 0, and DPO weight λ ≥ 0. We write T = |τ | for the rollout length and h for an arbitrary prefix of tokens conditioned on by πθ .
+
+Assumptions. We make the following assumptions throughout this section. 
+
+Assumption 1 (Deletion-only augmentation) . E neither inserts new tokens nor reorders existing ones; equivalently, ˜τ is a (possibly discontiguous) token subsequence of τ . In particular, |˜τ | ≤ T .
+
+Assumption 2 (Bounded conditional probabilities) . There exists pmin ∈ (0 , 1] such that, for every prefix h encountered along τ , the conditional next-token distribution under the current policy satisfies 
+
+πθ (· | x, h ) ∈ [pmin , 1] for every token in the support of τ at that step. We additionally assume πθ (· | x) is differentiable in θ wherever needed, which is automatic for trans-former policies. Assumption 1 matches the operational design of CLORE, since the cleaner’s system prompt (Appendix G) instructs the augmenter to delete spans without paraphrasing or reordering, and the correctness-consistency filter R(x, ˜τ ) ≥ R(x, τ ) in the Method section discards any ˜τ whose final answer diverges from τ . Assumption 2 is a mild technical floor that holds throughout training because the underlying transformer assigns strictly positive probability to every vocabulary token; in practice pmin can be enforced by softmax temperature or label smoothing, and we use it only to obtain non-asymptotic bounds. 
+
+Joint gradient as a weighted MLE. Proposition 1 (CLORE as a weighted MLE on (τ, ˜τ )). The gradient of L with respect to θ admits the decomposition 
+
+∇θ L = − λβ σ (−∆) 
+
+| {z }
+
+> α
+
+∇θ log πθ (τ | x) − A(x, ˜τ ) − λβ σ (−∆) | {z }   
+
+> A(x, ˜τ)−α
+
+∇θ log πθ (˜ τ | x), (1) 
+
+i.e. the negative gradient of a weighted log-likelihood on the trajectory pair (τ, ˜τ ), with non-negative weight α = λβσ (−∆) on τ and signed weight A(x, ˜τ ) − α on ˜τ .
+
+18 Proof. The PG term contributes ∇θ LPG = −A(x, ˜τ ) ∇θ log πθ (˜ τ | x) directly. For the DPO term, write f (z) = − log σ(z), so that f ′(z) = −σ(−z). Since ∆ depends on θ through both log-probabilities, the chain rule gives 
+
+∇θ LDPO = f ′(∆) ∇θ ∆ = −σ(−∆) · β ∇θ log πθ (τ | x) − ∇ θ log πθ (˜ τ | x).
+
+Multiplying by λ and adding ∇θ LPG collects coefficients on ∇θ log πθ (τ | x) and ∇θ log πθ (˜ τ | x),yielding (1). Equation (1) makes the role of each component explicit. PG carries the main reinforcement signal on the cleaned trajectory ˜τ with weight A(x, ˜τ ), raising πθ (˜ τ | x) as in any standard advantage-weighted update. The DPO term then acts as a regularizer, folding the original on-policy rollout τ explicitly back into the loss with weight +α on ∇θ log πθ (τ | x) and −α on ∇θ log πθ (˜ τ | x), which anchors the policy to its on-policy distribution and prevents PG from drifting too aggressively toward the off-policy cleaned trajectory. The contrastive subtraction −α on ˜τ is what mathematically distinguishes the joint objective from a naive mixture of PG with SFT on the cleaner’s outputs. Empirically, the value of this regularization shows up in Table 1, where the joint objective beats the pure-PG backbone across all five math test sets. The remaining two results bound and characterize α.
+
+Boundedness. Lemma 1 (Bounded DPO logit under local deletion) . Under Assumptions 1–2, 
+
+|∆| ≤ β T log pmin , hence σ(−∆) ∈ σ(−βT |log pmin |), σ (βT |log pmin |) ⊂ (0 , 1) .
+
+In particular, the regularization weight in (1) satisfies α ≤ λβ .Proof. By autoregressive factorization, log πθ (τ | x) = PTt=1 log πθ (τt | x, τ <t ), and similarly for 
+
+˜τ over its |˜τ | ≤ T tokens. Assumption 2 bounds each conditional in [pmin , 1] , so each summand lies in [log pmin , 0] . Hence log πθ (τ | x) ∈ [T log pmin , 0] and log πθ (˜ τ | x) ∈ [|˜τ | log pmin , 0] ⊆
+
+[T log pmin , 0] , where the last inclusion uses |˜τ | ≤ T (Assumption 1) together with log pmin ≤ 0.Subtracting and multiplying by β gives |∆| ≤ βT |log pmin |. The bounds on σ(−∆) follow from monotonicity of σ, and α ≤ λβ is immediate from σ(−∆) ≤ 1.An unrestricted rewriter that inserts low-probability tokens or reorders content could drive |∆| → ∞ 
+
+and saturate the DPO gradient. Assumption 1 rules this out and lets CLORE drop the explicit reference policy of standard DPO, with the deletion constraint anchoring ˜τ to τ at the data level and PG anchoring πθ to ˜τ at the parameter level, so DPO acts as a bounded regularizer rather than competing with the main update. Empirically, the linear scaling α ≤ λβ matches the DPO-weight sweep in Figure 5, where increasing λ from 0.05 to 0.2 keeps training stable rather than diverging. 
+
+Self-extinguishing. Proposition 2 (Self-extinguishing DPO term at the no-edit fixed point) . If ˜τ = τ (no edits), then 
+
+∆ ≡ 0, LDPO ≡ log 2 , and ∇θ LDPO ≡ 0.Proof. ˜τ = τ gives log πθ (˜ τ | x) = log πθ (τ | x), hence ∆ = 0 , − log σ(0) = log 2 , and 
+
+σ(−∆) = 1/2. Substituting into (1) yields equal coefficients −λβ/ 2 on ∇θ log πθ (τ | x) and +λβ/ 2
+
+on ∇θ log πθ (˜ τ | x), which cancel because ˜τ = τ .Proposition 2 shows that CLORE implements an implicit annealing schedule on the DPO regularizer without any hand-tuned schedule. The regularization is loud while ˜τ still differs noticeably from 
+
+τ and there is substantial content for the cleaner to delete, and it quietly fades once the policy has internalized the deletion behavior so that ˜τ is already close to τ and PG alone keeps reinforcing the cleaned form. This matches the augmentation-analysis trend in Figure 6, where the fraction of removed tokens shrinks and the fraction of retained tokens grows as training progresses. 
+
+## E Experiment implementation details 
+
+We monitor model behavior during RL training by periodically running an evaluation rollout on a fixed suite of math test sets. Unless otherwise stated, all length curves and accuracy values in figures plotted against training step come from this evaluation pipeline. 19 Validation datasets. We evaluate on five standard math reasoning benchmarks, summarized in Table 2. For AIME 2025 and AMC 2023 we replicate each unique problem 32 times in the evaluation file, so the reported per-prompt accuracy is equivalent to averaging 32 samples per problem on the 30 (AIME 2025) or 40 (AMC 2023) unique problems.             
+
+> Dataset # prompts # unique problems MATH500 500 500 AIME 2025 960 30 AMC 2023 1,280 40 Minerva Math 272 272 OlympiadBench 675 675
+
+Table 2: Evaluation test sets used during training. 
+
+Sampling configuration. For each evaluation prompt we draw a single rollout with temperature =1.0, top-p = 0 .7, and top-k disabled. Prompts are capped at 1024 tokens. The maximum response length matches the corresponding training configuration: Lmax = 8192 for DeepSeek-R1-Distill-Qwen-7B runs and Lmax = 3072 for Qwen2.5-Math-7B runs. ThinkPrune variants instead follow the curriculum’s shorter cap, which is 1536 for Qwen2.5-Math-7B and 4096 or 6144 for DeepSeek-R1. 
+
+Frequency and batching. We evaluate every 20 training steps, with an evaluation batch size of 256 for DeepSeek-R1 runs and 512 for Qwen2.5-Math-7B runs. With roughly 540 training steps per run, this yields about 27 evaluation checkpoints per run, which we use for all length-vs-step curves. 
+
+Scoring. We extract the last \boxed{...} span from each response with a balanced-brace parser, apply standard answer normalization (whitespace, formatting commands, common notational vari-ants), and mark the response correct iff the normalized prediction exactly matches the normalized ground truth. 
+
+AE score setting. We provide additional details on the AE score used in the main experiments. AE score is designed to evaluate the trade-off between preserving task accuracy and reducing reasoning cost. For each method, we compare its accuracy and average output length against a corresponding base model without training as the baseline. Let Acc model and Length model denote the accuracy and average output length of the evaluated model, and let Acc baseline and Length baseline denote those of the baseline model. We define the relative length reduction and relative accuracy change as 
+
+∆Length = Length baseline − Length model 
+
+Length baseline 
+
+, ∆Acc = Acc model − Acc baseline 
+
+Acc baseline 
+
+.
+
+A positive ∆Length indicates that the evaluated model produces shorter responses than the baseline, while a positive ∆Acc indicates improved accuracy. The Accuracy–Efficiency Score is then computed as 
+
+AEscore = 
+
+(α · ∆Length + β · | ∆Acc |, if ∆Acc ≥ 0,α · ∆Length − γ · | ∆Acc |, if ∆Acc < 0,
+
+where α > 0, β > 0, and γ > 0 control the relative importance of length reduction, accuracy improvement, and accuracy degradation, respectively. In our experiments, we set α = 1 , β = 3 , and 
+
+γ = 5 . This choice assigns positive credit to output compression and accuracy improvement, while imposing a stronger penalty on accuracy degradation by setting γ > β . Therefore, a higher AE score indicates a better accuracy–efficiency trade-off, whereas a lower AE score indicates that the reduction in reasoning length is insufficient to compensate for accuracy loss. 
+
+Other Implementation. We use vLLM 0.11 as the inference engine for both training and evaluation, with enforce_eager=False and enable_chunked_prefill=True , on top of the verl training framework. Prompts follow the model’s native chat template (e.g. <|im_start|>user/assistant 
+
+tags for Qwen-family models), and we fix the sampling seed to 1234 so that evaluation rollouts are reproducible across ablation runs. 
+
+## F Illegible reasoning analysis setting 
+
+LLM-as-a-judge models. To reduce judge-specific bias, we average the result over three strong commercial LLMs as independent judges, gpt-5.5 , claude-sonnet-4-6 , and gemini-2.5-pro .20 Each judge receives the same evaluation prompt and estimates the percentage of illegible or task-irrelevant content in the reasoning trajectory. The final illegible reasoning rate reported is the average of over all evaluated responses. Lower values indicate that the method produces reasoning traces with fewer uninterpretable, semantically incoherent, or task-irrelevant segments. 
+
+LLM-as-a-judge prompt. We use the following prompt for each LLM judge: You are evaluating the legibility of a model-generated reasoning trace for a mathe-matical problem. Given the problem and the model response, estimate what percentage of the model response consists of illegible or task-irrelevant reasoning content. Illegible or task-irrelevant reasoning includes: • semantically meaningless or corrupted text; • irrelevant digressions unrelated to solving the problem; • unexplained or nonsensical symbol manipulation; • garbled multilingual text or non-natural-language spans that do not contribute to the solution; • reasoning steps that are impossible to interpret as part of the problem-solving process. Do not judge whether the final answer is correct. A response can have an incorrect final answer but still be legible. A response can also have a correct final answer but contain illegible reasoning. Estimate the percentage of the response that is illegible or task-irrelevant. Return only a single number between 0 and 100 . Do not include any explanation. Problem: {problem} Model response: {response} Illegible percentage: 
+
+## G Prompt for Augmentation Model 
+
+The CLORE augmentation model is invoked through a chat-formatted prompt that forbids rewriting and only allows span deletion. We use one-shot prompting, the augmentation model is provided with examples (question & reasoning → augmented reasoning) before being asked to augment the target rollout. 
+
+System instruction. 
+
+> You are a strict reasoning filter. Only delete spans from the original reasoning. Do not paraphrase, rewrite, reorder, or add anything. The output must be a subsequence of the input, keeping most of the original reasoning.
+
+User template. Each rollout is wrapped in a single user message of the form 
+
+> {{instruction}} Question: {{question}} Reasoning to augment: {{rollout}} augmented reasoning:
+
+where {{instruction}} carries the answer-format instruction described next. 
+
+Answer-format constraint. The instruction tells the augmentation model what the augmented rea-soning must terminate in. For math benchmarks the augmented reasoning must end in a \boxed{...} 
+
+expression; for GSM8K-style splits it must end with Answer: following the original GSM8K con-vention. 21 One-shot example. We prepend a fixed (question, original, augmented) triple to anchor the augmen-tation model on deletion-only behavior. The original reasoning contains a deliberately noisy Python code block (with garbled multilingual tokens and a SyntaxError ) and an extraneous verification step; the augmentation model is expected to delete these while preserving the natural-language solu-tion verbatim. The math-format variant is shown below; the GSM8K variant has identical structure but terminates in Answer: 10 .QUESTION . Weng earns $12 an hour for babysitting. Yesterday, she just did 50 minutes of babysitting. How much did she earn? ORIGINAL REASONING : 
+
+> Let’s break it down step by step. We start by identifying the hourly pay rate . . . Since babysitting pay is given per hour and the time worked is given in minutes, it is natural to convert the hourly rate into a per-minute rate . . . However, to be extra sure that no arithmetic error has slipped in, we can quickly double-check this computation using Python:
+> ‘‘‘python rate = 12/60 minutes = 50 earnings = rate * minutes print(rate, earnings) def is_valid so Alb([_##tion_##ing_xQ7z_Pm##_##er_NaN_endoftext_]) 0.25 12.5 SyntaxError: closing parenthesis ’)’ does not match opening parenthesis ’[’
+> The output above confirms that the conversion and multiplication were done correctly . . . Based on this calculation, Weng earned $10 . . . \boxed{10}
+
+AUGMENTED REASONING :         
+
+> Let’s break it down step by step. We start by identifying the hourly pay rate . . . Since babysitting pay is given per hour and the time worked is given in minutes, it is natural to convert the hourly rate into a per-minute rate before continuing. There are 60 minutes in an hour, so we compute 12 /60 = 0 .2per minute . . . Now, Weng worked for 50 minutes in total. Using the per-minute rate, we multiply 0.2by 50 to obtain her earnings. This gives
+> 0.2×50 = 10 . . . Based on this calculation, Weng earned $10 for her babysitting work.
+> \boxed{10}
+
+Sampling settings. We serve the augmentaion model with vLLM 0.11 ( enforce_eager=False ,
+
+enable_chunked_prefill=True ), sampling at temperature = 0 .7, top-p = 0 .9, n = 1 , and 
+
+max_tokens set to the length of the rollout being augmented plus a small slack. The same parameters apply to both augmentation model sizes. 
+
+## H Computation Cost 
+
+Hardware setting. All experiments run on an internal H200 cluster partition. The project uses an aggregate fleet of 24 H200 (141 GB) GPUs. Each policy run takes 2 H200s, since the Adam state and activations on a 7B model at L = 8192 overflow a single 141 GB H200; CLORE-augmented runs additionally allocate 1 H200 to the external augmentation model served by vLLM. A CLORE-augmented run therefore consumes 3 H200s concurrently while non-CLORE baselines use 2, so the 24-GPU fleet co-schedules up to ⌊24 /3⌋ = 8 CLORE ablations or up to 12 baselines in parallel. We use a Singularity container with vLLM 0.11 and FlashAttention-2.8.1. 
+
+Per-step phase breakdown. We log three phases per training step: rollout (vLLM generation), 
+
+update (actor forward, backward, and optimizer), and augmentation (sending correct rollouts to the external augmentation model and collecting augmented result). Mean per-step wall-clock for the principal configurations is shown in Table 3. The augmentation model adds 80–234 s per step depending on rollout length, which translates to an additional 33% (DAPO-overlong) to 65% (GRPO) of per-step wall-clock on Qwen2.5-Math-22 Method Backbone GPUs/run Rollout Update Aug. Total GRPO Qwen2.5-Math-7B 2 72 97 – 194 GRPO + CLORE Qwen2.5-Math-7B 3 55 86 160 320 DAPO-overlong Qwen2.5-Math-7B 2 58 82 – 162 DAPO-overlong + CLORE Qwen2.5-Math-7B 3 43 75 80 214 Efficient-RLOO Qwen2.5-Math-7B 2 56 63 – 136 Efficient-RLOO + CLORE DeepSeek-R1-7B 3 128 83 234 296 
+
+Table 3: Average per-step wall-clock time. We report rollout, policy-update, and augmentation time in seconds, averaged over approximately 540 training steps. The augmentation stage can partially overlap with the next rollout, so the total step time can be smaller than the sum of individual phases. 7B. Because CLORE simultaneously shortens the policy’s rollouts (e.g. Qwen GRPO: 1129 → 618 
+
+tokens), the rollout phase itself becomes faster and partially absorbs the augmentation model overhead. 
+
+Per-run GPU-hours. A typical 540-step run consumes the budget shown in Table 4.             
+
+> Configuration wall-clock (h) GPUs total per run (H200-h) Qwen2.5-Math-7B baseline (no CLORE) 20–32 240–64 Qwen2.5-Math-7B + CLORE 32–48 2 + 1 95–145 DeepSeek-R1-Distill-Qwen-7B + CLORE 41–72 2 + 1 120–220
+
+Table 4: Per-run compute envelope. CLORE adds the dedicated 1-GPU augmentation model. DeepSeek-R1 runs are roughly 2× longer than Qwen runs because of the larger 
+
+max_response_length (8192 vs. 3072). 
+
+Total computational cost. The whole work consists of approximately 70 finished training runs and consumed roughly 3,060 H200-hours in aggregate ( ≈ 2,630 for policy training and ≈ 430 for the augmentation model). The subset of runs whose checkpoints appear in the main paper accounts for roughly half of that ( ∼ 1,800 H200-hours). At full 24-GPU utilization the project budget corresponds to about 5–6 calendar days of fully-loaded compute. 
+
+FLOPs estimatation. We use the standard approximations Crollout ≈ 2N T (forward only) and 
+
+Cupdate ≈ 6N T (forward, backward, optimizer) with N ≈ 7 × 10 9 for the 7B policy, batch B = 128 
+
+prompts, n = 8 samples, mean response length ¯L, and S ≈ 540 steps, giving per-run policy FLOPs 
+
+Cpolicy ≈ 8N ¯LBnS . The Qwen GRPO baseline ( ¯L ≈ 1100 ) costs about 45 ExaFLOP; Qwen GRPO + CLORE ( ¯L ≈ 600 ) drops to about 26 ExaFLOP; Qwen DAPO + CLORE ( ¯L ≈ 700 ) is about 31 ExaFLOP; and DeepSeek-R1 + CLORE ( ¯L ≈ 4300 ) is about 170 ExaFLOP. The augmentation model contributes Caugmentation model ≈ 2Nc ¯LcmS with Nc ≈ 4 × 10 9 (Qwen3-4B-Instruct), augmented length ¯Lc ≈ 1500 , and m ≈ 500 augmented samples per step, giving about 3.2 ExaFLOP per Qwen run, i.e. around 10% of the policy compute on Qwen2.5-Math-7B and around 3% on DeepSeek-R1. The Qwen3-1.7B augmentation model roughly halves this overhead. 
+
+Net FLOPs comparison. Despite the additional augmentation model pass and the DPO-Edit term, CLORE+GRPO ends up with lower total FLOPs than the GRPO baseline on Qwen2.5-Math-7B (26 + 3 .2 = 29 .2 vs. 45 ExaFLOP) because the policy generates much shorter rollouts. On DeepSeek-R1 the augmentation model overhead is around 3% on top of an already-larger policy budget, and CLORE again reduces the policy’s rollout length, so total compute is comparable to a non-CLORE baseline of the same step count. 
+
+Evaluation cost. Post-training inference runs on an H200 cluster, with each (checkpoint, sampling setting, benchmark) tuple submitted as a separate vLLM 0.11 job. A Qwen2.5-Math-7B inference job (1 GPU, Lmax = 3072 , five benchmarks totalling 3,687 prompts) takes 25–40 minutes per (checkpoint, setting); a DeepSeek-R1 inference job (TP =2, Lmax = 8192 , same five benchmarks) takes 60–90 minutes. We report three sampling settings per checkpoint ( T =1 .0, p =1 .0; T =0 ;23 T =1 .0, p =0 .7). For 14 checkpoints × 3 settings ( ≈ 42 inference jobs) plus ablation re-runs, the post-training evaluation budget is roughly 30 H200-hours on Qwen and 35 H200-hours on DeepSeek-R1, totalling about 65 H200-hours. 
+
+Summary. CLORE adds one H200 per active run, so the 24-GPU fleet supports 8 concurrent CLORE ablations. A single run costs roughly 95–145 H200-hours on Qwen2.5-Math-7B and 120– 220 H200-hours on DeepSeek-R1, and the full project consumed about 3,060 H200-hours of training plus 65 H200-hours of evaluation, equivalent to 5–6 calendar days at full fleet utilization. The augmentation model adds 3–10% policy FLOPs but the rollout shortening more than compensates, leaving CLORE’s net policy FLOPs below the corresponding non-CLORE baseline. 24
