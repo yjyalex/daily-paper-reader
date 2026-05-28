@@ -1,0 +1,666 @@
+Title: ArborKV: Structure-Aware KV Cache Management for Scaling Tree-based LLM Reasoning
+
+URL Source: https://arxiv.org/pdf/2605.22106v1
+
+Published Time: Fri, 22 May 2026 00:43:57 GMT
+
+Number of Pages: 14
+
+Markdown Content:
+# ArborKV: Structure-Aware KV Cache Management for Scaling Tree-based LLM Reasoning 
+
+Yeqiu Chen * 1 2 Ziyan Liu * 1 Zhenxin Huang 1 Runquan Gui 1 Hong Wang 1 Lei Liu 1 † 
+
+## Abstract 
+
+Recent progress in LLM reasoning has increas-ingly shifted from single-pass generation to ex-plicit search over intermediate reasoning states. Tree-of-Thoughts (ToT) organizes inference to tree-structured search with branching and back-tracking, but it substantially amplifies the Key– Value (KV) cache: retaining KV states for a frontier of partial trajectories quickly becomes a memory bottleneck that limits throughput and constrains search depth and width under fixed hardware budgets. We address this challenge by observing that KV reuse in ToT-style inference is governed by search dynamics: near-term de-coding depends primarily on the active branch and its ancestors, whereas inactive subtrees have low short-term reuse probability yet must remain recoverable for backtracking. Motivated by this, we propose ArborKV 1, a structure-aware evic-tion framework that couples a lightweight value estimator with a tree-aware allocation policy, and performs purely token-extractive eviction with lazy rehydration to support revisits. Experiments on ToT-style reasoning benchmarks show that Ar-borKV achieves up to ∼ 4× peak KV-memory reduction while preserving near-full-retention ac-curacy, enabling larger search configurations un-der fixed device budgets that would otherwise run out of memory. 
+
+## 1. Introduction 
+
+Recent progress in Large Language Model (LLM) reason-ing has increasingly shifted from single-pass generation to 
+
+> *
+
+Equal contribution , §Work done during an internship at Huawei. 1University of Science and Technology of China 
+
+> 2
+
+Huawei Technologies Co., Ltd.. Correspondence to: Lei Liu 
+
+<liulei13@ustc.edu.cn >.
+
+Proceedings of the 43 rd International Conference on Machine Learning , Seoul, South Korea. PMLR 306, 2026. Copyright 2026 by the author(s). 
+
+> 1
+
+”Arbor” is the Latin word for ”tree.” Chain-of-Thought Tree-of-Thoughts          
+
+> Device Memory Budget
+> KV Cache KV Cache KV Cache KV Cache
+> KV Cache KV Cache KV Cache
+> KV Cache KV Cache
+> KV Cache
+> Linear Growth
+> KV Cache
+> KV Cache
+> KV Cache
+> KV Cache
+> KV Cache
+> KV Cache
+> KV Cache
+> Memory Explosion
+> Total KV Cache
+> KV Cache
+> KV Cache KV Cache
+> KV Cache KV Cache KV Cache
+> Active Path
+> KV Cache
+
+(a) Memory Pressure: Linear vs. Tree Search SEARCH   
+
+> DYNAMICS
+> L1
+> (Failed Exploration) L2
+> (Target Branch)
+> FLAT-SEQUENCE ASSUMPTION
+> Recent/Active Tokens (Retained) Distant/Old Tokens
+> Retention Policy: Keep only recent or globally prominent tokens
+> THE BLIND SPOT
+> MISTAKENLY EVICTED
+> (Due to being 'old' or 'distant')
+> RESULT: EXPENSIVE RECOMPUTATION / REASONING FAILURE
+> v1_2
+> Naive Flattening
+> Backtracking
+
+(b) Prior Art: Naive Flattening Blind Spot 
+
+Figure 1. Challenges in Tree-structured Reasoning. (a) Transi-tioning from linear CoT to tree-based search leads to a KV-cache memory explosion that exhausts hardware budgets. (b) Sequence-centric policies flatten the tree into a linear pool, mistakenly evict-ing inactive branches required for future backtracking. 
+
+explicit search over intermediate reasoning states. Chain-of-Thought (CoT) prompting elicits a linear sequence of ratio-nales to improve multi-step reasoning (Wei et al., 2022), and Tree-of-Thoughts (ToT) formalizes inference as searching over multiple candidate thought states, explicitly model-ing branching and backtracking (Yao et al., 2023). This paradigm has been widely adopted in practice, with modern inference engines further scaling ToT via parallel tree-search controllers that maintain a frontier of candidates and dynam-ically transition the search focus (e.g., DPTS) (Ding et al., 2025). However, such tree-based inference introduces a pro-hibitive system bottleneck: the transformer key–value (KV) cache must sustain autoregressive decoding for numerous partially expanded paths, where the peak KV footprint can quickly exhaust available device memory (see Figure 1a). To facilitate efficient decoding, decoder-only transformers cache per-layer attention keys and values for previously pro-1
+
+> arXiv:2605.22106v1 [cs.AI] 21 May 2026 ArborKV: Structure-Aware KV Cache Management for Scaling Tree-based LLM Reasoning
+
+cessed tokens. As a result, KV memory consumption grows linearly with the sequence length and scales with model depth and attention dimensions (Shazeer, 2019; Kwon et al., 2023). Tree-based reasoning exacerbates this cost beyond standard linear decoding: ToT-style search necessitates re-taining the KV states for an entire frontier of partial tra-jectories to enable seamless backtracking and exploration of alternative branches (Yao et al., 2023). Parallel con-trollers such as DPTS magnify this peak-memory pressure as multiple candidates are activated concurrently (Ding et al., 2025). Consequently, naively materializing KV states for all nodes in a reasoning tree can quickly exhaust GPU memory, forcing practitioners to trade off between reducing search budgets (depth/width), shrinking batch sizes, or applying aggressive compression—often at the expense of throughput or reasoning performance. Although a substantial body of work has explored inference-time KV management, these methods remain largely mis-aligned with the non-linear dynamics of thought-tree reason-ing. System-level approaches like PagedAttention (Kwon et al., 2023) optimize KV storage to mitigate fragmenta-tion, yet remain agnostic to the semantic importance of content under tight budgets. Algorithmic cache policies typ-ically focus on token-level salience within a flat sequence— identifying ”heavy hitters” (Zhang et al., 2023), attention sinks (Xiao et al., 2023b), or using prompt-guided cues (Corallo & Papotti, 2024) to prune less-contributive tokens. While more recent work like ThinKV (Ramachandran et al., 2025) shifts focus toward ”thought-aware” compression by exploiting attention sparsity specific to reasoning steps, it is fundamentally designed for single linear trajectories. Conse-quently, these methods either (i) optimize throughput while leaving allocation semantics untouched (Kwon et al., 2023; Aminabadi et al., 2022; Sheng et al., 2023; Patel et al., 2024), or (ii) assume a monolithic, forward-moving path, failing to model the topological constraints and frequent backtracking inherent in tree-structured search (Yao et al., 2023; Zhou et al., 2023; Ding et al., 2025), as illustrated in Figure 1b. We address these limitations by recognizing that KV-cache reuse in tree-based inference is fundamentally governed by search dynamics rather than token-level statistics. Con-cretely, the cacheable unit is a thought block —contiguous spans representing discrete reasoning steps, and autoregres-sive expansion depends exclusively on the ancestor chain of the active leaf, while inactive branches remain latent for potential backtracking. Unlike conventional sequence-centric policies that fail to balance the competing demands of branch exploration and backtracking, our approach intro-duces a tree-aware allocation principle . Specifically, KV retention should dynamically track the shifting search focus, prioritizing blocks based on both (i) their semantic utility to the reasoning process and (ii) their topological proxim-ity to the active search frontier, all while maintaining the low-latency requirements of online inference. Building on this tree-aware principle, we propose ArborKV ,a structure-aware eviction framework comprising two syner-gistic components: a Multi-Signal Value Estimator (MSVE) and a Tree-Aware Eviction (TAE) policy. Specifically, MSVE quantifies the utility of each thought block by fusing the search engine’s strategic feedback with the model’s in-ternal generation confidence, identifying essential reasoning steps without incurring additional computational overhead. TAE then maps these utility scores onto the tree topology, dynamically allocating retention budgets based on a block’s proximity to the active search frontier. This framework is further supported by a lazy rehydration mechanism to effi-ciently restore evicted states during backtracking. Further-more, we formalize this allocation strategy as a constrained optimization problem , grounding the policy’s balance be-tween semantic merit and geometric relevance under strict memory budgets. In summary, our contributions are threefold. (i) We formulate KV-cache management for structured rea-soning as a tree-aware optimization problem . We propose a framework that couples a TAE policy with an intra-block token-extractive mechanism, explicitly aligning memory al-location with the branching and backtracking dynamics of tree-based search. (ii) We introduce MSVE , a low-overhead scoring module that quantifies the utility of thought blocks by fusing search-level strategic signals, semantic uncertainty, and attention statistics. This enables calibrated importance estimation without requiring additional online forward passes. (iii) Extensive experiments on ToT-style reasoning bench-marks (GSM8K, SVAMP, and Game of 24) demonstrate that ARBOR KV delivers up to ∼ 4× peak KV-cache reduction while maintaining near-full-retention reasoning accuracy, thereby enabling larger tree-search settings under fixed de-vice budgets that would otherwise run out of memory. 
+
+## 2. Related Works 
+
+2.1. Tree-Structured Reasoning with Large Language Models 
+
+LLM reasoning has transitioned from monotonic decoding to explicit search. While Chain-of-Thought (CoT) (Wei et al., 2022) and self-consistency (Wang et al., 2022) en-hance multi-step reasoning through linear trajectories, Tree-of-Thoughts (ToT) (Yao et al., 2023) and formalize search via branching and backtracking. Modern engines like DPTS (Ding et al., 2025) scale these via parallel controllers, yet the concurrent maintenance of multiple paths creates a pro-hibitive KV-cache bottleneck that constrains search budgets (Yao et al., 2023; Ding et al., 2025). 2ArborKV: Structure-Aware KV Cache Management for Scaling Tree-based LLM Reasoning 
+
+2.2. KV-Cache Management for Efficient Inference System and Architectural Optimizations. Prior research on KV-cache optimization spans system-level infrastruc-ture and architectural modifications. PagedAttention (Kwon et al., 2023) improves throughput by mitigating fragmenta-tion via virtual memory principles, while FlexGen (Sheng et al., 2023) explores offloading and compression to run large models under strict GPU constraints. Architectural ap-proaches, such as Multi-Query Attention (MQA) (Shazeer, 2019) and Grouped-Query Attention (GQA) (Ainslie et al., 2023), reduce the KV footprint through parameter sharing but typically require architectural commitments or retrain-ing. Furthermore, quantization methods like LLM.int8() and SmoothQuant reduce cache memory at the cost of some precision (Dettmers et al., 2022; Xiao et al., 2023a). While kernel-level optimizations like FlashAttention (Dao et al., 2022) accelerate computation, they are orthogonal to the 
+
+retention policy —the decision of which states to preserve under constrained memory. 
+
+Algorithmic Eviction and Compression. A significant body of work performs test-time eviction under a sequence-centric assumption . Representative approaches retain to-kens that appear important according to attention or re-lated proxies, including heavy-hitter retention (Zhang et al., 2023), attention-sink stabilization (Xiao et al., 2023b), persistence-based importance (Liu et al., 2023), and prompt-guided compression (Corallo & Papotti, 2024). More re-cent methods refine the granularity of decisions: Key-former selects a subset of “key tokens” to reduce KV band-width/footprint (Adnan et al., 2024), adaptive KV cache construction profiles head behaviors to compress KV on the fly (Ge et al., 2023), and Ada-KV allocates head-wise 
+
+budgets with a principled objective tied to eviction loss (Feng et al., 2024). While effective for linear generation, these methods fail to model the topological constraints and non-monotonic focus shifts inherent in tree search. Recent ”thought-aware” approaches like ThinKV (Ramachandran et al., 2025) adapt compression to reasoning steps, but re-main optimized for single linear trajectories. In contrast, ArborKV optimizes KV allocation directly over the tree structure, utilizing a reversible eviction mechanism that accommodates the non-monotonic nature of search-based inference. 
+
+## 3. Preliminaries 
+
+We model the decoding trajectory of a long-horizon infer-ence as a rooted tree T = ( V, E ) of thought blocks . Each node i ∈ V corresponds to a contiguous token span xai:bi
+
+produced during one locally coherent step of reasoning; let 
+
+ni = bi − ai + 1 denote its length. The tree evolves online as the search procedure (e.g., ToT/DPTS-style exploration) expands one active leaf ℓ⋆ at a time while preserving pre-viously explored branches for potential backtracking. For any node i, let di be its depth (root at depth 0), and let ∆i
+
+be the shortest-path distance in T from i to ℓ⋆; the ancestor chain from root to ℓ⋆ is denoted Path ⋆.The attention KV cache stores a per-token state whose mem-ory cost is approximately constant across tokens at a fixed model configuration. We therefore express the instantaneous memory usage as 
+
+M ∝ X
+
+> i∈V
+
+ki, 0 ≤ ki ≤ ni,
+
+where ki denotes retained tokens for block i. Under a global budget M ≤ B , the policy dynamically determines ki and selects specific tokens to preserve. We enforce three invari-ants for stability: 
+
+(i) Active-path protection. For i ∈ Path ⋆, we require 
+
+ki = ni or a high floor kprotect .
+
+(ii) Per-block minimum. For all i, ki ≥ Kmin to prevent catastrophic “thread drop,” where Kmin is a count-level lower bound on the number of retained tokens for each block. We also maintain a small tail window Ltail that preserves immediate local context, where Ltail denotes the number of most recent tokens that are always kept within each block. 
+
+(iii) Head-only eviction. Within a block, we keep the most recent tokens and evict earliest tokens first; this preserves the local Markovian support for the next decoding step. We update the KV cache only at three policy update events 
+
+(PUEs); at each PUE we recompute retention targets ki
+
+via Eqs. 2–3 and then apply token-extractive evictions. (i) 
+
+Thought boundary (a block i closes by end-of-span or ex-plicit tag): finalize node i, form features ϕi, obtain si, set 
+
+ki, and evict the earliest ni − ki tokens of that block only .(ii) Transition (the active leaf switches when the search expands a new child or backtracks): recompute all tree dis-tances ∆j , reallocate budgets with sibling coordination, pin 
+
+the new ancestor chain Path ⋆, and evict on non-active sub-trees wherever the new kj decreases. (iii) Memory pressure 
+
+(M ≥ B − δ for a small safety margin δ): tighten global knobs (e.g., lower α or raise λ∆), recompute kj , and evict lowest-priority off-path blocks until M ≤ B . Rehydration :if a previously evicted block becomes part of Path ⋆, rebuild its KV before the next token step by a single prefill over 
+
+xai:bi (no token generation), then resume decoding. 
+
+## 4. Method 
+
+We propose a structure-aware memory management frame-work (Figure 2) that explicitly models the inference process as a rooted tree T = ( V, E ) of thought blocks. ArborKV couples a Multi-Signal Value Estimator (MSVE) that scores 3ArborKV: Structure-Aware KV Cache Management for Scaling Tree-based LLM Reasoning MSVE   
+
+> Search Value Uncertainty Accumulated Attn
+> Semantic Value
+
+TAE   
+
+> Global Sinks
+> Boundary: Node Generation Ends Transition: Search Backtracking/Branch Switch Pressure: Memory Usage Threshold
+> Lazy Rehydration
+> Path*
+
+Search Dynamics 
+
+Thought Blocks 
+
+Thought Blocks Thought Blocks 
+
+Thought Blocks 
+
+> KV Cache Pool
+> ...
+> Heavy Hitters
+> Block Tail
+
+Evicted 
+
+... 
+
+> ≈
+
+Retention Ratio 
+
+> Depth
+
+Retention Target 
+
+> Active: Full Retention Inactive:
+> Aggressive Eviction
+
+Execution 
+
+Figure 2. Overview of the ArborKV framework. The pipeline consists of three stages: (1) Multi-Signal Value Estimation (MSVE) ,which fuses search value vi, uncertainty ui, and accumulated attention ai into a semantic score si; (2) Tree-Aware Eviction (TAE) ,which derives the optimal retention ratio ri by solving a budgeted allocation problem via KKT conditions, considering both si and tree geometry (depth di and distance ∆i); and (3) Storage & Execution , which performs token-extractive eviction (retaining global sinks, heavy hitters, and local tails) with lazy rehydration via a single prefill pass to restore KV states during backtracking. 
+
+the prospective utility of each thought block with a Tree-Aware Eviction (TAE) policy that maps scores and geometry to retention under a global memory budget. The design sep-arates scoring (estimating value) from allocation (assigning retention), and executes eviction in a purely token-extractive 
+
+manner. 
+
+Multi-Signal Value Estimation (MSVE). For each closed block i, we compute a lightweight feature vector 
+
+ϕi from signals already available during decoding: • Search value vi ∈ [0 , 1] (Ding et al., 2025): the normal-ized node score maintained by the controller’s selec-tion score for node i, i.e., the quantity used to prioritize which node to expand next. • Uncertainty ui: normalized next-token entropy at boundary bi as in Eq. 1. • Accumulated attention ai(Zhang et al., 2023): the run-ning mass of attention paid to tokens of block i by later tokens, aggregated over a thin slice of heads/layers (maintained incrementally). We quantify uncertainty by the normalized predictive en-tropy of the next-token distribution at the block boundary. Let pi(·) = p(xbi+1 = · | x1: bi ) be the softmax distribution for the next token after closing block i, and let V be the vocabulary. We define 
+
+Hi = − P 
+
+> w∈V
+
+pi(w) log pi(w),ui = 1 − Hi
+
+log |V| ∈ [0 , 1] . (1) where ui is a confidence score (higher is more confident). In practice, Hi is computed from the same forward pass that produces pi (no additional decoding or sampling); for efficiency we optionally restrict the sum to the top-K logits and aggregate the remaining mass into an “other” bucket. MSVE outputs a normalized score 
+
+si = clip  σ(θ⊤ϕi), 0, 1 ∈ [0 , 1] .
+
+We calibrate θ offline using hindsight interventions on full-retention trajectories; the calibration protocol is described in Sec. 5.1. 
+
+Tree-Aware Eviction (TAE). Given si and the current tree geometry, TAE assigns a per-block retention ratio and keep-count: 
+
+ri = clip  α η I(i / ∈Path ⋆) sγi e−λddi e−λ∆∆i , r min , 1, (2) where 0 < η ≤ 1 and I(i / ∈ Path ⋆) is an indicator function that equals one when block i is outside the current active path and zero otherwise. 4ArborKV: Structure-Aware KV Cache Management for Scaling Tree-based LLM Reasoning 
+
+We define the mandatory tail set of block i as 
+
+Ti = {max( ai, b i − Ltail + 1) , . . . , b i},
+
+so that |T i| = min {Ltail , n i}.
+
+ki = min {ni, max( Kmin , |T i|, ⌊ri ni⌋)} . (3) Eqs. 2–3 encode (i) importance amplification via γ > 1;(ii) geometric prioritization via λ∆ toward the active path 
+
+Path ⋆; (iii) discrete sibling coordination via the off-path discount η; and (iv) stability floors (Kmin , |T i|, r min ). The geometric term e−λ∆∆i provides a continuous decay based on the distance from block i to the active leaf, whereas η
+
+acts as a discrete structural penalty during transition events, such as branch switching or backtracking. Its purpose is to encourage non-active subtrees to yield part of their re-tention budget to the newly active branch, even when their geometric distances ∆i are similar. The depth bias is con-trolled by λd and can be positive or negative depending on the search regime: λd > 0 prioritizes shallower blocks that tend to contain reusable global context, whereas λd < 0
+
+favors deeper blocks closer to the current reasoning frontier; setting λd = 0 removes this bias when depth carries no consistent signal. 
+
+Execution. Given the per-block budget ki from Eq. 3, we perform token-extractive eviction by selecting an index set of retained tokens and freeing KV entries of the rest. Motivated by the empirical attention sink phenomenon in long-context decoding (Xiao et al., 2023b) and the obser-vation that a small subset of tokens dominates downstream attention utility (Zhang et al., 2023; Liu et al., 2023), we retain three components: 
+
+(i) Global sinks. We always preserve a small prefix set S
+
+from the initial prompt (system/instruction tokens), which stabilizes attention beyond the training window (Xiao et al., 2023b). 
+
+(ii) Block tail. For each block i, we preserve a mandatory tail set 
+
+Ti = {max( ai, b i − Ltail + 1) , . . . , b i},
+
+which contains the most recent min {Ltail , n i} tokens of the block, to maintain short-range coherence for the next-step generation. 
+
+(iii) Attention heavy hitters within the block. For each to-ken position t ∈ { ai, . . . , b i}, we maintain an accumulated attention score 
+
+Ai(t) = X
+
+> u>b i
+
+X
+
+> l∈L
+
+X
+
+> h∈H
+
+Attn (l,h )
+
+> u→t
+
+,
+
+computed incrementally from attention weights already ma-terialized during decoding (using a thin slice of layers/heads 
+
+L, H for efficiency). We then select Hi as the top-mi po-sitions in block i under Ai(t), where mi = ki − |T i| after reserving the mandatory tail. This realizes the “recent + heavy hitters” retention pattern (Zhang et al., 2023) without additional forward passes. The final retained set for block i is Ri = Ti ∪ H i (plus global sinks S shared across all blocks). When |R i| > k i
+
+due to overlaps or constraints, we prioritize tail tokens first and then heavy hitters by Ai(t).
+
+Lazy rehydration. Eviction removes KV states but never discards the underlying token span xai:bi recorded in the thought tree. When backtracking makes an evicted block i
+
+re-enter the active path Path ⋆, we lazily restore its full KV state only at that time by running a single prefill pass over 
+
+xai:bi (no token generation) before the next decoding step. This yields the same conditioning state as full retention on 
+
+Path ⋆, while avoiding recomputation for blocks that are never revisited. The exact computation of MSVE scores (Eq. 1), TAE re-tention (Eqs. 2–3), and the token-extractive retention rule is summarized in Appendix A.1. 
+
+Event-driven updates. The policy is evaluated only at three engine events to minimize overhead: B OUNDARY (a block closes), T RANSITION (the active leaf switches due to branching/backtracking), and P RESSURE (total KV usage approaches the budget B). At each event, we recompute 
+
+ki via Eqs. 2–3 and apply evictions on non-active subtrees; transition-style refocusing is aligned with tree-search en-gines that explicitly manage search focus and switching (Ding et al., 2025).For completeness, the full event-handling logic for B OUNDARY , T RANSITION , and P RESSURE (in-cluding active-path pinning and lazy rehydration) is pro-vided in Appendix A.2. 
+
+Optimization view. TAE can be interpreted as solving a separable, budgeted allocation problem on the current search tree. Let wi ≜ sγi exp( −λddi) exp( −λ∆∆i) denote the value–geometry weight of block i, and let ki ∈ (0 , n i]
+
+be the number of retained tokens. Ignoring clipping and hard floors momentarily, consider the convex program 
+
+min 
+
+> {ki}
+
+X
+
+> i∈V
+
+ψi(ki) s.t. X
+
+> i∈V
+
+ki ≤ B , 0 < k i ≤ ni,ψi(k) ≜ −wi log k. 
+
+The objective is separable and convex, and ψi yields a diminishing-return marginal benefit ψ′
+
+> i
+
+(k) = −wi/k . The KKT stationarity condition gives −wi/k ⋆i + λ = 0 for non-saturated blocks, hence k⋆i = wi/λ . Accounting for the 5ArborKV: Structure-Aware KV Cache Management for Scaling Tree-based LLM Reasoning 
+
+upper bounds ki ≤ ni yields the familiar capped allocation 
+
+k⋆i = min 
+
+n
+
+ni, wi
+
+λ
+
+o
+
+,
+
+where the dual variable λ (equivalently a global scale 
+
+α ∝ 1/λ ) is chosen so that P 
+
+> i
+
+k⋆i = B. Expressed as a retention ratio, this gives r⋆i = k⋆i /n i ∝ wi up to the global scale, matching the multiplicative structure in Eq. 2. Finally, clip( ·) and the hard floors in Eq. 3 can be viewed as projecting this relaxed solution onto a stricter feasible set: enforcing 0 ≤ ri ≤ 1 and injecting stability constraints (minimum context per block and tail preservation) that are intentionally not modeled in the relaxed objective. 
+
+## 5. Experiments 
+
+This section evaluates whether ArborKV improves the budget–quality–efficiency trade-off in tree-structured rea-soning, where branching and backtracking substantially am-plify KV-cache footprint. We report (i) solution quality under explicit memory budgets, (ii) end-to-end efficiency under realistic tree-search execution, and (iii) component-level ablations that connect empirical behavior to our design choices in MSVE/TAE and intra-block token selection. 
+
+5.1. Experimental Setup Hardware and runtime. All experiments are conducted on a single NVIDIA RTX 4090 GPU (24 GB) with FP16 inference. Unless stated otherwise, we run tree search with batch size 1 and log three complementary measurements: (i) 
+
+maximum CUDA memory allocated to capture peak device pressure, (ii) peak cached tokens as a hardware-stable proxy of KV footprint across kernels and allocator effects, and 
+
+(iii) average end-to-end latency to quantify the runtime overhead introduced by event-driven control and lazy rehy-dration. In the main text, Table 1 reports (i) as “Peak” (GiB) after resetting CUDA memory statistics at the beginning of each episode; we defer (ii) and (iii) as well as rehydration breakdowns to Appendix B.1 for completeness. 
+
+Models. We evaluate two open-weight instruction-tuned LLMs practical on a 24 GB GPU: Llama-3.1-8B-Instruct 
+
+(Dubey et al., 2024) and Qwen2.5-7B-Instruct (Bai et al., 2025). Decoding settings are kept identical across meth-ods (temperature 0.7, top-p 0.9; maximum generation is controlled by the search budget) so that differences arise from KV retention rather than sampling. Unless otherwise specified, all methods share the same prompts and con-troller/verifier logic so that the only degree of freedom is the cache policy. 
+
+MSVE calibration. We calibrate the MSVE parameter θ
+
+offline before inference. For each dataset, we collect 100 full-retention trajectories using the same prompts, controller, verifier, and decoding settings as in the main experiments. For each trajectory, we perform leave-one-out masking at the thought-block level: the KV cache corresponding to each closed thought block i is individually zeroed out, and the resulting change in answer accuracy is measured. This ac-curacy drop is used as the supervision signal for optimizing 
+
+θ, so that blocks whose removal causes larger performance degradation receive higher MSVE targets. After calibra-tion, θ is fixed during inference and introduces no additional online forward passes. 
+
+Tasks. We focus on ToT-style reasoning workloads with explicit branching/backtracking: GSM8K (Cobbe et al., 2021), MATH500 (Hendrycks et al., 2021), Game of 24 
+
+as used in Tree-of-Thoughts (Yao et al., 2023), and AIME 
+
+(Finkelstein et al., 2024). For rapid iteration we use a devel-opment subset of 200 instances per task when applicable; we additionally provide full-split evaluations and extended statistics in the final release materials to facilitate direct comparison with established benchmarks. We follow the standard task evaluation protocols used by prior work for these benchmarks, and we keep the controller/verifier and decoding hyperparameters fixed to avoid confounding im-provements from prompt or sampling changes. 
+
+Tree-search configurations. We use two settings to stress different failure modes of KV management. Config-S (budget sweep) fixes the search shape and varies mem-ory: branching factor B=3 , D =6 , N expand =64 , T node =128 .
+
+Config-L (fixed-memory scaling) increases branching and expansion to test feasibility under tight budgets: 
+
+B=5 , D =8 , N expand =256 , T node =128 . All cache policies share the same ToT controller/verifier; only KV retention differs. The controller is built on a DPTS-style transi-tion mechanism (Ding et al., 2025) to enable efficient parallelized search. This design ensures that differences in quality and efficiency can be attributed to the cache policy rather than changes in search order or expansion heuristics. 
+
+Baselines. We compare ArborKV against representative 
+
+sequence-centric KV management methods— H2O (Zhang et al., 2023), StreamingLLM (Xiao et al., 2023b), and 
+
+ThinKV (Ramachandran et al., 2025)—which estimate token-level utility for retention/eviction without explic-itly modeling tree topology. For a controlled comparison under tree search, all methods share the same ToT con-troller/verifier and identical decoding hyperparameters; they differ only in how KV states are retained under the same nor-malized budget ρ. Since these baselines are designed for lin-ear decoding, we adapt them to ToT by treating the currently active search path as the streaming sequence: whenever the controller expands a child or backtracks to an ancestor, we recompute the baseline’s retained-token set on the concate-nated tokens along that active path and evict KV entries 6ArborKV: Structure-Aware KV Cache Management for Scaling Tree-based LLM Reasoning 
+
+accordingly, while keeping the controller and expansion order unchanged. We report lazy rehydration only for Ar-borKV, because reversible restoration requires tree-level ownership of evicted thought-block spans, which sequence-centric baselines do not define. These baselines therefore follow their native irreversible eviction semantics: evicted tokens are permanently unavailable within an episode. To disentangle the contribution of the allocation policy from the recovery mechanism, we additionally evaluate an ArborKV variant with lazy rehydration disabled in Appendix B.3. 
+
+Budgeting and reported statistics. We report results un-der a normalized KV budget ratio ρ, where smaller ρ corre-sponds to a tighter global KV waterline (cf. the budgeted formulation in Sec. 3). For clarity, the primary notion of “matched memory” in this work refers to evaluation under the same normalized budget ρ; the reported peak memory in GiB (maximum CUDA allocated) may vary slightly across methods due to allocator effects, kernel workspaces, and rehydration-related transient buffers. In addition to quality and efficiency, we report rehydration count (“Rehyd”) for ArborKV, which measures how often evicted blocks must be restored when they re-enter the active path; this serves as a concrete indicator of backtracking-induced recovery and complements the latency measurements. 
+
+5.2. Main Results: Budget Sweep (Config-S) 
+
+Table 1 summarizes the budget–quality–efficiency trade-off across four reasoning benchmarks: GSM8K , MATH500 ,
+
+Game of 24 , and AIME , using two representative LLMs: Llama-3.1-8B and Qwen-2.5-7B. The core question is whether a structure-aware policy can preserve reasoning-critical context under aggressive budgets without collaps-ing to the sequence-centric “flattening” behavior that over-penalizes inactive branches. Across all models, tasks, and budgets, ArborKV consis-tently outperforms sequence-centric baselines under the same normalized budget ρ. While Table 1 reports peak CUDA memory allocated as “Peak” (GiB), our conclusions are driven by a controlled budget sweep in ρ; we additionally provide peak cached tokens, latency, and rehydration statis-tics in Appendix B.1 to further validate that improvements are not explained by unaccounted memory usage or hidden compute trade-offs. On GSM8K , ArborKV retains a large fraction of FullKV quality at ρ = 0 .50 while substantially reducing peak memory, indicating that topology-aware re-tention can preserve reasoning-critical context even when only a limited portion of the cache is kept active. On the more diverse MATH500 benchmark, ArborKV shows a similarly favorable degradation curve as budgets tighten, suggesting robustness beyond short-form arithmetic word problems and improved stability when the search encounters heterogeneous solution paths. The advantage of ArborKV is most pronounced in backtracking-heavy workloads. On the search-intensive 
+
+Game of 24 , sequence-centric methods suffer substantial reasoning failures under frequent branch switching due to irreversible eviction on the active path, whereas ArborKV aligns allocation with search dynamics and supports recov-ery via lazy rehydration when previously evicted branches become relevant again. On the hard AIME split, ArborKV remains competitive under tight budgets, serving as a stress test that highlights the necessity of topology-aware retention for scaling tree search under fixed hardware constraints. De-tailed statistics on inference latency and rehydration counts are provided in Appendix B.1, including an analysis of when rehydration is triggered and how its frequency correlates with backtracking intensity. 
+
+5.3. Fixed-Memory Search Scaling 
+
+We next evaluate whether A RBOR KV’s memory savings translate into search scaling under a fixed memory budget (ρ = 0 .25 ). Compared to the standard configuration, this setting increases branching and expansion factors, signifi-cantly stressing peak KV allocation. As shown in our scaling experiments, the baseline F ULL KV triggers an Out-of-Memory (OOM) error when the expan-sion factor reaches Nexpand = 256 , illustrating the practical constraints of full KV retention in long-horizon reasoning. In contrast, A RBOR KV successfully completes the high-expansion search without exceeding the budget, achieving 
+
+78 .4% accuracy with only 5.6 GiB of peak memory. Further-more, A RBOR KV maintains competitive end-to-end latency (38.2s) and outperforms sequence-centric baselines at the same expansion scale, demonstrating that structure-aware retention can unlock qualitatively larger feasible search on fixed hardware. A concise summary of scaling feasibility is reported in Ta-ble 6, while detailed resource usage comparisons (Table 2) are provided in Appendix B.2. 
+
+5.4. Ablations 
+
+We perform ablations in the most memory-constrained set-ting ( ρ = 0 .25 , Config-S) to isolate which design choices drive the gains. Overall, the results suggest three takeaways: (i) MSVE is most effective when combining complementary signals rather than relying on a single proxy, (ii) tree-aware allocation remains important beyond per-block scoring, and (iii) explicitly modeling topological proximity to the active frontier is critical for both solution quality and rehydration efficiency. In addition to end-to-end accuracy, we report cache-level metrics (e.g., rehydration counts) to disentangle improvements from faster recovery versus better retention decisions. Table 3 summarizes the key component ablations; additional intra-block analyses and MSVE transferability 7ArborKV: Structure-Aware KV Cache Management for Scaling Tree-based LLM Reasoning Table 1. Main Results (Config-S): Accuracy (%) and Peak Memory (GiB) across four tasks using Llama-3.1-8B and Qwen-2.5-7B.  
+
+> ArborKV reduces memory footprint under budgeted KV retention while maintaining high reasoning fidelity.
+
+GSM8K MATH500 Game of 24 AIME 
+
+Model Method ρ Acc (%) Peak Acc (%) Peak Acc (%) Peak Acc (%) Peak Llama-3.1-8B FullKV 1.00 80.1 21.8 79.8 23.5 56.4 22.4 28.3 23.0 H2O 0.50 73.9 10.6 72.2 12.4 44.8 11.4 25.6 10.2 StreamingLLM 0.50 76.1 11.4 74.2 13.1 45.6 12.1 26.1 13.5 ThinKV 0.50 75.3 11.1 73.8 11.5 47.2 11.5 26.5 11.2 
+
+ArborKV 0.50 77.8 11.0 75.8 12.3 49.1 11.1 27.2 11.5 H2O 0.25 65.6 5.1 60.2 6.0 38.6 5.8 20.5 4.9 StreamingLLM 0.25 63.1 5.7 62.4 5.8 36.1 5.4 21.6 6.1 ThinKV 0.25 67.1 5.3 61.6 5.4 41.5 5.6 23.1 6.2 
+
+ArborKV 0.25 70.2 5.5 64.8 5.9 44.8 5.8 24.3 6.1 Qwen-2.5-7B FullKV 1.00 89.6 21.5 81.2 23.1 64.2 20.3 35.6 22.5 H2O 0.50 82.0 12.1 74.8 10.7 52.7 11.2 31.5 10.3 StreamingLLM 0.50 84.6 12.3 76.4 11.6 53.4 11.3 31.9 11.4 ThinKV 0.50 84.0 10.2 76.0 10.6 55.0 10.6 33.2 11.6 
+
+ArborKV 0.50 86.2 10.5 77.6 10.9 59.9 10.4 33.8 11.6 H2O 0.25 71.5 5.3 61.6 5.4 42.4 5.3 19.6 5.3 StreamingLLM 0.25 70.1 5.7 62.8 5.9 41.9 4.7 22.4 5.3 ThinKV 0.25 69.1 5.6 65.4 6.0 49.3 5.7 25.0 5.7 
+
+ArborKV 0.25 74.9 6.0 67.4 6.1 52.6 4.8 26.1 5.5                       
+
+> Table 2. Scaling Resources: Peak memory and latency under Config-L. Method Nexpand Peak (GiB) Time (s) FullKV 64 5.9 18.5 FullKV 128 8.7 32.2 FullKV 256 ––H2O 256 5.6 42.5 StreamingLLM 256 5.7 41.8
+> ArborKV 256 5.6 38.2
+
+results are deferred to Appendix B.3.                                 
+
+> Table 3. Ablation - Signals: Impact of MSVE and TAE compo-nents on accuracy and efficiency. Variant ( ρ=0 .25 )Acc (%) Time (s) Rehyd
+> ArborKV (full) 70.2 21.5 2.7 w/o vi(Search Value) 68.8 22.1 2.9 w/o ui(Uncertainty) 67.5 21.6 2.6 w/o ai(Attention) 68.1 22.5 2.5 w/o sibling coord. 69.1 21.9 2.7 TAE only (no MSVE) 65.5 23.4 3.1 MSVE only (no ∆i)59.2 28.5 4.8
+
+In particular, removing any individual MSVE signal ( vi, ui,or ai) leads to a consistent accuracy drop, indicating that the fused estimator is more robust than any single heuris-tic. Disabling sibling coordination produces a smaller yet systematic degradation, suggesting that local competition among siblings complements global prioritization. We fur-ther evaluate whether the calibrated MSVE weights overfit to a specific dataset in Appendix B.3, where a GSM8K-calibrated scorer transfers well to other mathematical rea-soning tasks and remains close to the default task-calibrated ArborKV. Most notably, removing the geometric distance term (MSVE-only; no ∆i) yields the largest quality loss and sub-stantially increases rehydration. This supports our central motivation: during tree search, short-term reuse is primar-ily governed by topological proximity to the active frontier. Ignoring this structure tends to over-evict blocks that soon become relevant again, inflating recovery work and degrad-ing reasoning fidelity. To separate the contribution of reversible restoration from the allocation policy itself, we additionally disable lazy re-hydration while keeping the same MSVE scoring and TAE allocation policy. In this variant, once a block is evicted, it is treated as permanently unavailable within the episode, matching the irreversible eviction semantics of sequence-centric baselines. As shown in Table 4, ArborKV without re-hydration still outperforms ThinKV under the same budget, while full ArborKV performs best. This indicates that the 8ArborKV: Structure-Aware KV Cache Management for Scaling Tree-based LLM Reasoning Table 4. Ablation of lazy rehydration at ρ = 0 .25 . ArborKV without rehydration keeps the same MSVE and TAE policy but disables recovery of evicted blocks during backtracking. Task Model ThinKV No Rehyd. Full GSM8K Llama-3.1-8B 67.1 68.6 70.2 Qwen-2.5-7B 69.1 72.1 74.9 MATH500 Llama-3.1-8B 61.6 63.4 64.8 Qwen-2.5-7B 65.4 66.5 67.4 
+
+gains come from both tree-aware allocation and reversible restoration, rather than from rehydration alone. We also ablate the intra-block token-retention rule in Ap-pendix B.3. Purely recency-based selection (tail-only) per-forms worst, while incorporating within-block heavy hitters achieves the best performance under the same peak memory budget, supporting a “recent + salient” retention pattern as an effective token-extractive approximation of within-block utility. 
+
+5.5. Efficiency Breakdown 
+
+We finally examine the runtime implications of policy con-trol and recovery under the same setup as Sec. 5.1 (FP16 inference on a single RTX 4090 with batch size 1; identi-cal ToT controller/verifier and decoding hyperparameters across methods, differing only in KV policy). We instru-ment the engine to separately time (i) event-driven policy updates (MSVE scoring + TAE allocation) triggered only at BOUNDARY /T RANSITION /P RESSURE events, and (ii) lazy rehydration, implemented as a single-pass prefill that re-stores evicted KV states without autoregressive generation. Aggregated over the Config-S budget-sweep runs in Table 1, policy control accounts for < 1.2% of total wall-clock time. Rehydration remains a second-order term: single-pass pre-filling is substantially faster than generating the same tokens, and the moderate rehydration counts in Table 5 indicate that most evicted blocks are not immediately revisited. 0 20 40 60 80 100 120 140 160 
+
+> Search Steps (Node Expansions)
+> 0
+> 500
+> 1000
+> 1500
+> 2000
+> 2500
+> 3000
+> KV Cache Usage (Tokens)
+> OOM Triggered
+> Branch Switch
+> (Lazy Rehydration)
+> Baseline (Full Retention)
+> Memory Budget
+> Evicted / Saved Memory
+> High-Value Inactive (Retained)
+> Active Path KV (Variable Length)
+
+Figure 3. KV memory dynamics. ArborKV avoids the OOM 
+
+failure of the full-retention baseline (grey) by dynamically retain-ing only the Active Path (dark blue) and essential Inactive context (light blue). Sharp drops illustrate structure-aware eviction upon branch switching. 
+
+## 6. Conclusion 
+
+We propose ArborKV , a tree-aware KV-cache manage-ment framework for inference-time tree search with large language models. By coupling semantic value estimation with tree-structured budget allocation, ArborKV enables reversible exploration under strict memory constraints via token-extractive eviction and lazy rehydration. Experiments on Tree-of-Thoughts style reasoning tasks show that Ar-borKV reduces KV memory and improves efficiency while preserving reasoning performance, underscoring the value of modeling search structure beyond linear decoding. 
+
+## Acknowledgment 
+
+This research is supported by Smart-Grid National Science and Technology Major Project (Grant No. 2025ZD0805500). 
+
+## Impact Statement 
+
+This work targets the systems bottleneck of tree-structured LLM inference by reducing the key–value (KV) cache foot-print under fixed device memory budgets. By enabling larger or longer-horizon Tree-of-Thoughts–style search on a single commodity GPU, the proposed approach may lower the hardware and energy cost of advanced reasoning pipelines and broaden access to such techniques in resource-constrained settings. At the same time, improving the efficiency of deliberative search could also increase the scale at which LLM reasoning is deployed, potentially amplifying existing risks of misuse (e.g., generating persuasive but incorrect reasoning traces) and over-reliance on model outputs. Our method does not introduce new training data, does not change model weights, and operates only on inference-time cache management; therefore it does not create additional privacy exposure be-yond standard inference. We encourage responsible deploy-ment practices, including task-appropriate verification, mon-itoring for failure modes under aggressive eviction budgets, and adherence to applicable safety policies when scaling automated reasoning systems. 9ArborKV: Structure-Aware KV Cache Management for Scaling Tree-based LLM Reasoning 
+
+## References 
+
+Adnan, M., Arunkumar, A., Jain, G., Nair, P. J., Solovey-chik, I., and Kamath, P. Keyformer: Kv cache reduction through key tokens selection for efficient generative in-ference. Proceedings of Machine Learning and Systems ,6:114–127, 2024. Ainslie, J., Lee-Thorp, J., De Jong, M., Zemlyanskiy, Y., Lebr ´on, F., and Sanghai, S. Gqa: Training generalized multi-query transformer models from multi-head check-points. arXiv preprint arXiv:2305.13245 , 2023. Aminabadi, R. Y., Rajbhandari, S., Awan, A. A., Li, C., Li, D., Zheng, E., Ruwase, O., Smith, S., Zhang, M., Rasley, J., et al. Deepspeed-inference: enabling efficient inference of transformer models at unprecedented scale. In SC22: International Conference for High Performance Computing, Networking, Storage and Analysis , pp. 1–15. IEEE, 2022. Bai, S., Chen, K., Liu, X., Wang, J., Ge, W., Song, S., Dang, K., Wang, P., Wang, S., Tang, J., et al. Qwen2. 5-vl technical report. arXiv preprint arXiv:2502.13923 , 2025. Cobbe, K., Kosaraju, V., Bavarian, M., Chen, M., Jun, H., Kaiser, L., Plappert, M., Tworek, J., Hilton, J., Nakano, R., et al. Training verifiers to solve math word problems. 
+
+arXiv preprint arXiv:2110.14168 , 2021. Corallo, G. and Papotti, P. Finch: Prompt-guided key-value cache compression for large language models. Transac-tions of the Association for Computational Linguistics ,12:1517–1532, 2024. Dao, T., Fu, D., Ermon, S., Rudra, A., and R ´e, C. Flashat-tention: Fast and memory-efficient exact attention with io-awareness. Advances in neural information processing systems , 35:16344–16359, 2022. Dettmers, T., Lewis, M., Belkada, Y., and Zettlemoyer, L. Gpt3. int8 (): 8-bit matrix multiplication for transform-ers at scale. Advances in neural information processing systems , 35:30318–30332, 2022. Ding, Y., Jiang, W., Liu, S., Jing, Y., Guo, J., Wang, Y., Zhang, J., Wang, Z., Liu, Z., Du, B., et al. Dynamic parallel tree search for efficient llm reasoning. arXiv preprint arXiv:2502.16235 , 2025. Dubey, A., Jauhri, A., Pandey, A., Kadian, A., Al-Dahle, A., Letman, A., Mathur, A., Schelten, A., Yang, A., Fan, A., et al. The llama 3 herd of models. arXiv preprint arXiv:2407.21783 , 2024. Feng, Y., Lv, J., Cao, Y., Xie, X., and Zhou, S. K. Ada-kv: Optimizing kv cache eviction by adaptive budget allocation for efficient llm inference. arXiv preprint arXiv:2407.11550 , 2024. Finkelstein, J., Moskovitch, R., and Parimbelli, E. Artificial Intelligence in Medicine: 22nd International Conference, AIME 2024, Salt Lake City, UT, USA, July 9–12, 2024, Proceedings, Part I , volume 14844. Springer Nature, 2024. Ge, S., Zhang, Y., Liu, L., Zhang, M., Han, J., and Gao, J. Model tells you what to discard: Adaptive kv cache compression for llms. arXiv preprint arXiv:2310.01801 ,2023. Hendrycks, D., Burns, C., Kadavath, S., Arora, A., Basart, S., Tang, E., Song, D., and Steinhardt, J. Measuring math-ematical problem solving with the math dataset. arXiv preprint arXiv:2103.03874 , 2021. Kwon, W., Li, Z., Zhuang, S., Sheng, Y., Zheng, L., Yu, C. H., Gonzalez, J., Zhang, H., and Stoica, I. Efficient memory management for large language model serving with pagedattention. In Proceedings of the 29th sym-posium on operating systems principles , pp. 611–626, 2023. Liu, Z., Desai, A., Liao, F., Wang, W., Xie, V., Xu, Z., Kyril-lidis, A., and Shrivastava, A. Scissorhands: Exploiting the persistence of importance hypothesis for llm kv cache compression at test time. Advances in Neural Information Processing Systems , 36:52342–52364, 2023. Patel, P., Choukse, E., Zhang, C., Shah, A., Goiri, ´I., Maleki, S., and Bianchini, R. Splitwise: Efficient generative llm inference using phase splitting. In 2024 ACM/IEEE 51st Annual International Symposium on Computer Architec-ture (ISCA) , pp. 118–132. IEEE, 2024. Ramachandran, A., Neseem, M., Sakr, C., Venkatesan, R., Khailany, B., and Krishna, T. Thinkv: Thought-adaptive kv cache compression for efficient reasoning models. 
+
+arXiv preprint arXiv:2510.01290 , 2025. Shazeer, N. Fast transformer decoding: One write-head is all you need. arXiv preprint arXiv:1911.02150 , 2019. Sheng, Y., Zheng, L., Yuan, B., Li, Z., Ryabinin, M., Chen, B., Liang, P., R ´e, C., Stoica, I., and Zhang, C. Flexgen: High-throughput generative inference of large language models with a single gpu. In International Conference on Machine Learning , pp. 31094–31116. PMLR, 2023. Wang, X., Wei, J., Schuurmans, D., Le, Q., Chi, E., Narang, S., Chowdhery, A., and Zhou, D. Self-consistency im-proves chain of thought reasoning in language models. 
+
+arXiv preprint arXiv:2203.11171 , 2022. Wei, J., Wang, X., Schuurmans, D., Bosma, M., Xia, F., Chi, E., Le, Q. V., Zhou, D., et al. Chain-of-thought prompting elicits reasoning in large language models. Advances in neural information processing systems , 35:24824–24837, 2022. 10 ArborKV: Structure-Aware KV Cache Management for Scaling Tree-based LLM Reasoning 
+
+Xiao, G., Lin, J., Seznec, M., Wu, H., Demouth, J., and Han, S. Smoothquant: Accurate and efficient post-training quantization for large language models. In Interna-tional conference on machine learning , pp. 38087–38099. PMLR, 2023a. Xiao, G., Tian, Y., Chen, B., Han, S., and Lewis, M. Ef-ficient streaming language models with attention sinks. 
+
+arXiv preprint arXiv:2309.17453 , 2023b. Yao, S., Yu, D., Zhao, J., Shafran, I., Griffiths, T., Cao, Y., and Narasimhan, K. Tree of thoughts: Deliberate problem solving with large language models. Advances in neural information processing systems , 36:11809–11822, 2023. Zhang, Z., Sheng, Y., Zhou, T., Chen, T., Zheng, L., Cai, R., Song, Z., Tian, Y., R ´e, C., Barrett, C., et al. H2o: Heavy-hitter oracle for efficient generative inference of large language models. Advances in Neural Information Processing Systems , 36:34661–34710, 2023. Zhou, A., Yan, K., Shlapentokh-Rothman, M., Wang, H., and Wang, Y.-X. Language agent tree search unifies reasoning acting and planning in language models. arXiv preprint arXiv:2310.04406 , 2023. 11 ArborKV: Structure-Aware KV Cache Management for Scaling Tree-based LLM Reasoning 
+
+Algorithm 1 MSVE + TAE + Token-Extractive Eviction (Bundled Params) 
+
+1: Procedure MSVE (vi, u i, a i; Π) 
+
+2: ϕi ← [vi, u i, a i]
+
+3: return clip  σ(θ(Π) ⊤ϕi), 0, 1
+
+4: Procedure TAE (s, d, ∆, n ; Π) 
+
+5: z ← α(Π) sγ(Π) e−λd(Π) de−λ∆(Π) ∆ 
+
+6: r ← clip( z, r min (Π) , 1) 
+
+7: k ← max {Kmin (Π) , L tail (Π) , ⌊rn ⌋} 
+
+8: return min {k, n }
+
+9: Procedure EVICT (i, k i; Π , S)
+
+10: ki ← min {ki, n i}
+
+11: if ki ≤ Ltail (Π) then 
+
+12: return {bi − ki + 1 , . . . , b i} ∪ S 
+
+13: end if 
+
+14: Ti ← { bi − Ltail (Π) + 1 , . . . , b i}
+
+15: mi ← ki − |T i|
+
+16: Hi ← TOP -mi BY Ai(t)
+
+17: return TRIM (Ti, Hi, k i) ∪ S 
+
+18: Procedure SCORE ALLOC EVICT (i; Π , S)
+
+19: si ← MSVE (vi, u i, a i; Π) 
+
+20: ki ← TAE (si, d i, ∆i, n i; Π) 
+
+21: Ri ← EVICT (i, k i; Π , S)
+
+22: return (si, k i, Ri)
+
+## A. Additional Pseudocode and Implementation Details 
+
+A.1. MSVE scoring, TAE allocation, and token-extractive eviction 
+
+Algorithm 1 summarizes the three-stage policy evaluation: MSVE scoring, TAE allocation, and token-extractive evic-tion. MSVE computes si from (vi, u i, a i); TAE maps 
+
+(si, d i, ∆i) to (ri, k i) following Eqs. 2–3; eviction retains global sinks S, the tail window Ti, and within-block atten-tion heavy hitters Hi, prioritizing tail tokens under overlaps. 
+
+A.2. Event-driven controller 
+
+We provide pseudocode for the event-driven KV-cache con-troller used by our tree-search inference engine. The con-troller updates retention targets only at three policy update events (B OUNDARY , T RANSITION , P RESSURE ), enforces active-path protection, and performs lazy rehydration via a single-shot prefill when a previously evicted block re-enters 
+
+Path ⋆. Algorithm 2 lists the complete control flow. 
+
+## B. Additional Experimental Statistics 
+
+B.1. Detailed Main Results (Config-S) 
+
+Table 5 provides additional metrics for the Budget Sweep (Config-S) experiments, including end-to-end inference time and the average rehydration count per sample. These statis-
+
+Algorithm 2 Event-Driven Controller (PUEs + Rehydra-tion) 
+
+Require: Budget B; parameter bundle Π; sinks S
+
+Ensure: {ki}i∈V and retained sets {R i}i∈V
+
+1: while tree-search running do 
+
+2: e ← NEXT PUE () 
+
+3: if e = BOUNDARY (i) then 
+
+4: (si, k i, Ri) ← SCORE ALLOC EVICT (i; Π , S)
+
+5: else if e = TRANSITION (ℓnew ) then 
+
+6: ℓ⋆ ← ℓnew 
+
+7: Path ⋆ ← ROOT TOLEAF (ℓ⋆)
+
+8: for all i ∈ Path ⋆ do 
+
+9: if ki < n i then 
+
+10: REHYDRATE (xai:bi )
+
+11: ki ← ni
+
+12: Ri ← { ai, . . . , b i} ∪ S 
+
+13: end if 
+
+14: end for 
+
+15: for all j ∈ V \ Path ⋆ do 
+
+16: ∆j ← TREE DISTANCE (j, ℓ ⋆)
+
+17: knew  
+
+> j
+
+← TAE (sj , d j , ∆j , n j ; Π) 
+
+18: if knew  
+
+> j
+
+< k j then 
+
+19: kj ← knew 
+
+> j
+
+20: Rj ← EVICT (j, k j ; Π , S)
+
+21: end if 
+
+22: end for 
+
+23: else if e = PRESSURE then 
+
+24: for all j ∈ V \ Path ⋆ do 
+
+25: kj ← TAE (sj , d j , ∆j , n j ; Π) 
+
+26: Rj ← EVICT (j, k j ; Π , S)
+
+27: end for 
+
+28: while P 
+
+> i∈V
+
+ki > B do 
+
+29: j ← arg min i∈V \Path ⋆ PRIORITY (i)
+
+30: kj ← max {Kmin (Π) , k j − 1}
+
+31: Rj ← EVICT (j, k j ; Π , S)
+
+32: end while 
+
+33: end if 
+
+34: if P 
+
+> i∈V
+
+ki ≥ B − δ(Π) then 
+
+35: RAISE PRESSURE EVENT () 
+
+36: end if 
+
+37: end while 
+
+tics quantify the efficiency gains of A RBOR KV and the overhead introduced by its lazy rehydration mechanism dur-ing non-monotonic search. 
+
+B.2. Detailed Scaling Analysis (Config-L) 
+
+This section provides the complete experimental data for fixed-memory search scaling. A concise summary of feasi-bility and accuracy (including OOM status) is reported in Ta-ble 6 in the main text; here we provide detailed resource us-age, including peak memory and end-to-end latency across expansion configurations (Table 2). In particular, Table 6 re-12 ArborKV: Structure-Aware KV Cache Management for Scaling Tree-based LLM Reasoning Table 5. Detailed Efficiency Statistics (Config-S): Inference Time (s) and Rehydration Count (Rehyd) across four tasks. Rehydration is a unique mechanism in A RBOR KV to support lazy restoration during backtracking. 
+
+GSM8K MATH500 Game of 24 AIME 
+
+Model Method ρ Time (s) Rehyd Time (s) Rehyd Time (s) Rehyd Time (s) Rehyd Llama-3.1-8B FullKV 1.00 69.7 0.0 190.6 0.0 98.4 0.0 145.1 0.0 H2O 0.50 24.1 – 95.3 – 46.5 – 66.5 –StreamingLLM 0.50 23.8 – 77.6 – 34.2 – 78.2 –ThinKV 0.50 25.5 – 54.9 – 39.2 – 61.3 –
+
+ArborKV 0.50 19.8 0.7 51.2 0.9 31.4 1.9 59.7 1.3 H2O 0.25 22.4 – 125.6 – 32.1 – 72.6 –StreamingLLM 0.25 22.1 – 89.3 – 31.5 – 79.1 –ThinKV 0.25 23.6 – 53.2 – 34.8 – 60.5 –
+
+ArborKV 0.25 21.5 2.7 61.2 3.6 33.7 5.2 61.6 3.1 Qwen-2.5-7B FullKV 1.00 79.7 0.0 125.0 0.0 112.4 0.0 95.6 0.0 H2O 0.50 27.6 – 67.3 – 41.7 – 45.6 –StreamingLLM 0.50 27.2 – 78.9 – 39.1 – 57.3 –ThinKV 0.50 29.1 – 72.6 – 44.8 – 42.1 –
+
+ArborKV 0.50 22.6 0.8 61.2 1.3 35.9 2.3 43.9 0.9 H2O 0.25 25.6 – 57.8 – 36.6 – 47.3 –StreamingLLM 0.25 25.2 – 72.1 – 35.9 – 51.5 –ThinKV 0.25 26.9 – 60.9 – 39.8 – 47.6 –
+
+ArborKV 0.25 24.5 2.4 52.5 2.5 40.1 4.7 44.3 3.4 
+
+Table 6. Scaling Performance (Config-L, ρ = 0 .25 ) on MATH500 
+
+using Llama-3.1-8B : Accuracy and OOM status across Nexpand .Method Nexpand Acc (%) OOM FullKV 64 79.8 NFullKV 128 80.5 NFullKV 256 – YH2O 256 69.0 NStreamingLLM 256 67.1 N
+
+ArborKV 256 78.4 N
+
+Table 7. Ablation (Config-S, ρ = 0.25 ) on GSM8K using 
+
+Llama-3.1-8B : intra-block token-selection rules under a fixed peak-memory cap (5.6 GiB). Intra-block Policy Acc (%) Peak (GiB) Tail-only 65.2 5.6 Sinks + Tail 68.5 5.6 Sinks + Tail + HeavyHitters 70.8 5.6 
+
+ports the feasibility and accuracy on MATH500 with Llama-3.1-8B under Config-L at ρ = 0 .25 .
+
+B.3. Additional Ablation Results 
+
+This appendix provides complementary ablation results for ArborKV under memory-constrained settings. In addition to the component-level ablations and the lazy-rehydration ablation reported in Sec. 5.4, we further examine two as-
+
+Table 8. Transferability of MSVE calibration at ρ = 0.5.“GSM8K-tuned” uses θ calibrated only on GSM8K and applies it zero-shot to other tasks. “Default” uses the task-specific calibra-tion adopted in the main experiments. Model Task ThinKV GSM8K-tuned Default Llama-3.1-8B GSM8K 75.3 77.8 77.8 MATH500 73.8 75.1 75.8 Game of 24 47.2 48.3 49.1 AIME 26.5 26.9 27.2 Qwen-2.5-7B GSM8K 84.0 86.2 86.2 MATH500 76.0 77.1 77.6 Game of 24 55.0 58.2 59.9 AIME 33.2 33.5 33.8 
+
+pects: (i) the effect of intra-block token selection, and (ii) the transferability of MSVE calibration across mathematical reasoning tasks. 
+
+Intra-block token selection. Table 7 evaluates intra-block token-selection strategies under a fixed peak-memory bud-get. We compare tail-only retention, adding global sinks, and further incorporating within-block heavy hitters. All variants use the same ToT controller and memory budget to isolate the effect of intra-block retention. The results on GSM8K with Llama-3.1-8B under Config-S at ρ = 0 .25 
+
+show that purely recency-based retention performs worst, while combining global sinks, block tails, and heavy hit-ters achieves the best performance under the same 5.6 GiB 13 ArborKV: Structure-Aware KV Cache Management for Scaling Tree-based LLM Reasoning 
+
+peak-memory cap. 
+
+Transferability of MSVE calibration. We evaluate whether the MSVE parameter θ generalizes across mathe-matical reasoning tasks. Specifically, we calibrate θ only on GSM8K and directly apply it to other tasks without task-specific recalibration. Table 8 shows that the GSM8K-calibrated scorer transfers well within the mathematical domain: it remains close to the default task-calibrated Ar-borKV and consistently outperforms ThinKV. This suggests that MSVE signals such as uncertainty ui and accumulated attention ai capture transferable reasoning patterns rather than only dataset-specific features. 14
