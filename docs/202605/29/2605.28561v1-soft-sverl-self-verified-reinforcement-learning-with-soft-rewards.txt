@@ -1,0 +1,1464 @@
+Title: Soft-SVeRL: Self-Verified Reinforcement Learning with Soft Rewards
+
+URL Source: https://arxiv.org/pdf/2605.28561v1
+
+Published Time: Thu, 28 May 2026 01:42:02 GMT
+
+Number of Pages: 33
+
+Markdown Content:
+# Soft-SVeRL: Self-Verified Reinforcement Learning with Soft Rewards 
+
+Saurabh Dash 1, Pierre Clavier 2, John Dang †1, Matthias Galle ‡1, Marzieh Fadaee 1,Ahmet Üstün 2, and Beyza Ermis 11Cohere Labs, 2Cohere Corresponding authors: {saurabh,beyza}@cohere.com 
+
+# Abstract 
+
+Reinforcement Learning from Verifiable Rewards (RLVR) has improved language models in domains such as mathematics and code, where correctness can be checked automatically. However, many important tasks are only partially verifiable: prompts contain multiple requirements, responses may satisfy some but not all of them, or no single reference answer might exist. We introduce Soft-RLVR , a framework for reinforcement learning from decomposed, learned verification signals. Soft-RLVR converts each prompt into a checklist of atomic requirements, scores candidate responses item by item with an LLM verifier, and trains on the resulting soft reward. Checklist-based rewards turn sparse pass/fail supervision into a denser partial-credit signal, but they also introduce a tradeoff: averaging item-level judgments can reduce verifier noise, while partial credit can reward incomplete responses. We formalize this tradeoff and identify conditions under which checklist-based verification gives a more reliable RL training signal than holistic verification. We further introduce Soft-SVeRL , a self-verifying variant of Soft-RLVR in which the policy also acts as the verifier. We show that self-verification is prone to reward inflation from overly permissive self-judgments, and that explicit stabilization is needed to prevent this collapse. In a controlled instruction-following setting with rule-based ground-truth evaluation, checklist-based Soft-RLVR improves IFEval 
+
+by up to 11.1 points using only learned verifier rewards. Our experiments further show that verifier quality and checklist quality both affect downstream RL outcomes, and that explicit stabilization is essential for effective self-verification. 
+
+## 1 Introduction 
+
+Reinforcement learning (RL) has become a powerful tool for improving language models when reliable reward signals are available. In domains such as mathematics (Shao et al., 2024; DeepSeek-AI, 2025) and code generation (DeepSeek-AI, 2025; Wang et al., 2025), where correctness can be verified accurately through symbolic checks or unit tests, Reinforcement Learning from Verifiable Rewards (RLVR) has led to dramatic gains in reasoning performance (DeepSeek-AI, 2025; Shao 
+
+> †
+
+Work done at Cohere Labs. Currently at Adaption Labs. 
+
+> ‡
+
+Work done at Cohere. Currently at Poolside. 
+
+Released as a preprint on May 28, 2026 1
+
+> arXiv:2605.28561v1 [cs.CL] 27 May 2026
+
+et al., 2024). However, these settings represent only a narrow subset of the real-world tasks for which we want to improve language models. Many important applications do not allow exact verification. Complex instruction following is a central example: prompts often specify multiple requirements, such as formatting, keyword inclusion or exclusion, semantic manipulation, length limits, and answering a substantive question. A response may satisfy most requirements while failing one, and there is often no exact reference answer (Zhou et al., 2023). Binary all-or-nothing rewards are therefore too sparse, while single holistic judgments compress many requirements into one noisy decision and do not reveal which requirements were satisfied or violated (Bai et al., 2022; Lee et al., 2023; Gunjal et al., 2025). This raises a central question: how can we train language models with RL when correctness is partial, noisy, and difficult to specify? 
+
+We address this challenge with Soft-RLVR , a framework for reinforcement learning with learned checklist-based rewards. Our key observation is that many instruction-following tasks have an approximately decomposable reward structure: correctness arises from satisfying a set of identifiable requirements that can often be evaluated separately. Soft-RLVR makes this structure explicit by converting prompts into checklists of verifiable criteria, evaluating each checklist item with an LLM verifier, and computing reward as the fraction of satisfied items. This turns sparse pass/fail supervision into a graded signal that captures partial progress while keeping the reward tied to explicit criteria. A key concern is that learned verifiers are imperfect: they may incorrectly approve unsatisfactory responses or reject valid ones. We show that checklist decomposition fundamentally reshapes the impact of this noise. While individual item-level judgments may be noisy, aggregating them can reduce reward variance, especially when verifier errors are not strongly correlated. At the same time, partial credit changes the training target by assigning non-zero reward to incomplete responses. We formalize this tradeoff and identify conditions under which checklist verification provides a more accurate estimate of the ideal RL update than holistic judgments. We further introduce Soft-SVeRL , a self-verifying variant of Soft-RLVR where the policy model also serves as the verifier. This removes the need for a separate online reward model and can reduce the inference footprint of RL training. However, it introduces a collapse mode in which the shared model increases measured reward by making the verifier more permissive rather than by generating better responses. We call this always-yes collapse . To mitigate this, we introduce verifier co-training with gold and replayed examples, along with an anti-collapse penalty that discourages uniform inflation of item-level acceptance and stabilizes training. We evaluate our approach in a controlled instruction-following setting based on IFEval -style veri-fiable constraints (Zhou et al., 2023). This setting provides rule-based ground-truth verification for evaluation and analysis, while training uses learned checklist-based rewards rather than the rule-based verifier. Our experiments show that checklist-based soft verification substantially improves instruction following, that verifier and checklist quality both affect downstream RL outcomes, and that self-verification requires explicit stabilization. To summarize, our work makes the following key contributions: 
+
+• We introduce Soft-RLVR , a framework for reinforcement learning with decomposed LLM-based verifiers for partially verifiable instruction-following tasks, turning all-or-nothing pass/-fail supervision into graded item-level feedback.      
+
+> 2Figure 1: Overview of Soft-SVeRL .A prompt is decomposed into checklist criteria, candidate answers are scored item by item, and the resulting soft rewards update the generator. Because the generator also serves as the verifier, Soft-SVeRL adds verifier-side stabilization: labeled examples improve item-level judgments, while failing checklist contexts discourage inflated Yes predictions.
+
+• We characterize when averaging item-level verifier judgments yields a more reliable RL training signal than a single holistic judgment, and when partial-credit bias becomes harmful. 
+
+• We introduce Soft-SVeRL , a self-verifying variant of Soft-RLVR , identify always-yes col-lapse , and show that verifier co-training with gold and replay examples in addition to an anti-collapse penalty reduces reward inflation. 
+
+• We demonstrate empirically in an IFEval -style setting with rule-based ground-truth evalua-tion that learned checklist rewards substantially improve instruction following and that both verifier quality and checklist quality critically affect downstream RL performance. 
+
+## 2 Preliminaries 
+
+Let πθ(y | x) denote a language model policy parameterized by θ, where x is a prompt and y
+
+is a sampled completion. Given a reward function R that scores completions, the goal of policy optimization is to maximize expected reward under the policy. In reference-based settings, this reward may depend on a reference answer y∗, giving the objective 
+
+arg max 
+
+> θ
+
+E(x,y ∗)∼D , y ∼πθ (·| x)
+
+R(y, y ∗), (1) 
+
+where D = {(xi, y ∗ 
+
+> i
+
+)} is a dataset of prompt-reference pairs. In the settings we study, however, exact reference answers may be unavailable or insufficient, so the central question is how to construct a useful reward directly from the prompt and candidate response. 
+
+32.1 Reinforcement learning with verifiable rewards (RLVR) 
+
+When outputs admit exact verification, as in mathematics or code, a natural reward is binary correctness: 
+
+Rcorrect (y, y ∗) = 1[y ≡ y∗], (2) 
+
+where equivalence may allow for formatting or other task-specific normalizations. More generally, the reward can be computed by a deterministic checker, such as a symbolic verifier or a unit-test suite. Because these rewards are reliable and not directly manipulable by the policy, they have enabled strong RLVR results in reasoning and code-generation settings (DeepSeek-AI, 2025; Shao et al., 2024; Kimi Team et al., 2025; Bercovich et al., 2025). Many instruction-following tasks, however, do not admit a single exact equivalence check. A re-sponse may satisfy some requirements but not others, making binary correctness too coarse. This motivates replacing exact verification with learned verification. 
+
+2.2 Holistic learned verifiers 
+
+For tasks without exact checkers, a learned verifier can provide a reward. Given a prompt x and completion y, a verifier ρϕ(x, y ) ∈ { 0, 1} returns a binary judgment of whether the response satisfies the instruction: 
+
+Rver (x, y ; ϕ) = ρϕ(x, y ). (3) 
+
+In practice, ρϕ is often implemented by prompting an LLM to produce a Yes/No decision. A holistic learned verifier extends RL beyond exactly verifiable tasks, but it compresses evaluation into a single decision. For complex prompts, this decision can be noisy or underspecified: a response may satisfy some requirements and fail others, yet still receive only one pass/fail label. We therefore consider a more structured verifier that evaluates individual requirements separately. 
+
+2.3 Checklist-based verification with learned verifiers 
+
+Hard-to-verify instructions are often better described by a set of atomic criteria C(x) = {c1, . . . , c K }
+
+derived from the prompt x. For each response y and criterion ck, a learned verifier ρϕ judges whether 
+
+y satisfies ck.In our experiments, C(x) is generated offline by an LLM checklist generator conditioned on the instruction x. The generator outputs an ordered numbered list of essential yes/no criteria, which we parse into checklist items and keep fixed throughout RL training. The exact prompt template is given in Appendix A.3.2; representative examples and failure modes are provided in Appendix A.3.4. In the simplest case, the verifier returns a binary item-level judgment 
+
+ρϕ(x, y, c k) ∈ { 0, 1}, (4) 
+
+and the checklist reward averages these judgments: 
+
+Rsoft (x, y ; ϕ) = 1
+
+K
+
+> K
+
+X
+
+> k=1
+
+ρϕ(x, y, c k). (5) 
+
+This partial-credit formulation preserves learning signal for responses that satisfy some but not all criteria. For example, if a prompt asks for exactly three bullet points, a mention of Paris, and 
+
+> 4
+
+no use of the word travel , then a response satisfying two of the three requirements receives reward 
+
+2/3 rather than zero. At the same time, partial credit relaxes the strict-pass condition: incomplete responses can receive nonzero reward. Section 3.1 analyzes this tradeoff formally. In practice, ρϕ is implemented by a generative LLM. For each item ck, we sample J verifier outputs 
+
+zk1, . . . , z kJ ∼ πϕ(· | x, y, c k), (6) 
+
+and parse each output into a binary decision dkj = parse( zkj ) ∈ { 0, 1}.We define the empirical pass rate 
+
+ˆpk(x, y ) = 1
+
+J
+
+> J
+
+X
+
+> j=1
+
+dkj , (7) 
+
+and obtain the aggregated verifier judgment 
+
+ρϕ(x, y, c k) = 1[ˆ pk(x, y ) ≥ τ ]. (8) 
+
+Other aggregators, such as majority vote, shaped-averaging, or median aggregation, are possible; throughout the paper, ρϕ(x, y, c k) denotes the parsed and aggregated checklist-item judgment. 
+
+## 3 Reinforcement Learning with Checklist-Based Soft Rewards 
+
+Given a prompt x, a checklist C(x) = {c1, . . . , c K }, and a learned verifier ρϕ, Soft-RLVR trains the policy πθ(y | x) to maximize the expected checklist reward: 
+
+arg max  
+
+> θ
+
+Ex∼DX , y ∼πθ (·| x) [r(x, y, C (x), ρ ϕ)] . (9) 
+
+where r is computed from item-level verifier judgments. In the simplest case, r = Rsoft , the frac-tion of checklist items judged as satisfied. This gives the policy partial credit for satisfying some requirements even when the full response is not a strict success. Responses that would both receive zero reward under a strict pass/fail verifier can therefore receive different rewards depending on how much of the instruction they satisfy. This formulation is analogous to RLVR for code, where a generated program is evaluated against multiple unit tests. The key difference is that checklist items are evaluated by a learned LLM verifier rather than executable tests. This makes the reward applicable beyond exactly verifiable domains, but it also introduces two sources of error. First, each item-level verifier judgment may be noisy. Second, partial credit can reward incomplete responses. The rest of this section analyzes when the benefit of decomposition outweighs this additional bias. 
+
+3.1 Bias–variance tradeoff of checklist verification 
+
+Checklist verification changes the error profile of the reward. A holistic verifier produces one noisy judgment for the whole response, while a checklist verifier produces K item-level judgments and averages them. Averaging can reduce reward variance, especially when item-level errors are weakly correlated. However, the soft reward also relaxes the strict success target: a response that fails one requirement may still receive positive reward. Thus, checklist verification can be guaranteed to improve the training signal only when the variance reduction from decomposition is large enough to offset the bias introduced by partial credit. We formalize this tradeoff below.  
+
+> 53.1.1 Setup
+
+Let Y∗(x, y ) = [ Y ∗ 
+
+> 1
+
+, . . . , Y ∗ 
+
+> K
+
+]⊤ ∈ { 0, 1}K denote the latent checklist vector, where Y ∗ 
+
+> k
+
+= 1 means that response y satisfies checklist item ck. We define the strict success target as 
+
+S∗(x, y ) := 
+
+> K
+
+Y
+
+> k=1
+
+Y ∗ 
+
+> k
+
+, (10) 
+
+and the partial-credit target as 
+
+¯S∗(x, y ) := 1
+
+K
+
+> K
+
+X
+
+> k=1
+
+Y ∗ 
+
+> k
+
+. (11) 
+
+The relaxation gap 
+
+∆∗(x, y ) := ¯S∗(x, y ) − S∗(x, y ) ≥ 0 (12) 
+
+measures how much partial credit rewards incomplete responses beyond the strict success target. We take strict success as the ideal target because our controlled evaluation uses rule-based pass/fail instruction satisfaction; partial credit is treated as a training relaxation that may improve optimiza-tion but can introduce bias relative to this target. Let J denote the output of a single holistic verifier and Jk the output of the checklist verifier for item k. We define the averaged checklist judgment as 
+
+¯J := 1
+
+K
+
+> K
+
+X
+
+> k=1
+
+Jk. (13) 
+
+We also define the score function as 
+
+sθ(x, y ) := ∇θ log πθ(y | x), (14) 
+
+and let b(x) be a baseline. We compare the update induced by the learned verifier to the update that would be obtained from the true strict-success signal. The ideal, single-verifier, and checklist estimators are 
+
+g∗(x, y ) :=  S∗(x, y ) − b(x)sθ(x, y ),gsingle (x, y ) := ( J − b(x)) sθ(x, y ),gchk (x, y ) := ( ¯J − b(x)) sθ(x, y ).
+
+(15) 
+
+Finally, let p and q denote the true positive and true negative rates of the holistic verifier with respect to the strict target S∗. Let p′ and q′ denote the corresponding item-level true positive and true negative rates of the checklist verifier with respect to each latent item label Y ∗ 
+
+> k
+
+. We write 
+
+α := p + q − 1, α′ := p′ + q′ − 1. (16) 
+
+Equivalently, the holistic verifier satisfies 
+
+E[J | S∗] = (1 − q) + αS ∗ (17) 
+
+and each checklist verifier satisfies 
+
+E[Jk | Y ∗ 
+
+> k
+
+] = (1 − q′) + α′Y ∗ 
+
+> k
+
+. (18) 
+
+These quantities let us compare two sources of error: variance from noisy verifier judgments and bias from replacing strict success S∗ with partial credit ¯S∗.
+
+> 6
+
+Proposition 1 (Checklist variance under conditional independence). Under the setup above, if J1, . . . , J K are conditionally independent given (x, y ), then 
+
+Var( ¯J | x, y ) = 1
+
+K2
+
+> K
+
+X
+
+> k=1
+
+μk(x, y ) 1 − μk(x, y ) ≤ 14K , (19) 
+
+where μk(x, y ) := (1 − q′) + α′Y ∗ 
+
+> k
+
+(x, y ), and therefore 
+
+E∥gchk − E[gchk | x, y ]∥22 x, y  ≤ 14K ∥sθ(x, y )∥22. (20) 
+
+The proof is in Appendix A.4.1. The single-verifier estimator has conditional variance μsingle (1 −
+
+μsingle )∥sθ∥22 = O(1) , where μsingle (x, y ) := (1 − q) + αS ∗(x, y ). Thus, under conditional indepen-dence, averaging K item-level verifier judgments reduces the variance term by a factor of 1/K .The conditional independence assumption is idealized: verifier errors across checklist items may be correlated in practice. The proposition should therefore be read as identifying the variance-reduction mechanism of decomposition; positive error correlation reduces the gain, while weakly correlated item errors make the gain closer to the 1/K rate. Variance reduction alone is not sufficient. Checklist rewards can also be biased because partial credit assigns nonzero reward to incomplete responses. The bias is harmless on correct outputs if item-level sensitivity is at least as high as holistic sensitivity. On incorrect outputs, however, partial credit creates an additional error proportional to the relaxation gap ∆∗. This error must be small relative to any specificity gain from item-level verification. Appendix A.4.4 formalizes this bias comparison. Combining the variance and bias terms yields the following sufficient conditions for checklist ver-ification to improve the mean-squared error (MSE) of the policy-gradient estimator. Here MSE measures how close the verifier-induced update is to the ideal update g∗: lower MSE means that the learned reward produces an update that is better aligned with the update from the true strict-success signal. 
+
+Theorem 1 (Sufficient conditions for gradient MSE improvement). Suppose the single verifier satisfies E[J | S∗] = (1 − q) + αS ∗ with α := p + q − 1, each checklist verifier satisfies 
+
+E[Jk | Y ∗ 
+
+> k
+
+] = (1 − q′) + α′Y ∗ 
+
+> k
+
+with α′ := p′ + q′ − 1, and J1, . . . , J K are conditionally independent given (x, y ). Then 
+
+E∥gchk − g∗∥22 x, y  ≤ E∥gsingle − g∗∥22 x, y  (21) 
+
+whenever either 
+
+S∗(x, y ) = 1 and p′ ≥ p, (22) 
+
+or 
+
+S∗(x, y ) = 0 and 
+
+
+
+1 − q′ + α′∆∗(x, y )
+
+2
+
++ 14K ≤ 1 − q. (23) 
+
+The proof is in Appendix A.4.5. On correct outputs ( S∗ = 1 ), checklist verification gives an update closer to the ideal update whenever item-level sensitivity is at least as high as holistic sensitivity (p′ ≥ p), with an additional benefit from the 1/K variance reduction that comes from averaging 
+
+K conditionally independent verifier calls. On incorrect outputs ( S∗ = 0 ), partial-credit relaxation introduces extra bias proportional to α′∆∗. The condition in the theorem requires this bias to be small enough for variance reduction to offset it. 
+
+> 7
+
+Takeaway. Checklist verification is most useful when decomposition makes the reward less noisy without substantially changing what the reward is trying to optimize. Larger checklists can reduce variance, but they cannot by themselves fix a poor decomposition or a verifier that systematically approves incomplete responses. Thus, checklist quality and verifier specificity are central: the checklist items must capture meaningful requirements, and the verifier must reject failures often enough that partial credit does not become reward inflation. This analysis leads to two empirical predictions that we test in Section 6.3. First, checklist verifica-tion should help most when holistic verifier judgments are noisy. Second, checklist quality should matter: poorly decomposed criteria can increase the relaxation gap or make item-level judgments less reliable, reducing the benefit of decomposition. Appendix A.4 gives additional corollaries that make the checklist-size thresholds explicit and show that larger K alone cannot guarantee improve-ment when partial-credit bias is too large. 
+
+## 4 Soft-SVeRL: Self-Verified Soft RLVR 
+
+The checklist-based formulation in Section 3 assumes a learned verifier ρϕ that is fixed or trained separately from the policy. We now consider the shared-parameter case. In the self-verification setting, we set ϕ = θ, so the same model serves as both generator and verifier. This setting has two practical advantages: it removes the need for a separate online reward model, and it can be applied when no stronger external judge is available. It can also reduce training cost by avoiding calls to a separate verifier model.     
+
+> Figure 2: Naive self-verification training. The gen-erator and verifier share parameters and are optimized jointly using the verifier’s own reward signal. IFEval
+> drops from 73.9% at initialization to 55.1% by step 400, consistent with always-yes collapse: measured reward improves while task accuracy degrades.
+
+However, sharing parameters also changes the op-timization problem. With a fixed external verifier, the reward function is outside the policy update: the policy can increase reward only by produc-ing outputs that the verifier already scores highly. With self-verification, the reward function is im-plemented by the same parameters being updated. The model can therefore increase measured re-ward either by generating better responses or by making its own verifier more permissive. This creates the central challenge for self-verification: the measured reward can improve even when task performance degrades. Section 4.1 describes this failure mode, which we call always-yes collapse , and Section 4.2 introduces the stabi-lizers used in Soft-SVeRL .
+
+4.1 Why self-verification is non-trivial 
+
+The resulting failure mode is always-yes collapse ,in which the verifier says Yes for almost every response and checklist item, whether or not the response satisfies the requirement. In terms of the empirical vote fraction, this corresponds to 
+
+ˆpk(x, y ) ≈ 1 for nearly every (x, y, c k). Once this happens, low-quality generations receive inflated rewards and the generator loses the gradient signal needed to improve. Two mechanisms make this collapse especially likely under self-verification. 
+
+> 8
+
+Correlated priors. First, the verifier starts from the same inductive biases as the generator. The responses that are easiest for the generator to produce are also the responses on which the verifier may be most overconfident. Thus, the relevant question is not only whether the verifier is calibrated on a held-out set, but whether it is calibrated on the distribution of outputs induced by the current policy. This distinction matters because self-verification repeatedly scores model-generated responses, precisely where shared biases between generation and verification are most likely to appear. 
+
+Gradient coupling. Second, the shared objective no longer distinguishes between improving the generator and making the verifier more permissive. With a separate verifier, increasing expected reward requires the policy to put more probability on responses that the verifier already scores highly. When ϕ = θ, the same measured reward can also increase because the verifier assigns higher scores to responses the policy already produces. Both effects improve the training objective, but only the first corresponds to better task performance. Since both effects arise from updates to the same parameters, ordinary policy optimization has no reason to prefer task improvement over reward inflation. The shared model can therefore drift toward over-approval unless the objective explicitly counteracts this tendency. Figure 2 shows the empirical signature of this pathology: naive shared-parameter training drops  
+
+> IFEval
+
+by roughly 19 points over 400 training steps, well below the initial policy. This confirms that self-verification without stabilization can degrade task performance rather than improve it.  
+
+> 4.2 Stabilizing self-verification
+
+Stable self-verification requires addressing both failure modes above. Correlated priors make the verifier unreliable on the model-generated responses it must score, while gradient coupling allows the shared update to increase measured reward by making the verifier more permissive. Soft-SVeRL 
+
+first reduces reward noise by aggregating multiple verifier samples for each response–checklist pair, then adds two stabilizing signals to the shared objective: verifier co-training, which anchors the ver-ifier on labeled examples, and a partition-style Yes-rate penalty, which directly discourages reward inflation on failing items. Figure 1 gives a high-level overview of how generation, checklist verification, and verifier-side stabi-lization interact in Soft-SVeRL .
+
+Repeated verification for generator rewards. Because the generator reward is computed from sampled verifier judgments, a single verifier rollout can inject substantial reward noise. For each response–checklist pair, we sample J verifier traces and compute the empirical Yes-rate ˆpk(x, y ).This aggregation gives the generator a more stable item-level reward signal and also provides a confidence statistic for deciding which on-policy examples are reliable enough to reuse for verifier training. 
+
+Verifier co-training with gold and replay data. The shared model is additionally trained as a verifier on a mixture of (i) gold examples from a fixed verifier-improvement buffer, consisting of prompt–response–criterion triples (x, y, c ) with known item-level labels ℓ ∈ { 0, 1}, and (ii) replay 
+
+examples sampled from the current generator policy πθ and pseudo-labeled at the checklist-item level. This term primarily addresses correlated priors. Gold examples provide an independent anchor for what checklist satisfaction means, so the verifier does not define correctness only through what the current policy tends to generate. Replay examples move this supervision onto the distribution used for reward computation, including current-policy failures that a shared verifier may otherwise 
+
+> 9
+
+approve. For replay tagging, we use separate thresholds τ+ and τ−. Because self-verification is especially vulnerable to false positives, replay labels are added conservatively: items with ˆpk(x, y ) ≥
+
+τ+ are added as positives, items with ˆpk(x, y ) ≤ τ− are added as negatives, and intermediate items are not used as hard verifier labels. The coefficient λv controls how strongly these supervised verifier gradients constrain the shared update. 
+
+Partition-style Yes-rate penalty. Verifier co-training alone does not fully close the reward-inflation channel, because the generator objective can still benefit from shared-parameter updates that raise verifier Yes-rates on the policy’s own samples. Soft-SVeRL therefore adds a penalty on a selected subset of failed checklist contexts. We call this a partition-style penalty because its gradient is a selected, biased finite-sample approximation to the negative policy-sample term obtained by differentiating the log partition function of the KL-regularized optimal policy; Appendix A.5 shows the derivation. The bias comes from replacing the full expectation over reward-induced policy sam-ples and checklist items with current-policy samples from a selected failure subset; this selection is intentional, since applying the correction to all on-policy items could also suppress genuine suc-cesses. Unlike replay labels, this penalty does not require a confident negative threshold because it is not used as hard supervision. We instead select mixed-vote items from responses that are not strict successes: ˆpk(x, y ) > 0 and s(x, y ) < 1. This excludes strict successes and unanimous-No items, while retaining cases where the verifier produces one or more Yes votes on a response that failed consensus. These Yes traces reveal permissive verifier decisions that self-reward can amplify. The partition penalty lowers the Yes-rate on these selected failures, directly opposing updates that would make the verifier more permissive. The coefficient λp controls the strength of this anti-collapse pressure. Because the penalty reuses the verifier traces collected during reward scoring, it does not require additional verifier forward passes. Combining the generator reward with these two stabilizing signals gives the shared objective 
+
+J (θ) = Jgen (θ) + λvJver (θ) − λpJpart (θ). (24) 
+
+Here Jgen trains the generator under the soft checklist reward, Jver trains the verifier on gold and replay labels, and Jpart penalizes the Yes-rate on the failing partition and is subtracted as an anti-collapse penalty. Algorithm 1 summarizes the resulting shared-parameter training loop. 
+
+## 5 Experiment Setup 
+
+Training data. We train on prompts from the RL split of the Llama-Nemotron-Post-Training Dataset (Bercovich et al., 2025), which contains 56,339 instruction-following prompts. Each prompt includes one or more explicit constraints drawn from the 25 verifiable instruction types defined by IFEval (Zhou et al., 2023), such as formatting requirements, keyword inclusion or exclusion, length limits, and structural specifications. Each constraint in this dataset can be checked by a deterministic rule-based verifier, which we treat as ground truth for evaluation. Because the constraint universe matches IFEval , training with this oracle verifier uses the same family of rule-based checks as evaluation, eliminating verifier train–test mismatch. This controlled training and evaluation setup is useful for our analysis because it separates reward-learning effects from evaluation ambiguity. The deterministic verifier lets us evaluate learned check-list rewards against exact rule-based labels, measure verifier agreement with ground-truth con-straints, and test the empirical predictions of the MSE analysis in Section 3.1. 
+
+> 10
+
+Algorithm 1 Soft-SVeRL 
+
+Inputs: Input distribution DX ; gold verifier buffer DGold ; replay verifier buffer DReplay ; checklist gen-erator C(·); candidate count G; verifier vote count J; thresholds τ+, τ −; partial-credit scale β; weights 
+
+λv , λ p
+
+Model: Shared model θ used for generation πθ and verification ρθ 
+
+> 1:
+
+for t = 1 , . . . , T do  
+
+> 2:
+
+Sample x ∼ D X and checklist C(x) = {ck}Kk=1  
+
+> 3:
+
+Sample candidates y1, . . . , y G ∼ πθ (· | x) 
+
+> 4:
+
+for all (i, k, j ) ∈ [G] × [K] × [J] do  
+
+> 5:
+
+Sample zikj ∼ ρθ (· | x, y i, c k) and set dikj ← parse( zikj ) 
+
+> 6:
+
+end for  
+
+> 7:
+
+Compute ˆpik ← 1
+
+> J
+
+PJj=1 dikj for all (i, k ) 
+
+> 8:
+
+Set ˆℓik ← 1[ˆ pik ≥ τ+] for all (i, k ) ▷ pass label  
+
+> 9:
+
+for i = 1 , . . . , G do  
+
+> 10:
+
+Set si ← 1
+
+> K
+
+PKk=1 ˆℓik ▷ soft checklist score  
+
+> 11:
+
+Set Ri ← 1[si = 1] + βs i 1[si < 1] ▷ generator reward  
+
+> 12:
+
+end for  
+
+> 13:
+
+for all (i, k ) ∈ [G] × [K] do  
+
+> 14:
+
+if ˆpik ≥ τ+ then  
+
+> 15:
+
+Insert (x, y i, c k, ℓ = 1) into DReplay  
+
+> 16:
+
+else if ˆpik ≤ τ− then  
+
+> 17:
+
+Insert (x, y i, c k, ℓ = 0) into DReplay  
+
+> 18:
+
+end if  
+
+> 19:
+
+end for  
+
+> 20:
+
+Select subset S(x) ⊆ [G] × [K] where S(x) = {(i, k ) : ˆ pik > 0 and si < 1} 
+
+> 21:
+
+Sample verifier tuples (x, y, c, ℓ ) ∼ D Gold ∪ D Replay  
+
+> 22:
+
+for g = 1 , . . . , G do  
+
+> 23:
+
+Sample zg ∼ ρθ (· | x, y, c ) 
+
+> 24:
+
+Set Rver  
+
+> g
+
+← 1[parse( zg ) = ℓ] ▷ checklist verifier reward  
+
+> 25:
+
+end for  
+
+> 26:
+
+for all (i, k ) ∈ S (x) do  
+
+> 27:
+
+for j = 1 , . . . , J do  
+
+> 28:
+
+Set Rpart  
+
+> ikj
+
+← dikj ▷ Yes-rate penalty  
+
+> 29:
+
+end for  
+
+> 30:
+
+end for  
+
+> 31:
+
+Update θ to maximize J (θ) = Jgen (θ) + λv Jver (θ) − λpJpart (θ) ▷ shared update  
+
+> 32:
+
+end for 
+
+Training details. All experiments start from Command R7B 1, further adapted with the math-and-code SFT data used in the Command A Reasoning recipe (Team Cohere, 2025) 2. We generate prompt checklists offline using DeepSeek-R1-05-28 3; the checklist-generation prompt is given in Appendix A.3.2. For external-verifier experiments, we use GPT-OSS-20B and GPT-OSS-120B as the main LLM verifiers. These models provide a practical tradeoff between instruction-following quality and verification throughput, which is important because reward computation requires scoring multiple checklist items per sampled response. We also include additional verifier choices, such as the initial policy, in the verifier-quality ablations. The verifier prompt is shown in Appendix A.3.1. 
+
+> 1https://huggingface.co/CohereLabs/c4ai-command-r7b-12-2024
+> 2https://cohere.com/blog/command-a-reasoning
+> 3https://api-docs.deepseek.com/news/news250528
+
+11 For verifier models that support adaptive thinking, we use the maximum thinking-budget setting. We optimize the policy with Group Relative Policy Optimization (GRPO) (Shao et al., 2024) using a FAX-based asynchronous RL training framework (Yoo et al., 2022). Following DAPO (Yu et al., 2025a), we use asymmetric clipping bounds. For external verifiers, we only use a single pass ( J = 1 )to generate the decision. We sweep learning rates and report the best-performing run for each setting, with all other hyperparameters listed in Appendix A.1. 
+
+Evaluation. We evaluate instruction following on IFEval (Zhou et al., 2023), which measures compliance with automatically checkable natural-language instructions. IFEval covers 25 verifi-able instruction types, including length, keyword, formatting, casing, punctuation, and structural constraints, and the released English dataset contains 541 prompts with one or more instructions per prompt. This makes it a useful testbed for precise instruction following without requiring subjective human evaluation. As a sanity check for capability regression, we also evaluate on three math reasoning benchmarks outside the instruction-following training domain: MATH500 (Hendrycks et al., 2021), AIME 2024, and AIME 2025. Because the training data contains no math problems, these benchmarks let us check whether RL training on instruction-following data degrades, preserves, or incidentally improves mathematical reasoning. 
+
+Baselines. We compare against the initial Command R7B policy before RL training. For ablations where rule-based training is computationally feasible, we also include an oracle RLVR reference that uses the deterministic IFEval -style verifier on the same training data. This oracle removes both checklist-generation error and verifier noise, and therefore serves as an upper reference for learned checklist rewards rather than as the main deployed setting. 
+
+## 6 Results 
+
+We evaluate three questions: whether learned checklist rewards can improve instruction following, how performance depends on verifier and checklist quality, and whether self-verification can be stabilized when the generator and verifier share parameters. We first report the main Soft-RLVR 
+
+results using external LLM verifiers, then analyze verifier and checklist quality, followed by self-verification and a comparison between checklist-based and holistic verification. Table 1 summarizes the main external-verifier results. We train Command R7B with checklist-based RL using DeepSeek R1 checklists and LLM-based soft verification, then evaluate on IFEval, our target instruction-following benchmark, and on three out-of-domain math benchmarks: MATH500, AIME 2024, and AIME 2025. Unless mentioned otherwise, we use a single verifier pass ( J = 1 ) for grading the checklist items and do not train the verifier. Checklist-based soft verification substantially improves instruction following. IFEval increases from 73.89 to 84.20 with the GPT-OSS-20B verifier and to 85.00 with the GPT-OSS-120B verifier, corresponding to gains of +10.3 and +11.1 points, respectively. These gains are obtained using generated checklists and imperfect LLM-based verifier rewards, without access during training to the rule-based verifier or to the true constraint annotations associated with each prompt. This supports one of our central claims: generated checklists and learned verifiers can drive large RL gains in instruction following, even without rule-based rewards during training. (Appendix A.3.3 reports the distribution of generated checklist lengths used in these runs.)      
+
+> 12 Table 1: Results on instruction following and math reasoning. The baseline is Command R7B before RL training. Soft-RLVR rows use DeepSeek R1 checklists and checklist-based soft rewards from a 20B or 120B LLM verifier. The rule-based verifier is an oracle reference. Bold indicates the best learned-verifier result. All models are evaluated at training step 500, the No RL row is the initial policy. Scores are percentages. Math benchmarks are held out from RL training, so any math gains measure transfer rather than direct optimization.
+
+Reward IFEval MATH500 AIME24 AIME25         
+
+> No RL 73.89 87.60 35.67 27.33 Soft-RLVR, GPT-OSS-20B 84.20 89.60 39.33
+
+28.67  
+
+> Soft-RLVR, GPT-OSS-120B
+
+85.00 90.20 40.00 28.50 Oracle rule-based 88.92 87.80 36.83 28.00 
+
+The oracle rule-based verifier provides an upper reference for this controlled setting: it obtains the highest IFEval score, as expected, but relies on deterministic rule-based ground-truth checklists that might not be available in practice. Despite training exclusively on instruction-following prompts and no math data, Soft-RLVR also improves math benchmark performance, indicating domain transfer: MATH500 improves by 2.0– 2.6 points and AIME 2024 improves by 3.7–4.3 points across verifier scales. AIME 2025 gains are modest, around one point, and should be interpreted cautiously given the small benchmark size of 30 problems. The absence of math regression is notable in itself, as targeted post-training can degrade out-of-domain capabilities; we provide an SFT comparison in Appendix A.2. Increasing the verifier scale from GPT-OSS-20B to GPT-OSS-120B gives consistent but modest additional gains: +0.8 on IFEval , +0.6 on MATH500, and +0.7 on AIME 2024, while AIME 2025 remains essentially unchanged. This suggests that the checklist-based reward formulation is robust to moderate variation in verifier quality. We analyze the relationship between verifier quality and downstream training outcomes more systematically in Section 6.1. 
+
+6.1 Disentangling Verifier and Checklist Quality 
+
+Soft-RLVR depends on two learned components: the checklist used to decompose the prompt into criteria, and the verifier used to judge whether each criterion is satisfied. To disentangle their effects, we keep the RL pipeline fixed while varying both the checklist source and the verifier model. We compare checklists generated by the Initial Policy and DeepSeek R1, as well as a metadata setting that directly uses the ground-truth constraints stored in the training data as checklist items. The metadata setting removes checklist-generation error allowing us to isolate the impact of verifier imperfections. As an upper-bound reference, we also include training with the deterministic IFEval 
+
+rule-based verifier, which removes both checklist error and verifier noise. To reduce computational costs, all runs in this ablation are evaluated at training step 200 rather than step 500. Figure 3 shows that both checklist quality and verifier quality affect downstream RL performance. Holding the DeepSeek R1 checklist source fixed, stronger verifiers produce better trained genera-tors. Using the initial policy itself as verifier yields essentially no improvement over the baseline: the trained model reaches 73.83% IFEval compared with the 73.89% starting point. Replacing this verifier with GPT-OSS-20B raises IFEval to 82.41%, and GPT-OSS-120B raises it further to 84.00%. This comparison isolates the effect of verifier quality under a fixed generated checklist. Holding the verifier fixed isolates checklist quality. At both verifier scales, DeepSeek R1 checklists 
+
+13 Figure 3: Effect of verifier and checklist quality on downstream IFEval performance. The x-axis shows the verifier model’s IFEval score, used as a proxy for verifier quality; the y-axis shows the trained generator’s IFEval      
+
+> score. Curves compare various checklist sources: Initial Policy checklists, DeepSeek R1 checklists, and metadata checklists using the true constraints in the training data. Horizontal reference lines mark the pre-training baseline and the deterministic IFEval rule-based verifier reference, which removes both checklist error and verifier noise.
+
+outperform Initial Policy checklists: 82.41% vs. 75.07% with GPT-OSS-20B (+7.34 points), and 84.00% vs. 80.97% with GPT-OSS-120B (+3.03 points). Using true training metadata constraints as checklists improves performance further, reaching 85.90% with GPT-OSS-20B and 86.58% with GPT-OSS-120B. These metadata checklists are not generally available, but they quantify headroom from better checklist generation. Our results are consistent with prior work showing that the quality of evaluation criteria can affect downstream optimization performance (Gunjal et al., 2025). The deterministic rule-based verifier reaches 87.20%, providing a reference point with both the ideal checklist and a noise-free verifier. The remaining gap between the metadata-checklist runs and this oracle run estimates the residual cost of verifier imperfection after checklist error is removed. To-gether, these results show that effective checklist-based soft RL requires both a sufficiently accurate verifier and well-specified checklist items. 
+
+6.2 Self-Verification 
+
+We next evaluate Soft-SVeRL , where the generator and verifier share parameters. This setting removes the need for a separate online reward model, but it also introduces the collapse mode described in Section 4: the shared verifier can become more permissive on the generator’s own samples, producing inflated rewards instead of better responses. We therefore systematically ablate the stabilization components in the shared objective from Eq. 24. All variants in this section are trained for 100 training steps. Figure 4 shows that the stabilization components are important for effective self-verification. For replay admission, we use thresholds τ+ = 0 .75 and τ− = 0 .375 . With gold verifier-improvement examples, J = 3 verifier votes per checklist item, and λp = 0 .5, Soft-SVeRL reaches 74.77% 
+
+IFEval , a modest gain over the 73.89% baseline. Reducing the partition weight to λp = 0 .1 raises 
+
+14 Figure 4: Self-verification ablations on IFEval . Self-verification benefits from verifier co-training, replay data, multiple verifier votes, and a tuned partition penalty. Setting the partition weight too high hinder performance. 
+
+the final IFEval to 75.56%, indicating that the relative strengths of Jver and Jpart matter in shared-parameter training. A partition penalty that is too large may overcorrect the verifier, suppressing positive judgments needed for useful reward. Adding on-policy replay gives a larger improvement. With the same J = 3 vote count, including tagged examples from the current run increases IFEval to 76.27%. This supports the role of DReplay :gold examples anchor the verifier’s notion of checklist satisfaction, while on-policy examples expose the verifier to the current generator’s actual failure modes. Increasing the verifier vote count from 
+
+J = 3 to J = 8 further improves the gold-plus-replay setting from 76.27% to 77.02%, consistent with reduced sampling noise in the empirical vote fraction ˆpik . We do not interpret this limited range as a monotonic scaling law. Overall, self-verification benefits from the full Soft-SVeRL 
+
+stabilization recipe: verifier co-training, on-policy replay, multiple verifier votes, and a tuned anti-collapse penalty. 
+
+6.3 Checklist vs. Holistic Verification 
+
+The analysis in Section 3.1 predicts that checklist verification should help when decomposition reduces verifier noise without introducing too much partial-credit bias. In particular, checklist rewards are expected to be most useful when item-level judgments are more sensitive than holistic judgments and when item-level specificity is not substantially worse. We test this prediction by comparing checklist-based verification against holistic verification, where the verifier evaluates the full response against the entire prompt in a single judgment. To estimate the verifier quantities in the theory, we generate completions from the initial policy and grade the same completions with each GPT-OSS verifier. We use the IFEval verifier to obtain holistic ground-truth labels for estimating single-judgment sensitivity and specificity, p and 
+
+q. For checklist estimates, we use the IFEval constraints as checklist items and compare each LLM verifier’s item-level decisions against the corresponding constraint labels, yielding p′ and q′.Table 2 shows that both checklist verifiers have much higher item-level sensitivity than holistic      
+
+> 15 Table 2: Estimated holistic and checklist verifier quality on initial-policy completions. Checklist estimates use IFEval constraints as item-level ground truth. “Bias condition” reports the fraction of samples for which the partial-credit bias is small enough for checklist verification to satisfy the sufficient condition in Proposition 4.
+
+Verifier p p′ q q′ p′ − p q′ − q α α′ Bias cond. (%) GPT-OSS-20B 0.477 0.873 0.662 0.717 +0.396 +0.055 0.139 0.590 81.5 GPT-OSS-120B 0.552 0.860 0.709 0.712 +0.308 +0.003 0.261 0.572 81.5 
+
+sensitivity (here strictly, p′ > p ), while item-level specificity is similar to or slightly higher than holistic specificity ( q′ ≥ q). This matches the theory’s main prediction: checklist decomposition is most helpful when it improves sensitivity and reduces variance without substantially weakening specificity.        
+
+> (a) GPT-OSS-20B verifier (b) GPT-OSS-120B verifier Figure 5: Checklist-based vs. holistic (non-checklist) verification for two verifier scales. With the noisier GPT-OSS-20B verifier, checklist decomposition improves IFEval substantially. With the stronger GPT-OSS-120B verifier, the IFEval gap closes, though checklist-based training retains an edge on math benchmarks.
+
+Figure 5 compares checklist-based and holistic training at two verifier scales. With GPT-OSS-20B, checklist-based training outperforms holistic training by 3.4 points on IFEval (84.20% vs. 80.80%), consistent with the prediction that decomposition helps most when verifier judgments are noisy. With GPT-OSS-120B, holistic training slightly exceeds checklist-based training on IFEval ,though the gap is small (85.58% vs. 85.00%), suggesting that stronger holistic judgments reduce the variance-reduction benefit of decomposition. This result does not contradict the low holistic sensitivity in Table 2, because that estimate measures agreement with the deterministic IFEval rule-based label. Rule-based checks capture operational constraints, while holistic LLM verifiers may also judge the semantic content of the response. For example, consider the prompt: “List 2 science fiction books with their authors. End the response with Happy Reading!” The response “ ∗ 1984 by George Orwell; ∗ Brave New World by Aldous Huxley; Happy Reading!” may satisfy the rule-based checks for two listed items and the required closing phrase, but a holistic verifier may reject it because these works are often classified more specifically as political fiction rather than as science fiction. Such disagreements count as false negatives relative to the rule-based label and lower the estimated holistic sensitivity, even though the holistic reward can still provide a useful training signal. Checklist-based training still performs better on math benchmarks at both verifier scales. With GPT-OSS-120B, it reaches 90.20% on MATH500 versus 88.00% for holistic verification, and 40.00% 
+
+16 on AIME 2024 versus 39.17%. One possible explanation is that graded partial credit provides more informative reward shaping than a binary holistic judgment, especially for tasks where partial progress matters. 
+
+## 7 Related Work 
+
+RL beyond exact verifiers. Recent work extends reinforcement learning beyond standard ver-ifiable domains by replacing formal verification with weaker supervision signals. One line of work removes explicit rule-based verifiers but still relies on gold final answers or reference outcomes, for example by rewarding answer likelihood or reference-conditioned reasoning quality (Zhou et al., 2025; Yu et al., 2025b; Chen et al., 2024; Tang et al., 2025). These methods are important con-trasts, but they do not address our target setting because they still assume access to a correct target answer or reference outcome. In contrast, Soft-RLVR targets tasks where no single answer string is available and correctness must instead be assessed through prompt-specific criteria. 
+
+Self-generated and label-light rewards. A second line of work reduces labeled supervision through intrinsic or self-generated signals, including TTRL, Genius, and Learning to Reason with-out External Rewards (Zuo et al., 2025; Xu et al., 2025; Zhao et al., 2025). TTRL is especially relevant because it trains from unlabeled prompts and self-generated rewards rather than gold an-swers. However, its reward is based on majority-vote pseudo-labels on answer-extractable reasoning benchmarks. Current evidence does not show that the same mechanism extends to open-ended or checklist-style evaluation, where responses can satisfy some requirements but not others. These methods are therefore closer to Soft-SVeRL in being label-light than in addressing the same veri-fication problem. 
+
+Rubrics, checklists, and learned judges. Prior work has used rubrics, checklists, or learned judges to evaluate open-ended model outputs (Gunjal et al., 2025; Jia et al., 2025; Jayalath et al., 2025). Gunjal et al. (2025) is the closest checklist-style prior: it constructs rubrics for non-verifiable tasks and scores outputs with an external judge. Our focus is different. We use checklist decom-position to construct dense, interpretable RL rewards and analyze when these rewards provide a reliable training signal. This extends the principle behind RLVR beyond domains with hand-written verifiers: the model is still evaluated against explicit criteria, but the checker is an LLM verifier rather than a symbolic rule or unit test. More broadly, rubric-based approaches are closest to what we call a rubric-bound setting, where the main challenge is specifying useful criteria for open-ended tasks. Soft-RLVR instead targets a verifier-bound setting: even when evaluation criteria can be written as checklist items, the central problem is how to obtain stable and useful reward from an imperfect verifier. 
+
+Self-verifying RL. Reasoning over Mathematical Objects (Aggarwal et al., 2026) is close to our work on the verifier side because it studies strong LM judges, on-policy judge training, and hard-to-verify mathematical-object equivalence. However, its setting remains centered on externally trained judges for mathematically structured outputs. URPO (Lu et al., 2025) is also relevant because the generator and evaluator co-evolve within one training loop, though it remains grounded in preference data and verifiable reasoning tasks. In contrast, Soft-SVeRL combines checklist-conditioned soft rewards, repeated verifier voting, verifier co-training from gold and replay supervision, and explicit anti-collapse regularization for self-verification.                                              
+
+> 17 Table 3: Supervision assumptions of closely related RL methods. “Gold answer” denotes reliance on a known final answer or reference outcome, not item-level verifier labels or preference data; “Fixed Judge/RM” denotes use of a fixed external judge or separately trained reward model. Partial entries indicate that the property applies only to part of the method or evaluation setting. Method Gold Answer Fixed Judge/RM Open-Ended Rubric Self Verification Answer-likelihood RL (Zhou et al., 2025; Yu et al., 2025b; Chen et al., 2024; Tang et al., 2025) Yes No Yes No No TTRL (Zuo et al., 2025) No No No No No INTUITOR / GENIUS (Zhao et al., 2025; Xu et al., 2025) No No Yes No No Writing-Zero (Jia et al., 2025) No Yes Yes No No URPO (Lu et al., 2025) Mixed No Yes No Yes Compute as Teacher (Jayalath et al., 2025) No Yes Yes Yes No Rubrics as Rewards (Gunjal et al., 2025) Yes Yes Yes Yes No Reasoning over Mathematical Ob-jects (Aggarwal et al., 2026) Yes Yes Yes No No
+> Soft-SVeRL (ours) No No Yes Yes Yes
+
+## 8 Conclusion 
+
+We showed that learned LLM verifiers producing graded, checklist-based rewards can serve as ef-fective training rewards for instruction-following RL. Training Command R7B with checklist-based 
+
+Soft-RLVR improves IFEval by up to 11.1 points, with no degradation on out-of-distribution math benchmarks. Decomposing prompts into per-item checklist judgments improves over holis-tic verification when verifier judgments are noisier, consistent with our theoretical MSE analysis. Our ablations further show that both verifier quality and checklist quality matter, and that self-verification requires explicit safeguards: Soft-SVeRL benefits from verifier co-training, replay, and anti-collapse regularization. Several limitations qualify these findings. Checklist decomposition assumes that prompt require-ments can be expressed as discrete, atomic pass-fail items, which may not hold for more subjective or holistic tasks. Our evaluation is also limited to one base model scale and one training domain. For self-verification, we also assume access to a set of gold-labeled verifier training data as an anchor for the verifier. Future work should extend soft verification to less controlled settings such as open-ended writing and multi-turn dialogue, test self-verification at larger model scales and longer training horizons, and improve checklist generation without relying on a strong external model. Overall, checklist-based soft verification offers a path toward broadening RLVR beyond exactly verifiable domains by turning partially verifiable instructions into dense, actionable reward signals. 
+
+## References 
+
+Pranjal Aggarwal, Marjan Ghazvininejad, Seungone Kim, Ilia Kulikov, Jack Lanchantin, Xian Li, Tianjian Li, Bo Liu, Graham Neubig, Anaelia Ovalle, Swarnadeep Saha, Sainbayar Sukhbaatar, Sean Welleck, Jason Weston, Chenxi Whitehouse, Adina Williams, Jing Xu, Ping Yu, Weizhe Yuan, Jingyu Zhang, and Wenting Zhao. Reasoning over mathematical objects: On-policy reward modeling and test time aggregation, 2026. URL https://arxiv.org/abs/2603.18886 .
+
+18 Yuntao Bai, Saurav Kadavath, Sandipan Kundu, Amanda Askell, Jackson Kernion, Andy Jones, Anna Chen, Anna Goldie, Azalia Mirhoseini, Cameron McKinnon, et al. Constitutional AI: Harmlessness from AI feedback, 2022. URL https://arxiv.org/abs/2212.08073 .Akhiad Bercovich, Itay Levy, Izik Golan, Mohammad Dabbah, Ran El-Yaniv, Omri Puny, Ido Galil, Zach Moshe, Tomer Ronen, Najeeb Nabwani, et al. Llama-nemotron: Efficient reasoning models, 2025. URL https://arxiv.org/abs/2505.00949 .Haolin Chen, Yihao Feng, Zuxin Liu, Weiran Yao, Akshara Prabhakar, Shelby Heinecke, Ricky Ho, Phil Mui, Silvio Savarese, Caiming Xiong, and Huan Wang. Language models are hidden reasoners: Unlocking latent reasoning capabilities via self-rewarding, 2024. URL https://arxi v.org/abs/2411.04282 .DeepSeek-AI. DeepSeek-R1: Incentivizing reasoning capability in LLMs via reinforcement learning, 2025. URL https://arxiv.org/abs/2501.12948 .Anisha Gunjal, Anthony Wang, Elaine Lau, Vaskar Nath, Yunzhong He, Bing Liu, and Sean Hendryx. Rubrics as rewards: Reinforcement learning beyond verifiable domains, 2025. URL 
+
+https://arxiv.org/abs/2507.17746 .Dan Hendrycks, Collin Burns, Saurav Kadavath, Akul Arora, Steven Basart, Eric Tang, Dawn Song, and Jacob Steinhardt. Measuring mathematical problem solving with the MATH dataset, 2021. URL https://arxiv.org/abs/2103.03874 .Dulhan Jayalath, Shashwat Goel, Thomas Foster, Parag Jain, Suchin Gururangan, Cheng Zhang, Anirudh Goyal, and Alan Schelten. Compute as teacher: Turning inference compute into reference-free supervision, 2025. URL https://arxiv.org/abs/2509.14234 .Ruipeng Jia, Yunyi Yang, Yongbo Gai, Kai Luo, Shihao Huang, Jianhe Lin, Xiaoxi Jiang, and Guanjun Jiang. Writing-zero: Bridge the gap between non-verifiable tasks and verifiable rewards, 2025. URL https://arxiv.org/abs/2506.00103 .Kimi Team, Angang Du, Bofei Gao, Bowei Xing, Changjiu Jiang, Cheng Chen, et al. Kimi k1.5: Scaling reinforcement learning with LLMs, 2025. URL https://arxiv.org/abs/2501.12599 .Harrison Lee, Samrat Phatale, Hassan Mansoor, Thomas Mesnard, Johan Ferret, Kellie Lu, Colton Bishop, Ethan Hall, Victor Carbune, Abhinav Rastogi, and Sushant Prakash. RLAIF vs. RLHF: Scaling reinforcement learning from human feedback with AI feedback, 2023. URL https: //arxiv.org/abs/2309.00267 .Songshuo Lu, Hua Wang, Zhi Chen, and Yaohua Tang. Urpo: A unified reward & policy optimization framework for large language models, 2025. URL https://arxiv.org/abs/2507.17515 .John Schulman and Thinking Machines Lab. LoRA without regret. Thinking Machines Lab: Con-nectionism , 2025. doi: 10.64434/tml.20250929 . https://thinkingmachines.ai/blog/lora/ .Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan Zhang, Y. K. Li, Y. Wu, and Daya Guo. Deepseekmath: Pushing the limits of math-ematical reasoning in open language models, 2024. URL https://arxiv.org/abs/2402.03300 .Yunhao Tang, Sid Wang, Lovish Madaan, and Rémi Munos. Beyond verifiable rewards: Scaling reinforcement learning for language models to unverifiable data, 2025. URL https://arxiv.or g/abs/2503.19618 .Team Cohere. Command a: An enterprise-ready large language model, 2025. URL https://arxi v.org/abs/2504.00698 .
+
+> 19
+
+Yinjie Wang, Ling Yang, Ye Tian, Ke Shen, and Mengdi Wang. Co-evolving llm coder and unit tester via reinforcement learning, 2025. URL https://arxiv.org/abs/2506.03136 .Fangzhi Xu, Hang Yan, Chang Ma, Haiteng Zhao, Qiushi Sun, Kanzhi Cheng, Junxian He, Jun Liu, and Zhiyong Wu. Genius: A generalizable and purely unsupervised self-training framework for advanced reasoning, 2025. URL https://arxiv.org/abs/2504.08672 .Joanna Yoo, Kuba Perlin, Siddhartha Rao Kamalakara, and João G.M. Araújo. Scalable training of language models using JAX pjit and TPUv4, 2022. URL https://arxiv.org/abs/2204.06514 .Qiying Yu, Zheng Zhang, Ruofei Zhu, Yufeng Yuan, Xiaochen Zuo, Yu Yue, Weinan Dai, Tiantian Fan, Gaohong Liu, Lingjun Liu, Xin Liu, Haibin Lin, Zhiqi Lin, Bole Ma, Guangming Sheng, Yuxuan Tong, Chi Zhang, Mofan Zhang, Wang Zhang, Hang Zhu, Jinhua Zhu, Jiaze Chen, Jiangjie Chen, Chengyi Wang, Hongli Yu, Yuxuan Song, Xiangpeng Wei, Hao Zhou, Jingjing Liu, Wei-Ying Ma, Ya-Qin Zhang, Lin Yan, Mu Qiao, Yonghui Wu, and Mingxuan Wang. DAPO: An open-source LLM reinforcement learning system at scale, 2025a. URL https://arxiv.org/abs/ 2503.14476 .Tianyu Yu, Bo Ji, Shouli Wang, Shu Yao, Zefan Wang, Ganqu Cui, Lifan Yuan, Ning Ding, Yuan Yao, Zhiyuan Liu, Maosong Sun, and Tat-Seng Chua. Rlpr: Extrapolating rlvr to general domains without verifiers, 2025b. URL https://arxiv.org/abs/2506.18254 .Xuandong Zhao, Zhewei Kang, Aosong Feng, Sergey Levine, and Dawn Song. Learning to reason without external rewards, 2025. URL https://arxiv.org/abs/2505.19590 .Jeffrey Zhou, Tianjian Lu, Swaroop Mishra, Siddhartha Brahma, Sujoy Basu, Yi Luan, Denny Zhou, and Le Hou. Instruction-following evaluation for large language models, 2023. URL https: //arxiv.org/abs/2311.07911 .Xiangxin Zhou, Zichen Liu, Anya Sims, Haonan Wang, Tianyu Pang, Chongxuan Li, Liang Wang, Min Lin, and Chao Du. Reinforcing general reasoning without verifiers, 2025. URL https: //arxiv.org/abs/2505.21493 .Yuxin Zuo, Kaiyan Zhang, Li Sheng, Shang Qu, Ganqu Cui, Xuekai Zhu, Haozhan Li, Yuchen Zhang, Xinwei Long, Ermo Hua, Biqing Qi, Youbang Sun, Zhiyuan Ma, Lifan Yuan, Ning Ding, and Bowen Zhou. Ttrl: Test-time reinforcement learning, 2025. URL https://arxiv.org/abs/ 2504.16084 .
+
+> 20
+
+## A Appendix 
+
+A.1 Training Hyperparameters 
+
+All runs use Group Relative Policy Optimization (Shao et al., 2024) on a FAX-based (Yoo et al., 2022) asynchronous RL training framework. We sweep learning rates and find that 5×10 −6 provides the best balance of stability and performance across our runs. Unless stated otherwise, we train for 500 steps with a batch size of 256, group size 8, and maximum sequence length of 16,384 tokens. We use asymmetric clipping bounds from DAPO (Yu et al., 2025a), with ϵlow = 0 .1 and ϵhigh = 0 .2,and no KL regularization. For the verifier models, we use the highest thinking budget setting up to 32k tokens. 
+
+A.2 SFT vs. RL 
+
+A natural alternative to RL with learned verifiers is supervised fine-tuning (SFT) on high-quality outputs from a stronger model. We compare RL training with a 20B verifier against SFT on outputs generated by GPT-OSS-120B in the high reasoning setting, giving SFT an advantage in both model scale and generation quality.  
+
+> Figure 6: SFT on GPT-OSS-120B generated outputs vs. RL with GPT-OSS-20B verifier rewards. RL outperforms SFT on all benchmarks despite using a 6 ×smaller verifier model, and avoids the math degradation that SFT exhibits.
+
+Figure 6 shows that RL with the 20B verifier outperforms SFT with the 120B verifier on IFEval (84.20 vs. 81.93, +2.3 points) despite using a 6 × smaller verifier model. The gap is more pronounced on math benchmarks. SFT degrades MATH500 from 87.60 to 83.60 ( −4.0 points) and AIME 2024 from 35.67 to 31.83 ( −3.8 points), while RL improves both (89.60 and 39.33, respectively). The math degradation under SFT is consistent with the well-documented pattern of capability regression during supervised post-training: fine-tuning on domain-specific data can overwrite previ-ously learned capabilities. RL avoids this because policy-gradient updates adjust the model toward higher-reward behavior without forcing it to match specific output distributions, preserving useful capabilities that are not penalized by the reward. This is consistent with recent evidence that RL 
+
+> 21
+
+training produces sparse, low-rank updates to model parameters, requiring far less capacity than supervised fine-tuning (Schulman & Thinking Machines Lab, 2025). 
+
+A.3 Prompt Templates  
+
+> A.3.1 Verification Prompt Template
+
+The following template is used to query the verifier model for each checklist item. The verifier receives the original instruction, the candidate response, and a single checklist question, and outputs a binary yes /no judgment. 
+
+Here is an instruction given to an AI Assistant: <START OF INSTRUCTION> {instruction} <END OF INSTRUCTION> Here is an AI Assistant’s response to the instruction: <START OF RESPONSE> {response} <END OF RESPONSE> Please answer the following question about the AI Assistant’s response to the instruction: <START OF QUESTION> {checklist_question} <END OF QUESTION> Output "yes" or "no" and nothing else.  
+
+> A.3.2 Checklist Generation Prompt Template
+
+The following template is used to generate checklist items from a prompt. The checklist gener-ator produces an ordered list of yes/no questions that collectively cover the requirements of the instruction. 
+
+Here is an instruction given to an AI assistant: <START OF INSTRUCTION> {prompt} <END OF INSTRUCTION> Please write an exhaustive checklist of yes/no questions that could be used to evaluate whether the AI assistant’s response to the question is completely correct. The answer to each of the questions should be yes if and only if the 
+
+> 22
+
+AI assistant’s response is correct. Be sure to consider edge cases if applicable. The checklist should not include questions which are not absolutely essential for a completely correct response even if the answer "yes" would likely imply a better response. The ordering of the checklist should be such that the questions are ordered from the most important to the least important. Output the checklist as a markdown numbered list. DO NOT output anything else besides the numbered list. 
+
+A.3.3 Generated checklist length distribution 
+
+Figure 7 summarizes the number of checklist items produced by the LLM checklist generator across the training prompts. Most generated checklists contain between five and eight items, with a long tail of prompts receiving more detailed decompositions.   
+
+> Figure 7: Distribution of LLM-generated checklist lengths. The x-axis gives the number of checklist items generated for a prompt, and the y-axis reports the normalized frequency.
+
+A.3.4 Checklist examples and failure modes 
+
+Table 4 shows representative checklist outputs. In general, useful checklist items are atomic, nec-essary, and directly verifiable from the instruction and candidate response. Common failure modes include under-decomposition, over-decomposition, spurious criteria, and missing constraints. 
+
+Instruction Good checklist items Failure mode examples Write exactly three bullet points about Paris. Do not use the word “travel”. 
+
+• Does the response contain ex-actly three bullet points? 
+
+• Is each bullet point about Paris? 
+
+• Does the response avoid the word “travel”? 
+
+• Is the response engaging? (spu-rious) 
+
+• Does the response mention Paris and use three bullet points? 
+
+(under-decomposed) 
+
+> Table 4: Illustrative checklist items and checklist-generation failure modes.
+
+23 A.4 Additional Results and Proofs for Checklist MSE Analysis 
+
+This section collects the auxiliary results used in Section 3.1. We use the notation from the main text: Y∗(x, y ) denotes the latent checklist vector, S∗(x, y ) denotes strict success, ¯S∗(x, y ) denotes partial credit, and ∆∗(x, y ) = ¯S∗(x, y ) − S∗(x, y ) denotes the relaxation gap.  
+
+> A.4.1 Proof of Proposition 1
+
+Proof . Under conditional independence, Cov( Jk, J ℓ | x, y ) = 0 for all k̸ = ℓ. The general variance formula from Proposition 3 reduces to 
+
+Var( ¯J | x, y ) = 1
+
+K2
+
+> K
+
+X
+
+> k=1
+
+μk(x, y ) 1 − μk(x, y ).
+
+Since μk(x, y ) ∈ [0 , 1] , we have μk(x, y )(1 − μk(x, y )) ≤ 1/4 for each k, so 
+
+Var( ¯J | x, y ) ≤ 1
+
+K2 · K · 14 = 14K .
+
+Multiplying by ∥sθ(x, y )∥22 gives 
+
+E∥gchk − E[gchk | x, y ]∥22 x, y  ≤ 14K ∥sθ(x, y )∥22. 
+
+> A.4.2 Conditional bias and variance
+
+Proposition 2 (Conditional bias of single-verifier and checklist estimators). Under the setup of Section 3.1, conditioning on (x, y ),
+
+E[gsingle | x, y ] − g∗(x, y ) = 
+
+
+
+(1 − q) + ( α − 1) S∗(x, y )
+
+
+
+sθ(x, y ),
+
+and 
+
+E[gchk | x, y ] − g∗(x, y ) = 
+
+
+
+(1 − q′) + α′∆∗(x, y ) + ( α′ − 1) S∗(x, y )
+
+
+
+sθ(x, y ).
+
+Equivalently, 
+
+∥E[gsingle | x, y ] − g∗(x, y )∥22 =
+
+
+
+(1 − q) + ( α − 1) S∗(x, y )
+
+2
+
+∥sθ(x, y )∥22,
+
+and 
+
+∥E[gchk | x, y ] − g∗(x, y )∥22 =
+
+
+
+(1 − q′) + α′∆∗(x, y ) + ( α′ − 1) S∗(x, y )
+
+2
+
+∥sθ(x, y )∥22.
+
+Proof . Fix (x, y ); then sθ(x, y ) and b(x) are deterministic. For the single verifier, 
+
+E[gsingle | x, y ] =  E[J | x, y ] − b(x)sθ(x, y ).
+
+Using 
+
+E[J | x, y ] = (1 − q) + αS ∗(x, y )
+
+and subtracting 
+
+g∗(x, y ) =  S∗(x, y ) − b(x)sθ(x, y )
+
+24 gives 
+
+E[gsingle | x, y ]−g∗(x, y ) = 
+
+
+
+(1 −q)+ αS ∗(x, y )−S∗(x, y )
+
+
+
+sθ(x, y ) = 
+
+
+
+(1 −q)+( α−1) S∗(x, y )
+
+
+
+sθ(x, y ).
+
+For the checklist estimator, linearity of expectation gives 
+
+E[ ¯J | x, y ] = 1
+
+K
+
+> K
+
+X
+
+> k=1
+
+ (1 − q′) + α′Y ∗ 
+
+> k
+
+(x, y ) = (1 − q′) + α′ ¯S∗(x, y ).
+
+Subtracting g∗(x, y ) and using ¯S∗(x, y ) = S∗(x, y ) + ∆ ∗(x, y ) yields 
+
+E[gchk | x, y ] − g∗(x, y ) = 
+
+
+
+(1 − q′) + α′ ¯S∗(x, y ) − S∗(x, y )
+
+
+
+sθ(x, y )=
+
+
+
+(1 − q′) + α′∆∗(x, y ) + ( α′ − 1) S∗(x, y )
+
+
+
+sθ(x, y ).
+
+Taking squared norms gives the stated formulas. 
+
+A.4.3 Conditional variance 
+
+Proposition 3 (Conditional variance of single-verifier and checklist estimators). Under the setup of Section 3.1, conditioning on (x, y ),
+
+Cov( gsingle | x, y ) = Var( J | x, y ) sθ(x, y )sθ(x, y )⊤,
+
+and 
+
+Cov( gchk | x, y ) = Var( ¯J | x, y ) sθ(x, y )sθ(x, y )⊤,
+
+where 
+
+Var( J | x, y ) = μsingle (x, y ) 1 − μsingle (x, y ), μsingle (x, y ) := (1 − q) + αS ∗(x, y ),
+
+and 
+
+Var( ¯J | x, y ) = 1
+
+K2
+
+
+
+> K
+
+X
+
+> k=1
+
+μk(x, y ) 1 − μk(x, y ) + 2 X
+
+> 1≤k<ℓ ≤K
+
+Cov( Jk, J ℓ | x, y )
+
+ ,
+
+with 
+
+μk(x, y ) := (1 − q′) + α′Y ∗ 
+
+> k
+
+(x, y ).
+
+Equivalently, 
+
+E∥gsingle − E[gsingle | x, y ]∥22 x, y  = ∥sθ(x, y )∥22 μsingle (x, y ) 1 − μsingle (x, y ),
+
+and 
+
+E∥gchk − E[gchk | x, y ]∥22 x, y  = ∥sθ(x, y )∥22 Var( ¯J | x, y ).
+
+Under the additional assumption that J1, . . . , J K are conditionally independent given (x, y ),
+
+Var( ¯J | x, y ) = 1
+
+K2
+
+> K
+
+X
+
+> k=1
+
+μk(x, y ) 1 − μk(x, y ) ≤ 14K .
+
+25 Proof . Condition on (x, y ); then sθ(x, y ) and b(x) are deterministic and all randomness comes from verifier outputs. Since 
+
+gsingle = ( J − b(x)) sθ(x, y ),
+
+we have 
+
+gsingle − E[gsingle | x, y ] =  J − E[J | x, y ]sθ(x, y ).
+
+Therefore, 
+
+Cov( gsingle | x, y ) = Var( J | x, y ) sθ(x, y )sθ(x, y )⊤.
+
+Since J ∈ { 0, 1} is Bernoulli with mean 
+
+μsingle (x, y ) = (1 − q) + αS ∗(x, y ),
+
+its variance is 
+
+μsingle (x, y ) 1 − μsingle (x, y ).
+
+The same argument applies to 
+
+gchk = ( ¯J − b(x)) sθ(x, y ),
+
+giving 
+
+Cov( gchk | x, y ) = Var( ¯J | x, y ) sθ(x, y )sθ(x, y )⊤.
+
+Expanding the variance of the average, 
+
+Var( ¯J | x, y ) = 1
+
+K2
+
+
+
+> K
+
+X
+
+> k=1
+
+Var( Jk | x, y ) + 2 X
+
+> 1≤k<ℓ ≤K
+
+Cov( Jk, J ℓ | x, y )
+
+ .
+
+Since each Jk is Bernoulli with mean 
+
+μk(x, y ) = (1 − q′) + α′Y ∗ 
+
+> k
+
+(x, y ),
+
+we have 
+
+Var( Jk | x, y ) = μk(x, y ) 1 − μk(x, y ).
+
+The norm-squared identities follow from 
+
+E∥(Z − E[Z]) s∥22
+
+ = ∥s∥22Var( Z).
+
+Under conditional independence, the cross-covariance terms vanish, and μk(1 − μk) ≤ 1/4 gives the 
+
+1/(4 K) bound. 
+
+A.4.4 Bias-side condition 
+
+Proposition 4 (Sufficient conditions for gradient bias reduction). Under the setup of Sec-tion 3.1, 
+
+∥E[gchk | x, y ] − g∗(x, y )∥22 ≤ ∥ E[gsingle | x, y ] − g∗(x, y )∥22
+
+whenever either 
+
+S∗(x, y ) = 1 and p′ ≥ p, 
+
+or 
+
+S∗(x, y ) = 0 and α′∆∗(x, y ) ≤ q′ − q. 
+
+26 Proof . By Proposition 2, 
+
+E[gsingle | x, y ] − g∗(x, y ) = 
+
+
+
+(1 − q) + ( α − 1) S∗(x, y )
+
+
+
+sθ(x, y ),
+
+and 
+
+E[gchk | x, y ] − g∗(x, y ) = 
+
+
+
+(1 − q′) + α′∆∗(x, y ) + ( α′ − 1) S∗(x, y )
+
+
+
+sθ(x, y ).
+
+Case (i): S∗(x, y ) = 1 . When S∗(x, y ) = 1 , all checklist items are satisfied, so ¯S∗(x, y ) = 1 and 
+
+∆∗(x, y ) = 0 . The bias expressions reduce to 
+
+∥E[gsingle | x, y ] − g∗(x, y )∥22 = (1 − p)2∥sθ(x, y )∥22,
+
+and 
+
+∥E[gchk | x, y ] − g∗(x, y )∥22 = (1 − p′)2∥sθ(x, y )∥22.
+
+Since p′ ≥ p implies (1 − p′)2 ≤ (1 − p)2, the checklist squared bias is no larger. 
+
+Case (ii): S∗(x, y ) = 0 . When S∗(x, y ) = 0 , the bias expressions reduce to 
+
+∥E[gsingle | x, y ] − g∗(x, y )∥22 = (1 − q)2∥sθ(x, y )∥22,
+
+and 
+
+∥E[gchk | x, y ] − g∗(x, y )∥22 =  1 − q′ + α′∆∗(x, y )2∥sθ(x, y )∥22.
+
+If α′∆∗(x, y ) ≤ q′ − q, then 
+
+1 − q′ + α′∆∗(x, y ) ≤ 1 − q, 
+
+so the checklist squared bias is no larger. 
+
+A.4.5 Proof of Theorem 1 
+
+Proposition 5 (Bias–variance decomposition of gradient MSE). Under the setup of Sec-tion 3.1, conditioning on (x, y ),
+
+E∥gsingle − g∗∥22 x, y  = ∥E[gsingle | x, y ] − g∗(x, y )∥22 + E∥gsingle − E[gsingle | x, y ]∥22 x, y  ,
+
+and 
+
+E∥gchk − g∗∥22 x, y  = ∥E[gchk | x, y ] − g∗(x, y )∥22 + E∥gchk − E[gchk | x, y ]∥22 x, y  .
+
+Proof . For any random vector G and deterministic vector a,
+
+E∥G − a∥22
+
+ = ∥E[G] − a∥22 + E∥G − E[G]∥22
+
+ .
+
+Apply this identity conditionally on (x, y ) with G = gsingle and a = g∗(x, y ), and then with G = gchk 
+
+and a = g∗(x, y ).
+
+Proof of Theorem 1. We use the bias–variance decomposition in Proposition 5 and analyze the two cases separately. 
+
+Case (i): S∗(x, y ) = 1 . When S∗(x, y ) = 1 , the relaxation gap ∆∗(x, y ) = 0 . By Proposition 2, the squared biases are 
+
+∥E[gsingle | x, y ] − g∗(x, y )∥22 = (1 − p)2∥sθ(x, y )∥22,
+
+27 and 
+
+∥E[gchk | x, y ] − g∗(x, y )∥22 = (1 − p′)2∥sθ(x, y )∥22.
+
+For the variance terms, when S∗(x, y ) = 1 , the conditional means are μsingle (x, y ) = p and μk(x, y ) = p′
+
+for all k. Thus, 
+
+E∥gsingle − E[gsingle | x, y ]∥22 x, y  = p(1 − p)∥sθ(x, y )∥22,
+
+while conditional independence gives 
+
+E∥gchk − E[gchk | x, y ]∥22 x, y  = p′(1 − p′)
+
+K ∥sθ(x, y )∥22.
+
+Therefore, 
+
+E∥gchk − g∗∥22 x, y  =
+
+
+
+(1 − p′)2 + p′(1 − p′)
+
+K
+
+
+
+∥sθ(x, y )∥22.
+
+Since K ≥ 1,
+
+(1 − p′)2 + p′(1 − p′)
+
+K ≤ (1 − p′)2 + p′(1 − p′) = 1 − p′.
+
+If p′ ≥ p, then 1 − p′ ≤ 1 − p. Also, 
+
+(1 − p)2 + p(1 − p) = 1 − p. 
+
+Hence 
+
+E∥gchk − g∗∥22 x, y  ≤ (1 − p)∥sθ(x, y )∥22 = E∥gsingle − g∗∥22 x, y  .
+
+Case (ii): S∗(x, y ) = 0 . When S∗(x, y ) = 0 , Proposition 2 gives 
+
+∥E[gsingle | x, y ] − g∗(x, y )∥22 = (1 − q)2∥sθ(x, y )∥22,
+
+and 
+
+∥E[gchk | x, y ] − g∗(x, y )∥22 =  1 − q′ + α′∆∗(x, y )2∥sθ(x, y )∥22.
+
+The single-verifier variance term is 
+
+(1 − q)q ∥sθ(x, y )∥22,
+
+and the checklist variance term is bounded by 
+
+14K ∥sθ(x, y )∥22
+
+by Proposition 1. Thus, 
+
+E∥gsingle − g∗∥22 x, y  = (1 − q)2 + (1 − q)q∥sθ(x, y )∥22 = (1 − q)∥sθ(x, y )∥22.
+
+A sufficient condition for the checklist MSE to be no larger is 
+
+ 1 − q′ + α′∆∗(x, y )2 + 14K ≤ 1 − q, 
+
+which is exactly the condition in the theorem. 
+
+28 A.4.6 Checklist-size implications 
+
+Corollary 1 (Bias condition implies MSE condition for large K). In the regime S∗(x, y ) = 0 ,let (A) α′∆∗(x, y ) ≤ q′ − q and (B)  1 − q′ + α′∆∗(x, y )2 + 14K ≤ 1 − q. 
+
+Condition (A) is the bias-only sufficient condition of Proposition 4; condition (B) is the sufficient condition for full MSE improvement in Theorem 1. If (A) holds and 
+
+K ≥ 14(1 − q)q ,
+
+then (B) holds, and therefore checklist verification achieves lower conditional MSE than the single-verifier estimator. 
+
+Proof . Assume condition (A), i.e., 
+
+α′∆∗(x, y ) ≤ q′ − q. 
+
+Then 
+
+1 − q′ + α′∆∗(x, y ) ≤ 1 − q, 
+
+so  1 − q′ + α′∆∗(x, y )2 ≤ (1 − q)2.
+
+It therefore suffices to show 
+
+(1 − q)2 + 14K ≤ 1 − q, 
+
+which is equivalent to 14K ≤ (1 − q)q. 
+
+This holds whenever 
+
+K ≥ 14(1 − q)q .
+
+Hence condition (B) holds, and Theorem 1 gives the MSE inequality. 
+
+Corollary 2 (Checklist-size thresholds). On incorrect outputs (S∗(x, y ) = 0) , let 
+
+A(x, y ) := 1 − q′ + α′∆∗(x, y ).
+
+If A(x, y ) ≤ 1 − q and 
+
+K ≥ 14A(x, y ) 1 − A(x, y ) ,
+
+then 
+
+E∥gchk − g∗∥22 x, y  ≤ E∥gsingle − g∗∥22 x, y  .
+
+On correct outputs (S∗(x, y ) = 1) , if (1 − p′)2 < 1 − p and 
+
+K ≥ p′(1 − p′)(1 − p) − (1 − p′)2 ,
+
+then 
+
+E∥gchk − g∗∥22 x, y  ≤ E∥gsingle − g∗∥22 x, y  .
+
+29 Proof .
+
+Incorrect outputs. Since A(x, y ) ≤ 1 − q, it suffices to show 
+
+A(x, y )2 + 14K ≤ A(x, y ).
+
+This is equivalent to 14K ≤ A(x, y ) 1 − A(x, y ),
+
+which is exactly the assumed lower bound on K. Under this condition, 
+
+A(x, y )2 + 14K ≤ A(x, y ) ≤ 1 − q, 
+
+so the incorrect-output condition in Theorem 1 holds. 
+
+Correct outputs. From the proof of Theorem 1, the checklist MSE normalized by ∥sθ(x, y )∥22 is 
+
+(1 − p′)2 + p′(1 − p′)
+
+K ,
+
+and the single-verifier MSE normalized by ∥sθ(x, y )∥22 is 
+
+(1 − p)2 + p(1 − p) = 1 − p. 
+
+The checklist MSE is no larger whenever 
+
+(1 − p′)2 + p′(1 − p′)
+
+K ≤ 1 − p. 
+
+Since (1 − p′)2 < 1 − p by assumption, rearranging gives 
+
+K ≥ p′(1 − p′)(1 − p) − (1 − p′)2 ,
+
+which is the stated threshold. 
+
+Corollary 3 (Necessity of a bias-side condition). Larger K reduces variance but does not affect the structural bias term, so no condition on K alone can guarantee checklist MSE improvement. On incorrect outputs, if  1 − q′ + α′∆∗(x, y )2 > 1 − q, 
+
+then 
+
+E∥gchk − g∗∥22 x, y  > E∥gsingle − g∗∥22 x, y 
+
+for all finite K.Similarly, on correct outputs, if 
+
+(1 − p′)2 > 1 − p, 
+
+then the checklist estimator has larger conditional MSE than the single-verifier estimator for all finite K.
+
+> 30
+
+Proof .
+
+Incorrect outputs. The checklist MSE is at least its squared bias: 
+
+E∥gchk − g∗∥22 x, y  ≥  1 − q′ + α′∆∗(x, y )2∥sθ(x, y )∥22.
+
+The single-verifier MSE on incorrect outputs is 
+
+(1 − q)∥sθ(x, y )∥22.
+
+Therefore, if  1 − q′ + α′∆∗(x, y )2 > 1 − q, 
+
+then the checklist MSE is strictly larger for all finite K.
+
+Correct outputs. The checklist MSE on correct outputs is 
+
+
+
+(1 − p′)2 + p′(1 − p′)
+
+K
+
+
+
+∥sθ(x, y )∥22,
+
+while the single-verifier MSE is 
+
+(1 − p)∥sθ(x, y )∥22.
+
+If (1 − p′)2 > 1 − p, then 
+
+(1 − p′)2 + p′(1 − p′)
+
+K > 1 − p
+
+for all finite K, so the checklist MSE is strictly larger. 
+
+Together with Corollary 1, Corollary 3 gives the main checklist-size message: once the bias-side condition is controlled, sufficiently large K can make checklist verification lower-MSE than holistic verification; but increasing K alone cannot overcome a large partial-credit bias. 
+
+A.5 Motivation for the Partition-Style Penalty 
+
+This section gives a mathematical motivation for the partition-style Yes-rate penalty used in Soft-SVeRL . The result assumes the standard Gibbs form of the KL-regularized optimal policy and focuses on the reward gradient induced by a checklist-decomposed verifier reward. 
+
+Proposition 6 (Checklist-decomposed reward gradient). Let x be a prompt, y a response, and C(x) = {c1, . . . , c K } a checklist. Let ρϕ(z | x, y, c k) be the verifier trace distribution and let 
+
+d(z) ∈ { 0, 1} denote the parsed Yes/No decision. Define the verifier’s item-level Yes-rate as 
+
+rϕ(x, y, c k) := Ez∼ρϕ(·| x,y,c k )[d(z)] . (25) 
+
+The checklist reward is 
+
+Rϕ(x, y ) := 1
+
+K
+
+> K
+
+X
+
+> k=1
+
+rϕ(x, y, c k). (26) 
+
+For a fixed verifier reward Rϕ, assume the KL-regularized optimal generator has the Gibbs form 
+
+πθ∗(ϕ)(y | x) = 1
+
+Zϕ(x) πref (y | x) exp 
+
+ 1
+
+β Rϕ(x, y )
+
+
+
+, (27) 
+
+> 31
+
+where 
+
+Zϕ(x) = X
+
+> y′
+
+πref (y′ | x) exp 
+
+ 1
+
+β Rϕ(x, y ′)
+
+
+
+. (28) 
+
+Let D+ be a distribution of target-good prompt-response pairs, and define 
+
+Lgen (ϕ) := E(x,y )∼D +
+
+log πθ∗(ϕ)(y | x) . (29) 
+
+Then 
+
+∇ϕLgen (ϕ) = 1
+
+βK 
+
+> K
+
+X
+
+> k=1
+
+
+
+E(x,y )∼D + [∇ϕrϕ(x, y, c k)] − ExEy′∼πθ∗(ϕ)(·| x)[∇ϕrϕ(x, y ′, c k)] 
+
+
+
+. (30) 
+
+Proof . Using Eq. 27, 
+
+log πθ∗(ϕ)(y | x) = log πref (y | x) + 1
+
+β Rϕ(x, y ) − log Zϕ(x).
+
+Since πref does not depend on ϕ,
+
+∇ϕ log πθ∗(ϕ)(y | x) = 1
+
+β ∇ϕRϕ(x, y ) − ∇ ϕ log Zϕ(x).
+
+From Eq. 28, 
+
+∇ϕZϕ(x) = X
+
+> y′
+
+πref (y′ | x) exp 
+
+ 1
+
+β Rϕ(x, y ′)
+
+ 1
+
+β ∇ϕRϕ(x, y ′).
+
+Dividing by Zϕ(x) gives 
+
+∇ϕ log Zϕ(x) = 1
+
+β Ey′∼πθ∗(ϕ)(·| x)[∇ϕRϕ(x, y ′)] .
+
+Therefore, 
+
+∇ϕLgen (ϕ) = 1
+
+β
+
+
+
+E(x,y )∼D + [∇ϕRϕ(x, y )] − ExEy′∼πθ∗(ϕ)(·| x)[∇ϕRϕ(x, y ′)] 
+
+
+
+.
+
+Substituting 
+
+Rϕ(x, y ) = 1
+
+K
+
+> K
+
+X
+
+> k=1
+
+rϕ(x, y, c k)
+
+and exchanging the finite sum with the expectations yields Eq. 30. 
+
+The second term in Eq. 30 comes from differentiating the partition function Zϕ(x). It is an item-level policy-sample correction: under the reward-induced generator distribution, it pushes down reward assigned to generated responses. The partition-style penalty in Soft-SVeRL is a selected approximation to this term. The exact correction would require an expectation over prompts, policy samples, and all checklist items: 
+
+1
+
+K
+
+> K
+
+X
+
+> k=1
+
+ExEy′∼πθ∗(ϕ)(·| x)[∇ϕrϕ(x, y ′, c k)] . (31) 
+
+In practice, Soft-SVeRL replaces πθ∗(ϕ) with the current generator πθ and makes the expectation tractable by selecting a subset S of on-policy response-item contexts. This gives the partition objective 
+
+Jpart (ϕ) := E(x,y,c )∈S [rϕ(x, y, c )] . (32) 
+
+32 The gradient ∇ϕJpart (ϕ) is therefore a selected finite-sample approximation to the policy-sample expectation in Eq. 31. Since Soft-SVeRL subtracts Jpart in the shared objective, this term has the same sign as the negative policy-sample term in Eq. 30. Thus, the partition loss can be viewed as a tractable, selected approximation to the log-partition correction. The subset S matters because applying this correction to all on-policy items could also suppress genuine successes; Soft-SVeRL 
+
+applies it only to selected contexts where Yes-rate inflation is the relevant failure mode. The first term in Eq. 30 increases item-level reward on target-good responses. This term is written as if we had access to a distribution of target-good full responses. In Soft-SVeRL , we do not assume such completions are available for every prompt. Instead, we generate responses from the initial or current policy and label them at the checklist-item level, producing gold and replay tuples 
+
+(x, y, c, ℓ ). We approximate the positive part of the term with items labeled ℓ = 1 , and use items labeled ℓ = 0 to train the verifier for item-level correctness.
