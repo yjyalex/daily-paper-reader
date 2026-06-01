@@ -1,0 +1,1207 @@
+Title: Mechanistically Interpreting the Role of Sample Difficulty in RLVR for LLMs
+
+URL Source: https://arxiv.org/pdf/2605.28388v1
+
+Published Time: Thu, 28 May 2026 01:12:58 GMT
+
+Number of Pages: 30
+
+Markdown Content:
+# Mechanistically Interpreting the Role of Sample Difficulty in RLVR for LLMs 
+
+Yue Cheng 1,2∗ Jiajun Zhang 1∗ Xiaohui Gao 3
+
+Weiwei Xing 1† Zheng Wang 4 Zhanxing Zhu 5†
+
+> 1
+
+Beijing Jiaotong University 2AntGroup 3Northwestern Polytechnical University 
+
+> 4
+
+University of Leeds 5University of Southampton 
+
+{yuecheng,jiajunzhang}@bjtu.edu.cn gaitxh@foxmail.com wwxing@bjtu.edu.cn z.wang5@leeds.ac.uk z.zhu@soton.ac.uk 
+
+Abstract 
+
+Reinforcement Learning with Verifiable Reward (RLVR) is empirically shown to notably enhance the reasoning performance of large language models (LLMs), particularly in mathematics and programming. However, the mechanistic role of 
+
+Sample Difficulty in RLVR remains poorly understood. In this paper, we investigate RLVR through the lens of difficulty-wise and one-sample analysis. We find that sample difficulty has a non-monotonic effect on RLVR: easy and medium-difficulty problems yield the strongest and most stable reasoning improvements, whereas overly hard problems often provide weak learning signals, induce degenerate behaviors such as answer repetition or skipping necessary computation, and can ultimately degrade the model’s pre-existing capabilities. Beyond the obverse of response, we further analyze the model’s internal feature dynamics using Temporal Sparse Autoencoders (T-SAE). Easy problems mainly reinforce direct-answer and basic-computation features while suppressing deliberative-reasoning features; hard problems activate reasoning-related features but become useful only when successful trajectories are sampled; medium-difficulty problems provide a more balanced signal, strengthening both computation and multi-step reasoning features. Motivated by these findings, we propose difficulty-adaptive strategies for hard-sample utilization, using backward-reasoning reformulation and T-SAE-guided training signals to improve reward density and credit assignment during RLVR. Overall, our results identify sample difficulty as a key factor governing both the optimization dynamics and representation evolution of RLVR. 
+
+1 Introduction 
+
+Large language models (LLMs) have made significant achievements across a variety of tasks, ranging from mathematics [ 21 , 7], programming [ 28 ], and scientific reasoning [ 5 ]. Much of this progress has been further amplified by post-training, which adapts pretrained models to elicit stronger reasoning and problem-solving behaviors. Among post-training techniques, Reinforcement Learning with Verifiable Reward (RLVR) [ 36 , 15 ] has emerged as the dominant post-training paradigm, spawning algorithmic innovations such as GRPO [ 36 ], DAPO [ 46 ], and VAPO [ 48 ], as well as extensions to diverse application areas [ 41 , 24 , 31 ] and surprising empirical findings [ 39 , 51 ]. However, most RLVR methods share a fundamental design choice: they treat samples uniformly regardless of difficulty. 
+
+Under group-relative advantage normalization [ 36 ], only samples that induce mixed rollout outcomes provide meaningful relative-advantage signals. Extremely hard and easy samples therefore contribute 
+
+> ∗Equal contribution.
+> †Corresponding authors. Preprint.
+> arXiv:2605.28388v1 [cs.AI] 27 May 2026
+
+little direct learning signal. Although growing empirical evidence suggests that sample difficulty plays an important role in RLVR [ 16 , 38 , 47 , 44 ], the mechanisms by which different difficulty regimes shape optimization dynamics and latent representations remain poorly understood. Recent work has begun to study this issue from an empirical perspective. Curriculum-based ap-proaches [ 27 ] schedule training from easier to harder tasks, online difficulty filters [ 2] prioritize intermediate-difficulty samples, and entropy-guided advantage shaping [ 16 ] seeks to recover useful learning signals from prompts with degenerate reward variance. While these methods lead to practical gains, they primarily operate on outcome-level statistics, such as pass rates, advantage magnitudes, entropy, or reward variance, to select, filter, or reweight samples. As a result, they provide limited insight into how samples of different difficulty levels alter the model’s internal computation. This leaves a fundamental question unanswered: how does sample difficulty shape the model’s internal reasoning mechanisms during RL training, and can such a mechanistic understanding inform better training strategies? 
+
+This paper studies how sample difficulty shapes RLVR through one-sample dynamics. Specifically, we begin with controlled subset training and one-sample amplification experiments to characterize how samples of different difficulty levels affect reward dynamics, optimization behavior, and downstream reasoning performance. Our results reveal a non-monotonic effect of difficulty: medium-difficulty samples produce the strongest and most stable gains, whereas very easy and overly hard samples provide weak relative-advantage signals. Hard samples can be especially damaging, as accidentally rewarded trajectories caused by shortcuts or incomplete reasoning may be amplified by group-relative normalization, leading to biased updates that reinforce flawed reasoning behaviors. Furthermore, this asymmetry is also reflected in the model’s internal feature dynamics. To probe these dynamics, we introduce a Temporal Sparse Autoencoder (T-SAE) to extract sparse reasoning features from activations along reasoning trajectories. We track the activation frequencies and magnitudes of these features across RLVR training steps, revealing how different difficulty regimes reshape internal reasoning mechanisms. Easy samples primarily reinforce direct-answer and basic-computation features while suppressing deliberative reasoning; hard samples emphasize complex logical reasoning but weaken computation-related features; medium-difficulty samples strengthen both computation and multi-step reasoning features. These results suggest that medium-difficulty samples are effective not only because they provide informative reward variance, but also because they induce more balanced reasoning-feature updates. As a side product of this analysis, we propose two difficulty-aware interventions for improving sample utilization and credit assignment in RLVR. First, we improve the utilization of overly hard samples by reformulating forward problem-solving tasks into backward-reasoning variants, which increases the chance of sampling informative trajectories and usable relative-advantage signals. Second, we introduce Reasoning Feature-Guided Optimization (RFGO), which uses T-SAE reasoning-feature dynamics for mechanistic credit assignment. RFGO reweights token-level updates by future sentence-level feature movement and assigns feature-based proxy rewards only to zero-variance rollout groups. Those interventions support our analysis of hard samples by testing whether the reasoning features they recruit can serve as useful training signals for credit assignment and sample utilization. 
+
+Related Works. We discuss related works in Appendix A due to space limitations. 
+
+2 How Sample Difficulty Shapes Optimization Dynamics? 
+
+We investigate the role of sample difficulty in shaping the optimization dynamics of RLVR. Specifi-cally, we use the empirical success rate of the current policy over k sampled rollouts as a practical proxy for difficulty, and accordingly group samples into easy, medium-difficulty, and hard regimes. To focus on samples that can contribute meaningful policy-gradient updates, we exclude degenerate zero-variance cases in which all the rollouts either succeed or fail, as these samples provide no informative relative-advantage signal under group-relative advantage normalization. Section 2.2 studies how different difficulty regimes affect RLVR training at the aggregate level, revealing broad trends in reward evolution, optimization stability, and downstream performance. Section 2.3 then turns to a per-sample analysis, showing that individual samples within the same difficulty regime can still induce highly heterogeneous learning dynamics and failure modes. 22.1 Preliminaries Notation. We denote an LLM policy parameterized by weights θ as πθ . We sometimes also directly use πbase to denote a pre-trained model (e.g., Qwen2.5-math-1.5B, Qwen2.5-math-7B) to contrast its RL counterpart πθ . We use D to denote the query distribution and V to denote the vocabulary. Given an input query x, the model’s output is modeled by πθ (·| x). We use y ∼ πθ (·| x) to denote the sampling of answer y. During RL training, πθi denotes the model after the i-th policy update. 
+
+Reinforcement Learning with Verifiable Reward. We formalize the problem of fine-tuning an LLM for complex reasoning tasks under the Reinforcement Learning with Verifiable Reward (RLVR) [15 ] paradigm. At each step t, the state st = ( x, y1, . . . , yt−1) is the concatenation of the prompt x
+
+and previously generated tokens, and the action at is selecting the next token yt ∈ V . The LLM with parameters θ serves as the policy πθ , producing at ∼ πθ (· | st), so that the probability of a trajectory 
+
+y = ( y1, . . . , yT ) is 
+
+πθ (y | x) = 
+
+> T
+
+Y
+
+> t=1
+
+πθ (yt | x, y<t ), (1) A verifier assigns a sparse, terminal reward R(y), which equals 1 if the final answer extracted from y
+
+is correct and 0 otherwise. Then, the training objective is therefore optimized with policy gradient methods, 
+
+J (θ) = Ex∼D ,y∼πθ (·| x)
+
+R(y). (2) The gradient of the objective with respect to the policy parameters θ can be expressed as 
+
+∇θ J (θ) = E(x,y)∼D Eτ ∼πθ (·| x)
+
+h
+
+R(τ )∇θ log πθ (τ |x)
+
+i
+
+. (3) where gradient coefficient A depends on the verifier and reward feedback. Detailed policy gradient methods forms, such as GRPO [36], are provided in the Appendix B. 
+
+Sparse Autoencoders. Sparse autoencoders (SAEs) [ 30 , 13 ] are a class of unsupervised interpretabil-ity models that effectively learn sparse feature decompositions of dense LLM activations. Taking in input ht ∈ Rd, they map ht into an overcomplete sparse feature vector zt ∈ Rm, typically with 
+
+m ≫ d, and reconstructs the original activation from this sparse representation: 
+
+zt = fθ (ht) = σ(W enc ht + benc ), ˆht = W dec zt + bdec (4) where W enc ∈ Rm×d is the encoder matrix, and W dec ∈ Rd×m is the decoder matrix. The encoder and decoder bias are benc ∈ Rm and bdec ∈ Rd, respectively. Temporal Sparse Autoencoders (T-SAEs) [ 4 ] extend standard SAEs by explicitly leveraging the sequential structure of language. With the assumption that the first l indices are relatively stable high-level features z0: ht and the last 
+
+m − l indices are rapid change low-level features zh:mt , the reconstruction component of the T-SAEs objective can therefore be written as 
+
+L = ∥ht − W dec  
+
+> 0: h
+
+z0: ht − bdec ∥22 + ∥ht − W dec zt − bdec ∥. (5) See more details about T-SAEs in the Appendix B. 
+
+2.2 How Difficulty Regimes Shape Optimization Dynamics 
+
+For each training sample x, we sample k responses (rollouts) {yi}ki=1 from the current policy and assign each rollout a binary verification reward Ri ∈ { 0, 1}. We use the per-sample empirical success rate success @k = 1
+
+> k
+
+Pki=1 Ri as a practical proxy for sample difficulty. Samples with high success rates success @k = 1 are categorized as easy @k regimes, those with intermediate success rates 
+
+0 ≤ success @k ≤ 1 as medium @k, and those with low success rates success @k = 0 as hard @k.See Appendix B.3 for more details about the definition of sample difficulty. In the context of GRPO [ 36 ], rollout advantages are normalized within each group ˆAit =
+
+> Ri−mean( {Ri}ki=1 )
+
+/std( {Ri}ki=1 ). When all rollouts receive the same reward, the within-group reward variance becomes zero, and the sample provides no informative relative-advantage signal. Follow-ing [ 16 ], we refer to these cases as zero-variance samples . We exclude strictly zero-variance samples from the following case studies, since they do not induce non-trivial reward-driven updates. We empirically validate this choice in Appendix E.1. Exploiting 512 rollouts from Qwen2.5-Math-1.5B, 3we extract a zero-variance subset from MATH. We point out that their advantage signals vanish, leaving the policy update dominated by KL regularization rather than reward-driven reinforcement. Having removed these degenerate cases, we now turn to the central question of this section: how do non-zero-variance samples of different difficulty levels affect RLVR training? Response Length            
+
+> Grad Norm
+> Eas y@8 dataset Medium @8 dataset Hard @8 dataset
+> Performance  (%)
+> MATH -500 AIME -2024 AMC Minerva math Olympiad bench
+> (a) Benchmar k performance (b) CoT performance
+
+Figure 1: Overall performance of GRPO across multiple benchmarks using Qwen2.5-Math-1.5B as the base model. We partition training samples into Easy , Medium , and Hard regimes, where Easy is defined as easy @8, Hard as hard @8, and Medium contains the remaining samples. 
+
+Empirical Observations on Sample Difficulty. As a first step, we use success @8 as a coarse proxy for sample difficulty, matching the group size used in GRPO. We split the training data into 
+
+easy @8, medium @8, and hard @8 regimes, and train Qwen2.5-Math-1.5B and Qwen2.5-Math-7B on each subset to isolate the effect of difficulty, as shown in Figure 1. Across both base models, we find a clear non-monotonic trend: Medium samples yield the largest gains, Easy samples provide smaller but stable improvements, and Hard samples are the least effective. The strongest evidence comes from mixed-difficulty training: " Easy+Medium " consistently achieves the best performance and even outperforms the full dataset. This indicates that overly hard samples can dilute the useful learning signal in RLVR, motivating a more fine-grained analysis of sample difficulty beyond the coarse partition. More comprehensive comparisons are provided in Appendix E.3. 
+
+Difficulty Curriculum for Practical RL. The coarse split suggests that overly difficult samples can dilute RLVR training, but it does not reveal how the training signal changes across finer difficulty regimes. We therefore construct a finer difficulty curriculum by varying the rollout budget used to determine whether a sample is solvable by the base policy. For each sample x, we sample k = 8 
+
+rollouts from πbase and obtain binary rewards Ri(x) ∈ { 0, 1}. For k ∈ { 2, 4, 8}, we define 
+
+medium @k = {x ∈ D :
+
+> k
+
+X
+
+> i=1
+
+Ri(x) ≥ 1}, hard @k = {x ∈ D :
+
+> k
+
+X
+
+> i=1
+
+Ri(x) = 0 } (6) Here, medium @k contains samples solved at least once within k attempts, while hard @k contains samples that remain unsolved within the same budget. As k increases, medium @k progressively Qwen2.5 -Math -1.5B Qwen2.5 -Math -7B DeepSeek -Math -Instruct -7B 
+
+Figure 2: Difficulty curriculum for practical RLVR. We compare training on curriculum subsets defined by different rollout-based difficulty thresholds across three base models. Samples that are solvable within a limited rollout budget consistently yield stronger improvements than persistently unsolved samples, highlighting the importance of difficulty-aware data selection in RLVR. 4（a）One -Sample training accuracy on easy subset of test data （b）One -Sample training accuracy on medium subset of test data Figure 3: One-sample RL performance on MATH-500 test subsets. For each training regime (easy @8, medium @8, and hard @8), we sample 10 individual problems, train on each problem separately, and evaluate on the MATH-500 easy @8 and medium @8 test subsets. The hard @8 test subset is omitted because all runs achieve 0 accuracy. includes harder but still solvable samples, medium @2 ⊆ medium @4 ⊆ medium @8 . Conversely, 
+
+hard @k progressively removes relatively easier failures and retains more persistently unsolved samples, hard @8 ⊆ hard @4 ⊆ hard @2 . Since rollout sampling is stochastic, hard @8 only indicates a low probability of receiving a positive verifier reward under the reference policy and rollout budget. We train each base model on the resulting subsets and report results in Figure 2. On the solvable side, increasing k enlarges medium @k by adding harder but still occasionally solvable samples, and performance almost always improves monotonically. This indicates that RLVR benefits from medium-difficulty samples as long as the base model can still solve them occasionally. The hard side shows a different pattern. Although increasing k makes hard @k smaller and more persistently unsolved, performance does not degrade monotonically. Instead, results are unstable across models and benchmarks, suggesting that hard samples are heterogeneous: they may either trigger useful policy updates or contribute noisy, uninformative gradients. Detailed per-benchmark numbers are provided in Table 3. These findings show that aggregate difficulty is insufficient to explain the effect of hard data, motivating a sample-level analysis of how individual samples steer reasoning behavior during RLVR. 
+
+2.3 How Individual Samples Shape Optimization Dynamics 
+
+The curriculum-level analysis shows that hard data behaves irregularly in aggregate. We next ask whether this irregularity already appears at the level of a single training sample. Even within the same difficulty regime, different samples may reward different trajectories and induce very different policy updates. We therefore move from curriculum-level comparisons to one-sample RL dynamics. 
+
+One-Sample Amplification. To isolate the effect of an individual sample, we train the policy on one sample at a time while keeping the standard GRPO group-rollout structure. For a selected sample 
+
+x, each update samples G rollouts from πθt and computes group-relative advantages from verifier rewards. This removes aggregation across samples while preserving within-sample credit assignment. At step t, we track the sample reward ¯Rt(x) = 1
+
+> G
+
+PGi=1 R(yti ), where yti ∼ πθt (· | x), the KL divergence from the reference policy Dt
+
+> KL
+
+(x) = Ey∼πθt (·| x)
+
+h
+
+log πθt (y|x) 
+
+> πref (y|x)
+
+i
+
+and downstream 
+
+pass @1 accuracy. Together, these metrics measure whether the sample becomes solvable, how strongly it moves the policy, and whether the induced update transfers beyond the training sample. 
+
+Figure 4: Representative reward and KL dynam-ics for one-sample RL on three examples selected from Easy @8, Medium @8, and Hard @8. 
+
+Difficulty-Dependent Optimization Dynam-ics. Figure 3 shows that easy and medium sam-ples induce relatively stable updates. Training on Easy @8 or Medium @8 usually preserves or improves downstream accuracy, suggesting that RL reinforces useful behavior when the base model can already solve the sample with non-negligible probability. Hard samples are much less predictable. Although some Hard @8 sam-ples improve downstream performance, many sharply degrade it, sometimes below the base model. Their effect therefore depends not only 5on difficulty, but on which rare rewarded trajec-tories are amplified by GRPO. Figure 4 illustrates this mechanism: the hard sample reaches high training reward only with much larger KL growth, whereas easy and medium samples improve with more controlled policy movement. Thus, high reward on a hard sample need not indicate useful learning; it may instead reflect accidental correctness or shortcut reasoning. Overall, Hard @8 obtains a lower average score of 32 .61 and much larger variance, spanning both strong improvement and severe degradation. Appendix E.2 further tracks downstream test dynamics and shows that harmful hard samples often cause collapse only after their effects accumulate over training. This asymmetry explains why hard data is unstable: reward improvement on easy and medium samples tends to transfer, while reward improvement on hard samples can amplify brittle behaviors and damage existing capabilities. 
+
+Failure Modes of Harmful Hard Samples. We further inspect harmful hard samples and find that their rewards often come from spurious solution patterns rather than valid reasoning. Example 2.1 illustrates an answer-only shortcut: the model directly outputs “ \boxed{40} ” for a geometry problem that should require using l∥k, the labeled 130 ◦ angle, and the right-angle constraint. Outcome-only verification still rewards this rollout because the final answer is correct, despite the absence of supporting reasoning. Appendix C shows that this issue is broader: harmful hard samples can involve goal misunderstanding, question–answer mismatch, missing aggregation, calculation or execution errors, inconsistent output formats, and logical constraint errors. Thus, RL on such samples may amplify brittle shortcuts or artifacts rather than transferable reasoning. 
+
+Example 2.1: Spurious Reward from Answer-Only Output    
+
+> Question: In the diagram, $l\|k$. What is the number of degrees in $\angle SRQ$? [asy] draw((-.4,-.4) --(2,2)--(2,-.4)); draw((-.5,0)--(3,0),Arrows); draw((-.5,1)--(3,1),Arrows); draw((1.9,0) --(1.9,.1)--(2,.1)); label("$S$",(1,1),NNW); label("$R$",(2,2),N); label("$Q$",(2,1),NE); label(" $l$",(3,1),E); label("$k$",(3,0),E); label("$130^{\circ}$",(1,1),SSE); [/asy]
+> Answer: 40 ◦
+> Response: The number of degrees in \angle SRQ is \boxed{40}.
+
+This explains why reward-flipped hard samples can be especially risky. All-zero hard samples induce little reward-driven learning, whereas reward-flipped hard samples can produce large updates based on accidental correctness, shortcut reasoning, or verifier artifacts. Therefore, one-sample RL reveals the fine-grained source of hard-data instability: hard samples are heterogeneous, and many of them disrupt rather than improve the model’s existing reasoning ability. This motivates our next feature-level analysis, where we use T-SAE to examine how different samples reinforce or suppress internal reasoning features during RLVR. 
+
+3 How Sample Difficulty Reshapes Reasoning Features 
+
+Sample difficulty induces distinct optimization dynamics during RLVR. However, these optimization signatures do not directly explain how difficulty reshapes the model’s internal reasoning mechanisms. To bridge this gap, we introduce a feature-dynamics framework based on a Temporal Sparse Autoen-coder (T-SAE) probe in Section 3.1. Concretely, we apply the same T-SAE model across different training steps to obtain a shared sparse feature basis, and we then track how reasoning-relevant features change over time. This setup enables us to quantify whether different difficulty regimes reinforce, suppress, or reorganize internal reasoning features during training. We provide the concrete experimental design and the corresponding comparison results in Section 3.2. 
+
+3.1 Tracking Reasoning Features with a T-SAE Probe 
+
+In this section, we track how sparse features evolve along the RLVR training trajectory. Since standard SAEs treat token activations independently, they can miss the sequential structure of reasoning traces. T-SAE addresses this limitation by incorporating temporal consistency and sparse top-k coding, yielding features better aligned with temporally extended reasoning behavior. We therefore use a frozen T-SAE as a shared probe for analyzing reasoning-feature dynamics across training steps. Concretely, for a policy πθτ at training step τ , let hℓt,τ ∈ Rd denote the hidden activation at token 6position t from layer ℓ. The T-SAE maps this activation to a sparse latent code: 
+
+zt,τ = ζ(ht,τ ), ˆht,τ = ξ(z0: ht,τ ) (7) where ζ(·) and ξ(·) denote the encoder and decoder, respectively. Each coordinate of zt,τ ∈ Rm
+
+corresponds to a sparse latent feature, and its value indicates the activation strength of that feature at token position t. This representation allows us to compare reasoning-related activation patterns in a common sparse basis rather than in the original dense hidden space. Given a sequence of policies {πθτ } produced during RLVR, our goal is to characterize how the corresponding sparse features evolve as τ changes. We then adopt R EASON SCORE [ 8] to quantify whether a feature is associated with reasoning behavior. Let Vreason = {vr }Rr=1 denote a predefined collection of reasoning-token groups. For feature i,regime d, and training step τ , let μd, +
+
+i (τ ) be the mean activation of feature i on reasoning tokens, let 
+
+μd, −
+
+i (τ ) be the mean activation on non-reasoning tokens, and let Hdi (τ ) ∈ [0 , 1] be the normalized entropy of feature i across the R reasoning-token groups. We then define REASON SCORE di (τ ) = μd, +
+
+i (τ )
+
+P
+
+j μd, +
+
+j (τ ) ·  Hdi (τ )α − μd, −
+
+i (τ )
+
+P
+
+j μd, −
+
+j (τ ) , (8) where α controls the strength of the entropy normalization. Intuitively, a feature receives a high score when it activates strongly and broadly across reasoning tokens while remaining selective against non-reasoning contexts. For each feature i and regime d, we then track the trajectory 
+
+{REASON SCORE di (τ )}τ ∈T d over the available checkpoints Td. Comparing these trajectories across regimes reveals which reasoning-relevant features are reinforced, weakened, or remain stable. 
+
+3.2 Experimental Design for Difficulty-Wise Feature Dynamics 0 10 20 30 40 50 60                                      
+
+> RL training step
+> 2
+> 1
+> 0
+> 1
+> 2
+> 3
+> 4
+> ReasonScore
+> ×10 6
+> (a) Full-data RL training 26 emerging features
+> cohort mean (26 shown / 26 total)
+> #1517 transformation
+> #1782 equality / same
+> #3070 satisfied / holds
+> #7313 causal (since)
+> 010 20 30 40
+> RL training step
+> 0.25
+> 0.00
+> 0.25
+> 0.50
+> 0.75
+> 1.00
+> 1.25
+> 1.50
+> ReasonScore
+> ×10 5
+> (b) easy@8-unique emerging features
+> cohort mean (5 shown / 5 total)
+> #974 rare-token noise
+> #2282 English morphemes (-ing/-ent)
+> #18946 mixed-language noise
+> #24572 Lemma / claim
+> 0510 15 20 25
+> RL training step
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> ReasonScore
+> ×10 5
+> (c) medium@8-unique emerging features
+> cohort mean (4 shown / 4 total)
+> #2988 [zh template]
+> #3764 setup verb 'forth'
+> #2797 line-break punctuation
+> #15154 mixed adjectives (noisy)
+> 0510 15 20 25 30 35
+> RL training step
+> 1
+> 0
+> 1
+> 2
+> 3
+> 4
+> 5
+> 6
+> ReasonScore
+> ×10 5
+> (d) hard@8-unique emerging features
+> cohort mean (20 shown / 35 total)
+> #4456 maximize
+> #4657 achievable
+> #450 denote / assume
+> #22590 strengthening
+
+Figure 5: Per-split emergence of new reasoning features. Each panel plots the relative-to-early-mean ReasonScore trajectories of the emerging T-SAE features in one regime. In our experiments, following [ 8], we study feature dynamics in the model’s intermediate residual stream. We train a T-SAE probe on the layer-16 resid-ual stream of the full-data RL model at the final training step τ = 58 ,and then keep the probe frozen for all analyses. This gives a shared fea-ture basis for comparing different RL-trained models. We apply the same frozen T-SAE to models trained on 
+
+easy @8, medium @8, and hard @8 subsets, and compare their feature suppression and reinforcement pat-terns with the full-data model. Ap-pendix E.4 provides a controlled SAE and T-SAE comparison at the same training step, supporting our use of T-SAE as the feature probe. 
+
+Difficulty-Wise Feature Dynamics. We first examine emerging reasoning features across full-data and difficulty-controlled training. A feature is considered X-unique emerging if its R EASON SCORE 
+
+increases strongly under split X while remaining flat or decreasing under the other difficulty splits. Concretely, we require Spearman r > 0.55 over training steps and a top-0.5% late-vs.-early gain on split X, together with r < 0.30 and at least 2× smaller gain on the other two splits. This criterion allows us to separate features that emerge as part of general RLVR training from those specifically recruited by easy, medium, or hard samples. As shown in Figure 5, the resulting feature counts reveal a strong imbalance. While easy @8 induces only 5 unique emerging features and medium @8 induces 4, hard @8 induces 35 unique emerging features, substantially more than the other regimes. Moreover, the hard-unique cohort shows larger and more synchronized positive shifts in R EASON SCORE , suggesting that hard samples recruit 70 10 20 30 40                                             
+
+> training step
+> 6.55
+> 6.60
+> 6.65
+> 6.70
+> 6.75
+> 6.80
+> 6.85
+> ReasonScore
+> ×10 4
+> Feature #11260 tokens: 'Hence / Therefore / Thus'
+> conclusion connectives
+> easy@8
+> medium@8
+> hard@8
+> 010 20 30 40
+> training step
+> 3.12
+> 3.14
+> 3.16
+> 3.18
+> 3.20
+> 3.22
+> 3.24
+> ReasonScore
+> ×10 4
+> Feature #19758 tokens: 'correct / holds / Conclusion'
+> proof verification
+> easy@8
+> medium@8
+> hard@8
+> 010 20 30 40
+> training step
+> 1.045
+> 1.050
+> 1.055
+> 1.060
+> 1.065
+> ReasonScore
+> ×10 3
+> Feature #3601 tokens: 'we'
+> first-person derivation voice
+> easy@8
+> medium@8
+> hard@8
+> 010 20 30 40
+> training step
+> 6.00
+> 6.01
+> 6.02
+> 6.03
+> 6.04
+> 6.05
+> ReasonScore
+> ×10 4
+> Feature #22797 tokens: 'Therefore'
+> conclusion (single-token)
+> easy@8
+> medium@8
+> hard@8
+> 010 20 30 40
+> training step
+> 3.70
+> 3.75
+> 3.80
+> 3.85
+> 3.90
+> 3.95
+> 4.00
+> 4.05
+> ReasonScore
+> ×10 5
+> Feature #24299 tokens: 'Therefore','so','it','they'
+> discourse glue
+> easy@8
+> medium@8
+> hard@8
+> 010 20 30 40
+> training step
+> 1.326
+> 1.324
+> 1.322
+> 1.320
+> 1.318
+> 1.316
+> ReasonScore
+> ×10 4
+> Feature #3169 tokens: 'is'
+> generic copula filler
+> easy@8
+> medium@8
+> hard@8
+> 010 20 30 40
+> training step
+> 1.12
+> 1.11
+> 1.10
+> 1.09
+> 1.08
+> 1.07
+> 1.06
+> ReasonScore
+> ×10 5
+> Feature #9115 tokens: 'A','B','D','P'
+> geometry point letters
+> easy@8
+> medium@8
+> hard@8
+> 010 20 30 40
+> training step
+> 1.325
+> 1.300
+> 1.275
+> 1.250
+> 1.225
+> 1.200
+> 1.175
+> 1.150
+> ReasonScore
+> ×10 5
+> Feature #819 tokens: '(','_{','_'
+> LaTeX subscript brackets
+> easy@8
+> medium@8
+> hard@8
+
+Figure 6: Token-level T-SAE feature dynamics along representative reasoning trajectories after RL on samples of different difficulty. The top row visualizes features suppressed by Hard @8 training, and the bottom row visualizes features reinforced by Hard @8 training. Hard samples tend to weaken existing reasoning features while amplifying more local or surface-level patterns. features that easier samples do not activate. Thus, hard samples are mechanistically rich: they do not merely strengthen existing reasoning circuitry, but can induce qualitatively new reasoning-associated features. We provide a semantic inspection of representative emerging features in Appendix E.4.2. The token-level trajectories in Figure 6 clarify this difference. medium @8 consistently strengthens interpretable reasoning markers such as conclusion connectives, proof verification tokens, first-person derivation markers, and explicit conclusion tokens. In contrast, easy @8 more strongly activates features associated with direct calculation and concise answer production, leading to shorter responses. See Figure 11 for more details in Appendix E.5. hard @8 often weakens reasoning-related features while reinforcing more local or surface-form patterns, such as discourse glue, copula fillers, geometry point letters, and L ATEX subscript tokens. Thus, easy samples tend to compress reasoning into direct solution patterns, medium samples reinforce transferable reasoning routines, and hard samples may amplify narrow heuristics instead of robust reasoning. These results explain why hard samples have inconsistent effects: they can reinforce some internal features, but this reinforcement is often accompanied by broad suppression of existing reasoning features. Appendix E.5 further confirms this pattern at the one-sample level: beneficial hard samples tend to reinforce reasoning-related features, whereas harmful hard samples suppress existing reasoning features or amplify surface-level patterns. Consequently, hard samples may occasionally improve performance but more often destabilize or degrade the model’s original capabilities. 
+
+4 Leveraging Mechanistic Insights for Better Training 
+
+Under the T-SAE feature-dynamics framework, hard samples are not inherently uninformative; their forward-solving form often hides learnable signals from the current policy. We therefore introduce two lightweight difficulty-adaptive interventions, backward-reasoning rewrites (Section 4.1) and T-SAE-guided training signals (Section 4.2), to validate the functional role of the reasoning features identified above. Our goal is not to provide a complete algorithmic search for state-of-the-art RLVR performance, but to test whether the discovered feature mechanisms can be used to improve reward exposure and credit assignment for hard samples. 
+
+4.1 Rewriting Hard Samples via Backward Reasoning 
+
+As a simple data-side intervention, we convert hard @8 samples into backward-reasoning variants. Given a hard sample with question q and answer a, we enumerate the numerical quantities in q.For each quantity, inspired by [ 45 ], we replace its value with an unknown variable z and create two inverse templates: one inserts the original answer as a condition and asks the model to recover 8z; the other keeps the masked question in its original form, appends “ If we know the answer to the above question is ·,” and asks for z. A sample with m numerical quantities therefore yields up to 2m rewritten questions. These rewrites preserve the mathematical relation in the original prompt while converting an unreachable forward problem into more tractable inverse reasoning tasks. Example 4.1 in Appendix F shows one instance. 
+
+Results. We construct AugHard @8 by applying both templates to every numerical quantity in the 
+
+hard @8 subset. Table 1 shows that AugHard @8 consistently improves over direct hard @8 training and surpasses the full-data baseline on AMC, AIME-2024, and MinervaMath. This result supports the view that hard samples can be useful once their reward-sparse forward form is converted into a form closer to the policy’s current solvability frontier. Table 1: Performance comparison between training on the Full dataset, the original hard @8 subset, and the rewritten AugHard @8 subset. 
+
+Method AMC MATH-500 AIME-2024 Minervamath Olympiadbench Full data 40.96 72.20 10.00 25.37 34.82 
+
+hard @8 39.76 65.00 3.33 15.81 30.65 
+
+AugHard @8 43.37 68.40 13.33 26.47 32.74 RFGO 44.56 72.00 16.67 25.00 33.78 
+
+4.2 Reasoning Feature-Guided Optimization 
+
+Different difficulty regimes induce distinct trajectories in the T-SAE reasoning-feature space. We use this signal to guide RLVR through Reasoning Feature-Guided Optimization (RFGO), which has two components: token-level weighting for normal verifier-supervised updates and proxy rewards for zero-variance rollout groups. 
+
+RFGO Token Weighting. RFGO weights each token by the future movement it induces in the reasoning-feature space. Given a response split into sentence spans {yk}Kk=1 , we first compute the span-level feature divergence as Dk = ∥ ¯zθSk ,Freason − ¯zref   
+
+> yk,Freason
+
+∥1, where ¯zyk denotes the average T-SAE activation over tokens in span yk, and Freason is the set of reasoning-associated features. After mean-centering Dk within the rollout as eDk, the RFGO signal for token t ∈ yk is RFGO t =
+
+PKr=k γr−k eDr . We convert it into a clipped influence weight wt = clip (exp( β RFGO t), 1−ϵw, 1+ 
+
+ϵw). The verifier advantage still determines the update direction, while wt adjusts the token-level update magnitude according to future reasoning-feature movement. 
+
+RFGO Proxy Reward. For some samples, all rollouts in a GRPO group receive the same verifier reward, i.e., {Ri}Gi=1 is all-zero or all-one. Such zero-variance groups produce no informative group-relative advantage. RFGO therefore uses a feature-based proxy reward only in this case. For each rollout yi, we compute RRFGO  
+
+> i
+
+=     
+
+> P
+> tMi,t
+> P
+> j∈F reason ωjzθi,t,j
+> P
+> tMi,t
+
+, where Mi,t masks valid response tokens and ωj is the feature weight derived from R EASON SCORE . We then set eRi = RRFGO  
+
+> i
+
+if 
+
+R1 = · · · = RG, and otherwise keep the original verifier reward, eRi = Ri. Thus, RFGO preserves binary verifier rewards when they are informative, but introduces a reasoning-feature-based ranking when verifier rewards have zero variance. 
+
+Results. RFGO achieves the best overall performance without rewriting the training data. It obtains the highest score on AMC and AIME-2024, nearly matches Full data on MATH-500, and improves the average score from 30 .91 for Hard @8 and 36 .67 for Full data to 38 .40 . These results indicate that reasoning-feature guidance can better exploit difficult samples by preserving useful verifier feedback while reducing the instability caused by uninformative or misleading hard-sample rewards. 
+
+5 Conclusion 
+
+In this work, we presented a mechanistic study of how samples across the full difficulty spectrum shape RLVR training for LLMs. Through controlled experiments and one-sample amplification, we demonstrated that hard samples produce sparse, low-quality learning signals that destabilize optimization and degrade performance, while medium-difficulty samples yield the strongest data efficiency. Critically, we showed that sample informativeness is not a static property but depends on the dynamic interaction between task difficulty and the model’s evolving capability. Moving beyond 9reward-level analysis, we employed Temporal Sparse Autoencoders (T-SAEs) to track the evolution of sparse feature activations throughout RL training, revealing that samples of different difficulty levels selectively reinforce or suppress distinct reasoning feature dynamics that are invisible from advantage signals alone. Guided by these mechanistic insights, we proposed two complementary interventions: a backward reasoning reformulation that converts hard samples into learnable inverse problems, and a T-SAE feature-based training signal that supports both token-level weighting and direct hard-sample rewards. Experiments on multiple mathematical reasoning benchmarks confirmed that these strategies significantly outperform direct training on hard subsets, with the rewritten samples surpassing full-data baselines on several benchmarks. 10 References 
+
+[1] Arash Ahmadian, Chris Cremer, Matthias Gallé, Marzieh Fadaee, Julia Kreutzer, Olivier Pietquin, Ahmet Üstün, and Sara Hooker. Back to basics: Revisiting reinforce style optimization for learning from human feedback in llms. arXiv preprint arXiv:2402.14740 , 2024. [2] Sanghwan Bae, Jiwoo Hong, Min Young Lee, Hanbyul Kim, JeongYeon Nam, and Donghyun Kwak. Online difficulty filtering for reasoning oriented reinforcement learning. In Proceedings of the 19th Conference of the European Chapter of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 700–719, 2026. [3] Yoshua Bengio, Jérôme Louradour, Ronan Collobert, and Jason Weston. Curriculum learning. In Proceedings of the 26th annual international conference on machine learning , pages 41–48, 2009. [4] Usha Bhalla, Alex Oesterling, Claudio Mayrink Verdun, Himabindu Lakkaraju, and Flavio Calmon. Temporal sparse autoencoders: Leveraging the sequential nature of language for interpretability. In The Fourteenth International Conference on Learning Representations ,2026. [5] James Burgess, Jan N. Hansen, Duo Peng, Yuhui Zhang, Alejandro Lozano, Min Woo Sun, Emma Lundberg, and Serena Yeung-Levy. Papersearchqa: Learning to search and reason over scientific papers with rlvr. arXiv preprint arXiv:2601.18207 , 2026. [6] Ganqu Cui, Lifan Yuan, Zefan Wang, Hanbin Wang, Yuchen Zhang, Jiacheng Chen, Wendi Li, Bingxiang He, Yuchen Fan, Tianyu Yu, et al. Process reinforcement through implicit rewards. 
+
+arXiv preprint arXiv:2502.01456 , 2025. [7] Yichao Fu, Xuewei Wang, Yuandong Tian, and Jiawei Zhao. Deep think with confidence. arXiv preprint arXiv:2508.15260 , 2025. [8] Andrey V Galichin, Alexey Dontsov, Polina Druzhinina, Anton Razzhigaev, Oleg Rogov, Elena Tutubalina, and Ivan Oseledets. I have covered all the bases here: Interpreting reasoning features in large language models via sparse autoencoders. In Proceedings of the AAAI Conference on Artificial Intelligence , volume 40, pages 30771–30779, 2026. [9] Leo Gao, Tom Dupré la Tour, Henk Tillman, Gabriel Goh, Rajan Troll, Alec Radford, Ilya Sutskever, Jan Leike, and Jeffrey Wu. Scaling and evaluating sparse autoencoders. In Interna-tional Conference on Learning Representations , 2025. [10] Chaoqun He, Renjie Luo, Yuzhuo Bai, Shengding Hu, Zhen Thai, Junhao Shen, Jinyi Hu, Xu Han, Yujie Huang, Yuxiang Zhang, et al. Olympiadbench: A challenging benchmark for promoting agi with olympiad-level bilingual multimodal scientific problems. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 3828–3850, 2024. [11] Dan Hendrycks, Collin Burns, Saurav Kadavath, Akul Arora, Steven Basart, Eric Tang, Dawn Song, and Jacob Steinhardt. Measuring mathematical problem solving with the math dataset. 
+
+arXiv preprint arXiv:2103.03874 , 2021. [12] Jian Hu, Jason Klein Liu, Haotian Xu, and Wei Shen. Reinforce++: An efficient rlhf algorithm with robustness to both prompt and reward models. arXiv preprint arXiv:2501.03262 , 2025. [13] Robert Huben, Hoagy Cunningham, Logan Riggs Smith, Aidan Ewart, and Lee Sharkey. Sparse autoencoders find highly interpretable features in language models. In International Conference on Learning Representations , 2024. [14] Guochao Jiang, Wenfeng Feng, Guofeng Quan, Chuzhan Hao, Yuewei Zhang, Guohua Liu, and Hao Wang. VCRL: Variance-based curriculum reinforcement learning for large language models. arXiv preprint arXiv:2509.19803 , 2025. 11 [15] Nathan Lambert, Jacob Morrison, Valentina Pyatkin, Shengyi Huang, Hamish Ivison, Faeze Brahman, Lester James V. Miranda, Alisa Liu, Nouha Dziri, Shane Lyu, Yuling Gu, Saumya Malik, Victoria Graf, Jena D. Hwang, Jiangjiang Yang, Ronan Le Bras, Oyvind Tafjord, Chris Wilhelm, Luca Soldaini, Noah A. Smith, Yizhong Wang, Pradeep Dasigi, and Hannaneh Hajishirzi. Tulu 3: Pushing frontiers in open language model post-training. arXiv preprint arXiv:2411.15124 , 2025. [16] Thanh-Long V. Le, Myeongho Jeon, Kim Vu, Viet Dac Lai, and Eunho Yang. No prompt left behind: Exploiting zero-variance prompts in LLM reinforcement learning via entropy-guided advantage shaping. In The Fourteenth International Conference on Learning Representations ,2026. [17] Aitor Lewkowycz, Anders Andreassen, David Dohan, Ethan Dyer, Henryk Michalewski, Vinay Ramasesh, Ambrose Slone, Cem Anil, Imanol Schlag, Theo Gutman-Solo, et al. Solving quan-titative reasoning problems with language models. Advances in neural information processing systems , 35:3843–3857, 2022. [18] Jia Li, Edward Beeching, Lewis Tunstall, Ben Lipkin, Roman Soletskyi, Shengyi Huang, Kashif Rasul, Longhui Yu, Albert Q Jiang, Ziju Shen, et al. Numinamath: The largest public dataset in ai4maths with 860k pairs of competition math problems and solutions. Hugging Face repository ,2024. [19] Jiazheng Li, Hongzhou Lin, Hong Lu, Kaiyue Wen, Zaiwen Yang, Jiaxuan Gao, Yi Wu, and Jingzhao Zhang. QuestA: Expanding reasoning capacity in LLMs via question augmentation. In The Fourteenth International Conference on Learning Representations , 2026. [20] Ziniu Li, Tian Xu, Yushun Zhang, Zhihang Lin, Yang Yu, Ruoyu Sun, and Zhi-Quan Luo. Remax: A simple, effective, and efficient reinforcement learning method for aligning large language models. arXiv preprint arXiv:2310.10505 , 2023. [21] Xiao Liang, Zhongzhi Li, Yeyun Gong, Yelong Shen, Ying Nian Wu, Zhijiang Guo, and Weizhu Chen. Beyond pass@1: Self-play with variational problem synthesis sustains rlvr. arXiv preprint arXiv:2508.14029 , 2025. [22] Tom Lieberum, Senthooran Rajamanoharan, Arthur Conmy, Lewis Smith, Nicolas Sonnerat, Vikrant Varma, János Kramár, Anca Dragan, Rohin Shah, and Neel Nanda. Gemma scope: Open sparse autoencoders everywhere all at once on gemma 2. arXiv preprint arXiv:2408.05147 ,2024. [23] Hunter Lightman, Vineet Kosaraju, Yura Burda, Harri Edwards, Bowen Baker, Teddy Lee, Jan Leike, John Schulman, Ilya Sutskever, and Karl Cobbe. Let’s verify step by step. arXiv preprint arXiv:2305.20050 , 2023. [24] Jie Liu, Gongye Liu, Jiajun Liang, Yangguang Li, Jiaheng Liu, Xintao Wang, Pengfei Wan, Di Zhang, and Wanli Ouyang. Flow-grpo: Training flow matching models via online rl. arXiv preprint arXiv:2505.05470 , 2025. [25] Zichen Liu, Changyu Chen, Wenjun Li, Penghui Qi, Tianyu Pang, Chao Du, Wee Sun Lee, and Min Lin. Understanding r1-zero-like training: A critical perspective. arXiv preprint arXiv:2503.20783 , 2025. [26] Xinyu Lu, Kaiqi Zhang, Jinglin Yang, Boxi Cao, Yaojie Lu, Hongyu Lin, Min He, Xianpei Han, and Le Sun. P 2O: Joint policy and prompt optimization. arXiv preprint arXiv:2603.21877 ,2026. [27] Michael Luo, Sijun Tan, Justin Wong, Xiaoxiang Shi, William Y Tang, Manan Roongta, Colin Cai, Jeffrey Luo, Tianjun Zhang, Li Erran Li, et al. Deepscaler: Surpassing o1-preview with a 1.5 b model by scaling rl. Notion Blog , 2025. [28] Wenqiang Luo, Jacky Wai Keung, Boyang Yang, Jacques Klein, Tegawende F. Bissyande, Haoye Tian, and Bach Le. Unlocking llm repair capabilities through cross-language translation and multi-agent refinement, 2025. 12 [29] Samuel Marks, Can Rager, Eric J. Michaud, Yonatan Belinkov, David Bau, and Aaron Mueller. Sparse feature circuits: Discovering and editing interpretable causal graphs in language models. In International Conference on Learning Representations , 2025. [30] Andrew Ng et al. Sparse autoencoder. CS294A Lecture notes , 72(2011):1–19, 2011. [31] Jiazhen Pan, Che Liu, Junde Wu, Fenglin Liu, Jiayuan Zhu, Hongwei Bran Li, Chen Chen, Cheng Ouyang, and Daniel Rueckert. Medvlm-r1: Incentivizing medical reasoning capability of vision-language models (vlms) via reinforcement learning. arXiv preprint arXiv:2502.19634 ,2025. [32] Shubham Parashar, Shurui Gui, Xiner Li, Hongyi Ling, Sushil Vemuri, Blake Olson, Eric Li, Yu Zhang, James Caverlee, Dileep Kalathil, et al. Curriculum reinforcement learning from easy to hard tasks improves llm reasoning. arXiv preprint arXiv:2506.06632 , 2025. [33] Gonçalo Santos Paulo, Alex Troy Mallen, Caden Juang, and Nora Belrose. Automatically interpreting millions of features in large language models. In International Conference on Machine Learning , pages 48393–48421. PMLR, 2025. [34] Chuanyu Qin, Chenxu Yang, Qingyi Si, Naibin Gu, Dingyu Yao, Zheng Lin, Peng Fu, Nan Duan, and Jiaqi Wang. Near-future policy optimization. arXiv preprint arXiv:2604.20733 ,2026. [35] John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. Proximal policy optimization algorithms. arXiv preprint arXiv:1707.06347 , 2017. [36] Zhihong Shao, Peiyi Wang, Qihao Zhu, Runxin Xu, Junxiao Song, Xiao Bi, Haowei Zhang, Mingchuan Zhang, YK Li, Yang Wu, et al. Deepseekmath: Pushing the limits of mathematical reasoning in open language models. arXiv preprint arXiv:2402.03300 , 2024. [37] Guangming Sheng, Chi Zhang, Zilingfeng Ye, Xibin Wu, Wang Zhang, Ru Zhang, Yanghua Peng, Haibin Lin, and Chuan Wu. Hybridflow: A flexible and efficient rlhf framework. arXiv preprint arXiv:2409.19256 , 2024. [38] Xinyu Tang, Zhenduo Zhang, Yurou Liu, Xin Zhao, zujie wen, Zhiqiang Zhang, and JUN ZHOU. Towards high data efficiency in reinforcement learning with verifiable reward. In The Fourteenth International Conference on Learning Representations , 2026. [39] Yiping Wang, Qing Yang, Zhiyuan Zeng, Liliang Ren, Liyuan Liu, Baolin Peng, Hao Cheng, Xuehai He, Kuan Wang, Jianfeng Gao, et al. Reinforcement learning for reasoning in large language models with one training example. arXiv preprint arXiv:2504.20571 , 2025. [40] Yangzhen Wu, Shanda Li, Zixin Wen, Xin Zhou, Ameet Talwalkar, Yiming Yang, Wenhao Huang, and Tianle Cai. Learn hard problems during RL with reference guided fine-tuning. 
+
+arXiv preprint arXiv:2603.01223 , 2026. [41] Zeyue Xue, Jie Wu, Yu Gao, Fangyuan Kong, Lingting Zhu, Mengzhao Chen, Zhiheng Liu, Wei Liu, Qiushan Guo, Weilin Huang, and Ping Luo. Dancegrpo: Unleashing grpo on visual generation. arXiv preprint arXiv:2505.07818 , 2025. [42] An Yang, Beichen Zhang, Binyuan Hui, Bofei Gao, Bowen Yu, Chengpeng Li, Dayiheng Liu, Jianhong Tu, Jingren Zhou, Junyang Lin, et al. Qwen2. 5-math technical report: Toward mathematical expert model via self-improvement. arXiv preprint arXiv:2409.12122 , 2024. [43] Shihui Yang, Chengfeng Dou, Peidong Guo, Kai Lu, Qiang Ju, Fei Deng, and Rihui Xin. Dcpo: Dynamic clipping policy optimization. arXiv preprint arXiv:2509.02333 , 2025. [44] Zhicheng Yang, Zhijiang Guo, Yinya Huang, Yongxin Wang, Dongchun Xie, Hanhui Li, Yiwei Wang, Xiaodan Liang, and Jing Tang. Depth-breadth synergy in rlvr: Unlocking llm reasoning gains with adaptive exploration. arXiv preprint arXiv:2508.13755 , 2026. 13 [45] Longhui Yu, Weisen Jiang, Han Shi, Jincheng Yu, Zhengying Liu, Yu Zhang, James T. Kwok, Zhenguo Li, Adrian Weller, and Weiyang Liu. MetaMath: Bootstrap your own mathematical questions for large language models. In International Conference on Learning Representations ,2024. [46] Qiying Yu, Zheng Zhang, Ruofei Zhu, Yufeng Yuan, Xiaochen Zuo, Yu Yue, Weinan Dai, Tiantian Fan, Gaohong Liu, Lingjun Liu, et al. Dapo: An open-source llm reinforcement learning system at scale. arXiv preprint arXiv:2503.14476 , 2025. [47] Yang Yue, Zhiqi Chen, Rui Lu, Andrew Zhao, Zhaokai Wang, Yang Yue, Shiji Song, and Gao Huang. Does reinforcement learning really incentivize reasoning capacity in llms beyond the base model? arXiv preprint arXiv:2504.13837 , 2025. [48] Yu Yue, Yufeng Yuan, Qiying Yu, Xiaochen Zuo, Ruofei Zhu, et al. Vapo: Efficient and reliable reinforcement learning for advanced reasoning tasks. arXiv preprint arXiv:2504.05118 , 2025. [49] Runzhe Zhan, Yafu Li, Zhi Wang, Xiaoye Qu, Dongrui Liu, Jing Shao, Derek F. Wong, and Yu Cheng. ExGRPO: Learning to reason from experience. In International Conference on Learning Representations , 2026. [50] Xichen Zhang, Sitong Wu, Yinghao Zhu, Haoru Tan, Shaozuo Yu, Ziyi He, and Jiaya Jia. Scaf-GRPO: Scaffolded group relative policy optimization for enhancing LLM reasoning. In 
+
+International Conference on Learning Representations , 2026. [51] Andrew Zhao, Yiran Wu, Yang Yue, Tong Wu, Quentin Xu, Yang Yue, Matthieu Lin, Shenzhi Wang, Qingyun Wu, Zilong Zheng, and Gao Huang. Absolute zero: Reinforced self-play reasoning with zero data. arXiv preprint arXiv:2505.03335 , 2025. [52] Chujie Zheng, Shixuan Liu, Mingze Li, Xiong-Hui Chen, Bowen Yu, Chang Gao, Kai Dang, Yuqiong Liu, Rui Men, An Yang, et al. Group sequence policy optimization. arXiv preprint arXiv:2507.18071 , 2025. [53] Xudong Zhu, Mohammad Mahdi Khalili, and Zhihui Zhu. AbsTopK: Rethinking sparse au-toencoders for bidirectional features. In International Conference on Learning Representations ,2026. 14 Appendix A Related Work 
+
+Reinforcement Learning with Verifiable Reward. Reinforcement Learning from Verifiable Rewards has been proposed as a promising framework for enhancing the reasoning capabilities of large language models by leveraging rule-based or verifiable functions. Early RLVR pipelines typically built on Proximal Policy Optimization (PPO) [ 35 ], which provides stable updates but incurs high computational cost and sensitivity due to its critic model. VAPO [ 48 ] revisits this value-based line for long-CoT reasoning by improving the reliability and efficiency of PPO-style training. To reduce the overhead of value-model learning, GRPO [ 36 ] replaces the critic with group-relative reward normalization, while Dr. GRPO [ 25 ] analyzes and corrects biases in R1-zero-like training. DAPO [ 46 ] further improves long-CoT RLVR through decoupled clipping, dynamic sampling, token-level loss, and overlong reward shaping; GSPO [ 52 ] moves clipping and optimization from the token level to the sequence level; and DCPO [ 43 ] dynamically adjusts clipping to stabilize policy updates. In parallel, ReMax [ 20 ], REINFORCE++ [ 12 ], and RLOO [ 1] simplify RLVR optimization with REINFORCE-style estimators and lightweight baselines. Orthogonal to optimizer design, PRIME [ 6 ] introduces implicit process rewards, Scaf-GRPO [ 50 ] provides scaffolded guidance for zero-reward hard problems, ExGRPO [ 49 ] improves sample efficiency through experience reuse, and NPO [ 34 ] uses near-future checkpoints from the same training run as mixed-policy trajectory sources to balance trajectory quality and distributional closeness. Beyond language reasoning, DanceGRPO [ 41 ] and Flow-GRPO [ 24 ] extend GRPO-style online RL to visual generation and flow matching, respectively.These works ask how to make RLVR optimization more stable, efficient, or scalable. In contrast, we study which samples provide useful RLVR signals and why hard samples are unstable. 
+
+Sample Difficulty and Effective in RLVR. Beyond optimizer design, recent work studies how sample difficulty determines whether a prompt yields useful RLVR signal. [ 47 ] shows that RL gains are often bounded by the capabilities already present in the base model, suggesting that prompts outside the model’s reachable capability frontier may provide weak or unreliable feedback. Following the broader curriculum-learning principle [ 3], E2H Reasoner [ 32 ] schedules training from easy to hard tasks, while Online Difficulty Filtering [ 2] filters prompts online to emphasize intermediate-difficulty examples that are neither already saturated nor consistently failed. VCRL [ 14 ] treats rollout reward variance as a difficulty proxy, prioritizing prompts whose mixture of successful and failed samples can produce nonzero group-relative advantages. DEPO [ 38 ] improves data efficiency by combining prior data selection with online exploration and replay, thereby allocating rollout budget to prompts that are more likely to yield informative updates. At the low-signal end of the difficulty spectrum, RL-ZVP [ 16 ] revisits zero-variance prompts and applies entropy-guided advantage shaping, suggesting that samples with vanishing advantages can still affect exploration when their token-level uncertainty is used. DARS and DARS-B [ 44 ] adapt exploration along depth and breadth to expand the solvable region, QuestA [ 19 ] augments questions to elicit harder reasoning behaviors, ReGFT [ 40 ]uses reference-guided fine-tuning to make hard problems more learnable during RL, and P 2O [ 26 ]jointly optimizes prompts and policies so that the training distribution evolves with the learner. However, our work is complementary but focuses on a different question: why do hard samples behave unstably in RLVR? Rather than only selecting, augmenting, or exploring hard samples, we study their effects through curriculum-level, one-sample, and T-SAE feature-level analyses. We show that hard samples are heterogeneous: some induce useful policy changes, but many suppress existing reasoning features or amplify brittle shortcuts, thereby damaging downstream performance. 
+
+Sparse Autoencoders for LLM Interpretability. Sparse Autoencoders [ 30 ] provide an unsuper-vised tool for decomposing dense language-model activations into sparse latent features, offering a practical route to study superposition and polysemanticity in LLM representations. [ 13 ] shows that SAE features in language models are more interpretable and monosemantic than raw neurons or arbitrary activation directions, and can support causal interventions on model behavior. [ 9] further improves SAE training with controlled sparsity and systematic feature-quality metrics, demonstrating that larger SAEs recover richer features and can be trained even on frontier-model activations. Gemma Scope [ 22 ] lowers the barrier for layer-wise and sub-layer-wise analysis of modern open models, while the automated interpretability pipeline [ 33 ] scales natural-language interpretation to millions 15 of SAE features and introduces intervention scoring to evaluate feature effects under intervention. Beyond feature discovery, Sparse Feature Circuits [ 29 ] connects SAE features into causal graphs for explaining and editing model behaviors, and AbsTopK [ 53 ] revisits the sparse-coding formula-tion to recover bidirectional conceptual features. For reasoning models, ReasonScore [ 8] identifies SAE features associated with uncertainty, exploratory thinking, and reflection in DeepSeek-R1-style models, providing direct evidence that sparse features can expose internal reasoning mechanisms. Prior SAE work primarily studies feature discovery, monosemanticity, causal intervention, automated interpretation, and sparse feature circuits in pretrained or post-trained language models. For reasoning models, ReasonScore further shows that SAE features can capture uncertainty, exploration, and reflection-related behaviors. Our work is complementary but focuses on RLVR dynamics: we use T-SAE to analyze how samples of different difficulty reinforce or suppress reasoning features during policy optimization. 
+
+B More About Policy Algorithms and Definitions 
+
+B.1 More About Policy Optimization Algorithms Group Relative Policy Optimization (GRPO). GRPO [ 36 ] is an efficient RL algorithm introduced by DeepSeek for training its DeepSeek-Math model, aiming to reduce the training cost of PPO-style [ 35 ] reasoning. GRPO removes the value network by estimating advantages from the in-group standardized reward. Concretely, for each query–answer pair (x, y), the rollout policy πθold samples a group of responses {oi}Gi=1 with binary outcome rewards {Ri}Gi=1 defined by a verifier. Let 
+
+ˆAit = Ri − mean ({Ri}Gi=1 )
+
+std ({Ri}Gi=1 ) , where Ri =
+
+(1 if is_equivalent (a, o i),
+
+0 otherwise . (9) GRPO then optimizes a PPO-style clipped objective with an additional KL penalty to a reference model 
+
+JGRP O (θ) = E(q,a )∼D ,{oi}Gi=1 ∼πθold (·| q)
+
+1
+
+G
+
+> G
+
+X
+
+> i=1
+
+1
+
+|oi|
+
+> |oi|
+
+X
+
+> t=1
+
+
+
+min 
+
+
+
+rit(θ) ˆAit, clip (rit(θ), 1 − ϵ, 1 + ϵ) ˆAit
+
+
+
+− βDKL (πθ ∥πref )
+
+
+
+,
+
+(10) where the per-token likelihood ratio is 
+
+rit(θ) = πθ (oit | q, o i<t )
+
+πθold (oit | q, o i<t ) . (11) 
+
+G ∈ N is the group size, ϵ > 0 is the PPO clipping parameter, β ≥ 0 controls KL regularization, and 
+
+ε ≪ 1 stabilizes the standard deviation. 
+
+B.2 More About Temporal Sparse Autoencoders. 
+
+Sparse Autoencoders (SAEs) decompose dense model activations into sparse latent features. Given an activation ht ∈ Rd at token position t, an SAE encodes it into an overcomplete sparse code and reconstructs the original activation: 
+
+zt = ζ(ht) = TopK( σ(W enc ht + benc )) , ˆht = ξ(zt) = W dec zt + bdec , (12) where W enc ∈ Rm×d, W dec ∈ Rd×m, benc ∈ Rm, bdec ∈ Rd, and m ≫ d. Each coordinate of zt
+
+corresponds to a sparse latent feature, whose value indicates the activation strength of that feature at token position t.Temporal Sparse Autoencoders (T-SAEs) extend standard SAEs by incorporating the sequential structure of language. The key assumption is that high-level semantic features should remain relatively stable across nearby tokens in the same sequence, while low-level syntactic or token-specific features may fluctuate more rapidly. To model this distinction, T-SAE partitions the sparse code into high-level and low-level components: 
+
+zt = z0: ht , zh:mt
+
+, (13) 16 where z0: ht ∈ Rh denotes the first h high-level features and zh:mt ∈ Rm−h denotes the remaining low-level features. Correspondingly, the decoder matrix is partitioned as 
+
+W dec = W dec 0: h , W dec 
+
+> h:m
+
+, (14) where W dec 0: h ∈ Rd×h and W dec  
+
+> h:m
+
+∈ Rd×(m−h).The reconstruction objective contains a high-level reconstruction term and a full reconstruction term: 
+
+Lrec = ht −  W dec 0: h z0: ht + bdec  22 + ht −  W dec zt + bdec  22 . (15) The first term encourages high-level features to capture stable semantic structure, while the second term preserves full reconstruction quality using both high- and low-level features. To encourage temporal consistency, T-SAE further adds a contrastive objective on the high-level features. For paired activations (h(i) 
+
+> t
+
+, h(i)
+
+> t−1
+
+) from the same sequence, let 
+
+u(i) 
+
+> t
+
+= z0: h(h(i) 
+
+> t
+
+), u(i) 
+
+> t−1
+
+= z0: h(h(i)
+
+> t−1
+
+), (16) and let s(·, ·) denote cosine similarity. The contrastive loss is 
+
+Lcontr = − 1
+
+N
+
+> N
+
+X
+
+> i=1
+
+log exp 
+
+
+
+s(u(i) 
+
+> t
+
+, u(i)
+
+> t−1
+
+)
+
+PNj=1 exp 
+
+
+
+s(u(i) 
+
+> t
+
+, u(j)
+
+> t−1
+
+)
+
+ . (17) This objective pulls together high-level features from nearby tokens in the same sequence while push-ing apart high-level features from different examples, preventing collapse to constant representations. The full T-SAE objective is 
+
+LTSAE = Lrec + λcontr Lcontr . (18) In our analysis, this temporal structure is important because reasoning unfolds across multiple generated tokens rather than at isolated positions. T-SAE therefore provides a feature basis better suited for tracking reasoning-feature dynamics during RLVR. 
+
+B.3 More About Sample Difficulty Low-Variance pass @k Estimation. Directly computing pass @k using only k sampled outputs per problem can lead to high variance. To mitigate this, we follow the unbiased estimation method proposed by Chen et al . Specifically, for each problem xi from the evaluation dataset D, we generate 
+
+n samples ( n ≥ k) and count the number of correct samples as ci. The unbiased estimator of pass @k
+
+over the dataset is given by: 
+
+pass @k := Exi∈D 
+
+"
+
+1 −
+
+ n−ci
+
+> k
+
+ nk
+
+#
+
+(19) With this formulation, we can easily estimate pass @k with low variance across all k ≤ n.
+
+Sample Difficulty. Following [ 47 ], we use pass @k as a proxy for sample difficulty, where k is set to the group size used in GRPO. In this paper, we set group size is equal to 8. We then define a problem as unsolved within k attempts if none of the k candidates passes verification, i.e. , pass @k = 0 .Such a problem is categorized as a difficulty-k problem, which we refer to as a hard @k sample for convenience. Conversely, to identify easy samples, we introduce easy @k. A problem is categorized as an easy @k sample if all of its k sampled candidates pass verification, indicating that the model can solve the problem consistently across rollouts. To further characterize intermediate difficulty, we define medium @k samples as those satisfying pass @k̸ = 0 and not belonging to easy@ k, i.e., samples where at least one but not all rollouts pass verification. 
+
+C Additional Examples of Harmful Hard Samples 
+
+We provide additional representative examples of harmful hard samples. Example 2.2 shows misunder-standing of the target goal, where the model treats a make-up requirement as a simple cumulative-goal 17 problem. Example 2.3 illustrates a question–answer mismatch, where the provided label corresponds to the daily cost rather than the total cost requested by the question. Example 2.4 demonstrates missing aggregation operations in the final answer. Example 2.5 shows a Python calculation error that contradicts the correct arithmetic. Example 2.6 captures inconsistent output value types, where the model alternates between integer and decimal monetary formats. Example 2.7 presents a logical error in combining multiple constraints. 
+
+Example 2.2: Misunderstanding the Goal 
+
+Question: Shawna’s workout goal is 30 situps. On Monday, Shawna was only able to do 12 situps, so she decided that she would make up for the rest on Tuesday. However, she was only able to do 19 situps on Tuesday. How many situps would Shawna have to do on Wednesday to meet her minimum goal and make up for the ones she didn’t do? (Answer: 59) Response: Shawna’s goal is to do 30 situps in total. On Monday, she did 12 situps, and on Tuesday, she did 19 situps. To find out how many situps she needs to do on Wednesday to meet her goal, we can calculate the total number of situps she has already done and then subtract that from her goal. 1. Calculate the total number of situps Shawna has done so far: \[ \text{Total situps done so far} = 12 + 19 = 31 \] 2. Since Shawna’s goal is 30 situps, she has already exceeded her goal by 1 situp. Therefore, she doesn ’t need to do any more situps on Wednesday to meet her goal. However, if we interpret the problem as finding out how many situps she would need to do on Wednesday to make up for the ones she didn’t do (which is not possible since she has already exceeded her goal), we can still calculate it. 3. The number of situps Shawna needs to do on Wednesday to make up for the ones she didn’t do is: \[ \text{Situps needed on Wednesday} = 30 - (12 + 19) = 30 - 31 = -1 \] Since it’s not possible to do a negative number of situps, the answer is 0. Let’s confirm this with Python code. ‘‘‘python # Shawna’s goal goal = 30 # Situps done on Monday and Tuesday situps_monday = 12 situps_tuesday = 19 # Total situps done so far total_done = situps_monday + situps_tuesday # Situps needed on Wednesday to meet the goal situps_needed_wednesday = goal - total_done # Since it’s not possible to do a negative number of situps, we set it to 0 if situps_needed_wednesday < 0: situps_needed_wednesday = 0 # Output the final answer print(f"\boxed{{{situps_needed_wednesday}}}") ‘‘‘ ‘‘‘output \boxed{0} ‘‘‘ The final answer is \(\boxed{0}\). 
+
+Example 2.3: Question Mismatches Answer 
+
+Question: Henry took 9 pills a day for 14 days. Of these 9 pills, 4 pills cost $1.50 each, and the other pills each cost $5.50 more. How much did he spend in total on the pills? (Answer: 41) Response: First, let’s break down the problem: 1. Henry takes 9 pills a day for 14 days, so the total number of pills he takes is \(9 \times 14 = 126\). 2. Out of these 9 pills, 4 pills cost $1.50 each, and the other 5 pills cost $1.50 + $5.50 = $7.00 each .3. The total cost for the 4 pills is \(4 \times 1.50 = 6.00\). 4. The total cost for the 5 pills is \(5 \times 7.00 = 35.00\). 5. The total cost for the 9 pills is \(6.00 + 35.00 = 41.00\). 6. Since Henry takes these 9 pills every day for 14 days, the total cost for all the pills is \(41.00 \ times 14 = 574.00\). Now, let’s write the Python code to verify this calculation. ‘‘‘python # Number of pills per day 
+
+18 pills_per_day = 9 # Number of days days = 14 # Cost of 4 pills cost_4_pills = 4 * 1.50 # Cost of 5 pills cost_5_pills = 5 * (1.50 + 5.50) # Total cost for 9 pills total_cost_9_pills = cost_4_pills + cost_5_pills # Total cost for all pills over 14 days total_cost = total_cost_9_pills * days # Output the final answer print(f"\boxed{{{int(total_cost)}}}") ‘‘‘ ‘‘‘output \boxed{574} ‘‘‘ The total amount Henry spent on the pills is \(\boxed{574}\). 
+
+Example 2.4: Missing Multiplication or Addition 
+
+Question: In a section of the forest, there are 100 weasels and 50 rabbits. Three foxes invade this region and hunt the rodents. Each fox catches an average of 4 weasels and 2 rabbits per week. How many rabbits and weasels will be left after 3 weeks? (Answer: 96) Response: 1. First, we need to calculate the number of weasels and rabbits caught by the foxes in one week. 2. Each fox catches 4 weasels and 2 rabbits per week. With 3 foxes, the total number of weasels caught per week is \(3 \times 4 = 12\) weasels, and the total number of rabbits caught per week is \(3 \ times 2 = 6\) rabbits. 3. Over 3 weeks, the total number of weasels caught is \(12 \times 3 = 36\) weasels, and the total number of rabbits caught is \(6 \times 3 = 18\) rabbits. 4. The initial number of weasels is 100, so after 3 weeks, the number of weasels left is \(100 - 36 = 64\). 5. The initial number of rabbits is 50, so after 3 weeks, the number of rabbits left is \(50 - 18 = 32\). 6. The final answer should be boxed. Let’s implement this in Python to ensure the calculations are correct. ‘‘‘python # Initial number of weasels and rabbits initial_weasels = 100 initial_rabbits = 50 # Number of foxes and their catch rates foxes = 3 weasels_per_fox_per_week = 4 rabbits_per_fox_per_week = 2 # Total number of weasels and rabbits caught per week weasels_caught_per_week = foxes * weasels_per_fox_per_week rabbits_caught_per_week = foxes * rabbits_per_fox_per_week # Total number of weasels and rabbits caught in 3 weeks weasels_caught_in_3_weeks = weasels_caught_per_week * 3 rabbits_caught_in_3_weeks = rabbits_caught_per_week * 3 # Number of weasels and rabbits left after 3 weeks weasels_left = initial_weasels - weasels_caught_in_3_weeks rabbits_left = initial_rabbits - rabbits_caught_in_3_weeks # Final answer in boxed format final_answer = f"\boxed{{{int(weasels_left)} {int(rabbits_left)}}}" print(final_answer) ‘‘‘ ‘‘‘output \boxed{64 32} ‘‘‘ The final answer is: \[ \boxed{64 32} \] 
+
+19 Example 2.5: Python Calculation Error 
+
+Question: A cake has 8 slices and each slice contains 347 calories. A pan of brownies has 6 brownies and each slice contains 375 calories. How many more calories does the cake have? (Answer: 526) Response: First, we need to calculate the total number of calories in the cake and the total number of calories in the pan of brownies. Then, we will find the difference between these two values. 1. Calculate the total number of calories in the cake: \[ \text{Total calories in cake} = 8 \text{ slices} \times 347 \text{ calories/slice} \] 2. Calculate the total number of calories in the pan of brownies: \[ \text{Total calories in brownies} = 6 \text{ brownies} \times 375 \text{ calories/brownie} \] 3. Find the difference between the total number of calories in the cake and the total number of calories in the pan of brownies: \[ \text{Difference} = \text{Total calories in cake} - \text{Total calories in brownies} \] Let’s calculate this using Python code. ‘‘‘python # Calculate the total number of calories in the cake total_calories_cake = 8 * 347 # Calculate the total number of calories in the pan of brownies total_calories_brownies = 6 * 375 # Calculate the difference difference = total_calories_cake - total_calories_brownies # Output the final answer in boxed format print(f"\boxed{{{int(difference)}}}") ‘‘‘ ‘‘‘output \boxed{14} ‘‘‘ The cake has \(\boxed{14}\) more calories than the pan of brownies. 
+
+Example 2.6: Different Value Types 
+
+Question: Tim buys 3 dozen eggs. Eggs cost $.50 each. How much did he pay for eggs? (Answer: 18) Response: First, we need to determine the total number of eggs Tim bought. Since Tim buys 3 dozen eggs, and one dozen is equal to 12, the total number of eggs is \(3 \times 12 = 36\). Next, we need to calculate the total cost of these eggs. Since each egg costs $0.50, the total cost is \(36 \times 0.50 = 18.00\). So, Tim paid $18.00 for the eggs. Let’s put this in the final answer format. \boxed{18.00} ‘‘‘python # Calculate the total number of eggs total_eggs = 3 * 12 # Calculate the total cost total_cost = total_eggs * 0.50 # Output the final answer print(f"\boxed{{{int(total_cost)}}}") ‘‘‘ ‘‘‘output \boxed{18} ‘‘‘ The total cost of the eggs is $18.00. Therefore, the final answer is: \[ \boxed{18.00} \] 
+
+Example 2.7: Logical Error 
+
+Question: Amaya scored 20 marks fewer in Maths than she scored in Arts. She also got 10 marks more in Social Studies than she got in Music. If she scored 70 in Music and scored 1/10 less in Maths, what’s the total number of marks she scored in all the subjects? (Answer: 296) Response: First, let’s define the variables for the scores in each subject: - Let \( A \) be the score in Arts. - Let \( M \) be the score in Music. - Let \( S \) be the score in Social Studies. 
+
+20 - Let \( T \) be the score in Maths. From the problem statement, we know: 1. Amaya scored 20 marks fewer in Maths than she scored in Arts. So, \( T = A - 20 \). 2. She scored 10 marks more in Social Studies than she got in Music. So, \( S = M + 10 \). 3. She scored 70 in Music. So, \( M = 70 \). 4. She scored \( \frac{1}{10} \) less in Maths than in Arts. So, \( T = A - \frac{1}{10}A = \frac {9}{10}A \). Using the value of \( M \), we can find \( S \): \[ S = 70 + 10 = 80 \] Now, using the value of \( T \) and the relationship \( T = \frac{9}{10}A \), we can find \( A \): \[ A - 20 = \frac{9}{10}A \] \[ A - \frac{9}{10}A = 20 \] \[ \frac{1}{10}A = 20 \] \[ A = 200 \] Now we can find \( T \): \[ T = 200 - 20 = 180 \] So, the scores in each subject are: - Arts: \( A = 200 \) - Music: \( M = 70 \) - Social Studies: \( S = 80 \) - Maths: \( T = 180 \) The total number of marks she scored in all the subjects is: \[ 200 + 70 + 80 + 180 = 530 \] Let’s confirm this with Python code. ‘‘‘python # Given values and relationships M = 70 # Score in Music S = M + 10 # Score in Social Studies A = (M + 20) * (10 / 9) # Score in Arts, derived from T = (9/10)A and T = A - 20 T = A - 20 # Score in Maths # Total marks total_marks = A + M + S + T # Output the final answer print(f"\boxed{{{int(total_marks)}}}") ‘‘‘ ‘‘‘output \boxed{530} ‘‘‘ The total number of marks Amaya scored in all the subjects is \(\boxed{530}\). 
+
+D Experimental Setup 
+
+Models. Unless otherwise specified, all experiments in the main text used Qwen2.5-Math-1.5B [ 42 ]as the default base model. To examine the effect of model scale and instruction tuning, we further evaluated Qwen2.5-Math-7B [42] and DeepSeek-Math-7B-Instruct [36]. 
+
+Training. We implemented our reinforcement learning pipeline with the verl [ 37 ] framework. The KL coefficient β was set to 0.001 by default, and the training batch size and mini-batch size were set to 128 and 64, respectively. For each prompt, we sampled G = 8 responses, with maximum prompt and response lengths of 1024 and 3072. The learning rate was set to 3 × 10 −6 for Qwen2.5-Math-1.5B and 1 × 10 −6 for Qwen2.5-Math-7B and DeepSeek-Math-7B-Instruct. Policy optimization was performed with GRPO [ 36 ], keeping the optimization algorithm fixed so that differences in performance could be attributed to the sampled data regimes rather than optimizer variants. All experiments are conducted on eight NVIDIA A100 80GB GPUs. 
+
+Dataset. We conducted training experiments on MATH [ 11 ], a competition-style mathematical rea-soning dataset containing 12,500 problems across algebra, geometry, number theory, combinatorics, and related topics. The dataset provides 7,500 training problems and 5,000 test problems, each paired with a natural-language solution and metadata such as problem type and difficulty. 
+
+Evaluation. We reported pass@1 as the primary evaluation metric. Following common practice in mathematical reasoning evaluation, we evaluated models on AMC [18], MATH-500 [23], AIME-21 2024 [ 18 ], Minervamath [ 17 ], and Olympiadbench [ 10 ]. These benchmarks collectively covered a broad spectrum of mathematical problem-solving skills, ranging from high-school level contest problems to advanced Olympiad-style challenges. 
+
+T-SAE Details. We use the same frozen T-SAE from Section 3.1 (layer 16, m = 24 ,576 features, trained on the full-data GRPO step-58 checkpoint). The T-SAE encoder is applied in chunks of 16,384 tokens for memory efficiency. We set decay half-life λ = 128 tokens, chunk size for future accumulation to 128 tokens, and influence weight clipping range ϵw = 0 .2 (so weights lie in [0 .8, 1.2] ). To prevent destabilization from negative-advantage tokens with high importance sampling ratios, we apply a safety clamp that restricts influence weights to [0 .8, 1.0] when rt(θ) > 4.0 and ˆAt < 0.
+
+E More About Experiments 
+
+E.1 Detailed GRPO results under Zero variance samples. 
+
+We construct a Zero-Variance MATH dataset by extracting 190 zero-variance samples from the MATH benchmark using 512 rollouts from Qwen2.5-Math-1.5B. This dataset contains both all-success samples, corresponding to success @512 = 1 , and all-failed samples, corresponding to 
+
+success @512 = 0 . We then analyze the KL divergence DKL (πθ ∥πref ), the average advantage 
+
+¯A, and the pass @1 performance of the policy model πθ relative to the reference model πref . As shown in Figure 7 in Appendix E.1, the advantage signal vanishes on these zero-variance samples, causing the policy update to be dominated by the KL regularization term rather than by reward-driven reinforcement. This confirms that strictly zero-variance samples primarily constrain policy deviation instead of driving capability growth. Therefore, in the following case studies, we exclude zero-variance samples and focus on non-zero-variance samples across the difficulty spectrum. In particular, when referring to hard samples below, we mean low-success-rate samples that still contain occasional successful rollouts, rather than the trivial all-failed cases. Zero -Variance MATH MATH 
+
+> Zero -Variance MATH
+> MATH
+> Qwen2.5 -Math -1.5B
+
+Figure 7: KL divergence DKL (πθ ∥πref ), Average advantages ¯A and performance pass @1 between the policy model πθ and reference model πref on MATH and Zero-Variance MATH. 
+
+E.2 Detailed One Sample GRPO dynamic results. 
+
+Figure 8 shows that reinforcement learning from a single harmful demonstration, Example 2.1, induces a consistent collapse across all tracked metrics. The most salient change is the rapid reduction in average response length, from 510.7 tokens at step 1 to 45.7 tokens by step 58, with most of the decline occurring within the first 20 steps. This suggests that the policy learns to replace multi-step reasoning with short answer-only outputs, rather than becoming more efficient. Since Example 2.1 assigns high reward to bare final answers, policy gradient optimization reinforces this shortcut and reduces the policy’s ability to explore structured reasoning trajectories. The degradation in response length is followed by broad accuracy drops across reasoning benchmarks. AMC decreases from 0.398 to 0.253, Math 500 from 0.650 to 0.484, and OlympiadBench from 0.307 to 0.219. AIME 2024 remains near zero throughout training, while the variation on Minerva Math is small and likely within noise. Notably, the collapse in response length precedes the decline in 22 0 10 20 30 40 50 60                                
+
+> Training Step
+> 100
+> 200
+> 300
+> 400
+> 500
+> 600
+> Avg. Length (tokens)
+> 511
+> 45.7
+> Response Length
+> 010 20 30 40 50 60
+> Training Step
+> 0.25
+> 0.28
+> 0.30
+> 0.33
+> 0.35
+> 0.38
+> 0.40
+> 0.43
+> 0.45
+> Accuracy
+> 0.398
+> 0.253
+> AMC
+> 010 20 30 40 50 60
+> Training Step
+> 0.48
+> 0.50
+> 0.53
+> 0.55
+> 0.57
+> 0.60
+> 0.62
+> 0.65
+> Accuracy
+> 0.65
+> 0.484
+> Math 500
+> 010 20 30 40 50 60
+> Training Step
+> 0.00
+> 0.02
+> 0.04
+> 0.06
+> 0.08
+> 0.10
+> Accuracy
+> 0.0333 0.0333
+> AIME 2024
+> 010 20 30 40 50 60
+> Training Step
+> 0.15
+> 0.16
+> 0.17
+> 0.18
+> 0.19
+> 0.20
+> 0.21
+> Accuracy
+> 0.158
+> 0.191
+> Minerva Math
+> 010 20 30 40 50 60
+> Training Step
+> 0.22
+> 0.24
+> 0.26
+> 0.28
+> 0.30
+> 0.32
+> Accuracy
+> 0.307
+> 0.219
+> OlympiadBench
+
+Figure 8: Each subplot tracks a different evaluation metric over 58 training steps. The first panel shows the average response length (in tokens); the remaining five panels report accuracy on AMC, Math 500, AIME 2024, Minerva Math, and OlympiadBench, respectively. The faint line denotes raw per-step values; the bold line is a 5-step moving average. Dashed horizontal lines mark the initial value at step 1. benchmark accuracy, indicating that it can serve as an early diagnostic of policy degeneration. These results are consistent with reward hacking induced by a poisoned training signal, and suggest that reasoning-oriented RL pipelines should evaluate both answer correctness and reasoning structure, while monitoring response length as an online indicator of collapse. 
+
+E.3 Detailed GRPO results across difficulty groups. 
+
+Table 2 provides the full benchmark-level results for GRPO training under different data difficulty subsets. Across all three model settings, Medium@8 achieves the strongest average performance, supporting the main observation that samples with non-zero but non-trivial success probability provide more useful reward variation than either full-data training or hard-only training. For Qwen2.5-Math-1.5B, Medium@8 improves over Full from 37 .63 to 38 .08 on average, with gains on MATH-500, AIME-2024, Minervamath, and Olympiadbench. For Qwen2.5-Math-7B, the same subset improves the average score from 46 .68 to 47 .64 , with particularly clear gains on AIME-2024 and Olympiadbench. On DeepSeek-Math-7B-Instruct, Medium@8 also obtains the best average among the MATH subsets, improving over Full from 20 .81 to 21 .29 , although the gains are more modest and concentrated on AMC and Minervamath. In contrast, Hard@8 drops by 5.75 , 11 .24 , and 1.07 
+
+average points for the three model settings, respectively. These results suggest that hard samples are not uniformly useful during RLVR: samples that still admit occasional correct rollouts can provide learnable reward variation, whereas samples that remain fully unsolved tend to provide weak or misleading optimization signals. 
+
+E.4 Detailed SAE Feature Dynamics. 
+
+Figure 10 shows that medium samples reinforce the most reasoning features while suppressing relatively few, matching their stable downstream gains. Easy samples induce milder changes and tend to push the model toward direct computation and immediate answer generation, which is consistent with their shorter response length. Hard samples suppress the largest number of reasoning features, even though they also reinforce many features. This indicates that hard samples can overwrite existing reasoning mechanisms rather than simply adding new ones. 23 0 10 20 30 40 50 60                              
+
+> RL training step
+> 1.5
+> 1.0
+> 0.5
+> 0.0
+> 0.5
+> 1.0
+> 1.5
+> ReasonScore
+> ×10 6
+> (a) All 13 emerging features
+> #1521 The final answer is [·]
+> #21354 Identify the condition / roots
+> #17778 we can write
+> #13012 test / using / by
+> cohort mean (13)
+> other emerging (9)
+> 020 40 60
+> RL training step
+> 4
+> 3
+> 2
+> 1
+> 0
+> 1
+> 2
+> 3
+> 4
+> ReasonScore
+> ×10 7
+> searly = -2.1e-07
+> slate = +1.4e-07
+> (b) Feature #1521
+> Structured answer
+> summarisation
+> 020 40 60
+> RL training step
+> 7.5
+> 5.0
+> 2.5
+> 0.0
+> 2.5
+> 5.0
+> 7.5
+> ReasonScore
+> ×10 7
+> searly = -3.4e-07
+> slate = +5.0e-07
+> (c) Feature #21354
+> Structured problem
+> decomposition
+> 020 40 60
+> RL training step
+> 2
+> 1
+> 0
+> 1
+> 2
+> 3
+> ReasonScore
+> ×10 7
+> searly = -8.2e-08
+> slate = +2.0e-07
+> (d) Feature #17778
+> Mathematical
+> expression construction
+> 020 40 60
+> RL training step
+> 2
+> 0
+> 2
+> 4
+> 6
+> ReasonScore
+> ×10 7
+> searly = -9.1e-08
+> slate = +3.5e-07
+> (e) Feature #13012
+> Active problem-
+> solving strategy
+
+Figure 9: Emergence of new reasoning capabilities under RLVR. (a) Trajectories of the 13 emerging T-SAE features across the 29 RL checkpoints ( step_2 –step_58 ), with the four highlighted features in saturated colour, the remaining nine in light grey, and the cohort mean as a black dashed line. All features start near zero and rise monotonically. (b)–(e) Per-feature trajectories for the four highlighted emerging features, annotated with the activating-token semantics and with their early/late mean ReasonScores ( searly averaged over the first 5 checkpoints, slate over the last 5). Together they expose four qualitatively new reasoning behaviors—structured answer summarisation, structured problem decomposition, mathematical-expression construction, and active problem-solving strategy— that are not present in the base model and that RL training appears to construct rather than merely amplify. Reinforced Suppressed 
+
+0
+
+1000 
+
+2000 
+
+3000 
+
+4000 
+
+5000 
+
+6000 
+
+> Number of Features
+
+2795 
+
+4136 
+
+3642 
+
+3030 3187 
+
+4600 
+
+Easy 
+
+Medium 
+
+Hard 
+
+Figure 10: Number of features suppressed or reinforced after RL on samples of different difficulty. 
+
+E.4.1 Emergence of new reasoning capabilities. 
+
+Beyond the stable core, we identify a small but distinctive cohort of 13 emerging features—features whose ReasonScores are statistically indistinguishable from zero in the first few RL checkpoints yet become significantly positive by the end of training. Unlike the universally reinforced features, which already exist in the base model and are merely amplified, these emerging features encode reasoning behaviors that RLVR appears to construct from scratch . Figure 9 traces their trajectories: panel (a) shows that all 13 features (cohort mean in dashed black) follow a coherent emergence curve, rising monotonically from near-zero to positive ReasonScores, and panels (b)–(e) zoom in on four representative members of the cohort whose top-activating contexts admit clean semantic interpretations. Feature 1521 activates on the final-answer template “The final answer is \boxed ·”, signalling the emergence of an explicit answer-summarisation routine; Feature 21354 fires on the head of structured solution scaffolds (“Identify the condition / roots”, “Determine the angles”), indicating that the model is acquiring an explicit problem-decomposition step; Feature 17778 selectively responds to the bridging phrase “we can write” that introduces newly written equations, capturing 
+
+mathematical-expression construction ; and Feature 13012 activates on solution-action verbs (“test”, “using”, “start”, “by”), reflecting an active problem-solving stance in which the model commits to and narrates concrete steps. None of these features is appreciably active in the early checkpoints, ruling out the alternative explanation that RL is merely re-weighting pre-existing circuits. Together, the emergence of this 13-feature cohort provides direct mechanistic evidence that RLVR not only 24 Table 2: Detailed evaluation results on 5 math reasoning benchmarks. Among the non-base training settings within each model group, the best and second-best results are bolded and underlined ,respectively. Under a fair setup of equal rollout budget, “ Medium@8 ” achieves the best average performance for all three model settings. ↑ and ↓ respectively indicate improvements or degradations over the Full baseline under the same model and benchmark. 
+
+RL Dataset AMC MATH- AIME- Minerva- Olympiad- Avg. Dataset Difficulty 500 2024 math bench 
+
+Qwen2.5-Math-1.5B + GRPO 
+
+Base - 39.76 65.00 3.33 15.81 30.65 30.91 MATH Full 50.76 70.00 10.00 23.90 33.48 37.63 Easy@1 42.17 ↓8.59 70.40 ↑0.40 6.67 ↓3.33 24.26 ↑0.36 35.12 ↑1.64 35.72 ↓1.90 
+
+Easy@8 42.17 ↓8.59 67.60 ↓2.40 3.33 ↓6.67 21.69 ↓2.21 33.04 ↓0.44 33.57 ↓4.06 
+
+Medium@2 40.96 ↓9.80 70.00 ↑0.00 3.33 ↓6.67 23.53 ↓0.37 33.78 ↑0.30 34.32 ↓3.31 
+
+Medium@4 43.37 ↓7.39 71.20 ↑1.20 3.33 ↓6.67 24.26 ↑0.36 32.14 ↓1.34 34.86 ↓2.77 
+
+Medium@8 46.99 ↓3.77 71.00 ↑1.00 13.33 ↑3.33 25.00 ↑1.10 34.08 ↑0.60 38.08 ↑0.45 
+
+Hard@1 38.55 ↓12 .21 67.20 ↓2.80 10.00 ↑0.00 23.53 ↓0.37 30.65 ↓2.83 33.99 ↓3.64 
+
+Hard@2 43.37 ↓7.39 65.20 ↓4.80 6.67 ↓3.33 20.22 ↓3.68 30.80 ↓2.68 33.25 ↓4.38 
+
+Hard@4 39.76 ↓11 .00 64.80 ↓5.20 10.00 ↑0.00 16.54 ↓7.36 31.99 ↓1.49 32.62 ↓5.01 
+
+Hard@8 43.37 ↓7.39 64.00 ↓6.00 3.33 ↓6.67 16.54 ↓7.36 32.14 ↓1.34 31.88 ↓5.75 
+
+Qwen2.5-Math-7B + GRPO 
+
+Base - 43.37 68.80 26.67 11.76 30.06 36.13 MATH Full 59.04 74.80 30.00 30.15 39.43 46.68 Easy@1 55.42 ↓3.62 73.80 ↓1.00 20.00 ↓10 .00 27.57 ↓2.58 37.05 ↓2.38 42.77 ↓3.92 
+
+Easy@8 55.42 ↓3.62 74.20 ↓0.60 20.00 ↓10 .00 27.21 ↓2.94 38.10 ↓1.33 42.99 ↓3.70 
+
+Medium@2 51.81 ↓7.23 75.40 ↑0.60 26.67 ↓3.33 29.04 ↓1.11 39.29 ↓0.14 44.44 ↓2.24 
+
+Medium@4 54.22 ↓4.82 74.80 ↑0.00 26.67 ↓3.33 28.31 ↓1.84 39.58 ↑0.15 44.72 ↓1.97 
+
+Medium@8 57.83 ↓1.21 75.20 ↑0.40 33.33 ↑3.33 30.15 ↑0.00 41.67 ↑2.24 47.64 ↑0.95 
+
+Hard@1 56.63 ↓2.41 73.20 ↓1.60 23.33 ↓6.67 19.12 ↓11 .03 37.65 ↓1.78 41.99 ↓4.70 
+
+Hard@2 49.40 ↓9.64 70.80 ↓4.00 26.67 ↓3.33 13.60 ↓16 .55 35.42 ↓4.01 39.18 ↓7.51 
+
+Hard@4 51.81 ↓7.23 68.80 ↓6.00 23.33 ↓6.67 13.97 ↓16 .18 30.51 ↓8.92 37.68 ↓9.00 
+
+Hard@8 50.60 ↓8.44 67.20 ↓7.60 20.00 ↓10 .00 11.76 ↓18 .39 27.68 ↓11 .75 35.45 ↓11 .24 
+
+DeepSeek-Math-7B-Instruct + GRPO 
+
+Base - 19.28 44.20 6.67 21.32 15.03 21.30 MATH Full 16.87 45.20 3.33 21.69 16.96 20.81 Easy@1 16.87 ↑0.00 43.40 ↓1.80 0.00 ↓3.33 20.22 ↓1.47 15.48 ↓1.48 19.19 ↓1.62 
+
+Easy@8 19.28 ↑2.41 44.20 ↓1.00 3.33 ↑0.00 21.69 ↑0.00 15.48 ↓1.48 20.80 ↓0.01 
+
+Medium@2 15.66 ↓1.21 43.40 ↓1.80 3.33 ↑0.00 19.49 ↓2.20 15.03 ↓1.93 19.38 ↓1.43 
+
+Medium@4 16.87 ↑0.00 43.60 ↓1.60 3.33 ↑0.00 19.12 ↓2.57 15.63 ↓1.33 19.71 ↓1.10 
+
+Medium@8 20.48 ↑3.61 44.80 ↓0.40 3.33 ↑0.00 22.06 ↑0.37 15.77 ↓1.19 21.29 ↑0.48 
+
+Hard@1 18.07 ↑1.20 43.40 ↓1.80 0.00 ↓3.33 22.06 ↑0.37 13.99 ↓2.97 19.50 ↓1.31 
+
+Hard@2 15.66 ↓1.21 45.00 ↓0.20 0.00 ↓3.33 20.59 ↓1.10 15.77 ↓1.19 19.40 ↓1.41 
+
+Hard@4 18.07 ↑1.20 44.00 ↓1.20 3.33 ↑0.00 22.43 ↑0.74 15.63 ↓1.33 20.69 ↓0.12 
+
+Hard@8 15.66 ↓1.21 45.00 ↓0.20 0.00 ↓3.33 22.43 ↑0.74 15.63 ↓1.33 19.74 ↓1.07 
+
+strengthens existing reasoning patterns but also induces qualitatively new reasoning behaviors that the base model does not possess. 
+
+E.4.2 Semantics of the difficulty-specific emerging features. 
+
+To assign physical meaning to these features, we project each TSAE decoder direction Wdec [f ]
+
+through the final RMSNorm and the (tied) unembedding of Qwen2.5-Math-1.5B (logit-lens), and read off the tokens this feature most strongly promotes. The interpretable subset paints a clear picture of what each regime is teaching the model. Under full-data RL, the 26-feature cohort organises around general mathematical-reasoning vocabulary: #1517 promotes “transformation/-transformations/transformed” (operation-on-objects), #1782 “same/identical/equal” (equality), #3070 “satisfied/holds” (predicate satisfaction), #9943 “remaining/additional” (residual quantities), #11106 “repeatedly/multiplication/multiples” (multiplicative reasoning), #14293 “definition/Definition” (defi-25 Table 3: Per-sample one-sample training results. Each row is one training run on a single replicated sample.                                                                                                                                                                                                                                 
+
+> Source ID Reward AMC MATH-500 AIME-2024 Minervamath Olypiadbench Base ––40.96 64.00 3.33 16.18 31.25
+> Easy @8 10.81 →0.99 40.96 65.20 6.67 22.79 31.25
+> Easy @8 20.81 →0.99 40.96 66.60 13.33 25.00 32.74
+> Easy @8 30.81 →0.99 39.76 66.60 10.00 23.53 33.33
+> Easy @8 40.70 →0.99 46.99 68.60 6.67 25.74 32.89
+> Easy @8 50.87 →0.99 39.76 67.00 16.67 23.16 31.40
+> Easy @8 60.88 →0.99 43.37 65.40 13.33 24.26 32.29
+> Easy @8 70.72 →0.99 43.37 66.00 10.00 24.63 31.70
+> Easy @8 80.80 →0.99 42.17 65.00 10.00 24.63 33.18
+> Easy @8 90.81 →0.99 42.17 66.00 6.67 23.16 31.55
+> Easy @8 10 0.84 →0.99 45.78 66.40 10.00 23.90 32.44
+> Medium @8 10.81 →0.99 40.96 67.60 13.33 23.90 32.59
+> Medium @8 20.79 →0.99 49.40 65.80 10.00 23.90 31.25
+> Medium @8 30.73 →0.99 45.78 72.00 3.33 25.74 36.01
+> Medium @8 40.74 →0.99 46.99 66.80 6.67 23.16 31.10
+> Medium @8 50.80 →0.99 45.78 64.60 10.00 27.21 32.74
+> Medium @8 60.63 →0.99 39.76 66.80 6.67 24.63 32.29
+> Medium @8 70.59 →0.99 43.37 66.20 3.33 23.90 32.89
+> Medium @8 80.81 →0.99 44.58 66.20 13.33 22.79 30.06
+> Medium @8 90.70 →0.99 42.17 67.40 6.67 25.00 33.04
+> Medium @8 10 0.68 →1.00 43.37 69.80 16.67 25.00 33.04
+> Hard @8 10.00 →0.00 42.17 63.60 10.00 18.38 31.25
+> Hard @8 20.00 →0.00 40.96 64.00 3.33 18.01 30.51
+> Hard @8 30.43 →0.99 48.19 71.40 16.67 25.74 37.20
+> Hard @8 40.02 →1.00 31.33 48.00 3.33 21.69 25.74
+> Hard @8 50.00 →0.99 44.58 70.20 3.33 27.21 32.29
+> Hard @8 60.00 →0.99 28.92 61.80 3.33 23.53 29.76
+> Hard @8 70.02 →1.00 43.37 66.20 3.33 21.69 31.55
+> Hard @8 80.00 →0.98 33.73 59.20 13.33 25.37 29.17
+> Hard @8 90.00 →0.98 43.37 67.60 3.33 23.16 33.63
+> Hard @8 10 0.00 →0.00 42.17 62.80 3.33 16.54 31.10
+
+nition introduction), #16041 “odd” (parity), #17538 “pattern/trend” (pattern recognition), #18935 “rotation/rotational” (geometric rotation), #20143 “single/only” (uniqueness), and #22933 “parti-tion/sum/Partition” (partitioning)—a vocabulary of generic mathematical predicates . The easy @8 regime contributes only one cleanly interpretable unique feature, #24572, whose top-promoted tokens are “Lemma/claim/formal/indeed”, i.e. formal-proof scaffolding —consistent with already-solvable problems being polished into more rigorous write-ups. medium @8’s interpretable contribution is similarly thin, dominated by #3764 (“forth/us”, the “set forth” setup verb) and a Chinese question-template artifact (#2988). The hard regime is qualitatively different: its interpretable hard-unique features encode the specific operations needed to solve hard problems rather than merely write them up—#2665 promotes “implies/implying/conclude/necessarily” (logical implication and deduction ), #450 promotes “denote/denotes/assume/hypoth” ( hypothesis introduction and denotation ), #4657 promotes “achievable/Achie/constructions” ( achievability/construction-existence ), #22590 promotes “strengthening/strengthened” ( condition strengthening ), and #4456 promotes “maximize/execut” ( op-timisation moves ). These are precisely the elements of advanced proof-style reasoning—“assume . . . , then it follows that . . . , hence the construction is achievable”—that the easier splits never recruit. The remaining hard-unique features promote rare or low-mass tokens and are most likely statistical artifacts. 
+
+Universal versus difficulty-specific features. Across all training configurations, we identify a large set of universally reinforced features, i.e., features that are strengthened regardless of the 26 Table 4: Distribution of the top-200 most frequent primary activating tokens across all 24,576 SAE and TSAE features, grouped by semantic category. #SAE and #TSAE indicate the total number of features whose highest-activation example activates on tokens in each category. 
+
+Category #Tokens #SAE Feat. #TSAE Feat. 
+
+Reasoning Keywords 38 2837 2875 Math Domain Terms 25 728 623 LaTeX Commands 22 951 1172 LaTeX Delimiters 26 2432 2741 Math Operators 8 1027 912 Variables 31 1338 1454 Numeric Digits 15 4044 3447 Structural Tokens 4 217 989 Punctuation / Whitespace 14 1987 1178 Other 17 1222 796 
+
+Total 200 16783 16187 
+
+Table 5: Distribution of the top-200 most frequent primary activating tokens across all 24,576 SAE and TSAE features, grouped by semantic category. #SAE and #TSAE indicate the total number of features whose highest-activation example activates on tokens in each category. 
+
+Category #Tokens #SAE Feat. #TSAE Feat. 
+
+Reasoning Keywords 38 2837 2875 Math Domain Terms 25 728 623 LaTeX Commands 22 951 1172 LaTeX Delimiters 26 2432 2741 Math Operators 8 1027 912 Variables 31 1338 1454 Numeric Digits 15 4044 3447 Structural Tokens 4 217 989 Punctuation / Whitespace 14 1987 1178 Other 17 1222 796 
+
+Total 200 16783 16187 
+
+training data composition. As shown in Table 5, these universal features largely correspond to basic reasoning machinery, including variable definitions, conclusion markers, and causal connectives. This is consistent with the semantic distribution in Table 4, where a substantial fraction of high-activation SAE/T-SAE features are associated with reasoning keywords, mathematical symbols, variables, and structural tokens. However, each configuration also produces a sizable set of difficulty-specific reinforced features. In particular, hard @8 training yields the largest number of configuration-specific features, followed by easier or more mixed training regimes. This disproportionate number of hard @8-specific features suggests that hard samples activate distinct internal mechanisms that are not engaged by easier samples. Thus, RLVR appears to strengthen both universal reasoning circuitry shared across regimes and difficulty-specific feature subspaces shaped by the type of training samples. 
+
+Feature convergence speed depends on difficulty. The trajectory of universal features across training steps further reveals that the speed of feature reinforcement depends on sample difficulty. Easy-sample configurations ( easy @8) reach the highest mean ReasonScore earliest, as these samples provide consistent positive feedback that rapidly strengthens existing reasoning patterns. Hard-sample configurations ( hard @8) show the slowest convergence and lowest final mean ReasonScore for universal features, consistent with the sparse reward signal identified. The full-data model falls between these extremes, benefiting from the diversity of difficulty levels but also being slowed by the inclusion of uninformative hard samples. These results mechanistically explain why removing hard 27 samples improves training efficiency: hard samples not only fail to provide reward-level signal but also slow the internal reinforcement of reasoning features that drive capability improvement. 
+
+Summary. The T-SAE analysis reveals three key mechanistic insights: (1) RL training selectively reinforces a compact set of interpretable reasoning features while suppressing others, rather than uniformly scaling all representations; (2) different difficulty levels activate qualitatively different internal mechanisms, with hard samples driving unique but slowly converging feature patterns; and (3) feature informativeness is dynamic—it depends on the interaction between task difficulty and the model’s current internal state, not on difficulty alone. These findings motivate the interventions in the next section: rewriting hard samples to make them more learnable (Section 4.1), and using T-SAE-derived feature signals to dynamically reweight samples during training (Section 4.2). 0 10 20 30 40                                                   
+
+> training step
+> 1.522
+> 1.520
+> 1.518
+> 1.516
+> 1.514
+> ReasonScore
+> ×10 4
+> Feature #212 tokens: '='
+> arithmetic result
+> easy@8 (r=+0.72)
+> medium@8 (r=-0.30)
+> hard@8 (r=-0.77)
+> 010 20 30 40
+> training step
+> 1.68
+> 1.69
+> 1.70
+> 1.71
+> 1.72
+> ReasonScore
+> ×10 4
+> Feature #1411 tokens: 'Multiplying / substituting'
+> math operation verbs
+> easy@8 (r=+0.40)
+> medium@8 (r=+0.79)
+> hard@8 (r=-0.24)
+> 010 20 30 40
+> training step
+> 3.7
+> 3.8
+> 3.9
+> 4.0
+> ReasonScore
+> ×10 5
+> Feature #24299 tokens: 'Therefore / so / it / they'
+> discourse glue
+> easy@8 (r=-0.59)
+> medium@8 (r=-0.47)
+> hard@8 (r=+0.83)
+> 010 20 30 40
+> training step
+> 1.4750
+> 1.4775
+> 1.4800
+> 1.4825
+> 1.4850
+> 1.4875
+> ReasonScore
+> ×10 3
+> Feature #2812 tokens: 'There'
+> existential count
+> easy@8 (r=+0.36)
+> medium@8 (r=-0.88)
+> hard@8 (r=-0.91)
+> 010 20 30 40
+> training step
+> 1.65
+> 1.70
+> 1.75
+> 1.80
+> ReasonScore
+> ×10 4
+> Feature #19772 tokens: 'we / find / solving'
+> problem-solving voice
+> easy@8 (r=+0.48)
+> medium@8 (r=+0.81)
+> hard@8 (r=-0.67)
+> 010 20 30 40
+> training step
+> 1.326
+> 1.324
+> 1.322
+> 1.320
+> 1.318
+> 1.316
+> ReasonScore
+> ×10 4
+> Feature #3169 tokens: 'is'
+> generic copula filler
+> easy@8 (r=-0.53)
+> medium@8 (r=-0.57)
+> hard@8 (r=+0.44)
+
+Figure 11: Difficulty-specific T-SAE feature dynamics under one-sample RL. We track representative sparse features whose R EASON SCORE changes differently when training on Easy , Medium , and 
+
+Hard @8 samples. Easy samples mainly reinforce short-chain arithmetic reduction and existence-recognition features, medium samples strengthen explicit problem-solving operations, and hard samples amplify verbose connective or filler features rather than content-bearing reasoning operations. These patterns show that sample difficulty reshapes not only optimization dynamics but also the type of internal reasoning features reinforced by RLVR. 
+
+E.5 Detailed One-sample RL Training Results across Difficulty Groups 
+
+Figure 11 shows representative features whose R EASON SCORE changes most strongly under one-sample RL across difficulty groups. The resulting patterns reveal that different difficulty regimes do not merely change feature magnitude, but reinforce qualitatively different reasoning behaviors. 
+
+Easy samples reinforce arithmetic reduction and existence recognition. As shown in Figure 11, features amplified by Easy one-sample RL mainly correspond to short-chain, immediately resolvable reasoning. For example, Feature #212 activates on “=” in contexts such as “ 4 · 2 = 8 ”, capturing the moment where an expression is reduced to a numerical result. Feature #2812 activates on “There” in statements such as “There are 9 such numbers”, corresponding to existence or counting-style answer declarations. Both features decrease sharply under medium and hard training, with hard-sample correlations hr = −0.77 and hr = −0.91 , respectively. This suggests that RL on always-solved samples primarily rewards the model for quickly collapsing computations into final values and reporting concise recognition-style answers, rather than for expanding longer deliberative reasoning chains. 
+
+Medium samples reinforce explicit problem-solving actions. Figure 11 further shows that Medium 
+
+one-sample RL strengthens features associated with active mathematical operations. Feature #1411 activates on operation verbs such as “Multiplying”, “substituting”, and “Simplifying”, while Fea-ture #19772 activates on first-person solution phrases such as “we”, “find”, “is”, and “solving”. 28 These features exhibit a medium-specific trajectory: they are most strongly reinforced by medium samples ( mr = +0 .79 and mr = +0 .81 ), only mildly increased by easy samples, and substantially suppressed by hard samples ( hr = −0.24 and hr = −0.67 ). This indicates that medium-difficulty samples reward executable solution procedures, such as expanding, substituting, simplifying, and solving. Such behaviors require problems that are solvable but non-trivial, matching the role of 
+
+Medium @8 samples near the model’s capability boundary. 
+
+Hard samples reinforce verbose connective filler. Finally, Figure 11 shows that the features most amplified by Hard @8 one-sample RL are qualitatively different. Feature #24299 activates on discourse connectives and punctuation such as “Therefore”, “so”, “it”, “they”, and “$”, while Feature #3169 activates primarily on the generic copula “is”. Both features show a strong reverse pattern: they increase under hard-sample RL ( hr = +0 .83 and hr = +0 .44 ), but decrease under easy and medium samples ( cr = −0.59 , −0.53 ; mr = −0.47 , −0.57 ). These tokens carry little problem-specific mathematical content; instead, they are common in long explanations regardless of whether the reasoning is valid. Thus, RL on Hard @8 samples tends to reinforce verbose connective scaffolding rather than genuine problem-solving features. This provides a feature-level explanation for the response-length increase observed during hard-sample RL: the model learns to produce longer reasoning-looking text, but the activated features correspond more to filler and connective structure than to executable computation. 
+
+F Additional Example of Backward Rewriting 
+
+Example 4.1: Backward Rewriting of a Hard Sample                                                                                                                                                                                           
+
+> Original Question: Let aand bbe the roots of the equation x2−mx + 2 = 0 . Suppose that a+ (1 /b )and
+> b+ (1 /a )are the roots of the equation x2−px +q= 0 . What is q? ( Answer: 92)
+> Self-Verification:
+> 1. Let aand bbe the roots of the equation x2−mx +z= 0 . Suppose that a+ (1 /b )and b+ (1 /a )are the roots of the equation x2−px +q= 0 . The value of qis 92. What is the value of z? ( Answer: 2)2. Let aand bbe the roots of the equation x2−mx + 2 = 0 . Suppose that a+ ( z/b )and b+ (1 /a )are the roots of the equation x2−px +q= 0 . The value of qis 92. What is the value of z? ( Answer: 1)3. Let aand bbe the roots of the equation x2−mx + 2 = 0 . Suppose that a+ (1 /b )and b+ ( z/a )are the roots of the equation x2−px +q= 0 . The value of qis 92. What is the value of z? ( Answer: 1)
+> FOBAR:
+> 1. Let aand bbe the roots of the equation x2−mx +z= 0 . Suppose that a+ (1 /b )and b+ (1 /a )are the roots of the equation x2−px +q= 0 . What is q? If we know the answer to the above question is 92,what is the value of z? ( Answer: 2)2. Let aand bbe the roots of the equation x2−mx + 2 = 0 . Suppose that a+ ( z/b )and b+ (1 /a )are the roots of the equation x2−px +q= 0 . What is q? If we know the answer to the above question is 92,what is the value of z? ( Answer: 1)3. Let aand bbe the roots of the equation x2−mx + 2 = 0 . Suppose that a+ (1 /b )and b+ ( z/a )are the roots of the equation x2−px +q= 0 . What is q? If we know the answer to the above question is 92,what is the value of z? ( Answer: 1)
+
+G Limitations 
+
+Our study has several limitations. First, our difficulty notion is empirical and policy-dependent. A 
+
+hard @8 sample is not intrinsically unsolvable; it only has low probability of receiving positive verifier reward under the current policy and rollout budget. Second, our experiments focus mainly on mathematical RLVR, where rewards are clean and verifiable. The same difficulty-feature dynamics may differ in domains with noisy, dense, or subjective rewards. Finally, our rewriting and T-SAE-guided training signals are intended as lightweight validations of the proposed mechanism, not as a full search for state-of-the-art RLVR algorithms. 
+
+H Broader Impacts 
+
+This work studies how sample difficulty affects RLVR training and internal reasoning features in LLMs. A positive impact is that difficulty-aware analysis may help make RLVR more stable, 29 interpretable, and data-efficient by identifying when hard samples provide useful signals versus when they reinforce shortcuts. The T-SAE analysis may also support auditing of reasoning models by revealing which internal features are strengthened during training. At the same time, improving RLVR can increase LLM reasoning capabilities, which may be beneficial for mathematics, programming, and education, but could also be misused in capability-sensitive settings. Feature-guided objectives should also be used carefully: reasoning-feature activation is only a proxy for valid reasoning and may reward reasoning-like text if used without verifier grounding. For this reason, our interventions retain verifier rewards whenever they are informative and use feature-based rewards only for zero-variance rollout groups. 30

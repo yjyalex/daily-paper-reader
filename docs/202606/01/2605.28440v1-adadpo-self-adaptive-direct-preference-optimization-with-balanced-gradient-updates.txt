@@ -1,0 +1,475 @@
+Title: AdaDPO: Self-Adaptive Direct Preference Optimization with Balanced Gradient Updates
+
+URL Source: https://arxiv.org/pdf/2605.28440v1
+
+Published Time: Thu, 28 May 2026 01:30:31 GMT
+
+Number of Pages: 14
+
+Markdown Content:
+# AdaDPO: Self-Adaptive Direct Preference Optimization with Balanced Gradient Updates 
+
+Shaolong Chen 
+
+Incept Labs Houston, TX 
+
+Madalina Ciobanu 
+
+Incept Labs Houston, TX 
+
+Qingqing Mao ∗
+
+Incept Labs, Houston, TX Titan Holdings, San Francisco, CA 
+
+qmao@inceptlabs.ai 
+
+Ritankar Das 
+
+Incept Labs, Houston, TX Titan Holdings, San Francisco, CA 
+
+## Abstract 
+
+Direct Preference Optimization (DPO) has become a widely adopted alternative to reinforcement learning from human feedback (RLHF) for aligning large language models with human preferences, eliminating the need for a separate reward model or reinforcement learning loop. However, recent theoretical analysis uncovers an asymmetric gradient behavior in DPO: the loss suppresses dispreferred responses substantially faster than it promotes preferred counterparts, causing the model to predominantly learn to avoid bad answers rather than to generate good ones. We propose AdaDPO , a Self-Ada ptive variant of the Direct Preference Optimization algorithm that introduces per-preference-pair, stop-gradient-based coefficients de-rived directly from the policy model’s generation probabilities, with the reference model’s probabilities as an optional component. AdaDPO is constructed to enforce equality of gradient magnitudes between preferred and dispreferred probabilities; the practical implementation balances per-token gradients and applies a numeri-cal clipping bound for stability, while retaining DPO’s original hyperparameter structure. On Llama-3-8B-Instruct trained on UltraFeedback under a setup nearly identical to that of SimPO, AdaDPO consistently outperforms DPO on AlpacaEval 2: it achieves higher length-controlled win rates (LC) in 81% of hyperparameter combinations, attains the global best LC (48.3%) and raw win rate (46.1%), and enlarges the LC-over-WR margin in 88% of combinations, indicating effective mitigation of length bias. Additional analyses on KL divergence, reward margin, and reward accuracy confirm that AdaDPO rectifies the gradient imbalance and yields more efficient optimization. Because it operates purely at the loss level, AdaDPO can be dropped into existing preference-based alignment pipelines without changing data collection or model architectures. The method requires only a few lines of code, and the same self-adaptive principle generalizes to a broad family of pairwise contrastive preference losses including SimPO, R-DPO, IPO, CPO, and ORPO. 
+
+## 1 Introduction 
+
+Aligning large language models (LLMs) with human preferences has become essential for deploying capable, controllable systems. Reinforcement Learning from Human Feedback [Christiano et al., 2017, Ziegler et al., 2019], typically implemented with Proximal Policy Optimization [Schulman et al., 2017], established the dominant paradigm but introduces substantial complexity through its reliance on a separately trained reward model and an online RL loop. Direct Preference Optimization 
+
+> Preprint.
+> arXiv:2605.28440v1 [cs.CL] 27 May 2026
+
+(DPO) [Rafailov et al., 2023] simplified this pipeline dramatically by reparameterizing the reward function and learning the policy directly from a fixed preference dataset via a binary cross-entropy loss, achieving strong empirical performance without reinforcement learning. Despite DPO’s success, recent theoretical analysis [Feng et al., 2024] has revealed an asymmetric gradient pathology in its loss function. Using a field-theoretic analysis of DPO’s gradient vector field, Feng et al. [2024] show that the loss applies a substantially larger gradient to dispreferred responses than to preferred ones, with the asymmetry growing as the policy becomes more confident. As a con-sequence, DPO-trained models predominantly learn to suppress bad answers rather than to promote good ones—an effect that becomes especially pronounced when preferred and dispreferred responses are semantically close. This is not an artifact of hyperparameter choice but a structural property of the loss: the same coefficient β multiplies both log-ratios, leaving no mechanism to balance the per-pair gradient magnitudes. Several DPO variants address related concerns: SimPO [Meng et al., 2024], R-DPO [Park et al., 2024], IPO [Azar et al., 2023], CPO [Xu et al., 2024], and ORPO [Hong et al., 2024]. However, none directly addresses the per-preference-pair gradient imbalance: the asymmetry persists in any pairwise contrastive loss with a shared coefficient on both terms. We propose AdaDPO, a self-adaptive variant of DPO that resolves this imbalance by replacing the fixed β in DPO’s implicit reward margin with per-preference-pair coefficients βw and βl. Setting 
+
+βl = β (preserving DPO’s hyperparameter) and computing βw via a stop-gradient-based ratio of generation probabilities, AdaDPO is constructed to enforce equality of gradient magnitudes on preferred and dispreferred probabilities at every optimization step (the length-normalized variant used in our experiments balances gradients per-token within a numerical clipping bound). The construction is theoretically principled, requires only a few lines of code to implement, and introduces no sensitive hyperparameters beyond those already in DPO. The same self-adaptive principle extends as a drop-in modification to any pairwise contrastive preference loss (SimPO, R-DPO, IPO, CPO, ORPO). 
+
+Contributions. (i) We rigorously derive the condition under which a DPO-style loss produces equal gradient magnitudes on preferred and dispreferred probabilities, and prove that AdaDPO satisfies it exactly through stop-gradient operators, providing a principled correction of the gradient imbalance (Section 3). (ii) On Llama-3-8B-Instruct trained on UltraFeedback under a setup nearly identical to SimPO [Meng et al., 2024], AdaDPO consistently outperforms DPO on AlpacaEval 2: higher length-controlled win rates in 81% of hyperparameter combinations, the global best LC (48.3%) and raw WR (46.1%), and an enlarged LC-over-WR margin in 88% of combinations, indicating effective mitigation of length bias (Section 5). (iii) The same self-adaptive principle applies as a drop-in modification to any pairwise contrastive preference loss; we provide explicit constructions for SimPO, R-DPO, IPO, CPO, and ORPO that preserve each method’s existing hyperparameters (Section 6), highlighting a general recipe for balancing gradients in preference optimization. 
+
+## 2 Background 
+
+Direct Preference Optimization. We are given a preference dataset D = {(x, y w, y l)} of triples consisting of a prompt x, a preferred response yw, and a dispreferred response yl, together with a reference policy πref . DPO [Rafailov et al., 2023] optimizes the policy πθ by minimizing 
+
+LDPO (πθ ; πref ) = −E(x,y w ,y l)∼D 
+
+
+
+log σ
+
+
+
+β log πθ (yw | x)
+
+πref (yw | x) − β log πθ (yl | x)
+
+πref (yl | x)
+
+ 
+
+, (1) where σ is the sigmoid function and β > 0 controls the deviation from πref . The same coefficient β
+
+multiplies both log-ratios—a structural choice with consequences we examine next. 
+
+The gradient imbalance pathology. Feng et al. [2024] analyze the gradient vector field of LDPO 
+
+and identify a structural asymmetry. Let Pw = πθ (yw | x), Pl = πθ (yl | x), Rw = πref (yw | x),
+
+Rl = πref (yl | x), and let xw = Pw/R w, xl = Pl/R l. The partial derivatives yield the gradient-magnitude ratios 
+
+Ratio x = ∂LDPO /∂x w
+
+∂LDPO /∂x l
+
+= xl
+
+xw
+
+, Ratio P = ∂LDPO /∂P w
+
+∂LDPO /∂P l
+
+= Pl
+
+Pw
+
+. (2) As training progresses and the policy learns to prefer yw, both ratios fall below 1, meaning DPO suppresses yl more aggressively than it promotes yw [Feng et al., 2024]. We note that DPO’s gradients 2with respect to log-probabilities are balanced by construction; the asymmetry analyzed by Feng et al. [2024] arises in probability and probability-ratio space, where it reflects the differential rate of change of Pw versus Pl during training. AdaDPO operates in this same space, deliberately introducing a compensating asymmetry in log-probability space to maintain promotion pressure on yw as the policy becomes confident. This imbalance is structural rather than an artifact of hyperparameter choice: equation (1) applies the same coefficient β to both log-ratio terms. 
+
+A concrete illustration. Consider a single preference pair where, after some training, the policy assigns Pw = 0 .10 and Pl = 0 .02 (the model has learned to prefer yw). With a uniform reference 
+
+Rw = Rl, the gradient on yw is roughly 0.02 /0.10 = 1 /5 of the gradient on yl, so the optimization signal on the dispreferred response is five times stronger than on the preferred one. As Pw increases further, the gradient on yw shrinks toward zero and DPO continues to focus on suppressing yl rather than reinforcing yw. AdaDPO eliminates this asymmetry by construction (Section 3). 
+
+Related work. DPO variants such as SimPO [Meng et al., 2024], R-DPO [Park et al., 2024], IPO [Azar et al., 2023], CPO [Xu et al., 2024], and ORPO [Hong et al., 2024] improve DPO along specific axes yet leave the gradient imbalance unaddressed. While we adopt SimPO’s stable parameterization [Meng et al., 2024], our work focuses on the orthogonal problem of gradient asymmetry, which persists even in length-normalized settings. A complementary line of work studies 
+
+likelihood displacement [Razin et al., 2025], where the absolute likelihoods of both responses drift downward, with targeted fixes including DPOP [Pal et al., 2024], Cal-DPO [Xiao et al., 2024], and SPPO [Wu et al., 2024]. Displacement and gradient imbalance are distinct: the former concerns absolute magnitudes of Pw and Pl, the latter their relative rate of change within each pair. Crucially, whereas standard DPO is balanced in log-probability space, AdaDPO intentionally introduces logit-space asymmetry to enforce balance in probability space. AdaDPO operates at the per-pair gradient level and is therefore composable with displacement-mitigation methods; its amplification of the gradient on Pw may also partially counteract displacement directly, which we leave for future work. 
+
+Concurrent work on gradient imbalance. Two concurrent works also target DPO’s gradient asymmetry. Ma et al. [2025] (Balanced-DPO) introduce a global reweighting factor that balances average gradient contributions across the batch. Zhu et al. [2025] (SGDPO) add an auxiliary 
+
+pilot term that resamples a sub-sequence from the policy logits. AdaDPO differs by enforcing 
+
+|∂L/∂P w| = |∂L/∂P l| exactly and per preference pair via the closed-form ratio of Proposition 1, with no auxiliary terms, resampling, or extra forward passes, and no new tunable hyperparameters. 
+
+## 3 AdaDPO: Self-Adaptive Direct Preference Optimization 
+
+The method follows directly from the gradient analysis: we identify the mathematical condition that produces equal gradient magnitudes on Pw and Pl, and construct per-pair coefficients that satisfy this condition exactly. The construction preserves DPO’s hyperparameter structure and is implementable in a few lines of code. Figure 1 summarizes the contrast between vanilla DPO and AdaDPO at the per-pair level. 
+
+3.1 Adaptive Coefficients for Balanced Gradients 
+
+DPO’s implicit reward margin uses the same coefficient β for both log-ratio terms [Rafailov et al., 2023]. We replace it with per-preference-pair coefficients βw and βl:
+
+∆AdaDPO = βw log Pw
+
+Rw
+
+− βl log Pl
+
+Rl
+
+= r(x, y w) − r(x, y l). (3) 
+
+Proposition 1 (Gradient balance) Let L be a DPO-style loss with implicit margin ∆AdaDPO of the form (3) . Requiring |∂L/∂P w| = |∂L/∂P l| yields the policy-space constraint 
+
+βw
+
+βl
+
+= Pw
+
+Pl
+
+, (4) 
+
+while requiring balance in probability-ratio space, |∂L/∂x w| = |∂L/∂x l|, yields 
+
+βw
+
+βl
+
+= xw
+
+xl
+
+= PwRl
+
+PlRw
+
+. (5) 3Figure 1: Schematic comparison of vanilla DPO (left) and AdaDPO (right). DPO’s shared coefficient 
+
+β produces systematically larger gradients on the dispreferred response; AdaDPO’s per-pair coeffi-cients enforce equal-magnitude updates on Pw and Pl.
+
+The two constraints coincide when Rw = Rl. In practice, AdaDPO can adopt either balancing rule, yielding strictly equal per-pair gradient magnitudes in the chosen space. 
+
+3.2 Stop-Gradient Parameterization 
+
+The ratios in (4) and (5) depend on Pw and Pl, themselves outputs of the policy model. Setting βw
+
+directly to these values would propagate gradients through the coefficients and break the intended balance. We treat the coefficients as constants during backpropagation using the stop-gradient operator sg( ·). Setting βl = β to preserve DPO’s hyperparameter: 
+
+βw = β · sg 
+
+ Pw
+
+Pl
+
+
+
+or βw = β · sg 
+
+ PwRl
+
+PlRw
+
+
+
+. (6) Both formulations satisfy the balance condition exactly; AdaDPO uses the same β values as DPO and adds only a numerical clipping constant C that is robust over a wide range (Appendix A.2), which we view as important for fair comparison and practical adoption. In our experiments we use the ratio-space variant βw/β l = PwRl/(PlRw), which incorporates the reference policy and corresponds to the implementation in Listing 1; an ablation with the policy-space variant βw/β l = Pw/P l yields essentially identical AlpacaEval 2 performance across the (lr , β ) grid, confirming that the choice of balancing space is not critical. 
+
+3.3 The AdaDPO Loss 
+
+The full AdaDPO objective replaces the fixed β in DPO’s loss with the adaptive coefficients: 
+
+LAdaDPO (πθ ; πref ) = −E(x,y w ,y l)∼D 
+
+
+
+log σ
+
+
+
+βw log Pw
+
+Rw
+
+− βl log Pl
+
+Rl
+
+ 
+
+. (7) Applying Proposition 1 to the AdaDPO loss in (7) yields: 
+
+∂LAdaDPO /∂P w
+
+∂LAdaDPO /∂P l
+
+= βw
+
+βl
+
+· Pl
+
+Pw
+
+= 1 , ∂LAdaDPO /∂x w
+
+∂LAdaDPO /∂x l
+
+= βw
+
+βl
+
+· xl
+
+xw
+
+= PwRl
+
+PlRw
+
+· PlRw
+
+PwRl
+
+= 1 .
+
+(8) By construction, base AdaDPO enforces strict gradient equality between preferred and dispreferred probabilities at every step (Equation (8) ), directly correcting the structural asymmetry identified 4by Feng et al. [2024] and rectifying both Ratio x and Ratio P from Section 2. The practical Stable AdaDPO variant used in our experiments approximates this balance per-token within the clipping bound C (Section 6.1). 
+
+Intuition for the adaptive ratio. The coefficients βw and βl are implemented using a stop-gradient operator (e.g., detach() in PyTorch) to ensure they act as constant multipliers during the backward pass rather than differentiable parameters. This choice admits a clear mechanistic interpretation: the gradient on Pw is proportional to βw/P w, while the gradient on Pl is proportional to βl/P l. By setting βw ∝ Pw, we exactly cancel the inverse-probability scaling that naturally shrinks the gradient as the model becomes confident. This ensures a persistent reinforcement signal that prevents the "vanishing promotion" problem inherent in vanilla DPO, where updates stagnate once the model identifies the preferred response. 
+
+3.4 Implementation 
+
+AdaDPO requires only a few lines of code on top of a standard DPO loss. We compute the adaptive ratio in log-space (avoiding numerical underflow), clip it at a fixed ceiling C = 2 for stability, and use the result to scale βw. Listing 1 shows the complete loss; the modification relative to standard DPO consists of the four lines computing beta_w .Listing 1: PyTorch implementation of the AdaDPO loss with the length-normalized adaptive ratio used in all main experiments. This corresponds to Stable AdaDPO, formally introduced in Section 6.1; the un-normalized form of Equation (6) is recovered by removing the divisions by lw and ll .                                                               
+
+> def adadpo_loss ( pi_logps , ref_logps , yw_idx , yl_idx , beta , C =2.0 , yw_lens = None , yl_lens = None ): pi_yw , pi_yl =pi_logps [ yw_idx ] , pi_logps [ yl_idx ] ref_yw , ref_yl =ref_logps [ yw_idx ] , ref_logps [ yl_idx ] #Adaptive coefficient via stop - gradient ( length - normalized ) lw =yw_lens . float (). detach () ll =yl_lens . float (). detach () log_ratio =( pi_yw . detach () /lw -pi_yl . detach () /ll -ref_yw . detach () /lw +ref_yl . detach () /ll ) beta_w =beta *torch . clamp ( log_ratio . exp () , max = C ) #Standard DPO - style loss with adaptive beta_w delta =beta_w *( pi_yw -ref_yw ) -beta *( pi_yl -ref_yl ) return -F . logsigmoid ( delta )
+
+## 4 Experimental Setup 
+
+Base model and training data. Following the Instruct setting of SimPO [Meng et al., 2024], we use Llama-3-8B-Instruct [AI@Meta, 2024] as the base SFT model and train AdaDPO and DPO on the UltraFeedback preference dataset [Cui et al., 2024], which contains 61,837 examples (59,876 train, 1,961 evaluation). We do not collect any new human data; all experiments use existing open-source preference datasets under their original licenses. 
+
+Hyperparameters and grid search. We follow SimPO’s training settings: batch size 128, maxi-mum sequence length 2048, cosine learning rate schedule with 10% warmup, training for 1 epoch. We grid-search learning rate lr ∈ { 3, 5, 6, 10 } × 10 −7 and β ∈ { 0.005 , 0.01 , 0.05 , 0.1}, yielding 16 
+
+(lr , β ) combinations per method (32 training runs total). Following the standard reporting practice in this literature, we evaluate every grid cell on each benchmark and report both the best cell (Table 1) and aggregate statistics across the full hyperparameter grid (Section 5.3); the latter is robust to the choice of best-cell reporting convention. 
+
+Evaluation benchmarks. We evaluate on three standard instruction-following benchmarks with GPT-4 Turbo as the judge. As is standard in LLM alignment work, we rely on GPT-4-Turbo as an automatic evaluator and therefore inherit its known biases (e.g., verbosity preference and occasional inconsistency), which we partially control for via length-controlled metrics but do not eliminate 5entirely. AlpacaEval 2 [Dubois et al., 2024] consists of 805 queries and reports length-controlled win rate (LC), raw win rate (WR), and average response length. Arena-Hard v0.1 [Li et al., 2024] contains 500 challenging technical queries and reports WR with 95% confidence intervals. 
+
+MT-Bench [Zheng et al., 2023] covers 8 categories with 80 multi-turn questions on a 1–10 scale. 
+
+## 5 Results 
+
+Throughout this section, “AdaDPO” refers to the length-normalized variant (Stable AdaDPO; Sec-tion 6.1), which is the implementation shown in Listing 1. The base form of Equation (6) yields comparable best-case performance after tuning but exhibits less stable training dynamics on long responses (Appendix A.1). 
+
+5.1 Optimization Dynamics 
+
+Figure 2 compares AdaDPO and DPO under two representative β values (0.05 and 0.01) at fixed learning rate 5 × 10 −7. AdaDPO consistently achieves lower evaluation loss (Figure 2a), higher reward accuracy (Figure 2b), larger β × KL divergence margin (Figure 2c), and larger reward margin 
+
+r(x, y w) − r(x, y l) (Figure 2d). The performance ordering across all metrics consistently places AdaDPO above DPO at matched β. While the β × KL margin is dominated by the KL constraint strength, the other metrics—more directly tied to alignment quality—benefit clearly from balanced gradient updates, indicating that a large KL margin alone is insufficient: balanced updates are key to translating margin into improved performance. 
+
+5.2 Best Performance Comparison 
+
+Table 1 reports the strongest configuration per method across the 16 (lr , β ) combinations, while Section 5.3 analyzes the full hyperparameter grid. AdaDPO achieves the global best LC (48.3%) and WR (46.1%) on AlpacaEval 2, with shorter average response length than DPO on that benchmark. On Arena-Hard (Figure 4 in Appendix A.5), DPO achieves a slightly higher WR (42.9% vs. 41.5%), but the 95% confidence intervals overlap substantially ([41.1, 44.6] vs. [39.7, 43.1]), indicating no statistically significant difference between the two methods. Average response lengths on Arena-Hard are similar (DPO: 525, AdaDPO: 530), and the benchmark does not provide a length-controlled metric, so we cannot fully separate length effects from response quality on this benchmark. On MT-Bench (Figure 5 in Appendix A.5), AdaDPO (8.03) marginally exceeds DPO (8.01); the 0.02-point gap is below the resolution of MT-Bench’s 1–10 scale and 80-question evaluation set, so we do not interpret this benchmark as differentiating the methods. 
+
+5.3 Hyperparameter Sweep on AlpacaEval 2 
+
+To rigorously compare AdaDPO and DPO, we evaluate each of the 16 (lr , β ) combinations on AlpacaEval 2, rather than relying on a single tuned configuration. Figure 3 visualizes the results. Aggregating across the 16 combinations: • LC : AdaDPO outperforms DPO in 13/16 (81%) combinations. • WR : AdaDPO outperforms DPO in 9/16 (56%) combinations. • ∆ = LC − WR : AdaDPO produces a larger LC-over-WR margin in 14/16 (88%) combina-tions, indicating reduced length exploitation. Table 1: Best performance per method across the 16 (lr , β ) configurations. AdaDPO achieves the global best LC and WR on AlpacaEval 2 with the shortest average length on that benchmark.                                       
+
+> AlpacaEval 2 Arena-Hard MT-Bench Method LC (%) WR (%) STD Length WR (%) 95%-Hi 95%-Lo Length Score SFT 28.5 28.8 1.6 1976 26.3 28.1 24.7 589 7.58 DPO 46.4 44.5 1.8 1933 42.9 44.6 41.1 525 8.01 AdaDPO 48.3 46.1 1.8 1908 41.5 43.1 39.7 530 8.03
+
+6Figure 2: Training-dynamics comparison on the validation set. (a) Evaluation loss; (b) reward accuracy ( Pr[ r(x, y w) > r (x, y l)] ); (c) β × KL divergence margin; (d) reward margin r(x, y w) −
+
+r(x, y l). Solid: AdaDPO, dashed: DPO; red: β = 0 .05 , blue: β = 0 .01 . AdaDPO’s loss and reward margin are scaled by the adaptive coefficient βw, so absolute values are not directly comparable to DPO’s; reward accuracy (b) is scale-invariant. Furthermore, 31 out of 32 runs (97%) satisfy LC ≥ WR. These results confirm that AdaDPO consistently improves length-controlled performance across the majority of hyperparameter settings while effectively mitigating length bias. 
+
+Length-bias mitigation in detail. The aggregate LC − WR margin gain (88% of combinations) is the most direct evidence that AdaDPO reduces length exploitation, but it can be confirmed at finer granularity. Across the 16 hyperparameter combinations, AdaDPO produces shorter average responses than DPO in 12/16 (75%) configurations on the AlpacaEval 2 benchmark, while simultaneously achieving higher LC, indicating that AdaDPO’s quality gains are not driven by verbosity. The strongest LC improvements ( ∆LC ≥ 2pp) occur at the shortest average response lengths, consistent with the theoretical prediction that balanced gradients reduce the implicit incentive for length exploitation present in DPO [Park et al., 2024]. 
+
+## 6 Generalization to Other DPO Variants 
+
+The AdaDPO principle—replacing fixed coefficients with self-adaptive stop-gradient-based coefficients—applies to any pairwise contrastive loss of the form 
+
+L = f
+
+
+
+βw log Pw
+
+Rw
+
+− βl log Pl
+
+Rl
+
++ λ
+
+
+
+, (9) 7Figure 3: AlpacaEval 2 performance vs. log 10 (β). (a) LC; (b) WR; (c) ∆LC = LC AdaDPO −LC DPO ;(d) ∆WR . Solid: AdaDPO; dashed: DPO. where f is any differentiable function (e.g., f (x) = log σ(x) for DPO, SimPO, R-DPO, CPO; 
+
+f (x) = x2 for IPO). Imposing the gradient-balance condition yields βw/β l = sg( Pw/P l)
+
+or sg( PwRl/P lRw). The principle extends to ORPO with a slight modification: βw/β l =sg( Pw(1 − Pw)/[Pl(1 − Pl)]) . Table 2 summarizes the resulting self-adaptive variants for each method, preserving the original hyperparameters of each base method. Detailed derivations are presented in Appendix A.3. 
+
+6.1 Stable AdaDPO: A Length-Normalized Variant 
+
+Computing the adaptive ratio over token-summed log-probabilities can produce unstable training dynamics on long responses, where small per-token differences accumulate into large ratios that frequently saturate the clipping bound C. Inspired by SimPO’s length-normalized reward param-eterization, Stable AdaDPO computes the adaptive ratio over per-token average log-probabilities. Formally, this corresponds to setting exponents αw = 1 /|yw|, αl = 1 /|yl| in the generalization 
+
+βw = β · sg 
+
+ (Pw/R w)αw
+
+(Pl/R l)αl
+
+
+
+, (10) which recovers DPO when αw = αl = 0 and base AdaDPO when αw = αl = 1 . As noted at the start of Section 5, this is the variant used in all main experiments: length normalization yields smoother log-probability curves throughout training and more robust convergence than the unnormalized formulation, particularly at small β where gradient magnitudes are sensitive to the exact ratio. The full (αw, α l) family is discussed in Appendix A.4. 8Table 2: Self-adaptive counterparts of preference-optimization objectives under the AdaDPO principle. Each method preserves its original hyperparameters (DPO, CPO, R-DPO, ORPO, and SimPO use β;IPO has no β, hence βl = 1 ). Method Self-adaptive objective Adaptive coefficients DPO log σ βw log Pw 
+
+> Rw
+
+− βl log Pl
+
+> Rl
+
+ βl = β, βw = β · sg   Pw Rl
+
+> PlRw
+
+
+
+IPO  βw log Pw 
+
+> Rw
+
+− βl log Pl 
+
+> Rl
+
+− 12τ
+
+2 βl = 1 , βw = sg   Pw Rl
+
+> PlRw
+
+
+
+R-DPO log σ βw log Pw 
+
+> Rw
+
+− βl log Pl 
+
+> Rl
+
+− α(|yw| − | yl|) βl = β, βw = β · sg   Pw Rl
+
+> PlRw
+
+
+
+CPO log σ βw log Pw − βl log Pl
+
+ βl = β, βw = β · sg   Pw
+
+> Pl
+
+
+
+ORPO log Pw + log σ βw log Pw 
+
+> 1−Pw
+
+− βl log Pl
+
+> 1−Pl
+
+ βl = β, βw = β · sg   Pw (1 −Pw )
+
+> Pl(1 −Pl)
+
+
+
+SimPO log σ  βw  
+
+> |yw|
+
+log Pw − βl 
+
+> |yl|
+
+log Pl − γ βl = β, βw = β · sg   |yw |Pw
+
+> |yl|Pl
+
+
+
+## 7 Discussion and Limitations 
+
+Why AdaDPO works. AdaDPO counteracts the asymmetric gradient ratio of equation (2) by setting βw/β l to scale with Pw/P l (or PwRl/P lRw): when the policy becomes much more likely to generate yw than yl, the gradient on yw would otherwise vanish, and AdaDPO amplifies it to match the gradient on yl. Empirically, this balance translates into observable gains in reward accuracy, reward margin, and length-controlled win rate. 
+
+Stability of the Ceiling Constant. In AdaDPO, the adaptive coefficient βw is clipped by a ceiling constant C to ensure numerical stability. While C = 2 was used for all main experiments, our ablation study in Appendix A.2 confirms that performance is robust across the range C ∈ [1 .5, 2.5] .Training only becomes unstable when C exceeds 5, at which point the adaptive coefficients can amplify gradients enough to cause instability. This relative insensitivity suggests that C is a stable architectural choice rather than a hyperparameter requiring intensive per-task tuning. 
+
+Limitations. (i) Single base model. We use Llama-3-8B-Instruct; cross-model validation on Mistral, Qwen, and larger Llama checkpoints remains future work. (ii) Single preference dataset. 
+
+We train on UltraFeedback only; transfer to other preference-data sources (e.g., HH-RLHF, PKU-SafeRLHF) is untested. (iii) Arena-Hard underperformance. On Arena-Hard, DPO marginally outperforms AdaDPO in raw win rate; the 95% confidence intervals overlap substantially, so the gap is not statistically significant. Arena-Hard does not provide a length-controlled metric, limiting our ability to disentangle length effects from quality on this benchmark. (iv) Scope of claims. Our results apply to offline preference optimization in the LLM Instruct setting; extending AdaDPO to online RL, other modalities, and stronger safety objectives remains future work rather than a claim of this paper. 
+
+## 8 Conclusion 
+
+We identified the gradient imbalance in DPO as a structural property of its loss that causes models to suppress dispreferred responses far more aggressively than they promote preferred ones. AdaDPO resolves this by introducing per-preference-pair adaptive coefficients that enforce equality of gradient magnitudes on Pw and Pl (exactly in the base form, and per-token within a clipping bound in Stable AdaDPO implementation), with minimal code changes and no sensitive hyperparameters beyond DPO’s β. Two observations follow from our results. First, the consistency of AdaDPO’s gains across the 16-cell hyperparameter grid—LC win in 81% of combinations and an enlarged LC-over-WR margin in 88%—suggests that gradient balance, rather than careful β tuning, is the constraint on length-controlled performance for DPO-style objectives. Second, the LC-over-WR margin improvement systematically tracks reduced response lengths, providing direct empirical evidence that DPO’s gradient asymmetry is mechanistically linked to length exploitation, and offering an alternative to the explicit length regularization used in prior work. Cross-model validation, transfer to alternative preference datasets, and empirical evaluation of the variants in Table 2 are natural next 9steps. More broadly, the per-pair gradient-balance condition appears to be a useful design lens for preference optimization beyond any specific loss function. 
+
+## Acknowledgments and Disclosure of Funding 
+
+The authors would like to thank Lei Li and Nazhou Liu for their insightful suggestions, as well as Chenghua Wang, Zhifeng Li, Wenhui Chen, Jie Zhou, Xinmiao Yu, and Yanlin Fei for their valuable feedback and discussions. 10 References 
+
+AI@Meta. The Llama 3 herd of models. arXiv preprint arXiv:2407.21783 , 2024. Mohammad Gheshlaghi Azar, Mark Rowland, Bilal Piot, Daniel Guo, Daniele Calandriello, Michal Valko, and Rémi Munos. A general theoretical paradigm to understand learning from human preferences. arXiv preprint arXiv:2310.12036 , 2023. Paul F Christiano, Jan Leike, Tom Brown, Miljan Martic, Shane Legg, and Dario Amodei. Deep reinforcement learning from human preferences. In Advances in Neural Information Processing Systems (NeurIPS) , 2017. Ganqu Cui, Lifan Yuan, Ning Ding, Guanming Yao, Wei Zhu, Yuan Ni, Guotong Xie, Zhiyuan Liu, and Maosong Sun. UltraFeedback: Boosting language models with high-quality feedback. In 
+
+International Conference on Machine Learning (ICML) , 2024. Yann Dubois, Balázs Galambosi, Percy Liang, and Tatsunori B Hashimoto. Length-controlled AlpacaEval: A simple way to debias automatic evaluators. arXiv preprint arXiv:2404.04475 , 2024. Duanyu Feng, Bowen Qin, Chen Huang, Zheng Zhang, and Wenqiang Lei. Towards analyzing and understanding the limitations of DPO: A theoretical perspective. arXiv preprint arXiv:2404.04626 ,2024. Jiwoo Hong, Noah Lee, and James Thorne. ORPO: Monolithic preference optimization without reference model. arXiv preprint arXiv:2403.07691 , 2024. Tianle Li, Wei-Lin Chiang, Evan Frick, Lisa Dunlap, Tianhao Wu, Banghua Zhu, Joseph E. Gonzalez, and Ion Stoica. From live data to high-quality benchmarks: The Arena-Hard pipeline. LMSYS Blog, 2024. https://lmsys.org/blog/2024-04-19-arena-hard/ .Qinwei Ma, Jingzhe Shi, Can Jin, Jenq-Neng Hwang, Serge Belongie, and Lei Li. Gradient imbalance in direct preference optimization. arXiv preprint arXiv:2502.20847 , 2025. Yu Meng, Mengzhou Xia, and Danqi Chen. SimPO: Simple preference optimization with a reference-free reward. arXiv preprint arXiv:2405.14734 , 2024. Arka Pal, Deep Karkhanis, Samuel Dooley, Manley Roberts, Siddartha Naidu, and Colin White. Smaug: Fixing failure modes of preference optimisation with DPO-positive. arXiv preprint arXiv:2402.13228 , 2024. Ryan Park, Rafael Rafailov, Stefano Ermon, and Chelsea Finn. Disentangling length from quality in direct preference optimization. arXiv preprint arXiv:2403.19159 , 2024. Rafael Rafailov, Archit Sharma, Eric Mitchell, Stefano Ermon, Christopher D Manning, and Chelsea Finn. Direct preference optimization: Your language model is secretly a reward model. In Advances in Neural Information Processing Systems (NeurIPS) , 2023. Noam Razin, Sadhika Malladi, Adithya Bhaskar, Danqi Chen, Sanjeev Arora, and Boris Hanin. Unin-tentional unalignment: Likelihood displacement in direct preference optimization. In International Conference on Learning Representations (ICLR) , 2025. John Schulman, Filip Wolski, Prafulla Dhariwal, Alec Radford, and Oleg Klimov. Proximal policy optimization algorithms. arXiv preprint arXiv:1707.06347 , 2017. Yue Wu, Zhiqing Sun, Huizhuo Yuan, Kaixuan Ji, Yiming Yang, and Quanquan Gu. Self-play preference optimization for language model alignment. arXiv preprint arXiv:2405.00675 , 2024. Teng Xiao, Yige Yuan, Huaisheng Zhu, Mingxiao Li, and Vasant G Honavar. Cal-DPO: Calibrated direct preference optimization for language model alignment. In Advances in Neural Information Processing Systems (NeurIPS) , 2024. Haoran Xu, Amr Sharaf, Yunmo Chen, Weiting Tan, Lingfeng Shen, Benjamin Van Durme, Kenton Murray, and Young Jin Kim. Contrastive preference optimization: Pushing the boundaries of LLM performance in machine translation. arXiv preprint arXiv:2401.08417 , 2024. 11 Lianmin Zheng, Wei-Lin Chiang, Ying Sheng, Siyuan Zhuang, Zhanghao Wu, Yonghao Zhuang, Zi Lin, Zhuohan Li, Dacheng Li, Eric P Xing, Hao Zhang, Joseph E Gonzalez, and Ion Stoica. Judging LLM-as-a-judge with MT-Bench and Chatbot Arena. In Advances in Neural Information Processing Systems (NeurIPS) Datasets and Benchmarks Track , 2023. Wenqiao Zhu, Ji Liu, Lulu Wang, Jun Wu, and Yulun Zhang. SGDPO: Self-guided direct preference optimization for language model alignment. In Findings of the Association for Computational Linguistics: ACL 2025 , pages 12366–12383, Vienna, Austria, 2025. Association for Computational Linguistics. Daniel M Ziegler, Nisan Stiennon, Jeffrey Wu, Tom B Brown, Alec Radford, Dario Amodei, Paul Christiano, and Geoffrey Irving. Fine-tuning language models from human preferences. arXiv preprint arXiv:1909.08593 , 2019. 12 A Technical appendices and supplementary material 
+
+A.1 Implementation Details 
+
+The complete PyTorch implementation appears in Listing 1 of Section 3.4. We use the length-normalized variant (Stable AdaDPO; see Section 6.1) for all main-text experiments. The unnormalized variant—obtained by replacing the per-token-averaged log-probabilities with raw summed log-probabilities—produces less stable training dynamics on long responses but achieves comparable best-case performance after appropriate hyperparameter tuning. The full grid-search artifacts (training logs, evaluation outputs, and per-configuration metrics for all 32 runs) will be released with the camera-ready version. 
+
+A.2 Ceiling Constant Ablation 
+
+We ablate the ceiling constant C over {1.5, 2, 2.5, 3, 4, 5, 10 } at β = 0 .01 , taking the best LC across two learning rates ( 5 × 10 −7 and 1 × 10 −6) per value of C. The optimum is C = 2 (LC 44.2%, WR 42.7%); performance is robust on [1 .5, 2.5] and degrades beyond C ≥ 5.Table 3: Effect of ceiling constant C on AlpacaEval 2 performance ( β = 0 .01 ).                         
+
+> CLC (%) WR (%) Length 1.5 43.7 37.3 1772 2.0 44.2 42.7 1941 2.5 40.5 37.5 1867 3.0 41.6 37.8 1838 4.0 39.8 37.1 1881 5.0 38.4 36.0 1886 10.0 34.9 34.8 1979
+
+A.3 Generalization to DPO Variants: Derivations 
+
+For any pairwise contrastive loss L = f (βw log Pw − βl log Pl + λ) or L = f (βw log xw −
+
+βl log xl + λ), requiring |∂L/∂P w| = |∂L/∂P l| yields βw/β l = Pw/P l (or equivalently βw/β l =
+
+PwRl/(PlRw)). Beyond symmetric balancing ( k = 1 ), the same framework allows an optional scaling factor k
+
+that biases the update toward reinforcing preferred responses ( k > 1) or suppressing dispreferred responses ( k < 1). Concretely, one can set 
+
+βw
+
+βl
+
+= k · sg 
+
+ Pw
+
+Pl
+
+
+
+,
+
+leaving all other aspects of the loss unchanged. In this paper we always fix k = 1 and report results only for the balanced setting, which we find to be the most robust across general benchmarks. Using the stop-gradient operator gives the per-method coefficients summarized in Table 2. For ORPO, whose loss involves log[ P/ (1 − P )] , the balance condition gives βw/β l =sg( Pw(1 − Pw)/[Pl(1 − Pl)]) . The exponent generalization framework discussed in Section 6.1 extends naturally to all variants in Table 2 by replacing each adaptive coefficient with its (αw, α l)-parameterized counterpart. 
+
+A.4 Stable AdaDPO: Additional Details 
+
+The exponent family introduced in equation (10) accommodates several special cases beyond DPO (α = 0 ), base AdaDPO ( α = 1 ), and Stable AdaDPO ( α = 1 /|y|). Intermediate values of α
+
+smoothly interpolate between these regimes. We empirically observed that Stable AdaDPO yields the most stable training across the broadest range of β values; hence its use throughout Section 5. Asymmetric exponents (αw̸ = αl) are an interesting direction for future work, particularly for settings where preferred and dispreferred responses differ systematically in length or complexity (e.g., reasoning-style preferences with verbose chain-of-thought yw and terse incorrect yl). 13 A.5 Additional Benchmark Results 
+
+Figure 4: Arena-Hard performance comparison between AdaDPO and DPO. (a) Win rate vs. β; (b) 
+
+∆WR . The 95% confidence intervals on the best configurations overlap, indicating no statistically significant difference between methods on this length-uncontrolled benchmark. 
+
+Figure 5: MT-Bench performance comparison between AdaDPO and DPO. The 0.02-point gap between AdaDPO (8.03) and DPO (8.01) is below the resolution of the 1–10 scoring scale and 80-question evaluation set. 14
