@@ -1,0 +1,622 @@
+Title: Mitigating Bias in Locally Constrained Decoding via Tractable Proposals
+
+URL Source: https://arxiv.org/pdf/2606.01926v1
+
+Published Time: Tue, 02 Jun 2026 02:21:53 GMT
+
+Number of Pages: 13
+
+Markdown Content:
+# Mitigating Bias in Locally Constrained Decoding via Tractable Proposals 
+
+Meihua Dang 1 Linxin Song 2 Honghua Zhang 3 Jieyu Zhao 2 Guy Van den Broeck 3 Stefano Ermon 1
+
+# Abstract 
+
+Generations from large language models often fail to conform to desired constraints such as JSON schema. Existing locally constrained de-coding (LCD) approaches enforce constraints by myopically masking out next tokens, resulting in biased sampling and degradation in perfor-mance. Recent work uses sequential Monte Carlo (SMC) methods to mitigate such biases, but de-signing effective proposal distributions or poten-tial functions remains a key challenge. In this work, we propose a generic approach to construct proposals and potentials for SMC sampling from 
+
+plm (· | constraint) . First, we show that con-straints specified as finite automata can be ten-sorized for efficient execution on GPUs, which we use to construct globally constrained decod-ing (GCD) proposals. In addition, leveraging the fact that tensorized finite automata share the same 
+
+circuit structure as hidden Markov models, we circuit-multiply them to obtain the probabilistic GCD (P-GCD) proposals encoding both logical and probabilistic information about the target dis-tributions. We evaluate (P-)GCD on the tasks of function calling, keyword-based generation, and SQL generation. Experiments show that under the same SMC sampling setup, compared to LCD proposals, (P-)GCD converges faster to the target distribution with significantly fewer particles. 
+
+# 1. Introduction 
+
+Many applications require LLM outputs to satisfy strict log-ical or structural constraints. Examples include generating function calls conforming to a JSON schema (Patil et al., 2024; 2025), producing syntactically valid SQL queries (Lei 
+
+> 1
+
+Department of Computer Science, Stanford University 
+
+> 2
+
+Department of Computer Science, University of Southern Cal-ifornia 3Department of Computer Science, University of Cali-fornia, Los Angeles. Correspondence to: Meihua Dang <mh-dang@cs.stanford.edu >.
+
+Proceedings of the 43 rd International Conference on Machine Learning , Seoul, South Korea. PMLR 306, 2026. Copyright 2026 by the author(s). 
+
+et al., 2025), and avoiding toxic content (Gehman et al., 2020). Despite substantial advances in instruction fine-tuning (Wei et al., 2022; Chung et al., 2024) and preference optimization (Ouyang et al., 2022; Rafailov et al., 2023), current LLMs remain unreliable at consistently enforcing such hard constraints (Lu et al., 2023). Given a constraint C, the simplest unbiased way to sam-ple from the constrained distribution plm (x1: n | C ) is re-jection sampling : repeatedly draw from the unconstrained LM and reject those violating the constraint. However, it becomes impractical for complex constraints due to vanish-ingly low acceptance rates. A standard alternative is locally constrained decoding (LCD) , which masks out next tokens that immediately violate the constraint at each decoding step (Scholak et al., 2021; Dong et al., 2025). However, this local strategy (i) distorts the model’s distribution (Park et al., 2024) and (ii) does not guarantee constraint satisfaction 
+
+within a finite token budget , since the model may continue generating locally valid prefixes indefinitely without ever reaching a satisfying completion (Li et al., 2025). To address the two limitations of LCD, we propose: 1. Globally constrained decoding (GCD) . Given con-straints encoded as finite automata, we compile them into tensorized representations for efficient execution on GPUs. We use them to efficiently mask tokens that cannot lead to a valid completion within a token budget. This guarantees constraint satisfaction at termination. 2. Probabilistic GCD (P-GCD) . We first distill hidden Markov models to approximate the LM’s distributions, following Zhang et al. (2023). Then we efficiently mul-tiply them with the finite automata, leveraging circuit multiplication and tensor-network operations (Loconte et al., 2025). The multiplied distributions capture both hard constraint satisfaction and probabilistic informa-tion about future valid completions. We compare (P-)GCD against LCD within the sequential Monte Carlo (SMC) sampling framework. Prior work ap-plies SMC with LCD as the proposal distribution, mitigat-ing its bias by re-weighting and re-sampling a batch of se-quences ( particles ) (Loula et al., 2025; Lipkin et al., 2025). SMC is guaranteed to converge to the target distribution as the number of particles increases, but the convergence rate is bottlenecked by the quality of the proposal. 1
+
+> arXiv:2606.01926v1 [cs.CL] 1 Jun 2026 Mitigating Bias in Locally Constrained Decoding via Tractable Proposals
+
+We evaluate (P-)GCD on three constrained generation bench-marks: xLAM, a function-calling dataset with outputs con-strained to follow JSON or Python-like syntax; Common-Gen, a keyword-based generation task; and Spider, a text-to-SQL task where outputs must follow SQL syntax. When used as the proposal or potential distribution within the SMC framework, (P-)GCD outperforms LCD-based proposals in both generation quality and sampling efficiency, converging to the target distribution with significantly fewer particles. 1
+
+# 2. Problem Setup 
+
+Notation. We denote a sequence of n tokens as x1: n, with 
+
+xt the token at position t and x<t the prefix x1, . . . , x t−1,and assume all sequences generated by language models are padded to length n. We use p to denote a distribution defined by a model (e.g., plm ), q to denote any modified distribution used for sampling, and C to denote any constraint. 
+
+Constrained Generation. The goal of this work is to sample sequences from an LLM that strictly satisfy a given logical constraint C. Let plm (x1: n) = Qnt=1 plm (xt | x<t )
+
+denote the LLM distribution over token sequences of length 
+
+n. The target distribution is then 
+
+plm (x1: n | C ) ∝ plm (x1: n) · 1{x1: n ∈ X n},
+
+where 1{·} denotes the indicator function and Xn := 
+
+{ x1: n : x1: n satisfying C } .
+
+Rejection Sampling. The simplest and unbiased approach to sample from the target distribution plm (x1: n | C ) is re-jection sampling: repeatedly drawing x1: n ∼ plm until 
+
+x1: n ∈ X n. However, this is impractical for non-trivial constraints, where acceptance rates can be vanishingly low. 
+
+Locally Constrained Decoding. During autoregressive generation, one can often detect whether a candidate next token would immediately violate the constraint. For exam-ple, a valid JSON object must begin with an opening brace “{” or bracket “[”; sampling anything else at the first step immediately violates the constraint. Locally constrained de-coding (LCD) exploits this by masking out invalid tokens at each sampling step and renormalizing distribution over the tokens that still permit a valid completion from the current prefix. That is, it defines the proposal distribution: 
+
+qlcd (xt | x<t ) ∝ plm (xt | x<t ) · 1{x1: t ∈ X t, ∗}, (1) where Xt,m = { x1: t : ∃ xt+1: m, x 1: m satisfying C } is the set of prefixes that can be extended to a length-m sequence satisfying C, and Xt, ∗ = S 
+
+> m≥t
+
+Xt,m allows extension to satisfying sequences of any length. In other words, LCD  
+
+> 1Code available at https://github.com/MhDang/gelatwo .
+
+rejects xt only when no valid sequence of any length begins with the prefix x1: t (Lipkin et al., 2025). However, this is a “loose” masking criterion: locally valid prefixes may only admit a valid completion beyond length n, so the final length-n sequence may still violate the constraint C. For example, when generating a JSON object, the decoder may repeatedly emit unmatched opening braces “ {”. Each step remains locally valid, but if generation stops at length n
+
+before the braces are closed, the final sequence is invalid. There are a variety of open-source constrained decoding frameworks, such as Outlines (Willard & Louf, 2023) and XGrammar (Dong et al., 2025), and constrained decoding is widely deployed in production for proprietary models, such as the OpenAI API (Geng et al., 2025). To the best of our knowledge, all of the aforementioned systems perform LCD and do not guarantee constraint satisfaction within a given token budget . Our approach eliminates such fail-ure cases (Section 3). Moreover, the greedy and myopic enforcement of LCD deviates from the target conditional distribution plm (x1: n | C ), introducing substantial sampling bias (Loula et al., 2025; Park et al., 2024); see Appendix A for an illustrative example. 
+
+Sequential Monte Carlo Sampling. To approximately sample from the target distribution plm (x1: n | C ) while mini-mizing the aforementioned biases, Loula et al. (2025) pro-pose to use SMC with LCD as the proposal distribution, fol-lowed by importance reweighting to correct samples toward the target. Concretely, the SMC sampling algorithm main-tains k particles representing partial sequences, indexed by 
+
+i = 1 , . . . , k . At each timestep t, the process involves: (1) 
+
+proposing a sample x(i) 
+
+> t
+
+∼ q(xt | x(i)
+
+> <t
+
+), where q is any locally normalized distribution; (2) reweighting by computing the importance weights w(i) 
+
+> t
+
+= ϕ(x(i)1: t)/q (x(i)1: t) where ϕ is an unnormalized potential satisfying ϕ(x1: n) ∝ plm (x1: n | C )
+
+at the final timestep n; and (3) resampling with replacement according to the normalized weights w(i) 
+
+> t
+
+to obtain the new particles for the next iteration. The performance of SMC depends heavily on the quality of the proposal distributions. LCD is a weak proposal for two reasons: it does not guarantee constraint satisfaction within a finite token budget, and it is a binary signal that does not have probabilistic information about future valid completions. As a result, SMC may require a large number of particles or expensive potentials to converge. In the following, we show that GCD (Section 3) addresses the first limitation, while P-GCD (Section 4) addresses the second. 
+
+# 3. Globally Constrained Decoding 
+
+To overcome the limitations of LCD, we introduce two con-strained decoding distributions: (i) globally constrained decoding (GCD) , obtained by tensorizing constraints 2Mitigating Bias in Locally Constrained Decoding via Tractable Proposals 
+
+s0 s1 s2 s3 s4
+
+s5s6s7s9
+
+s8   
+
+> {”x”
+> ::
+> −
+> 0}
+> Z+
+> }
+> Z
+> EOS
+
+e0 e12 
+
+s0
+
+s9
+
+# S × E         
+
+> {}”:−019x· · · · · · EOS
+> · · ·
+> · · ·
+> · · ·
+> e0
+> e12
+
+# E × V        
+
+> Figure 1. An illustration of an NFA corresponding to a JSON schema object of the form {"x": <integer> }, together with its tensorized representation. It consists of a transition matrix Tout and an emission matrix Bf, which encode state transitions and symbol emissions, respectively. For simplicity, the incoming transition matrix Tin is omitted in the figure.
+
+specified as finite automata, and (ii) probabilistic glob-ally constrained decoding (P-GCD) , obtained by circuit-multiplying the tensorized automaton with a hidden Markov model. While both can be used directly for constrained generation, we evaluate them as proposals (and potentials) within the SMC framework. We first introduce globally constrained decoding (GCD) ,a constrained generation distribution that masks tokens that cannot lead to a valid completion within the token budget n:
+
+qgcd (xt | x<t ) ∝ plm (xt | x<t ) · 1{x1: t ∈ X t,n }. (2) Recall that Xt,n is the set of prefixes that can be extended to a length-n sequence satisfying C. GCD differs from LCD (Equation 1) only in the masking criterion: it masks with respect to Xt,n (prefixes that admit a valid completion within the remaining token budget) rather than Xt, ∗ (prefixes that admit a valid completion at any length). As a result, GCD guarantees that every generated length-n sequence satisfies C. We now show how to represent the valid set Xn
+
+of length-n sequences satisfying C compactly and evaluate the indicator 1{x1: t ∈ X t,n } efficiently for all vocabulary tokens at each decoding step using tensor operations. 
+
+3.1. Tensorizing Finite Automata 
+
+We consider constraints expressible as finite automata ,specifically nondeterministic finite automata (NFAs) and deterministic finite automata (DFAs) (Hopcroft et al., 2000). Such constraints arise in a wide range of constrained gen-eration tasks, including JSON-schema-constrained genera-tion (Geng et al., 2025) and agentic applications involving function calling (Yao et al., 2024). 
+
+Definition 3.1 (Finite Automata (Hopcroft et al., 2000)) .
+
+A finite automaton (FA) is a tuple M = ( S, V, δ, s 0, F),where S is a finite set of states , V is a finite set of symbols 
+
+(tokens of the LLM vocabulary), δ is a transition function ,
+
+s0 ∈ S is the initial state , and F ⊆ S is the set of accepting states . M is a nondeterministic finite automaton (NFA) when δ : S × V → 2S maps each state-symbol pair to a set of possible next states, and a deterministic finite automaton 
+
+(DFA) when δ : S × V → S maps each state-symbol pair to a unique next state. A token sequence x1: n is accepted by 
+
+M if there exists a state sequence s0, s 1, . . . , s n such that 
+
+si ∈ δ(si−1, x i) for all 1 ≤ i ≤ n, and sn ∈ F .Figure 1 illustrates an NFA accepting JSON strings of the form {"x":<integer> }. We tensorize a finite automa-ton by viewing it as a labeled directed graph and en-coding it as a collection of matrices. Let the states be 
+
+S = {s0, . . . , s S−1}, where s0 is the initial state and 
+
+S = |S| is the number of states, and let the alphabet be 
+
+V = {v0, . . . , v V −1}, where V = |V| is the vocabulary size. We group transitions so that for each state pair (si, s j )
+
+there is at most one edge labeled by a subset of V. Let 
+
+E = {e0, . . . , e E−1} denote the resulting edge set, where 
+
+E = |E| and each edge ek is associated with a source state 
+
+si, a destination state sj , and a subset of symbols that trigger the transition. 
+
+Definition 3.2 (Tensorization of Finite Automata) . We en-code a finite automaton using three binary matrices: 
+
+Tout ∈ { 0, 1}S×E , T in ∈ { 0, 1}E×S , B f ∈ { 0, 1}E×V ,
+
+where Tout and Tin are the source and destination incidence matrices, and Bf encodes edge labels, with the subscript 
+
+f representing FA. Specifically, for each edge ek from si
+
+to sj , set Tout [i, k ] = 1 and Tin [k, j ] = 1 ; and for each symbol vℓ that labels ek, set Bf [k, ℓ ] = 1 . The initial state 
+
+s0 and the accepting set F are represented by indicator vectors πf , f ∈ { 0, 1}S , where πf = (1 , 0, . . . , 0) ⊤ and 
+
+fi = 1{si ∈ F} .3Mitigating Bias in Locally Constrained Decoding via Tractable Proposals 
+
+Figure 1 illustrates the resulting tensorized representation of the example NFA. 
+
+3.2. Inference with Tensorized Automata 
+
+We now show how to compute qgcd efficiently using this ten-sorized representation. To evaluate the indicator 1{x1: t ∈Xt,n }, we must determine whether the partial sequence x1: t
+
+can be completed to a valid length-n sequence. This re-quires answering two questions: (i) for each candidate next token xt ∈ V , which automaton states are reachable after consuming x1: t−1; and (ii) from each such state, whether there exists a continuation of length n − t that reaches an accepting state. 
+
+Forward Process. The forward process computes the set of FA states reachable after observing the prefix x1: t−1,jointly for all candidate next tokens xt ∈ V . Intuitively, this corresponds to propagating state reachability along the FA transitions. We maintain a forward message αt ∈{0, 1}S×V , where αt(s, v ) = 1 indicates that, after process-ing x1: t−1, the FA can transition to state s if the next token is v. Once a token xt is generated, the realized state is the column αt(·, x t) ∈ { 0, 1}S . Thus the forward message can be computed recursively during autoregressive generation. Given the realized state αt−1(·, x t−1), the forward message at time t is computed for all v ∈ V in parallel via: 
+
+αt(·, ·) = 1 T ⊤
+
+> in
+
+ T ⊤
+
+> out
+
+αt−1(·, x t−1) ◦ Bf
+
+ , (3) where Tout , T in , B f are defined in Definition 3.2, ◦ denotes element-wise multiplication with broadcasting along the vocabulary dimension, and 1{·} denotes the element-wise indicator. The base case is α0(·) = πf , corresponding to the initial automaton state at timestep t = 0 .
+
+Backward Process. During generation, we require that each prefix x1: t can be extended to a valid length-n sequence satisfying the constraint. To enforce this, we maintain back-ward messages βt ∈ { 0, 1}S where βt(s) = 1 indicates that 
+
+s can reach an accepting state in exactly n − t steps. The recursion is initialized at the final step with βn = f , the indicator vector of accepting states. Given βt, the backward message at the previous timestep is computed by propagat-ing reachability backward along the FA edges: 
+
+βt−1 = 1 {Tout (( Tin βt) ◦ (Bf 1V )) } , (4) where 1V ∈ RV is the all-ones vector, so Bf 1V sums each row of Bf over the vocabulary dimension. 
+
+Constraint Mask. Combining forward and backward in-formation yields a mask over the vocabulary: a token v is feasible at step t if and only if it reaches a state that admits a valid continuation. 
+
+mt = 1 α⊤ 
+
+> t
+
+βt ∈ { 0, 1}V .
+
+Tokens with mt(v) = 0 are masked out at step t, guar-anteeing that the generated sequence satisfies C within n
+
+tokens. This yields an efficient algorithm for evaluating 
+
+1{x1: t ∈ X t,n } and hence computing qgcd (xt | x<t ).
+
+# 4. Probabilistic Globally Constrained Decoding 
+
+While GCD guarantees constraint satisfaction within n to-kens, its mask is purely binary: a token is permitted if and only if it admits some valid completion, regardless of how likely that completion is under plm . This is the same limi-tation we identified for LCD in Section 2. To address this limitation, inspired by prior work (Zhang et al., 2023), we augment GCD with probabilistic information by distilling a hidden Markov model (HMM) phmm to approximate plm 
+
+and combining it with the FA, yielding probabilistic glob-ally constrained decoding (P-GCD) .
+
+4.1. FA as HMM 
+
+We first show that FA naturally induces an HMM. Below we recap the definition of an HMM using tensor operations. The classic definition of an HMM is in Appendix B. 
+
+Definition 4.1 (Hidden Markov Model (Rabiner & Juang, 1986)) . A hidden Markov model (HMM) defines a joint distribution over an observed sequence x1: n and latent states 
+
+z1: n, where zt ∈ { 1, . . . , H } and xt ∈ V . It is parameterized by an initial distribution πh ∈ RH , a transition matrix Ah ∈
+
+RH×H , and an emission matrix Bh ∈ RH×V . The forward message αt ∈ RH , defined by αt(i) = phmm (x1: t, z t = i),satisfies the recursion 
+
+αt = ( A⊤ 
+
+> h
+
+αt−1) ◦ Bh(·, x t), α 1 = πh ◦ Bh(·, x 1),
+
+where ◦ is element-wise multiplication, Bh(·, x t) denotes the xt-th column of Bh, and the subscript h represents HMM. The marginal likelihood of the prefix is then 
+
+phmm (x1: t) = P 
+
+> i
+
+αt(i).Comparing the HMM forward recursion in Definition 4.1 with the FA forward recursion in Equation 3, we observe that they share the same algebraic structure. In fact, the tensorized FA implicitly defines an HMM whose hidden states are the edges of the FA. 
+
+Definition 4.2 (Edge HMM induced by an FA) . The ten-sorized FA (Tout , T in , B f , π f , f ) from Definition 3.2 in-duces an HMM whose hidden states correspond to FA edges. The transition and emission matrices are 
+
+Af = Tin Tout ∈ { 0, 1}E×E , Bf ∈ { 0, 1}E×V ,
+
+where Af [k, k ′] = 1 if and only if the destination state of edge ek is the source state of edge ek′ . Overloading notation 4Mitigating Bias in Locally Constrained Decoding via Tractable Proposals 
+
+from Definition 3.2, we redefine the initial-state and accept-state vectors in edge space as 
+
+πf := T ⊤
+
+> out
+
+πf ∈ { 0, 1}E , f := Tin f ∈ { 0, 1}E ,
+
+where the right-hand πf and f are the state-indexed versions from Definition 3.2; henceforth πf and f refer to their edge-lifted versions. Since Af and Bf contain binary values rather than proba-bilities, this induced HMM has unnormalized parameters. Rather than normalizing the transition and emission ma-trices, we compute unnormalized prefix probabilities and the corresponding normalization constants via forward and backward processes similar to Equations 3 and 4, enabling efficient likelihood evaluation and sampling from pfa .
+
+Theorem 4.3 (Distribution induced by an FA) . The induced HMM from Definition 4.2 yields a distribution 
+
+pfa (x1: n) ∝
+
+
+
+z1: n : z1: n is an accepting path producing x1: n
+
+
+
+.
+
+That is, each accepted sequence is weighted by its number of accepting paths, while unaccepted sequences have prob-ability 0. For a DFA, every accepted sequence has exactly one accepting path, so pfa is uniform over Xn.
+
+4.2. The Product Distribution 
+
+The classical HMM (Definition 4.1) and the FA-induced HMM (Definition 4.2) share the same circuit structure , so applying circuit multiplication algorithms (Shen et al., 2016; Vergari et al., 2021; Loconte et al., 2025), their product 
+
+pprod (x1: n) ∝ phmm (x1: n) · pfa (x1: n)
+
+is a single HMM. Theorem 4.4 gives the explicit construc-tion. As a corollary, when the FA is deterministic, pfa is uniform over Xn (Theorem 4.3), and the product reduces to the constrained conditional 
+
+pprod (x1: n) = phmm (x1: n | C ),
+
+where C is the constraint represented by the DFA. 
+
+Theorem 4.4 (Product HMM) . Let (πh, A h, B h) be the parameters of the language-model HMM and (πf , A f , B f )
+
+those of the FA-induced HMM. Their product distribution 
+
+pprod ∝ phmm · pfa admits a representation as an HMM whose hidden state space is the Cartesian product of the two factors, with parameters 
+
+π = πh ⊗ πf , A = Ah ⊗ Af , B = Bh ⊗row Bf ,
+
+where ⊗ is the Kronecker product and ⊗row denotes the row-wise Kronecker product, applied independently for each token: for each v ∈ V , B[: , v ] = Bh[: , v ] ⊗ Bf [: , v ].
+
+Algorithm 1 Next-token probability for constrained genera-tion 
+
+Input: prefix x1: t−1, maximum sequence length n
+
+HMM phmm (Ah, B h, π h) with hidden size H
+
+FA pfa (Af , B f , π f , f ) with hidden size E
+
+Output: pprod (xt=v, x <t ) for any token v in the vocabulary 
+
+Convention: αt(z) = pprod (x<t , z t=z) (before-emission), re-shaped in RH×E ; emission column B(: , x ) = Bh(: , x ) Bf (: 
+
+, x )⊤.
+
+Step 1: Precompute backward messages if t = 1 then 
+
+βn = 1H f ⊤ ▷ accept indicator; exactly n−t steps 
+
+input = Bh B⊤ 
+
+> f
+
+▷ emission marginalized over vocab 
+
+for k from n to 2 do 
+
+βk−1 =  Af
+
+ Ah(input ◦ βk )⊤⊤
+
+end for 
+
+γ = π⊤
+
+> f
+
+ π⊤ 
+
+> h
+
+β1
+
+⊤ ▷ total probability mass 
+
+end if Step 2: Compute prefix marginal if t = 1 then 
+
+α1 = 1
+
+γ (πh ⊗ πf )
+
+else 
+
+αt =  A⊤
+
+> f
+
+ A⊤ 
+
+> h
+
+(αt−1 ◦ B(: , x t−1)) ⊤⊤ ▷ emit xt−1, then 
+
+transition 
+
+end if return diag  B⊤
+
+> f
+
+ B⊤ 
+
+> h
+
+(αt ◦ βt)⊤
+
+Tensor Operations. Rather than explicitly materializing the Kronecker-product matrices that define pprod , we oper-ate directly on the factored representation. Specifically, we reshape each message in RHE as a matrix in RH×E and apply the transition via the Kronecker-vec identity (Zhang et al., 2025): for any u ∈ RH×E ,
+
+(Ah ⊗ Af )u =  Af (Ahu)⊤⊤ (5) where the left-hand side identifies u with its vectorization. This reduces the cost of one transition step from O(( HE )2)
+
+to O(H2E + HE 2). Analogous tensor operations handle the emission (where Bh ⊗row Bf acts column-wise) and the initial distribution (where πh ⊗ πf is a Kronecker product of vectors and never needs to be materialized). 
+
+Autoregressive Generation. To sample from pprod , we need next-token probabilities pprod (xt | x<t ) at each step. Although pprod has an HMM representation (Theorem 4.4), that HMM has unnormalized parameters, so the standard for-ward algorithm alone does not yield conditional next-token probabilities pprod (xt | x<t ). We instead normalize on the fly: we precompute backward messages βt ∈ RHE to store the total probability mass of length-(n − t) continuations 5Mitigating Bias in Locally Constrained Decoding via Tractable Proposals 
+
+under pprod given hidden state at time t, and combine them with forward marginals to obtain next-token probabilities at each step. Algorithm 1 gives the pseudocode. The βt here is the real-valued analog of the binary backward message in Section 3: there, βt(s) indicated whether state s
+
+could reach an accept state in n − t steps; here, βt(z) mea-sures the total probability mass of continuations reaching ac-cept. Per step, computing βt costs O(H2E+HE 2+HEV ),which is quadratic in each of H and E, linear in the vocabu-lary size V . Since forward and backward messages can be cached across timesteps, autoregressive decoding remains efficient. 
+
+4.3. P-GCD: Probabilistic Proposal and Potential 
+
+By leveraging the HMM’s tractable approximation of the constrained likelihood, we introduce P-GCD, which pro-vides both an SMC proposal and an SMC potential. As a proposal, P-GCD reweights the LM distribution at each step by the HMM’s constrained next-token probability: 
+
+qpgcd (xt | x<t ) ∝ plm (xt | x<t )w ·phmm (xt | x<t , C)1−w,
+
+where w is a hyper-parameter to be tuned, and phmm (xt |
+
+x<t , C) is computed via pprod (xt | x<t ) as in Algorithm 1. P-GCD also serves as a potential, weighting particles by the LM’s prefix probability times the HMM’s look-ahead estimate that the prefix admits a constraint-satisfying com-pletion: 
+
+ϕpgcd (x1: t) ∝ plm (x1: t) · phmm (C | x1: t)
+
+∝ plm (x1: t) · phmm (x1: t | C )/p hmm (x1: t),
+
+where the second form follows from Bayes’ rule (the con-stant phmm (C) is absorbed into ∝) and is operationally con-venient: phmm (x1: t | C ) is the prefix marginal under pprod 
+
+(Algorithm 1), and phmm (x1: t) is the prefix marginal under the unconstrained HMM. In Section 5, we show that both the proposal and the potential improve SMC convergence, reducing the number of particles required. 
+
+# 5. Experiments 
+
+5.1. Baselines 
+
+We compare the GCD proposal qgcd , the P-GCD proposal 
+
+qpgcd , and the P-GCD potential ϕpgcd within the SMC framework against the following baselines: • Rejection sampling (RS). Repeatedly sample from 
+
+plm (x1: n) until a sequence satisfying C is obtained, yield-ing exact samples from plm (x1: n | C ). This serves as the ground-truth distribution. • Locally constrained decoding (LCD). At each step, masks tokens that immediately violate the constraint, renormalizes the remaining probability mass, and samples from the resulting distribution. • LCD + SMC (Loula et al., 2025). Uses LCD as the pro-posal distribution within an SMC framework to approxi-mate the target conditional distribution plm (x1: n | C ).
+
+5.2. Function Calling Task and Dataset. We first evaluate on the xlam-function-calling-60k (xLAM) dataset (Liu et al., 2024). Each example from the dataset provides a set of “functions” that the language model can call to retrieve information needed to answer a user query. We first filter out ex-amples where the ground-truth answer does not satisfy the given function specification (e.g., argument type mis-match). From the remaining examples, we randomly sample 1,000 instances as a test set. We evaluate two function-calling formats: JSON and Python-like syntax. For ex-ample, given the user query “What’s the weather like in NYC today?”, the model should generate the function call 
+
+{"name": "get weather", "location": "NYC" } in JSON format or get weather(location="NYC") in Python-like syntax. 
+
+Metric. The model may only call functions provided in the example, and an output is considered correct if it (i) follows the required syntax (i.e., is parsable) and (ii) calls the correct function with the correct arguments, matching the ground-truth answer. 
+
+Constraints and FA Construction. Each function defini-tion is provided as a JSON schema, which we convert into an equivalent FA that accepts exactly the set of valid JSON strings conforming to the schema. We use standard JSON Schema specifications 2 to construct the FA, first building primitive types such as literals and strings, then composite types including arrays and objects, and finally composing them into function-calling schemas. We use the AUTOMATA 
+
+library for FA construction 3 and operations such as union, option, and concatenation (Evans & Robson, 2023). We construct FAs for Python-like function-calling syntax in a similar manner. 
+
+Experiments and Results. We use Llama-3.1-8B-Instruct as the base model and follow the pipeline of Zhang et al. (2024) to distill Monarch HMMs (Zhang et al., 2025) with 
+
+214 hidden states (i.e., 221 FLOPs per token during infer-ence). As shown in Figure 2, for both JSON and Python-like formats, (P-)GCD achieves substantially higher accuracy than LCD at the same number of particles, converging to the ground-truth distribution (rejection sampling) much faster. In particular, P-GCD exhibits a faster convergence rate than 
+
+> 2https://json-schema.org/
+> 3https://github.com/caleb531/automata
+
+6Mitigating Bias in Locally Constrained Decoding via Tractable Proposals     
+
+> (a) xLAM with JSON format (b) xLAM with Python-like format
+> Figure 2. Accuracy (%) on xLAM as a function of the number of SMC particles comparing proposals LCD, GCD, and P-GCD.
+
+GCD, illustrating the benefit of the additional probabilistic information provided by the HMM. We additionally report constraint satisfaction rates at fixed particle budgets in Ta-ble 1. LCD can fail to satisfy the constraint even at moderate particle budgets, partially explaining its lower accuracy com-pared to GCD and P-GCD.                   
+
+> Table 1. Constraint satisfaction rates (%). JSON Python-like
+> Method k=4 k=16 k=4 k=16
+> LCD 95.26 95.40 98.12 99.20 GCD 100.0 100.0 100.0 100.0 P-GCD 100.0 100.0 100.0 100.0
+
+Runtime Comparison. We measure wall-clock latency on xLAM. Table 2 shows that LCD and GCD incur only mod-est overhead relative to unconstrained generation (1.08 ×
+
+and 1.10 ×, respectively). P-GCD is more expensive due to the additional HMM computations, ranging from 3.11 ×
+
+to 10.2 × slowdown depending on the HMM size. HMM distillation is a one-time offline procedure consisting of (i) sampling data from the base model, which requires approxi-mately 2 GPU hours on H100 to generate 2M samples using vLLM, and (ii) training the HMM, which takes approxi-mately 0.2 to 3 GPU hours for hidden sizes ranging from 1024 to 16384. 
+
+Sensitivity to HMM size. Table 3 reports xLAM accuracy for different HMM hidden sizes. We find that even relatively small HMMs provide useful guidance yet larger HMMs con-sistently yield better performance; the advantage is mostly exhibited in low-particle regimes, while the performance gap diminishes as the number of particles increases. This suggests that P-GCD is robust to the quality of the HMM                                                          
+
+> Table 2. Wall-clock latency and slowdown compared to uncon-strained generation on xLAM using Llama-3.1-8B-Instruct, re-ported as seconds per token (mean ±standard deviation over 3 seeds). Measured on a single NVIDIA H100 GPU over 100 exam-ples with batch size 16; Hdenotes the HMM’s hidden size.
+> Method ms/token Slowdown Unconstrained 1.69 ±0.01 1.00 ×
+> LCD 1.83 ±0.02 1.08 ×
+> GCD 1.86 ±0.04 1.10 ×
+> P-GCD ( H= 1024 )5.26 ±0.01 3.11 ×
+> P-GCD ( H= 4096 )8.23 ±0.63 4.87 ×
+> P-GCD ( H= 16384 )17 .30 ±0.39 10 .2×
+> Table 3. Accuracy (%) on xLAM with JSON format comparing LCD and P-GCD with different HMM’s hidden size.
+> Method k=1 k=2 k=4 k=8 k=16
+> LCD 66.4 68.2 69.3 69.7 69.7 P-GCD ( H= 1024 )65.4 68.6 70.2 71.1 71.5 P-GCD ( H= 16384 )66.5 69.2 70.5 71.5 71.6
+
+approximation and does not require highly accurate models to be effective. 
+
+5.3. Keyword-based Generation Task and Dataset. We also evaluate (P-)GCD on the Com-monGen benchmark (Lin et al., 2020). Each test example provides 3 to 5 concepts (keywords) as input, and the goal is to generate a natural sentence that incorporates all concepts, allowing for any inflections. For example, given “car” ,
+
+“snow” , and “drive” , both “a man drives a car on a snow-covered road” and “the car drove through the snow” are considered acceptable. 
+
+Metric. We use BLEU (Papineni et al., 2002) as the eval-uation metric. Since generation involves random sampling 7Mitigating Bias in Locally Constrained Decoding via Tractable Proposals             
+
+> Figure 3. BLEU-4 on CommonGen as a function of the num-ber of SMC particles. LCD and GCD configurations use the LM likelihood plm as the potential, with proposals qlcd and qgcd re-spectively; ϕ-GCD uses qpgcd as the proposal and ϕpgcd as the potential.
+
+from the proposal distribution with temperature 1.0, we report the expected BLEU score, weighted over particles produced by SMC sampling. 
+
+Experiments and Results. In this setting, we evaluate P-GCD as a potential function by incorporating ϕpgcd into SMC sampling with qpgcd as the proposal. We use GPT2-Large as the base language model and adopt the HMM checkpoint released by Zhang et al. (2023). As shown in Figure 3, using ϕpgcd in addition to the qpgcd proposal fur-ther improves convergence, yielding a substantial advantage over the LCD proposal. 
+
+5.4. Text-to-SQL Generation Task and Dataset. We further evaluate on Spider (Yu et al., 2018), a text-to-SQL benchmark featuring SQL syntax constraints. Following the experimental setup of xLAM, we randomly sample 500 examples for evaluation and use the remaining data to distill the HMM for P-GCD. 
+
+Metric. We report execution accuracy: a generated SQL query is correct if executing it on the target database returns the same result as the reference query. 
+
+Results. Table 4 reports results for different particle bud-gets. Both GCD and P-GCD improve upon LCD across a range of particle budgets, with the largest improvements observed at moderate values of k. These results suggest that the benefits of GCD extend beyond function calling to more complex structured generation tasks. 
+
+5.5. NFA vs. DFA 
+
+Throughout this paper, we treat finite automata (FAs) gener-ically, without distinguishing between nondeterministic FAs                  
+
+> Table 4. Accuracy (%) on Spider as a function of the number of SMC particles using different proposal distributions.
+> Method k= 1 k= 4 k= 8
+> LCD 59.8 65.4 67.2 GCD 59.0 66.8 69.0 P-GCD 56.2 67.9 69.1
+> Figure 4. NFA and DFA state counts as a function of required set, illustrating the exponential succinctness gap.
+
+(NFAs) and deterministic FAs (DFAs). In our experiments, xLAM and CommonGen use DFAs, while text-to-SQL uses NFAs. Here we present a more specific case study illus-trating that NFAs can be exponentially more succinct than DFAs. Continuing with the function-calling task, we con-sider the following definition of function add vec n and impose a JSON constraint on the function-call output: 
+
+> {"name": "add_vec_n", "parameters": { "type": "object", "properties": { "x1": {"type": "integer"}, ... "xn": {"type": "integer"}, "y1": {"type": "integer"}, ... "yn": {"type": "integer"}, }, "anyOf": [ { "required": ["x1", "y1"] }, ... { "required": ["xn", "yn"] }, ]}}
+
+Figure 4 reports the sizes of the NFAs and the theoretically minimal DFAs encoding this JSON schema as a function of 
+
+n. As n increases, the NFA size grows linearly, whereas the DFA size grows exponentially, rendering DFAs impractical in this setting. In real-world agentic applications, function definitions often exhibit complex dependencies among pa-rameters, where such DFA blow-ups may arise in practice. 8Mitigating Bias in Locally Constrained Decoding via Tractable Proposals        
+
+> Table 5. Number of states in the SQL constraint FA used for Spider. OOM denotes out-of-memory during DFA construction.
+> Granularity NFA states DFA states
+> Character-level 7,999 57,263 Token-level 31,858 CPU OOM
+
+This example highlights the importance of NFA support for constrained decoding. Furthermore, the compactness advantage of NFAs also man-ifests in practical structured generation tasks. For the SQL grammar used in our Spider experiments, the corresponding NFAs are substantially smaller than their DFA counterparts (Table 5). At the character level, the NFA has about 8k states compared to about 57k for the equivalent DFA; at the token level, the NFA has about 32k states, while DFA construction exceeded available CPU memory. These results motivate operating directly on NFAs. 
+
+# 6. Related Work 
+
+Locally Constrained Decoding. There is an extensive line of work on locally constrained decoding (Shin et al., 2021; Scholak et al., 2021; Poesia et al., 2022; Ugare et al., 2025; Park et al., 2025), with a primary focus on enforcing hard constraints efficiently during autoregressive generation. These approaches typically operate by masking out invalid next tokens based on the current prefix, thereby ensuring local constraint satisfaction at each decoding step. Existing frameworks differ mainly in how constraints are represented: for example, Outlines (Willard & Louf, 2023) uses regular expressions and their corresponding DFA representations, while more recent systems such as XGrammar (Dong et al., 2025) rely on context-free grammars. Notably, most of these systems are optimized for CPUs executions. In contrast, we propose the first tensorized representation of automaton-based constraints together with GPU-native inference al-gorithms. More importantly, our approach guarantees the constraint will be satisfied upon termination. 
+
+Approximate Inference for Constrained Generation. 
+
+Recent work has formulated constrained generation as ap-proximate inference of the conditional distribution. Prior ap-proaches include MCMC-based methods (Qin et al., 2022; Gonzalez et al., 2026), which iteratively refine samples toward the target distribution; amortized inference meth-ods (Hu et al., 2024), which learn auxiliary approximations to the conditional distribution; and sequential Monte Carlo (SMC) methods (Loula et al., 2025; Lipkin et al., 2025), which maintain weighted particles and asymptotically re-cover the target distribution through importance weighting and resampling. 
+
+Controllable Generation with Auxiliary Models. Sev-eral works incorporate auxiliary models or signals to guide constrained or controllable generation. ABS (Collura et al., 2025) re-weights language model logits using the distance to an accepting state in a DFA, thereby encouraging progress toward constraint satisfaction. GeLaTo (Zhang et al., 2023) is the first to use a hidden Markov model to capture prob-abilistic information from the language model, but it is limited to keyword-based constraints. Its follow-up work, Ctrl-G (Zhang et al., 2024), combines DFA constraints with HMM guidance; however, its algorithm does not handle NFAs. As discussed in Section 5.5, DFAs can be expo-nentially larger than equivalent NFAs, making DFA-based approaches infeasible in many real-world settings. Meth-ods such as GeDi (Krause et al., 2021), FUDGE (Yang & Klein, 2021), and NADO (Meng et al., 2022) train auxiliary neural classifiers to steer generation, but they provide no guarantees on exact constraint satisfaction. 
+
+# 7. Conclusion 
+
+This work aims to mitigate the sampling bias introduced by locally constrained decoding for constrained generation from large language models. In conclusion, we present 
+
+(probabilistic) globally constrained decoding , an algorith-mic approach for constructing proposal distributions and potential functions within the sequential Monte Carlo sam-pling framework. By tensorizing constraints represented as finite automata and (optionally) multiplying them with hidden Markov models, we can obtain tractable proposals and potentials that capture not only the logical structure of the constraints but also the probabilistic information from the language model. Empirical evaluations on xLAM, Com-monGen and, Spider demonstrate that, compared to locally constrained decoding–based proposals, our approach not only guarantees constrained satisfaction within any given token budget but also achieves substantially better conver-gence in SMC sampling with far fewer particles. 
+
+# Acknowledgments 
+
+This work is supported by ARO (W911NF-21-1-0125), ONR (N00014-23-1-2159), and the CZ Biohub. Addi-tional support is provided by the DARPA ANSR and CODORD programs under awards FA8750-23-2-0004 and HR00112590089, and gifts from Cisco Research, and Qual-comm. We thank Amazon responsible AI for their support. 
+
+# Impact Statement 
+
+This paper presents work whose goal is to advance the field of machine learning. There are many potential societal consequences of our work, none of which we feel must be specifically highlighted here 9Mitigating Bias in Locally Constrained Decoding via Tractable Proposals 
+
+# References 
+
+Chung, H. W., Hou, L., Longpre, S., Zoph, B., Tay, Y., Fedus, W., Li, Y., Wang, X., Dehghani, M., Brahma, S., Webson, A., Gu, S. S., Dai, Z., Suzgun, M., Chen, X., Chowdhery, A., Castro-Ros, A., Pellat, M., Robinson, K., Valter, D., Narang, S., Mishra, G., Yu, A., Zhao, V., Huang, Y., Dai, A., Yu, H., Petrov, S., Chi, E. H., Dean, J., Devlin, J., Roberts, A., Zhou, D., Le, Q. V., and Wei, J. Scaling instruction-finetuned language models. Journal of Machine Learning Research , 25(70):1–53, 2024. Collura, V., Tit, K., Bussi, L., Giunchiglia, E., and Cordy, M. Abs: Enforcing constraint satisfaction on generated se-quences via automata-guided beam search. arXiv preprint arXiv:2506.09701 , 2025. Dong, Y., Ruan, C. F., Cai, Y., Xu, Z., Zhao, Y., Lai, R., and Chen, T. Xgrammar: Flexible and efficient structured generation engine for large language models. Proceedings of Machine Learning and Systems , 7, 2025. Evans, C. and Robson, E. W. automata: A python package for simulating and manipulating automata. Journal of Open Source Software , 2023. Gehman, S., Gururangan, S., Sap, M., Choi, Y., and Smith, N. A. RealToxicityPrompts: Evaluating neural toxic de-generation in language models. In Cohn, T., He, Y., and Liu, Y. (eds.), Findings of the Association for Computa-tional Linguistics: EMNLP 2020 , 2020. Geng, S., Cooper, H., Moskal, M., Jenkins, S., Berman, J., Ranchin, N., West, R., Horvitz, E., and Nori, H. Jsonschemabench: A rigorous benchmark of struc-tured outputs for language models. arXiv preprint arXiv:2501.10868 , 2025. Gonzalez, E. A., Vaidya, S., Park, K., Ji, R., Berg-Kirkpatrick, T., and D’Antoni, L. Constrained sampling for language models should be easy: An MCMC perspec-tive. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2026. Hopcroft, J. E., Motwani, R., and Ullman, J. D. Introduc-tion to Automata Theory, Languages and Computability .Addison-Wesley Longman Publishing Co., Inc., 2000. Hu, E. J., Jain, M., Elmoznino, E., Kaddar, Y., Lajoie, G., Bengio, Y., and Malkin, N. Amortizing intractable infer-ence in large language models. In The Twelfth Interna-tional Conference on Learning Representations , 2024. Krause, B., Gotmare, A. D., McCann, B., Keskar, N. S., Joty, S., Socher, R., and Rajani, N. F. Gedi: Generative discriminator guided sequence generation. In Findings of the Association for Computational Linguistics: EMNLP 2021 , pp. 4929–4952, 2021. Lei, F., Chen, J., Ye, Y., Cao, R., Shin, D., SU, H., SUO, Z., Gao, H., Hu, W., Yin, P., Zhong, V., Xiong, C., Sun, R., Liu, Q., Wang, S., and Yu, T. Spider 2.0: Evaluating language models on real-world enterprise text-to-SQL workflows. In The Thirteenth International Conference on Learning Representations , 2025. Li, L., salar rahili, and Zhao, Y. Correctness-guaranteed code generation via constrained decoding. In The Second Conference on Language Modeling , 2025. Lin, B. Y., Zhou, W., Shen, M., Zhou, P., Bhagavatula, C., Choi, Y., and Ren, X. CommonGen: A constrained text generation challenge for generative commonsense reasoning. In Findings of the Association for Computa-tional Linguistics: EMNLP 2020 , pp. 1823–1840, Online, November 2020. Association for Computational Linguis-tics. Lipkin, B., LeBrun, B., Vigly, J. H., Loula, J., MacIver, D. R., Du, L., Eisner, J., Cotterell, R., Mansinghka, V., O’Donnell, T. J., Lew, A. K., and Vieira, T. Fast con-trolled generation from language models with adaptive weighted rejection sampling. In The Second Conference on Language Modeling , 2025. Liu, Z., Hoang, T., Zhang, J., Zhu, M., Lan, T., Kokane, S., Tan, J., Yao, W., Liu, Z., Feng, Y., Murthy, R., Yang, L., Savarese, S., Niebles, J. C., Wang, H., Heinecke, S., and Xiong, C. Apigen: Automated pipeline for generating ver-ifiable and diverse function-calling datasets. In Advances in Neural Information Processing Systems , 2024. Loconte, L., Mari, A., Gala, G., Peharz, R., de Campos, C., Quaeghebeur, E., Vessio, G., and Vergari, A. What is the relationship between tensor factorizations and circuits (and how can we exploit it)? Transactions on Machine Learning Research , 2025, 2025. Loula, J., LeBrun, B., Du, L., Lipkin, B., Pasti, C., Grand, G., Liu, T., Emara, Y., Freedman, M., Eisner, J., Cot-terell, R., Mansinghka, V., Lew, A. K., Vieira, T., and O’Donnell, T. J. Syntactic and semantic control of large language models via sequential monte carlo. In The Thir-teenth International Conference on Learning Representa-tions , 2025. Lu, A., Zhang, H., Zhang, Y., Wang, X., and Yang, D. Bounding the capabilities of large language models in open text generation with prompt constraints. In Findings of the Association for Computational Linguistics: EACL 2023 , 2023. Meng, T., Lu, S., Peng, N., and Chang, K.-W. Control-lable text generation with neurally-decomposed oracle. In Advances in Neural Information Processing Systems 35 , 2022. 10 Mitigating Bias in Locally Constrained Decoding via Tractable Proposals 
+
+Ouyang, L., Wu, J., Jiang, X., Almeida, D., Wainwright, C., Mishkin, P., Zhang, C., Agarwal, S., Slama, K., Ray, A., Schulman, J., Hilton, J., Kelton, F., Miller, L., Simens, M., Askell, A., Welinder, P., Christiano, P. F., Leike, J., and Lowe, R. Training language models to follow instructions with human feedback. In Advances in Neural Information Processing Systems , 2022. Papineni, K., Roukos, S., Ward, T., and Zhu, W.-J. Bleu: a method for automatic evaluation of machine transla-tion. In Proceedings of the 40th annual meeting of the Association for Computational Linguistics (ACL) , 2002. Park, K., Wang, J., Berg-Kirkpatrick, T., Polikarpova, N., and D' Antoni, L. Grammar-aligned decoding. In Ad-vances in Neural Information Processing Systems , 2024. Park, K., Zhou, T., and D’Antoni, L. Flexible and ef-ficient grammar-constrained decoding. arXiv preprint arXiv:2502.05111 , 2025. Patil, S. G., Zhang, T., Wang, X., and Gonzalez, J. E. Go-rilla: Large language model connected with massive apis. In Advances in Neural Information Processing Systems ,2024. Patil, S. G., Mao, H., Yan, F., Ji, C. C.-J., Suresh, V., Stoica, I., and Gonzalez, J. E. The berkeley function calling leaderboard (BFCL): From tool use to agentic evaluation of large language models. In Forty-second International Conference on Machine Learning , 2025. Poesia, G., Polozov, A., Le, V., Tiwari, A., Soares, G., Meek, C., and Gulwani, S. Synchromesh: Reliable code genera-tion from pre-trained language models. In The Eleventh International Conference on Learning Representations ,2022. Qin, L., Welleck, S., Khashabi, D., and Choi, Y. Cold decoding: Energy-based constrained text generation with langevin dynamics. In Advances in Neural Information Processing Systems , 2022. Rabiner, L. and Juang, B. An introduction to hidden markov models. IEEE ASSP Magazine , 3(1), 1986. Rafailov, R., Sharma, A., Mitchell, E., Manning, C. D., Er-mon, S., and Finn, C. Direct preference optimization: Your language model is secretly a reward model. In Ad-vances in Neural Information Processing Systems , 2023. Scholak, T., Schucher, N., and Bahdanau, D. PICARD: Parsing incrementally for constrained auto-regressive de-coding from language models. In Proceedings of the Conference on Empirical Methods in Natural Language Processing , 2021. Shen, Y., Choi, A., and Darwiche, A. Tractable operations for arithmetic circuits of probabilistic models. Advances in Neural Information Processing Systems , 29, 2016. Shin, R., Lin, C., Thomson, S., Chen, C., Roy, S., Platanios, E. A., Pauls, A., Klein, D., Eisner, J., and Van Durme, B. Constrained language models yield few-shot semantic parsers. In Proceedings of the Conference on Empirical Methods in Natural Language Processing , 2021. Ugare, S., Suresh, T., Kang, H., Misailovic, S., and Singh, G. Syncode: LLM generation with grammar augmentation. 
+
+Transactions on Machine Learning Research , 2025. Vergari, A., Choi, Y., Liu, A., Teso, S., and Van den Broeck, G. A compositional atlas of tractable circuit operations for probabilistic inference. Advances in Neural Information Processing Systems , 34:13189–13201, 2021. Wei, J., Bosma, M., Zhao, V., Guu, K., Yu, A. W., Lester, B., Du, N., Dai, A. M., and Le, Q. V. Finetuned lan-guage models are zero-shot learners. In The Eleventh International Conference on Learning Representations ,2022. Willard, B. T. and Louf, R. Efficient guided generation for large language models. arXiv e-prints , pp. arXiv–2307, 2023. Yang, K. and Klein, D. Fudge: Controlled text genera-tion with future discriminators. In Proceedings of the Conference of the North American Chapter of the Associ-ation for Computational Linguistics: Human Language Technologies (NAACL) , 2021. Yao, S., Shinn, N., Razavi, P., and Narasimhan, K. τ -bench: A benchmark for tool-agent-user interaction in real-world domains. arXiv preprint arXiv:2406.12045 , 2024. Yu, T., Zhang, R., Yang, K., Yasunaga, M., Wang, D., Li, Z., Ma, J., Li, I., Yao, Q., Roman, S., Zhang, Z., and Radev, D. Spider: A large-scale human-labeled dataset for complex and cross-domain semantic parsing and text-to-SQL task. In Proceedings of the 2018 Conference on Empirical Methods in Natural Language Processing ,2018. Zhang, H., Dang, M., Peng, N., and Van Den Broeck, G. Tractable control for autoregressive language generation. In The Fortieth International Conference on Machine Learning , 2023. Zhang, H., Kung, P.-N., Yoshida, M., Van den Broeck, G., and Peng, N. Adaptable logical control for large language models. In Advances in Neural Information Processing Systems , 2024. 11 Mitigating Bias in Locally Constrained Decoding via Tractable Proposals 
+
+Zhang, H., Dang, M., Wang, B., Ermon, S., Peng, N., and den Broeck, G. V. Scaling probabilistic circuits via monarch matrices. In The Forty-second International Conference on Machine Learning , 2025. 12 Mitigating Bias in Locally Constrained Decoding via Tractable Proposals 
+
+# A. Locally Constrained Decoding 
+
+To see why LCD distors the LM distribution, consider a simple example where plm defines a uniform distribution of 01 
+
+sequences of length 3 (i.e., plm (xt | x<t ) = 1 /2 for xt ∈ 0, 1). Let C require exactly one 1 in the sequence, so the valid sequences are 001 , 010 , and 100 , each of which has probability 1/3. Under locally constrained decoding equation 1, 
+
+plm (x1 | C ) = 1 /2 for x1 = 0 and x1 = 1 . For x1 = 0 , both x2 = 0 (to 001 ) and x2 = 1 (to 010 ) are possible, so plm (x2 | x1 = 0 , C) = 1 /2 each, with x3 deterministic ( 1 or 0). For x1 = 1 , only x2 = 0 (to 100 ) is possible, so plm (x2 | x1 = 1 , C) = 1 and x3 = 0 . The resulting probabilities are plm (001 | C ) = plm (010 | C ) = 1 /4 and 
+
+plm (100 | C ) = 1 /2. The issue is that local renormalization lacks the ability of “lookahead”: as the model generates the first digit x1, it cannot count globally how many examples satisfy the constraint and start with this digit, therefore, it equally splits probability mass between x1 = 0 and x1 = 1 . After x1 = 1 , however, there is only one branch, capturing the full remaining mass. It cannot account for the global number of valid completions per prefix. 
+
+# B. Hidden Markov Models 
+
+A Hidden Markov Model (HMM) (Rabiner & Juang, 1986) represents a joint probability distribution over n observed variables x1: n and n hidden variables z1: n. Specifically, for language modeling, xt represents the token at position t and 
+
+zt is the corresponding hidden state; zt takes values in {1, 2, . . . , H }, where H is the number of hidden states . An HMM models the joint distribution: 
+
+p(x1: n, z 1: n) = p(x1 | z1) · p(z1) · Y
+
+> 2≤t≤n
+
+p(xt | zt) · p(zt | zt−1).
+
+In particular, the parameters of an HMM are given by the initial probability p(z1), the emission matrix p(xt | zt) and the transition matrix p(zt+1 | zt); the number of parameters of HMMs grows quadratically with respect to H.In the main text, we use matrices and vectors to represent the transition probabilities A, emission probabilities B, and initial probability π. Specifically, let 
+
+A ∈ RH×H , A(i, j ) = p(zt+1 = j | zt = i); 
+
+B ∈ RH×V , B(i, v ) = p(xt = v | zt = i); 
+
+π ∈ RH , π(i) = p(z1 = i).
+
+To perform inference on HMMs efficiently, we leverage the Markov property : p(x≥t | zt, x <t ) = p(x≥t | zt). For example, we can efficiently compute p(x≤t) = P 
+
+> zt
+
+p(x≤t, z t) by the following recurrence relation, referred to as the forward algorithm (Rabiner & Juang, 1986): 
+
+p(x≤t, z t) = p(xt | zt) · X
+
+> 1≤zt−1≤h
+
+p(zt | zt−1) · p(x≤t−1, z t−1).
+
+In the tensor representation, we define the forward message at time t as 
+
+αt ∈ RH , αt(i) def 
+
+= p(x≤t, z t = i).
+
+Therefore the forward algorithm can then be written compactly as the recursion 
+
+αt =  A⊤αt−1
+
+ ◦ B(: , x t),
+
+where ◦ denotes element-wise multiplication and B(: , x t) denotes the column of B corresponding to the observed token xt.The base case is given by 
+
+α1 = π ◦ B(: , x 1).
+
+Therefore, the marginal is 
+
+p(x≤t) = 1⊤ 
+
+> H
+
+αt,
+
+where 1H ∈ RH denotes the all-ones vector. 13

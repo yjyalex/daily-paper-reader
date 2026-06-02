@@ -1,0 +1,884 @@
+Title: EPIC: Efficient and Parallel Inference under CFG Constraints for Diffusion Language Models
+
+URL Source: https://arxiv.org/pdf/2606.00722v1
+
+Published Time: Tue, 02 Jun 2026 01:01:54 GMT
+
+Number of Pages: 22
+
+Markdown Content:
+# EPIC: Efficient and Parallel Inference under CFG Constraints for Diffusion Language Models 
+
+Hyundong Jin Yo-Sub Han ⋆
+
+Yonsei University, Seoul, Republic of Korea 
+
+{tuzi04, emmous}@yonsei.ac.kr 
+
+Abstract 
+
+Controlling language model outputs is essen-tial for ensuring structural validity, reliability, and downstream usability, and diffusion lan-guage models are no exception. Recent ad-vances in diffusion language model decoding have extended output control beyond regular constraints to context-free grammar (CFG) con-straints. Existing methods, however, can be up to four times slower than unconstrained decoding. More importantly, they substan-tially diminish one of the key advantages of diffusion language models over autoregressive models, namely parallel decoding. This slow-down arises because sequential validity check-ing introduces significant overhead during par-allel generation. We propose an efficient CFG-constrained decoding framework, EPIC, that addresses this limitation. Our method improves decoding efficiency by combining lexing mem-oization, validation using Earley-style pars-ing instead of deterministic automata, and re-laxed compatible subset selection for paral-lel commit. It reduces repeated lexing and validation overhead while allowing multiple compatible tokens to be committed together. Experiments on three benchmarks using four models show that our method preserves the syntactic and functional correctness of CFG-constrained decoding while keeping the over-all runtime close to unconstrained decoding. Compared with existing CFG-constrained de-coding methods, EPIC reduces relative infer-ence time by up to 67 .5% . Our implemen-tation is available at https://github.com/ hyundong98/EPIC-Decoding.git .
+
+1 Introduction 
+
+Driven by the success of diffusion models in vi-sion, there has been growing interest in apply-ing diffusion-based methods to language model-ing (Ho et al., 2020; Sahoo et al., 2024; Nie et al., 2026). Diffusion language models (DLMs) gen-erate text through iterative denoising rather than Repeated Lexing Overhead   
+
+> Sequential Token Checking
+> Exponential Determination
+
+Prior Works     
+
+> Lexing Memoization
+> Filter -based Parallel Commit
+> DFA -free Validation
+
+EPIC (Ours)                   
+
+> 𝑡 1?𝑡 !??𝑡 "𝑡 1?𝑡 !??𝑡 "
+> re -lex re -lex re -lex Miss Hit Hit
+> DFA
+> Minimal
+> DFA
+> ENFA DFA Minimal
+> DFA
+> Intersect
+> w/ CFG
+> State Blow -up
+> ENFA Valid
+> Invalid
+> Earley
+> Parser
+> Check w/o DFA
+> Lost Parallelism
+> Check Validity
+> in Parallel Fallback
+> Minimizing Overhead
+
+Figure 1: Overview of the bottlenecks in prior CFG-constrained diffusion decoding and the corresponding components of EPIC. 
+
+autoregressive (AR) next-token prediction, and masked diffusion language models (MDLMs) in-stantiate this paradigm by repeatedly refining par-tially masked sequences. Recent progress has shown that MDLMs can scale to large language models (LLMs), making DLMs a promising alter-native to AR generation (Sahoo et al., 2024; Nie et al., 2026). Unlike AR models, which generate tokens strictly from left to right, DLMs can update multiple positions in parallel, offering a distinctive latency advantage (Kim et al., 2026). Despite this advantage, unconstrained DLM de-coding remains less reliable for structured out-puts such as code, JSON, and molecular strings. Proposed tokens can violate inter-token depen-dencies and degrade sequence-level consistency since multiple positions may be filled indepen-dently (Kang et al., 2026; Kim et al., 2026). Fur-thermore, the nonsequential nature of DLM gener-ation complicates syntax checking during decod-ing. Unlike autoregressive decoding, DLM decod-ing must reason about partially filled sequences whose unresolved masks may appear between gen-erated tokens. These challenges motivate grammar-1
+
+> arXiv:2606.00722v1 [cs.CL] 30 May 2026
+
+constrained decoding for DLMs. Recent work has begun to develop constrained decoding for DLMs motivated by these challenges. Suresh et al. (2025) study constrained DLM de-coding under regular constraints, where validity can be represented with finite automata. Building on this direction, Mündler et al. (2026) extend the constraints to context-free grammars (CFGs) us-ing a rejection sampling decoder, which we use as the state-of-the-art baseline. The baseline checks whether the partial output remains completable un-der the target grammar after applying a candidate update. However, each check requires repeated lex-ing, deterministic finite automaton (DFA) construc-tion and minimization, and sequential CFG-based validation, introducing substantial overhead. This overhead limits the benefit of parallel generation, especially when fewer denoising steps are used and more tokens are proposed per step. We propose EPIC, a decoding framework that reduces the main sources of overhead in the prior pipeline, as illustrated in Figure 1. EPIC reuses lexical computations across similar partial outputs, checks CFG compatibility directly on the lexed graph without deterministic finite automaton (DFA) construction, and selects compatible candidate sub-sets before exact verification to recover parallel commitment. Together, these components reduce repeated lexing, DFA construction, and sequential validation overhead, making CFG-constrained de-coding more efficient for DLMs. Our main contributions are as follows. • We identify three main sources of overhead in prior work on CFG-constrained decoding for DLMs, namely repeated lexing, DFA con-struction, and sequential candidate validation. • We propose EPIC, a CFG-constrained decod-ing framework for DLMs that targets the main overheads of prior work through lexing memo-ization, DFA-free validation, and relaxed com-patible subset selection for parallel commit. • We establish the correctness of the proposed decoding procedure and evaluate its inference efficiency on structured generation bench-marks covering code, JSON, and SMILES. 
+
+2 Related Work 
+
+We assume basic familiarity with regular languages, finite automata, context-free grammars (CFGs), lex-ing, and CFG parsing, and refer to Appendix A for formal background. Since EPIC directly targets the computational bottlenecks of CFG-constrained decoding for diffusion language models, we focus this section on the closest line of work and defer broader discussions of diffusion language models, autoregressive constrained decoding, and formal-language-based generation to Appendix B. The most relevant prior work is Mündler et al. (2026), which represents the state-of-the-art CFG-constrained decoding method for DLMs. They formulate CFG-constrained decoding as a repeated completion test over partial outputs. Given a pro-posed update to a partial output with masks, their decoder checks whether the remaining masks can still be filled so that the final output is accepted by the target grammar. The decoder accepts and commits the update when this test succeeds and rejects it otherwise. They implemented the test by constructing an automaton representing possi-ble completions of the updated partial output and checking its compatibility with the CFG. For out-puts that were not completed within the rejection budget, their method used an infilling procedure to produce a syntactically valid completion. We adopt the same completable output criterion and focus on making it more efficient. This prior pipeline involves three main sources of overhead. First, language models produce token-level outputs, whereas the CFG is defined over grammar terminals, namely lexemes. The de-coder therefore needs a lexing step before grammar checking. This step is nontrivial since partial out-puts may contain masks. A generated token can complete a lexeme on its left, start a lexeme on its right, or participate in a lexeme that spans one or more masks. Prior work handled these ambigui-ties by constructing an NFA for possible lexeme sequences, but it still had to be repeated for each update, making it a major runtime bottleneck. Second, the automaton derived from the partial output is determinized and minimized before CFG validation. This repeated NFA-to-DFA conversion can be costly, requiring exponential time in the number of NFA states in the worst case. Moreover, the subsequent compatibility check with the CFG further increases validation overhead. Prior work checked whether the DFA admits at least one com-pletion consistent with the CFG by searching an intersection grammar. Although the authors com-puted this grammar on the fly, the underlying con-struction could still grow cubically in the number of DFA states, making the validation step expensive. 2Lastly, the overall procedure reduces the benefit of diffusion parallelism because candidate tokens are checked and committed one at a time. Thus, even when a DLM proposes multiple tokens in a single denoising step, the constrained decoder may still incur largely sequential validation costs. 
+
+3 Problem Formulation 
+
+Let G = ( V, Σlex , P, S ) be a context-free grammar, where Σlex is the lexeme vocabulary, the set of grammar terminals. The target constraint language is therefore 
+
+L(G) ⊆ Σ∗
+
+> lex
+
+.
+
+This lexeme vocabulary should not be confused with either the byte-level alphabet Σbyte , used to represent raw strings, or the tokenizer vocabulary 
+
+Γ used by the diffusion language model. A partial model output is represented as 
+
+x ∈ (Γ ∪ { [MASK] })n,
+
+where [MASK] denotes a mask. Because the model operates over tokenizer-level sequences whereas the CFG is defined over lex-eme sequences, validity checking requires a lexical interface. We let Λ denote the lexical map that converts a token-level partial output x into a regu-lar or graph representation of compatible lexeme sequences. We denote this representation by Ax,with 
+
+L(Ax) ⊆ Σ∗
+
+> lex
+
+.
+
+For notational convenience, we write 
+
+Cx := L(Ax)
+
+for the lexeme-sequence completion language in-duced by x, and 
+
+M (x) := {i ∈ [n] | xi = [MASK] }
+
+for the set of masked positions. At each diffusion step, the model predicts distri-butions over tokens for masked positions. Given a reveal budget k, the decoder selects a subset of masked positions 
+
+I = {i1, . . . , i k} ⊆ M (x)
+
+and samples tokenizer tokens for these positions in parallel, 
+
+ti ∼ pθ(· | x), i ∈ I. 
+
+Equivalently, the model proposes updates 
+
+∆ = {(i, t i) | i ∈ I}.
+
+Applying this update to x gives a new partial output defined position-wise by 
+
+(x ⊕ ∆) j =
+
+(
+
+tj if (j, t j ) ∈ ∆,xj otherwise .
+
+The central question in CFG-constrained DLM decoding is whether this token-level update pre-serves the possibility of completing the remain-ing masks into a lexeme sequence accepted by the grammar. We say that a partial output x is com-pletable with respect to G if 
+
+L(G) ∩ Cx̸ = ∅.
+
+A proposed update ∆ is valid when VALID G(x, ∆) = 1 [L(G) ∩ Cx⊕∆̸ = ∅] .
+
+This definition gives a rule for constrained diffu-sion decoding. If VALID G(x, ∆) = 1 , the decoder may commit the proposed tokens. Otherwise, the proposal must be rejected. Prior methods evalu-ate this condition by constructing an automaton for 
+
+Cx⊕∆ and checking its compatibility with the CFG. Our goal is to compute the same validity predicate more efficiently in the repeated and parallel setting induced by DLM decoding. The multi-token nature of ∆ is crucial. In un-constrained DLM decoding, all tokens in I can be committed simultaneously after one model forward pass. Under CFG constraints, however, a naive decoder must test the proposed tokens sequentially, 
+
+(i1, t i1 ), (i2, t i2 ), . . . , (ik, t ik ),
+
+because the validity of one token may depend on which other tokens have already been accepted. This sequential processing weakens the main ad-vantage of DLMs. The problem we address is there-fore efficient validity checking for multiple token updates, while preserving the exact completable output criterion over lexeme sequences. 
+
+4 Proposed Method 
+
+We propose EPIC , a decoding framework for 
+
+Efficient and Parallel Inference under CFG Con-straints. Our method consists of three main compo-nents, namely lexing memoization, DFA-free vali-dation with Earley-style parsing, and relaxed com-patible subset selection for parallel commit. Each 3component addresses a distinct source of overhead in prior work. An overview of our framework is illustrated in Figure 2. 
+
+4.1 Lexing Memoization 
+
+The first improvement exploits locality in lexing. Although masks introduce lexing ambiguity, each ambiguity is determined by a local text segment and its adjacent mask boundaries. During diffu-sion decoding, an update modifies only a small part of the sequence, while the remaining mask positions stay fixed. As a result, consecutive vali-dation queries often contain many unchanged local lexing contexts. We therefore memoize possible prefix and suffix lexings for segments adjacent to masks. When the same local context appears again, we reuse the stored lexing result during partial-language construction. This avoids repeated lexing of unchanged regions and reduces the cost of con-structing the partial-output automaton or graph. 
+
+4.2 DFA-free Validation with Earley-style Parsing 
+
+The next component is DFA-free validation. Prior work represented a lexed partial output as an epsilon-NFA (ENFA) and then determinized and minimized it before CFG validation. After this con-version, validation checked whether the automaton admitted some path whose sequence of lexemes could be generated by the CFG. Prior work imple-mented this search as dynamic programming over CFG nonterminals and automaton pairs, analogous to CYK-style recognition (Younger, 1967; Kasami, 1965) on a finite automaton. However, this pipeline incurs the cost of ENFA-to-DFA conversion at each decoding step, and this bottom-up formulation pro-vides limited top-down guidance during the search. In contrast, for exact validation, we avoid ENFA-to-DFA conversion by performing witness check-ing directly on the ENFA using an Earley-style graph parser. The parser combines bottom-up evi-dence from ENFA transitions with top-down pre-dictions from the CFG. Intuitively, the search meets in the middle. The ENFA provides possible lex-eme transitions, while the grammar restricts which partial derivations are relevant to the start symbol. Although the worst case complexity is not substan-tially different from that of a CYK-style implemen-tation, the procedure avoids repeated determiniza-tion and minimization and introduces top-down grammar guidance into the witness search. Thus, DFA-free validation preserves the completable out-put criterion while removing the per-step overhead of ENFA-to-DFA conversion. 
+
+4.3 Relaxed Compatible Subset Selection for Parallel Commit 
+
+Finally, we introduce relaxed compatible subset se-lection to address the sequential commit problem, which significantly limits the parallelism of DLMs. When the number of denoising steps is small, a DLM reveals many tokens in a single step. This is a key advantage of DLMs over AR language models, but it can also make structured generation more difficult because independently proposed to-kens may be mutually incompatible. Prior work performs sequential compatibility checking to en-sure compatibility among independently sampled tokens. As a result, when the number of denois-ing steps is small, existing methods incur a larger slowdown relative to unconstrained decoding. The most direct solution would be to check the validity of multiple tokens simultaneously. This approach, however, does not reveal which tokens are compat-ible when the check fails. Finding the truly com-patible subset would require a number of checks exponential in the number of tokens masked at the same time. We avoid this cost by first selecting a subset that is compatible under a relaxed condition. Our imple-mentation builds a regular cover by flattening the production rules of the given CFG. For a CFG G,a regular cover is a finite automaton FG that satis-fies L(G) ⊆ L(FG). Given a candidate batch C,we intersect this regular cover with the completion automaton induced by x ⊕ C and perform an empti-ness check. This relaxed check is cheaper than ex-act CFG validation and safely rejects candidate sub-sets that are incompatible even under the relaxed condition. If the full batch is not cover-compatible, we recursively split the candidates by confidence and recover a smaller relaxed-compatible subset. A relaxed-compatible subset is not committed im-mediately. It is subsequently verified by the exact CFG completability checker. If exact verification rejects the selected subset, we recursively shrink it again and then fill the remaining reveal budget with the standard sequential constrained sampler. Detailed pseudocode for the three main compo-nents of EPIC are provided in Appendix C, and Appendix D shows that these components preserve the same completable-output criterion used by the baseline decoder. 4EPIC Decoding Pipeline  
+
+> DLM forward pass
+
+Candidate Set 𝑪 
+
+> (parallel proposals, sorted by confidence)
+
+§ 4.1 Lexing Memoization § 4.3 Subset Selection 
+
+Current Output   
+
+> [𝑡 1] [ 𝑡 !] [MASK] [ 𝑡 "] [MASK] [MASK] ⋯[𝑡 𝑁 ]
+
+Updated Output                         
+
+> ⋯[𝑡 #] [ 𝑡 "] [ 𝑡 $] [MASK] ⋯
+> Neighborhoods of Masks
+> Check the Memoization Table
+> [𝑡 1] [ 𝑡 2] [MASK] [ 𝑡 ⎙]
+> Reuse ENFA
+> fragments
+> Compute and
+> store ENFA
+> Precompute FSM 𝐹 𝐺 from CFG 𝐺
+> Test 𝐿 𝐹 𝐺 ∩𝐿 𝐴 %⨁'≠∅?
+> such that 𝐿 𝐺 ⊆𝐿 𝐹 (.
+> Hit Miss Yes No
+
+Parallel Commit 
+
+> (Recovers DLM parallelism)
+
+Sequential Fallback 
+
+> (Correctness guarantee)
+
+§ 4.2 DFA -free Validation              
+
+> Earley -style Validity Checking
+> 𝑡 )𝑡 !𝑡 ⎘𝑡 "
+> •No Exponential Determini zation
+> •No Minimization Overhead
+> 𝑣 "
+> 𝑣 !
+> ENFA 𝐴 %⨁'over lexeme
+> Keep full 𝐶 as
+> compatible
+> Split and find
+> compatible subset
+> Compatible Candidates Set 𝐵
+> Valid Invalid
+> Filling
+> Remainder
+> Commit to
+> Output
+
+Figure 2: Overview of EPIC. EPIC combines lexing memoization, a DFA-free graph-parser validation, and regular-cover batch selection to reduce the overhead in the CFG-constrained diffusion decoding. 
+
+4.4 Failure recovery 
+
+Following prior work, we use the same automatic recovery procedure when decoding reaches a fixed resampling budget. This budget counts the num-ber of rejected proposals over the entire decoding process. Even when the budget is exhausted, the current partial output is known to be completable, since every accepted update has been verified with a witness. Therefore, a valid witness completion always exists for the remaining masks. Under the recovery procedure of prior work, model sampling is terminated early and the output is completed by extracting a valid completion from a witness. This recovery step is not sampled from the model distri-bution, but provides a valid fallback when further rejection sampling is unlikely to succeed. 
+
+5 Experimental Results and Analysis 
+
+We evaluate EPIC to show that it reduces the infer-ence cost of CFG-constrained decoding for DLMs while maintaining syntactic and functional correct-ness. Our experiments follow the evaluation proto-col of prior work and cover three structured genera-tion tasks: C++ code generation, JSON generation under instance-specific schemas, and SMILES gen-eration. We organize the evaluation around three questions. First, we compare the relative inference time of EPIC and the prior CFG-constrained base-line across different denoising-step settings, using unconstrained decoding as the normalization refer-ence. Second, we analyze where runtime is spent and how each component of EPIC reduces the run-time cost. Third, we perform an ablation study over lexing memoization, DFA-free graph validity checking, and relaxed compatible subset selection to isolate their individual and combined effects. We provide additional experimental details in Ap-pendix E and additional results in Appendix F. 
+
+5.1 Experimental Settings 
+
+We evaluate the same four instruction-tuned DLMs as prior work, namely Dream, DreamCoder, LLaDA, and DiffuCoder. The models include both general-purpose DLMs and code-oriented variants. Following prior CFG-constrained decod-ing work, we use three structured-output bench-marks, C++ code generation, JSON generation with instance-specific schemas, and SMILES gener-ation. The C++ task is based on the HumanEval-X C++ split (Zheng et al., 2023), while the JSON and SMILES tasks use the benchmarks from the prior evaluation suite (Mündler et al., 2026). We primar-ily compare EPIC with the state-of-the-art CFG-constrained baseline, using unconstrained diffusion decoding as the reference for normalizing inference time. Con. denotes the prior CFG-constrained de-coder, and EPIC denotes our constrained decoding framework. All constrained methods use the same 5Model Steps C++ JSON SMILES Average Con. EPIC Con. EPIC Con. EPIC Con. EPIC Dream (7B) 16 143.86 98.44 176.32 109.36 102.09 103.43 140.76 103.74 32 147.89 114.85 123.79 101.22 100.45 101.07 124.04 105.71 64 114.41 108.12 108.19 101.36 100.67 101.18 107.76 103.55 128 106.03 102.65 104.42 100.92 100.30 100.29 103.58 101.29 256 102.12 102.92 102.39 100.82 98.96 99.21 101.16 100.98 DreamCoder (7B) 16 388.60 127.34 178.21 89.19 101.14 103.14 222.65 106.56 32 269.76 140.51 132.63 89.52 100.72 101.34 167.70 110.46 64 182.52 128.04 118.02 96.74 100.41 100.65 133.65 108.48 128 133.57 110.46 106.71 98.21 100.25 100.26 113.51 102.98 256 117.23 106.50 101.26 98.84 100.03 100.01 106.17 101.78 LLaDA (8B) 16 112.19 74.84 123.15 74.90 112.40 94.95 115.91 81.56 32 95.49 64.07 111.99 77.51 102.77 92.22 103.42 77.93 64 93.26 76.78 104.67 87.55 98.76 95.49 98.90 86.61 128 100.52 93.27 102.42 95.21 98.17 96.03 100.37 94.84 256 102.30 100.71 100.09 98.25 98.94 98.55 100.44 99.17 DiffuCoder (7B) 16 187.50 108.07 165.58 108.72 103.93 104.96 152.34 107.25 32 182.20 123.18 125.93 96.37 103.93 102.58 137.35 107.38 64 138.87 102.33 111.23 97.45 103.36 101.01 117.82 100.26 128 121.15 103.98 102.38 96.46 108.05 104.62 110.53 101.69 256 118.54 107.80 95.17 92.97 103.17 102.10 105.63 100.96 Average 147.90 104.74 119.73 95.58 101.93 100.15 123.18 100.16 
+
+Table 1: Inference time relative to unconstrained decoding. For each method, we report the relative inference time normalized by unconstrained diffusion decoding, where 100% indicates the same runtime as unconstrained decoding. Con. denotes the prior CFG-constrained decoder, and EPIC denotes our method. The shaded column highlights EPIC. 
+
+task-specific grammars and lexical specifications. For the main comparison, we measure infer-ence time across denoising steps in {16 , 32 , 64 ,
+
+128 , 256 } with a maximum generation length of 
+
+256 tokens, and report the results as relative in-ference time normalized by unconstrained decod-ing. Smaller denoising step settings reveal more tokens per step and therefore place greater stress on the sequential validity checking bottleneck. We use greedy decoding and repeat runtime measure-ments with three seeds, {42 , 43 , 44 }. Since EPIC achieves comparable syntactic and functional cor-rectness to the CFG-constrained baseline, we defer the full correctness results to Appendix F. 
+
+5.2 Main Results 
+
+Table 1 presents our main experimental results. We report relative inference time for four models and three datasets, normalized by unconstrained de-coding. Thus, a value of 100 indicates the same runtime as unconstrained decoding, while smaller values indicate faster decoding. Across C++ and JSON, EPIC consistently outperforms the prior CFG-constrained baseline for all models and de-noising steps. In several cases, EPIC achieves relative inference time below 100 . This does not imply negative constraint checking cost. Rather, constrained decoding can terminate early once a complete valid output and EOS have been formed, whereas the unconstrained diffusion sampler exe-cutes the full configured schedule. This effect is most visible on JSON and LLaDA. The improve-ment of EPIC is especially pronounced on C++, where the grammar is more complex than those used for JSON and SMILES and requires more production rules and automaton states. On SMILES, the relative-time difference be-tween the baseline and EPIC is generally small, ex-cept for LLaDA. This is because the fixed CFG and lexical specification used for SMILES are much smaller than those for the other tasks, so the base-line already stays close to unconstrained decoding. As a result, there is less room for our optimiza-tions to reduce per-check cost. The LLaDA case is different because of its block-wise decoding sched-ule. LLaDA divides the canvas into blocks and fills a fixed number of masks within each block, whereas DREAM, DreamCoder, and DiffuCoder determine the number and positions of unmasked tokens dynamically from a global timestep sched-ule. This makes the candidate sets of LLaDA more localized and stable, which can make compatible 6Model Dataset Method Runtime Breakdown Lex. (s) DFA (s) Val. (s) Dream C++ Con. 50.8 47.2 49.8 EPIC 12.0 11.8 17.1 JSON Con. 24.4 27.1 2.0 EPIC 5.9 5.6 2.1 SMILES Con. 0.3 1.0 0.7 EPIC 0.1 0.2 0.5 DreamCoder C++ Con. 96.9 216.8 179.8 EPIC 33.4 68.5 36.7 JSON Con. 17.3 31.0 1.7 EPIC 4.3 6.4 1.8 SMILES Con. 0.3 0.3 0.1 EPIC 0.1 0.0 0.4 LLaDA C++ Con. 47.1 20.0 56.6 EPIC 21.6 3.7 11.6 JSON Con. 21.7 7.5 1.0 EPIC 4.2 1.0 0.9 SMILES Con. 2.6 3.0 33.1 EPIC 1.5 0.4 7.1 DiffuCoder C++ Con. 83.4 102.8 146.2 EPIC 18.3 18.1 25.0 JSON Con. 26.2 40.4 2.5 EPIC 5.3 8.2 2.6 SMILES Con. 1.2 1.8 18.4 EPIC 0.2 0.2 1.6 
+
+Table 2: Runtime breakdown of the baseline and EPIC. We report the time spent in lexing, ENFA-to-DFA con-version, and validation. Validation includes both CFG checks and regular cover checks. For graph parser vari-ants, DFA time comes from regular cover selection. 
+
+subset selection more effective. Thus, even though graph parsing and caching provide limited gains on SMILES, LLaDA can still benefit from a reduc-tion in sequential exact checks. We provide further analysis in Section 5.3. The benefit of EPIC is larger when the num-ber of denoising steps is small. This matches our motivation, since smaller step counts require the decoder to unmask more tokens per step and there-fore amplify the sequential validation bottleneck. The effect is particularly clear for DreamCoder. For example, on DreamCoder with C++ at 16 de-noising steps, the prior CFG-constrained baseline requires 388 .60% of the unconstrained decoding time, whereas EPIC requires only 127 .34% . Equiv-alently, the overhead beyond unconstrained decod-ing is reduced from 288 .60% to 27 .34% .Although Table 1 focuses on runtime, EPIC also preserves the correctness. Across all models, datasets, and denoising-step settings, syntactic and                                                       
+
+> Model Dataset Memoization Parallelism # Hit Rate # Tok. Rate Dream C++ 300,019 67.2 3.4 97.4 JSON 970,458 88.9 2.7 93.9 SMILES 31,442 43.3 2.2 97.1 DreamCoder C++ 141,128 75.2 3.7 93.5 JSON 757,257 95.3 4.9 95.0 SMILES 5,116 44.5 1.9 91.6 LLaDA C++ 429,345 53.1 5.1 94.5 JSON 1,178,326 83.5 7.0 97.1 SMILES 4,590 46.5 3.6 87.8 DiffuCoder C++ 62,347 72.3 3.7 90.9 JSON 269,782 90.9 3.9 95.2 SMILES 13,884 65.0 2.9 92.1
+
+Table 3: Component analysis of EPIC. Memoization reports reused lexing results and hit rate, while paral-lelism reports the average batch commit size and regular cover selection success rate. 
+
+functional correctness remain comparable to the baseline. Detailed correctness results are provided in Appendix F.2. 
+
+5.3 Further Analysis 
+
+We further analyze EPIC to verify that its empirical gains come from the intended sources of efficiency improvement. All results in this subsection are measured at 32 denoising steps. We first examine the runtime breakdown in Table 2. The table com-pares the baseline and EPIC in terms of lexing time, DFA-construction time, and validation time. EPIC reduces overhead in almost all components. Lexing memoization yields roughly a 2× to 4× reduction in lexing time, with the largest gains appearing on C++ and JSON, where lexing accounts for a substantial fraction of the baseline overhead. The DFA-construction time also decreases substantially. Although EPIC does not construct a DFA for exact validation of each partial output, it still constructs automata during relaxed compatible subset selec-tion. This cost remains small because regular-cover checks are used only for parallel commit, while the sequential fallback runs without DFA construction. Validation time is also reduced, especially on C++ and LLaDA. C++ benefits from DFA-free valida-tion because its grammar is more complex than the grammars used for JSON and SMILES. LLaDA benefits more strongly from validation reduction since its fixed-number unmasking policy makes parallel commit more stable than in the other mod-els. We next report component-level statistics of 7Model Method C++ JSON SMILES Dream Con. 900 1203 516                                                            
+
+> 1Memo. 843 1095 541 2 DFA-free 863 1237 540 3 Parallel 900 1162 545 EPIC 700 983 519 DreamCoder Con. 1582 1089 523
+> 1Memo. 1385 939 540 2 DFA-free 1261 1109 540 3 Parallel 1378 986 543 EPIC 824 735 523
+> LLaDA Con. 791 1554 636 1 Memo. 772 1450 655 2 DFA-free 738 1619 628 3 Parallel 601 1179 609 EPIC 531 1076 570
+> DiffuCoder Con. 1278 1314 584 1 Memo. 1152 1172 598 2 DFA-free 1085 1307 582 3 Parallel 1119 1195 601 EPIC 862 1005 576
+> Table 4: Ablation results for EPIC. Starting from the baseline (Con.), we separately add 1 lexing memoiza-tion, 2 DFA-free validation with Earley-style parsing, and 3 relaxed compatible subset selection for parallel commit. EPIC enables all three components.
+
+EPIC in Table 3. Memoization achieves hit rates above 50% in most settings, and C++ and JSON show particularly large numbers of reused lexing results. These high hit rates indicate that diffu-sion decoding repeatedly visits similar local lexing contexts and that the memoization table captures meaningful reuse. The parallelism statistics show that about 90% of regular cover compatible subsets pass the exact CFG validation step. They also show that EPIC commits more than two tokens at once on average across all models and datasets. The effect is most pronounced for LLaDA. Unlike the other models, LLaDA reveals a fixed number of to-kens in each decoding block, which provides more stable candidates for relaxed compatible subset se-lection. On JSON, LLaDA commits an average of 7.0 tokens in parallel, demonstrating that EPIC can recover substantial diffusion parallelism under CFG constraints. 
+
+5.4 Ablation Results 
+
+Table 4 shows the ablation results at 32 denois-ing steps. We evaluate each component of EPIC by adding it separately to the baseline. The re-sults further confirm the observations from the run-time breakdown analysis. The components of EPIC provide distinct sources of speedup, and their ef-fects become clearer in the ablation study. The gains are especially pronounced on C++. All three components reduce inference time for every model, showing that C++ benefits from memoized lexing, DFA-free validation, and parallel commit. This consistent improvement indicates that EPIC is par-ticularly effective when the constraint language is complex enough to make repeated lexing, automa-ton construction, and exact CFG validation costly. On JSON, DFA-free validation alone sometimes increases runtime. This is likely because JSON grammars are simpler than the C++ grammar, so the baseline intersection-based validation already incurs relatively small overhead. In this setting, the additional graph-parser overhead can outweigh the reduction from avoiding DFA construction. On SMILES, the gains are limited because the baseline constraint overhead is already small. The full EPIC configuration generally achieves the best inference time by combining the complementary benefits of the three components. Pairwise combinations fur-ther show incremental improvements over single component variants in most settings, as reported in the full ablation results in Appendix F.3. 
+
+6 Conclusions 
+
+We presented EPIC, an efficient CFG-constrained decoding framework for diffusion language mod-els. EPIC reduces the main overheads of prior con-strained diffusion decoding through lexing mem-oization, DFA-free validation with Earley-style graph parsing, and relaxed compatible subset se-lection for parallel commit. These components preserve the completable output criterion while re-ducing repeated lexing, avoiding per-step DFA con-struction for exact validation, and recovering paral-lel token commitment. Experiments on C++, JSON, and SMILES with four DLMs show that EPIC sub-stantially reduces inference time while maintain-ing correctness comparable to the baseline. At 16 
+
+denoising steps, where parallelism matters most, EPIC achieves a 3.1× speedup over the prior CFG-constrained decoder on DreamCoder for C++ and reduces the relative inference time from 388 .6% 
+
+to 127 .3% of unconstrained decoding. Component analysis further shows memoization hit rates above 
+
+50% in most settings and an average parallel com-mit size above two tokens across all models and datasets. Future work could further reduce over-head through incremental graph parsing, tighter modeling of finite token budgets, and extensions 8beyond CFGs to lightweight context-sensitive con-straints such as type or schema-dependent semantic checks. 
+
+Limitations 
+
+Our method still over-approximates masked re-gions using a broad completion language such as 
+
+Σ∗ and remains rejection-based. Consequently, un-der finite token budgets and timeouts, it does not by itself guarantee 100% syntactic correctness. This limitation is shared with prior work, where a par-tial output can be theoretically completable but still difficult to finish within the remaining mask budget. Syntactic correctness also does not guar-antee functional correctness. This limitation is not unique to our method, since constrained decoding only enforces formal-language validity and does not verify task semantics. Moreover, the proposed optimizations reduce practical overhead but do not improve the worst-case asymptotic complexity of CFG-constrained validity checking. 
+
+References 
+
+Jacob Austin, Daniel D. Johnson, Jonathan Ho, Daniel Tarlow, and Rianne van den Berg. 2021. Structured denoising diffusion models in discrete state-spaces. In Advances in Neural Information Processing Sys-tems .Yehoshua Bar-Hillel, Micha A. Perles, and Eli Shamir. 1961. On formal properties of simple phrase struc-ture grammars. Zeitschrift für Phonetik, Sprachwis-senschaft und Kommunikationsforschung , 14:143– 172. Luca Beurer-Kellner, Marc Fischer, and Martin Vechev. 2024. Guiding llms the right way: Fast, non-invasive constrained generation. In Proceedings of the 41st International Conference on Machine Learning .Jay Earley. 1970. An efficient context-free parsing algo-rithm. Communications of the ACM , 13(2):94–102. Saibo Geng, Martin Josifoski, Maxime Peyrard, and Robert West. 2023. Grammar-constrained decoding for structured NLP tasks without finetuning. In Pro-ceedings of the 2023 Conference on Empirical Meth-ods in Natural Language Processing , pages 10932– 10952, Singapore. Association for Computational Linguistics. Shansan Gong, Ruixiang Zhang, Huangjie Zheng, Ji-atao Gu, Navdeep Jaitly, Lingpeng Kong, and Yizhe Zhang. 2026. Diffucoder: Understanding and im-proving masked diffusion models for code genera-tion. In The Fourteenth International Conference on Learning Representations .Jonathan Ho, Ajay Jain, and Pieter Abbeel. 2020. De-noising diffusion probabilistic models. Advances in neural information processing systems , 33:6840– 6851. John E. Hopcroft. 1971. An n log n algorithm for min-imizing states in a finite automaton. Theory of Ma-chines and Computations , pages 189–196. John E. Hopcroft, Rajeev Motwani, and Jeffrey D. Ull-man. 2006. Introduction to Automata Theory, Lan-guages, and Computation , 3 edition. Pearson. Wonjun Kang, Kevin Galim, Seunghyuk Oh, Min-jae Lee, Yuchen Zeng, Shuibai Zhang, Coleman Richard Charles Hooper, Yuezhou Hu, Hyung Il Koo, Nam Ik Cho, and Kangwook Lee. 2026. Parallel-bench: Understanding the trade-offs of parallel de-coding in diffusion llms. In International Conference on Learning Representations .Tadao Kasami. 1965. An efficient recognition and syntax-analysis algorithm for context-free languages. Technical Report AFCRL-65-758, Air Force Cam-bridge Research Laboratory. Bumjun Kim, Dongjae Jeon, Moongyu Jeon, and Albert No. 2026. Dependency-aware parallel de-coding via attention for diffusion llms. Preprint ,arXiv:2603.12996. Terry Koo, Frederick Liu, and Luheng He. 2024. Automata-based constraints for language model de-coding. In Conference on Language Modeling .Aaron Lou, Chenlin Meng, and Stefano Ermon. 2024. Discrete diffusion modeling by estimating the ratios of the data distribution. In Proceedings of the 41st International Conference on Machine Learning , vol-ume 235 of Proceedings of Machine Learning Re-search , pages 32819–32848. PMLR. Mehryar Mohri and Mark-Jan Nederhof. 2000. Regu-lar approximation of context-free grammars through transformation. In Robustness in Language and Speech Technology , pages 251–261. Kluwer Aca-demic Publishers. Niels Mündler, Jasper Dekoninck, and Martin Vechev. 2026. Constrained decoding of diffusion LLMs with context-free grammars. In The Fourteenth Interna-tional Conference on Learning Representations .Mark-Jan Nederhof. 2000. Practical experiments with regular approximation of context-free languages. 
+
+Computational Linguistics , 26(1):17–44. Shen Nie, Fengqi Zhu, Zebin You, Xiaolu Zhang, Jingyang Ou, Jun Hu, Jun Zhou, Yankai Lin, Ji-Rong Wen, and Chongxuan Li. 2026. Large language dif-fusion models. Advances in Neural Information Pro-cessing Systems , 38:50608–50646. NousResearch. 2024. Json mode eval. https: //huggingface.co/datasets/NousResearch/ json-mode-eval . Hugging Face dataset. 
+
+9Kanghee Park, Timothy Zhou, and Loris D’Antoni. 2025. Flexible and efficient grammar-constrained decoding. In Proceedings of the 42nd International Conference on Machine Learning .Fernando C. N. Pereira. 1991. Finite-state approxima-tion of phrase structure grammars. In Proceedings of the 29th Annual Meeting of the Association for Computational Linguistics , pages 246–255. Fernando C. N. Pereira and Rebecca N. Wright. 1997. Finite-state approximation of phrase-structure gram-mars. In Finite-State Language Processing , pages 149–173. MIT Press. Subham Sekhar Sahoo, Marianne Arriola, Yair Schiff, Aaron Gokaslan, Edgar Marroquin, Justin T. Chiu, Alexander Rush, and Volodymyr Kuleshov. 2024. Simple and effective masked diffusion language mod-els. In Advances in Neural Information Processing Systems .Torsten Scholak, Nathan Schucher, and Dzmitry Bah-danau. 2021. PICARD: Parsing incrementally for constrained auto-regressive decoding from language models. In Proceedings of the 2021 Conference on Empirical Methods in Natural Language Processing ,pages 9895–9901, Online and Punta Cana, Domini-can Republic. Association for Computational Lin-guistics. Michael Sipser. 2012. Introduction to the Theory of Computation , 3 edition. Cengage Learning. Tarun Suresh, Debangshu Banerjee, Shubham Ugare, Sasa Misailovic, and Gagandeep Singh. 2025. DINGO: Constrained inference for diffusion LLMs. In Advances in Neural Information Processing Sys-tems .Shubham Ugare, Tarun Suresh, Hangoo Kang, Sasa Misailovic, and Gagandeep Singh. 2024. Syncode: Llm generation with grammar augmentation. Brandon T. Willard and Rémi Louf. 2023. Effi-cient guided generation for large language models. 
+
+Preprint , arXiv:2307.09702. Zhihui Xie, Jiacheng Ye, Lin Zheng, Jiahui Gao, Jing-wei Dong, Zirui Wu, Xueliang Zhao, Shansan Gong, Xin Jiang, Zhenguo Li, and Lingpeng Kong. 2025. Dream-coder 7b. https://hkunlp.github.io/ blog/2025/dream-coder .Jiacheng Ye, Zhihui Xie, Lin Zheng, Jiahui Gao, Zirui Wu, Xin Jiang, Zhenguo Li, and Lingpeng Kong. 2025. Dream 7b. https://hkunlp.github.io/ blog/2025/dream .Daniel H. Younger. 1967. Recognition and parsing of context-free languages in time n3. Information and Control , 10(2):189–208. Qinkai Zheng, Xiao Xia, Xu Zou, Yuxiao Dong, Shan Wang, Yufei Xue, Zihan Wang, Lei Shen, Andi Wang, Yang Li, Teng Su, Zhilin Yang, and Jie Tang. 2023. Codegeex: A pre-trained model for code generation with multilingual benchmarking on humaneval-x. In 
+
+Proceedings of the 29th ACM SIGKDD Conference on Knowledge Discovery and Data Mining , pages 5673–5684. Association for Computing Machinery. 
+
+10 A Preliminaries 
+
+This section reviews the formal language theory and compiler theory background used throughout the paper. We focus on the concepts necessary to define CFG-constrained decoding, analyze the com-putational bottlenecks, and analyze the correctness of our proposed procedures. 
+
+A.1 Regular Languages and Finite Automata 
+
+A regular language is a set of strings that can be recognized by a finite automaton, or described by a regular expression (Sipser, 2012; Hopcroft et al., 2006). A DFA is defined as a tuple (Q, Σ, δ, q 0, F ),where Q is a finite set of states, Σ is a finite al-phabet, δ : Q × Σ → Q is a transition function, 
+
+q0 ∈ Q is the initial state, and F ⊆ Q is the set of accepting states. An NFA generalizes a DFA by allowing multiple outgoing transitions for the same input symbol and may also include ε-transitions. Every NFA can be converted to an equivalent DFA via subset construction, although the resulting DFA may contain exponentially many states in the worst case (Sipser, 2012; Hopcroft et al., 2006). As in the prior work, we use NFAs to repre-sent the partial outputs with masked regions. In prior CFG-constrained decoding pipelines, this NFA is determinized and then minimized before CFG compatibility checking. For a DFA with state set Q over alphabet Σ, Hopcroft’s algorithm runs in 
+
+O(|Σ|| Q| log |Q|) time in the worst case (Hopcroft, 1971). Since the automaton is reconstructed from many partial outputs during decoding, repeated determinization and minimization become a non-negligible source of overhead. 
+
+A.2 Context-Free Grammars 
+
+A CFG is defined as a tuple G = ( V, Σ, P, S ),where V is a finite set of nonterminals, Σ is a finite set of terminals, P is a set of productions of the form A → α with A ∈ V and α ∈ (V ∪ Σ) ∗,and S ∈ V is the start symbol. The language generated by G is denoted by L(G). Context-free languages (CFLs) are more expressive than regu-lar languages, and can express recursive structures such as balanced parentheses, nested expressions, and programming languages. Prior work uses a closure property that the inter-section of a CFL and a regular language is context-free (Bar-Hillel et al., 1961; Sipser, 2012). This property is used to formulate validity checking as an emptiness test over the intersection between the target CFL and the possible completions of the partial output. In such a construction, the intersec-tion grammar has nonterminals indexed by CFG nonterminals and pairs of automaton states, which introduces a cubic dependence on the number of automaton states. This leads to a validity-checking cost of O  |P || Q|3 + |P || Σ|| Q|2.Our relaxed check follows the classical idea of finite-state or regular approximation of CFG (Pereira, 1991; Pereira and Wright, 1997; Neder-hof, 2000; Mohri and Nederhof, 2000). We view the CFG as a recursive transition network, where each nonterminal corresponds to a subautomaton with an entry state and an exit state. We then flatten this network into a finite automaton by replacing each recursive call to a nonterminal with a transi-tion to that nonterminal’s entry state, and by con-necting its exit state to the possible continuation states. After flattening, the automaton no longer records which call site entered a nonterminal. Con-sequently, the automaton may accept additional lexeme sequences, but every CFG derivation is still preserved as a valid path. The resulting automaton is therefore a regular cover FG satisfying 
+
+L(G) ⊆ L(FG).
+
+A.3 Lexers and Parsers 
+
+Practical parsers rarely operate on raw character sequences directly. A typical compiler front end first applies lexing, which maps a character-level string into a sequence of tokens or lexemes, and then applies parsing to verify whether the token se-quence conforms to a grammar. Additional context-sensitive checks, such as type checking or name resolution, are often performed after parsing. This separation is important for constrained de-coding since language models generate tokens at the token level, whereas CFGs are usually defined over lexemes. Partial outputs with masked regions make lexing ambiguous, since a generated token may belong to a lexeme on its left, a lexeme on its right, or a lexeme spanning a masked region. Earley parsing is a general CFG parsing al-gorithm that combines top-down prediction with bottom-up completion (Earley, 1970). Unlike purely bottom-up methods such as CYK, Earley-style parsing can use top-down grammar predic-tions to restrict which partial derivations are consid-ered during parsing. Our DFA-free validity checker adopts this principle for witness checking over graph-structured partial outputs. 11 B Additional Related Work 
+
+This section provides additional related work that complements Section 2. We discuss diffusion lan-guage models, constrained decoding for autoregres-sive language models, and constrained decoding methods for diffusion language models. 
+
+B.1 Diffusion Language Models 
+
+Diffusion language models (DLMs) provide an al-ternative to autoregressive text generation (Austin et al., 2021; Lou et al., 2024; Sahoo et al., 2024; Nie et al., 2026). Instead of generating tokens from left to right, DLMs iteratively refine a partially ob-served sequence, often starting from a sequence of masked tokens. At each denoising step, the model predicts tokens for one or more masked positions conditioned on the current partially filled sequence. Masked diffusion language models (MDLMs) instantiate this idea using a discrete masking pro-cess (Sahoo et al., 2024; Nie et al., 2026). During generation, a model repeatedly replaces masked positions with sampled tokens until the sequence is fully specified. This generation process enables nonsequential and potentially parallel token pre-diction, since multiple masked positions can be updated within the same denoising step. The de-gree of parallelism is typically controlled by the number of denoising steps or the number of tokens committed per step. Fewer steps allow more to-kens to be generated per forward pass, improving speed but often increasing the risk of inconsistent or low-quality outputs (Kim et al., 2026). This parallel generation makes DLMs attractive for efficient decoding. At the same time, it creates new challenges for structured generation. Since multiple tokens may be sampled independently be-fore being committed, their joint compatibility with syntactic constraints is not guaranteed. This issue motivates constrained decoding methods that can preserve the parallelism of DLMs while enforcing formal language constraints. 
+
+B.2 Constrained Decoding for AR Models 
+
+Constrained decoding aims to enforce model out-puts to conform to a predefined set of constraints. In many applications, this set is specified by a for-mal language, such as a regular expression, a JSON schema, or a context-free grammar. Constrained decoding has been widely studied for autoregres-sive language models, where generation proceeds from left to right and the validity of each next token can be checked against the current prefix (Scholak et al., 2021; Geng et al., 2023; Park et al., 2025). For regular constraints, valid next tokens can be computed using finite automata (Koo et al., 2024; Willard and Louf, 2023). For context-free con-straints, the decoder must account for nested and re-cursive structures, which requires parsing-based or grammar-based methods (Geng et al., 2023; Beurer-Kellner et al., 2024; Ugare et al., 2024). Existing approaches differ in whether they mask invalid to-kens before sampling, reject invalid samples af-ter sampling, or combine both strategies (Willard and Louf, 2023; Beurer-Kellner et al., 2024; Ugare et al., 2024). These methods are effective for au-toregressive generation because the prefix grows monotonically from left to right. The DLM setting breaks this assumption. Apartial output may contain multiple masks, and updates can occur at arbitrary positions. As a re-sult, prefix-based constrained decoding algorithms cannot be directly applied. This motivates validity checking procedures that reason about whether a partially filled sequence can still be completed into a valid string. 
+
+B.3 Constrained Decoding for DLMs 
+
+Several recent works have begun to study con-strained decoding for diffusion language mod-els. Suresh et al. (2025) proposed DINGO, a constrained inference method for DLMs under regular-language constraints. Their method showed that formal constraints can be integrated into non-autoregressive diffusion decoding. However, regu-lar constraints cannot capture many structured out-put settings that require nested or recursive struc-ture, such as nested JSON objects, arithmetic ex-pressions, and programming-language syntax. The closest prior work to ours is Mündler et al. (2026), which introduced CFG-constrained decod-ing for diffusion LLMs. Their framework formu-lates validity checking as an infilling-based comple-tion and reduces it to checking the non-emptiness of the intersection between a CFG and a regular lan-guage representing possible completions of the par-tial output. This approach enables CFG constraints for diffusion language models and multi-region in-filling, but it requires repeated lexing, automaton construction, DFA minimization, and intersection-based emptiness checking during decoding. Their paper explicitly constructs an NFA for the partial output, converts it to a DFA, minimizes it, and then performs CFG intersection-based checking. 12 Algorithm 1 EPIC Decoding under CFG Constraints 
+
+Require: Prompt p, diffusion LM M , CFG G, lexical map Λ, answer length L, steps T
+
+Ensure: Output tokens x 
+
+> 1:
+
+Compile Λ and initialize the lexing memoization table.  
+
+> 2:
+
+Construct a regular cover FG by flattening the production rules of G. 
+
+> 3:
+
+Initialize x with p followed by L copies of [MASK] . 
+
+> 4:
+
+for all diffusion blocks do  
+
+> 5:
+
+for t = 1 , . . . , T do 
+
+▷ Parallel proposal from the diffusion model  
+
+> 6:
+
+Run M on x and collect high-confidence candidates C for masked positions.  
+
+> 7:
+
+Compute the number of tokens to commit nt for this denoising step. 
+
+▷ Select a relaxed-compatible batch and verify it exactly before committing  
+
+> 8:
+
+B ← RELAXED SUBSET SELECT (x, C, FG, G, Λ) . 
+
+> 9:
+
+Commit all candidates in B to x.
+
+▷ Fall back to sequential rejection sampling if verification fails or commits remain  
+
+> 10:
+
+for j = 1 , . . . , n t − | B| do  
+
+> 11:
+
+Select the next highest-confidence candidate c not already committed.  
+
+> 12:
+
+while DFAF REE VALIDATE (x ⊕ c, G, Λ) is false do  
+
+> 13:
+
+Reject c, suppress its logit, and select the next candidate.  
+
+> 14:
+
+end while  
+
+> 15:
+
+Commit the accepted candidate c to x. 
+
+> 16:
+
+end for  
+
+> 17:
+
+end for  
+
+> 18:
+
+end for  
+
+> 19:
+
+return x
+
+C Detailed Algorithms 
+
+We provide implementation-level pseudocode for EPIC. These algorithms clarify how EPIC pre-serves the completable-output criterion of prior CFG-constrained decoding while changing how this criterion is evaluated during diffusion decod-ing. Algorithm 1 presents the main decoding loop, including proposal generation, relaxed subset se-lection, exact verification, and token commitment. Algorithm 2 describes how lexical representations are stored and reused across partial outputs. Algo-rithm 3 specifies the Earley-style graph parser used for DFA-free validity checking. Algorithm 4 gives the compatible subset selection for multiple-token proposals under the relaxed regular cover. 
+
+C.1 Overall Decoding Procedure 
+
+Algorithm 1 summarizes the overall decoding pro-cedure of EPIC. At each denoising step, the model scores the currently masked positions and proposes candidate tokens for multiple positions. The role of the constrained decoder is to decide which of these updates can be committed without losing the possibility of completing the sequence into a valid string in L(G). The main difference from the base-line lies in how this validity decision is organized. The baseline effectively checks candidate tokens one at a time using exact CFG validation. This sequentializes the decoding process and weakens the main advantage of diffusion language models. In contrast, EPIC first calls R ELAXED SUBSET SE- 
+
+> LECT
+
+to search for a compatible subset that may be committed together. This subset selection step is intentionally conservative. It may return a smaller or empty batch, but any nonempty batch must still pass exact verification before commitment. For candidates that are not committed through the batch filter, the algorithm falls back to the exact rejection loop. This fallback is important for two reasons. First, it preserves the behavior of rejection-based constrained decoding when parallel commit-ment is not possible. Second, it separates efficiency from correctness. Relaxed compatible subset selec-tion is used only to propose a subset that is likely to pass exact validation, thereby reducing the number of sequential checks. The final accept-or-reject de-cision is still made by DFAF REE VALIDATE . Thus, every token committed by Algorithm 1 is still justi-fied by the completable-output condition. 13 Algorithm 2 Lexing Memoization for Partial Outputs 
+
+Require: Partial output x, lexical map Λ, lexing cache Clex 
+
+Ensure: ε-NFA Ax representing possible lexeme sequences  
+
+> 1:
+
+Merge consecutive generated tokens in x into text spans separated by masked regions.  
+
+> 2:
+
+Initialize an empty ε-NFA Ax. 
+
+> 3:
+
+for all fixed text spans w in order do  
+
+> 4:
+
+if (w, boundary) ∈ C lex then  
+
+> 5:
+
+Retrieve the cached lexing result for w. 
+
+> 6:
+
+else  
+
+> 7:
+
+Compute the lexing result for w using Λ. 
+
+> 8:
+
+Store the computed result in Clex . 
+
+> 9:
+
+end if  
+
+> 10:
+
+Add the retrieved or computed lexing result to add span-level transitions to Ax. 
+
+> 11:
+
+end for  
+
+> 12:
+
+Complete the construction by adding transitions for masked gaps and lexemes spanning them.  
+
+> 13:
+
+return Ax
+
+C.2 Lexing Memoization 
+
+Algorithm 2 describes the lexing memoization pro-cedure. Since the CFG is defined over lexemes while the diffusion model operates over a tokenizer vocabulary, validity checking first requires an ε-NFA representation of lexeme sequences compati-ble with the current masked string. The automaton construction follows the partial-output lexing pro-cedure, which handles fixed text spans, masked gaps, and lexemes that may span masked gaps. EPIC applies memoization to the lexing of text spans. For each span, the procedure first checks whether the same span has already been lexed under the same boundary condition. If the result is cached, it is reused during the construction of Ax. If the entry is missing, the span is lexed using the lexical map Λ, and the result is inserted into Clex .The output of the procedure is an ε-NFA Ax.Paths in this automaton correspond to lexeme se-quences that are compatible with the current par-tial output. Lexing memoization does not approxi-mate or change this represented language. It only changes the construction procedure by avoiding repeated computation for local contexts that have already been processed. Thus, lexing memoiza-tion reduces the cost of constructing Ax without changing the completable-output check. 
+
+C.3 DFA-Free Validation with Earley-style Parsing 
+
+Algorithm 3 describes the DFA-free validity checker used by EPIC. After lexing memoization constructs the graph Ax, the goal is to determine whether the graph contains at least one path whose terminal sequence belongs to L(G). Equivalently, the procedure checks whether the partial output still has a completion satisfying the target CFG. The baseline performs this check through an automata-theoretic pipeline. It first converts the graph representation of the partial output into a DFA, often applies minimization, and then checks the non-emptiness of the intersection between the DFA language and the CFG language. This ap-proach is correct, but it introduces substantial re-peated overhead. In particular, determinization and minimization are performed many times during de-coding. EPIC avoids repeated DFA construction by run-ning the witness search directly on Ax. The valida-tor generalizes Earley-style parsing from a single input string to an ε-NFA whose paths represent pos-sible lexeme sequences. Each parser item records both a CFG progress state and graph-node informa-tion, so that it represents a partial derivation over a path segment of Ax. Prediction introduces pro-ductions that can satisfy the next expected nonter-minal, scanning advances items along compatible terminal-labeled edges, and completion connects a recognized constituent to items that were wait-ing for it at the corresponding graph node. The algorithm accepts once it finds a completed start-symbol item that connects a start node of Ax to an accepting node. This DFA-free formulation preserves the exact witness-search problem. The algorithm does not ask whether one fixed string is generated by G.Instead, it asks whether any path in the graph is 14 Algorithm 3 DFA-Free Validation with Earley-style Parsing 
+
+Require: Partial output x, CFG G = ( V, Σ, P, S ), lexical map Λ
+
+Ensure: Whether x can be completed into a string in L(G) 
+
+> 1:
+
+Ax ← MEMOIZED LEXING (x, Λ, Clex ). 
+
+> 2:
+
+Initialize an worklist with Earley-style items at the start nodes of Ax. 
+
+> 3:
+
+Initialize an empty visited set for parser items.  
+
+> 4:
+
+while the worklist is not empty do  
+
+> 5:
+
+Pop an item from the worklist.  
+
+> 6:
+
+if the item has already been visited then  
+
+> 7:
+
+Continue to the next item.  
+
+> 8:
+
+end if  
+
+> 9:
+
+Mark the item as visited.  
+
+> 10:
+
+if the item expects a nonterminal then 
+
+▷ Prediction  
+
+> 11:
+
+Add predicted items for productions of the expected nonterminal to the worklist.  
+
+> 12:
+
+else if the item expects a terminal then 
+
+▷ Scanning over graph edges  
+
+> 13:
+
+Follow matching terminal-labeled edges in Ax and add advanced items to the worklist.  
+
+> 14:
+
+else 
+
+▷ Completion  
+
+> 15:
+
+Advance items that were waiting for the completed nonterminal at the same graph node.  
+
+> 16:
+
+Add the advanced items to the worklist.  
+
+> 17:
+
+end if  
+
+> 18:
+
+if an accepting item for the start symbol reaches an accepting node of Ax then  
+
+> 19:
+
+return true  
+
+> 20:
+
+end if  
+
+> 21:
+
+end while  
+
+> 22:
+
+return false generated by G. This is precisely the same con-dition captured by the CFG and DFA intersection test. This change should be understood as a prac-tical optimization rather than an improvement in the worst-case asymptotic complexity of validity checking. It reduces overhead by searching for the witness directly on Ax and avoiding construction of an equivalent minimal DFA at every validation. 
+
+C.4 Relaxed Compatible Subset Selection for Parallel Commit 
+
+Algorithm 4 describes the candidate subset selec-tion procedure used to recover parallel token com-mitment. For a candidate set C, we write x ⊕ C for the partial output obtained by applying all candi-date updates in C to x. Checking and committing every proposed token sequentially weakens the par-allelism of DLM decoding. Although a joint CFG check over all candidates is possible, a failed check does not identify which candidates caused the fail-ure. Finding the largest compatible subset by ex-haustive search would require a number of checks exponential in the number of proposed tokens. EPIC avoids this cost by selecting a subset under a cheaper relaxed condition before exact verifica-tion. The relaxed condition is defined by a regular cover FG of the CFG language. The automaton 
+
+FG can be viewed as a finite-state relaxation of a recursive transition network representation of G,It ignores the return sites of recursive calls, which may introduce additional paths but preserves ev-ery CFG derivation. Therefore, L(G) ⊆ L(FG).This inclusion makes rejection under the regular cover sound. If a candidate batch is rejected by FG,then applying the whole batch cannot yield a CFG-completable partial output. If a candidate batch is accepted by FG, it may still be invalid under the original CFG, so exact verification is required. The recursive structure of Algorithm 4 uses the regular cover as a cheap group test. The algorithm first tests the whole candidate set under the re-laxed condition. When the whole set fails the cover check, it splits the candidates by confidence and searches for smaller high-confidence subsets that 15 Algorithm 4 Relaxed Compatible Subset Selection for Parallel Commit 
+
+Require: Partial output x, candidates C, regular cover FG, CFG G, lexical map Λ
+
+Ensure: Exact-verified candidate subset B with |B| ≥ 2, or ∅ 
+
+> 1:
+
+function RELAXED SELECT (x, C ) 
+
+> 2:
+
+if |C| ≤ 1 then  
+
+> 3:
+
+return ∅ 
+
+> 4:
+
+end if  
+
+> 5:
+
+xC ← x ⊕ C 
+
+> 6:
+
+AxC ← MEMOIZED LEXING (xC , Λ, Clex ) 
+
+> 7:
+
+if L(FG) ∩ L(AxC )̸ = ∅ then  
+
+> 8:
+
+return C ▷ Keep the full subset as relaxed-compatible  
+
+> 9:
+
+end if  
+
+> 10:
+
+Split C into high-confidence halves CL and CR. 
+
+> 11:
+
+BL ← RELAXED SELECT (x, C L) 
+
+> 12:
+
+BR ← RELAXED SELECT (x ⊕ BL, C R) 
+
+> 13:
+
+return BL ∪ BR 
+
+> 14:
+
+end function  
+
+> 15:
+
+function EXACT SHRINK (x, B ) 
+
+> 16:
+
+if |B| ≤ 1 then  
+
+> 17:
+
+return ∅ 
+
+> 18:
+
+end if  
+
+> 19:
+
+if DFAF REE VALIDATE (x ⊕ B, G, Λ) is true then  
+
+> 20:
+
+return B 
+
+> 21:
+
+end if  
+
+> 22:
+
+Split B into high-confidence halves BL and BR. 
+
+> 23:
+
+B′ 
+
+> L
+
+← EXACT SHRINK (x, B L) 
+
+> 24:
+
+B′ 
+
+> R
+
+← RELAXED SELECT (x ⊕ B′
+
+> L
+
+, B R) 
+
+> 25:
+
+B′′  
+
+> R
+
+← EXACT SHRINK (x ⊕ B′
+
+> L
+
+, B ′
+
+> R
+
+) 
+
+> 26:
+
+return B′ 
+
+> L
+
+∪ B′′  
+
+> R
+> 27:
+
+end function  
+
+> 28:
+
+Sort C by descending confidence.  
+
+> 29:
+
+B ← RELAXED SELECT (x, C ) 
+
+> 30:
+
+return EXACT SHRINK (x, B )
+
+pass the relaxed check. This allows the decoder to find a jointly plausible subset without enumer-ating all subsets. The procedure is biased toward high-confidence candidates because those are more likely to be selected by the unconstrained diffusion decoder as well. The final exact check is essential because the regular cover may introduce false posi-tives. Before a nonempty subset is committed, the algorithm verifies the partial output obtained after applying the subset using the exact CFG validity checker. If a relaxed-compatible subset fails ex-act checking, the algorithm recursively shrinks it using the exact CFG validator. Thus, before any nonempty subset is committed, the partial output obtained after applying the subset has been verified by the exact CFG validity checker. The selector returns only nontrivial batches. Singleton candi-dates are left to the standard sequential rejection sampler, which verifies them with the exact CFG checker. After committing the verified subset, the decoder uses the standard sequential rejection loop to make the remaining commits. This fallback pre-serves correctness while allowing EPIC to recover parallel commitment whenever a sufficiently large compatible subset is found. 
+
+D Correctness Analysis of Proposed Methods 
+
+This section analyzes why EPIC preserves the same completable-output criterion as the baseline de-coder. The analysis consists of four parts. First, lexing memoization reuses local lexing results with-out changing the partial-output language. Sec-16 ond, DFA-free validation checks the same non-emptiness condition as the CFL and the regular lan-guage intersection test, but searches directly over the partial-output graph. Third, the finite automa-ton used in relaxed subset selection is a regular cover of the CFG language. 
+
+D.1 Lexing Memoization 
+
+Lexing memoization preserves the partial-output language. For any partial output x, Algorithm 2 constructs an NFA Ax that recognizes the same set of lexeme sequences as the non-memoized lexing procedure. The reason is that memoization changes only how local lexing alternatives are obtained. For each local context, the algorithm either retrieves a previously computed result from the cache or computes the result using the same lexical map Λ.Since cache entries are keyed by the corresponding local prefix and suffix configuration, a cache hit refers to the same lexing subproblem. The final graph is assembled from the same local alternatives and the same ϵ-connections across masked regions. Thus, memoization reduces construction cost but does not approximate or change the represented lexeme sequence language. 
+
+D.2 DFA-Free Validation 
+
+DFA-free validation checks exact CFG completabil-ity over the partial-output graph. For a partial-output graph Ax and CFG G, Algorithm 3 searches for a path in Ax whose label sequence belongs to 
+
+L(G). Thus, it targets the same condition 
+
+L(G) ∩ L(Ax)̸ = ∅.
+
+The validator can be viewed as an Earley-style recognizer generalized from string positions to graph nodes. Prediction introduces productions that may satisfy the next expected nonterminal, scanning items along matching graph edges, and completion connects recognized constituents to items waiting for them. An accepting item there-fore corresponds to a CFG derivation along some path of Ax. Conversely, any such derivation can be explored by the same prediction, scanning, and completion operations. The algorithm therefore changes the search strategy, not the validity crite-rion. 
+
+D.3 Regular Cover 
+
+The flattened automaton is a regular cover of the CFG language. Let FG be the finite automaton obtained by flattening the recursive transition net-work induced by a CFG G. Then the automaton over-approximates the CFG language: 
+
+L(G) ⊆ L(FG).
+
+This construction follows the standard RTN-based regular superset approximation of CFGs (Nederhof, 2000). A CFG can be viewed as a recursive transition network by introducing entry and exit states for each nonterminal and rule-position states for each production. Flatten-ing joins these components into a single finite automaton and replaces the recursive call-return mechanism with ordinary transitions. This removes return-site matching and can therefore introduce additional paths, but it does not remove any path corresponding to a valid CFG derivation. The inclusion follows by a structural induction over CFG derivation trees. For each subtree rooted at a nonterminal A, the corresponding RTN con-tains a path from the entry state of A to the exit state of A whose labels are exactly the yield of that sub-tree. For a production A → X1 · · · Xm, terminal symbols are matched by the corresponding labeled rule-position transitions, and nonterminal children are matched by the induction hypothesis together with the flattened call and return transitions. Since flattening keeps all such transitions and only for-gets which call site a return must match, the yield of the whole derivation tree labels an accepting path in FG. Thus every string generated by G is accepted by FG.
+
+E Experimental Details 
+
+We follow the benchmark suite, constraints, and prompting protocol of prior CFG-constrained de-coding work for DLMs. All runs use a maxi-mum generation length of 256 tokens and tem-perature 0.0 with greedy decoding. For the main comparison, we evaluate denoising steps in 
+
+{16 , 32 , 64 , 128 , 256 } and repeat runtime measure-ments with seeds {42 , 43 , 44 }, although greedy de-coding makes the generated outputs seed indepen-dent. For the ablation study, we fix the denoising step count to 32 and evaluate all subsets of the three acceleration components of EPIC. 
+
+E.1 Implementation and Decoding Settings 
+
+We implement EPIC on top of the public im-plementation of prior CFG-constrained decoding for diffusion language models (Mündler et al., 17 2026). The evaluation pipeline, dataset wrappers, model wrappers, and profiling scripts are written in Python, while the formal-language backend uses Rust components for finite automata, CFG opera-tions, regular-expression compilation, automaton construction, and intersection-related routines. We compare three decoding modes. Uncon-strained decoding disables grammar constraints. The baseline enables CFG constraints but disables the three acceleration components. EPIC enables lexing memoization, DFA-free validation, and re-laxed compatible subset selection. For the main comparison, we evaluate all three modes across the three tasks, four models, five denoising-step set-tings, and three runtime seeds. Smaller step counts reveal more tokens per denoising step and there-fore place more pressure on the sequential checking bottleneck. The ablation study is performed at 32 
+
+denoising steps and varies only which of the three acceleration components are enabled. For each run, we record generated outputs, total wall-clock time, and component-level profiling statistics used in the runtime analysis. 
+
+E.2 Datasets, Prompts, and Metrics 
+
+We evaluate three structured-generation tasks: C++ code generation, JSON generation under instance-specific schemas, and SMILES generation. Each prompt follows the prior constrained-diffusion im-plementation and contains a system instruction, a user input, and an assistant-side target prefix. The assistant-side prefix places the model inside the target format before generation begins, so that the generated continuation aligns with the grammar used by the constrained decoder. For C++, we use the C++ split of HumanEval-X (Zheng et al., 2023). Each instance provides a programming problem, a target function decla-ration, and test cases. We use the C++ CFG and lexical specification from the prior implementation. Syntactic correctness is measured by CFG-based syntax checking, and functional correctness is mea-sured by compiling the generated program and run-ning the provided tests. For JSON, we use the JSON benchmark from the prior CFG-constrained diffusion evaluation suite (Mündler et al., 2026), which extends JSON-Mode-Eval (NousResearch, 2024). Each instance contains a natural-language input and an instance-specific JSON schema. The schema is converted into an instance-specific CFG and lexical map us-ing the prior implementation. Syntactic correctness is measured by schema-CFG acceptance, and func-tional correctness is measured by comparing the normalized generated JSON object with the refer-ence output. For SMILES, we use the benchmark introduced by prior CFG-constrained diffusion work (Mündler et al., 2026). Each instance asks the model to gen-erate a SMILES string from a molecule description. We use the SMILES CFG and lexical specification from the prior implementation. Unlike C++ and JSON, this setting does not allow arbitrary whites-pace between lexed tokens. Syntactic correctness is measured by validity under the SMILES grammar and lexer, and functional correctness is measured by molecular equivalence to the reference SMILES string after canonicalization. 
+
+E.3 Models 
+
+We evaluate four instruction-tuned diffusion lan-guage models following prior CFG-constrained decoding work: Dream (Ye et al., 2025), Dream-Coder (Xie et al., 2025), LLaDA (Nie et al., 2026), and DiffuCoder (Gong et al., 2026). Dream and LLaDA are general-purpose DLMs, while Dream-Coder and DiffuCoder are code-oriented DLMs. The evaluated checkpoints are Dream 1, Dream-Coder 2, LLaDA 3, and DiffuCoder 4. All models are evaluated with their corresponding tokenizer and wrapper. Dream, DreamCoder, and DiffuCoder use the Dream-style generation interface. LLaDA uses a separate wrapper because its chat template and generation interface differ. These wrapper-level dif-ferences affect prompt formatting but not the task instructions, constraints, or evaluation protocol. 
+
+E.4 Experimental Environments 
+
+All experiments were conducted on a worksta-tion with an NVIDIA RTX A6000 GPU and an AMD Ryzen Threadripper 3960X CPU. The soft-ware environment used Linux 8.10, Python 3.11.15, Rust 1.93.1, and PyTorch 2.12.0 built against CUDA 13.0. For model and dataset handling, we used transformers 4.52.2, datasets 3.6.0, and accelerate 1.13.0. Rust extension mod-ules were built with maturin 1.13.3. For task-specific evaluation, we used partialsmiles 2.0 and rdkit 2026.3.2. 
+
+> 1Dream-org/Dream-v0-Instruct-7B .
+> 2Dream-org/Dream-Coder-v0-Instruct-7B .
+> 3GSAI-ML/LLaDA-8B-Instruct .
+> 4apple/DiffuCoder-7B-Instruct .
+
+18 Model Steps C++ JSON SMILES Uncon. Con. EPIC Uncon. Con. EPIC Uncon. Con. EPIC Dream 7B 16 571 656 450 549 969 601 232 237 240 32 609 900 700 972 1203 983 514 516 519 64 1089 1245 1177 1822 1971 1847 1015 1022 1028 128 2044 2167 2098 3476 3630 3508 1998 2004 2003 256 3958 4042 4071 6812 6975 6867 4043 4001 4011 DreamCoder 7B 16 594 1876 609 517 921 461 240 242 247 32 586 1582 824 821 1089 735 519 523 526 64 1068 1949 1368 1530 1806 1480 1012 1016 1019 128 2024 2703 2236 2833 3023 2782 2000 2005 2005 256 3806 4462 4054 5479 5548 5415 3983 3984 3984 LLaDA 8B 16 520 578 386 923 1137 690 361 405 343 32 828 791 531 1388 1554 1076 619 636 570 64 1336 1246 1026 2332 2441 2042 1156 1141 1104 128 2382 2394 2221 4233 4335 4030 2238 2197 2149 256 4359 4459 4389 8023 8030 7882 4384 4337 4320 DiffuCoder 7B 16 628 1114 657 605 1002 657 349 362 366 32 701 1278 862 1044 1314 1005 562 584 576 64 1137 1579 1163 1902 2116 1854 1010 1043 1020 128 1897 2298 1973 3601 3687 3474 1952 2109 2042 256 3108 3684 3351 7046 6706 6551 3736 3854 3814 
+
+Table 5: Full inference time results. We report wall-clock inference time in seconds for unconstrained decoding (Uncon.), the prior CFG-constrained baseline (Con.), and EPIC. These raw timings correspond to the relative inference times reported in Table 1. The results cover all models, tasks, and denoising-step settings used in the main comparison. The shaded column highlights EPIC. 
+
+F Additional Experimental Results 
+
+This section provides additional results for in-ference time, correctness, and ablation analyses. We first report the full wall-clock inference times across all models, datasets, and denoising-step set-tings, complementing the relative inference-time results in Table 1. We then report syntactic and functional correctness, showing that EPIC main-tains correctness comparable to the prior CFG-constrained baseline while substantially reducing inference time. Finally, we provide the full abla-tion results over all subsets of lexing memoization, DFA-free validation, and relaxed compatible subset selection, complementing the main ablation table in Section 5.4. 
+
+F.1 Full results on Inference Time 
+
+Table 5 provides the raw wall-clock inference times corresponding to the relative inference times re-ported in Table 1. The table includes unconstrained decoding, the prior CFG-constrained baseline, and EPIC for every model, task, and denoising-step set-ting. These raw values are reported to make the normalization transparent and to show the absolute runtime scale across tasks. As in the main results, all times are measured in seconds and averaged over three runtime seeds. The raw times also show how the absolute decod-ing cost scales with the number of denoising steps. Although the increase is not exactly linear, runtime generally grows with the step count for all meth-ods because each additional step requires another model forward pass. This trend is visible even for unconstrained decoding, indicating that the overall runtime is still dominated by repeated model eval-uation at larger step counts. In this regime, EPIC stays close to unconstrained decoding, whereas the baseline constrained decoder often remains no-ticeably slower due to additional per-step validity-checking overhead. Thus, the absolute timings complement the relative inference-time results in the main text. In many settings, EPIC brings CFG-constrained decoding much closer to the runtime scale of unconstrained decoding. 
+
+F.2 Correctness 
+
+Tables 6 and 7 report the full syntactic and func-tional correctness results. We use U. for uncon-strained decoding, C. for the prior CFG-constrained baseline, and E. for EPIC. The superscript − de-notes the result before applying the final witness-based recovery procedure, while the version with-out − includes this recovery. 19 Model Steps C++ JSON SMILES U. C. − C. E. − E. U. C. − C. E. − E. U. C. − C. E. − E. Dream 16 35.4 54.3 100.0 53.0 100.0 32.4 50.4 100.0 50.0 100.0 61.7 95.2 100.0 95.2 100.0                                                                                                                                                                                                                                                                                              
+
+> 32 67.7 80.5 100.0 80.5 100.0 77.6 87.1 100.0 87.1 100.0 70.7 98.2 100.0 98.2 100.0
+> 64 80.5 90.2 99.6 90.9 99.6 92.3 95.6 100.0 96.0 100.0 72.5 99.4 100.0 98.8 100.0
+> 128 89.0 95.1 100.0 95.1 99.8 90.4 96.3 100.0 96.3 100.0 73.1 100.0 100.0 100.0 100.0
+> 256 82.9 94.5 100.0 94.5 100.0 91.2 96.1 100.0 96.3 100.0 72.5 100.0 100.0 100.0 100.0
+> DreamCoder 16 17.7 33.5 99.8 39.0 99.8 79.0 85.3 100.0 85.7 100.0 78.4 97.0 100.0 97.0 100.0
+> 32 54.3 66.5 99.4 65.9 99.4 87.5 91.9 100.0 92.3 100.0 79.0 97.0 100.0 97.6 100.0
+> 64 72.6 77.4 99.2 78.7 100.0 90.8 91.9 100.0 92.3 100.0 74.9 98.8 100.0 98.8 100.0
+> 128 73.8 80.5 100.0 81.1 100.0 93.0 94.1 100.0 94.1 100.0 74.3 98.8 100.0 98.8 100.0
+> 256 84.1 85.0 100.0 86.0 100.0 94.1 94.9 100.0 94.9 100.0 74.3 98.8 100.0 98.8 100.0
+> LLaDA 16 5.5 34.1 99.6 32.9 100.0 57.4 78.3 100.0 78.3 100.0 41.3 90.4 100.0 89.2 100.0
+> 32 9.1 31.7 99.2 31.1 99.4 75.4 89.0 100.0 88.6 100.0 60.5 90.4 100.0 89.8 100.0
+> 64 42.7 67.1 99.8 67.1 100.0 79.8 92.3 100.0 92.6 100.0 65.9 94.0 100.0 93.4 100.0
+> 128 82.9 92.7 100.0 92.7 100.0 87.9 96.3 100.0 96.3 100.0 65.9 91.6 100.0 91.6 100.0
+> 256 96.3 99.4 100.0 99.4 100.0 91.2 96.3 100.0 96.3 100.0 65.3 95.8 100.0 95.6 100.0
+> DiffuCoder 16 25.0 40.9 99.8 39.0 99.8 76.8 83.5 100.0 83.5 100.0 70.7 94.0 100.0 93.4 100.0
+> 32 36.0 50.0 99.8 51.8 99.8 87.9 90.8 100.0 90.4 100.0 71.9 98.2 100.0 98.2 100.0
+> 64 53.7 67.1 99.8 67.7 100.0 84.6 86.8 100.0 86.8 100.0 62.3 98.8 100.0 98.8 100.0
+> 128 60.4 72.6 100.0 74.4 99.8 77.9 79.0 100.0 79.0 100.0 49.7 99.2 100.0 99.4 100.0
+> 256 93.9 91.3 100.0 93.7 100.0 77.9 79.4 100.0 79.4 100.0 47.9 97.0 100.0 97.0 100.0
+
+Table 6: Syntactic correctness across all models, denoising steps, and tasks. U. denotes unconstrained decoding, C. denotes the prior CFG-constrained baseline, and E. denotes EPIC. The superscript − reports correctness before witness-based recovery, while the version without − includes recovery. All values are percentages. 
+
+F.2.1 Syntactic Correctness 
+
+Table 6 shows that both constrained methods sub-stantially improve syntactic correctness over uncon-strained decoding. Even before recovery, both C. −
+
+and E. − consistently improve over unconstrained decoding, showing that rejection-based CFG check-ing already prevents syntactic errors. EPIC gen-erally achieves pre-recovery syntactic correctness comparable to the prior CFG-constrained baseline. The numbers are not always identical since EPIC may commit several tokens in parallel, and there-fore can fill positions in a different order from the sequential baseline. This changes the subsequent partial outputs observed by the model, which can lead to differences in either direction. In some settings, EPIC is slightly higher than the baseline before recovery, while in others it is slightly lower. These differences are expected because relaxed subset selection changes the commit order for effi-ciency, but every committed batch is still verified by the exact CFG checker. After applying the recovery procedure, both con-strained methods achieve near-perfect syntactic correctness in almost all settings. This confirms that the efficiency improvements of EPIC do not weaken the final CFG-based acceptance criterion. Rather, EPIC mainly changes how compatible can-didates are selected and verified. 
+
+F.2.2 Functional Correctness 
+
+Table 7 reports task-level functional correctness. Constrained decoding often improves functional correctness over unconstrained decoding, espe-cially on C++ and JSON, because syntactically invalid outputs cannot satisfy the downstream eval-uator. As the number of denoising steps increases, functional correctness also tends to improve in many settings. This is consistent with the usual diffusion decoding trade-off. With more steps, the decoder unmasks fewer tokens at each step, making each update more conditioned on previously com-mitted context and generally improving generation quality. However, the improvement in syntactic correct-ness does not always translate into a proportional improvement in functional correctness. This be-havior is also observed in prior work and reflects a common limitation of grammar-only constrained decoding. A grammar can enforce formal syntac-tic validity, but it does not verify task semantics. The witness-based recovery procedure has only a marginal effect on functional correctness in most settings. Although recovery raises syntactic cor-rectness to nearly 100%, the recovered completion is selected to satisfy the grammar rather than to op-timize the task-level objective. Therefore, recovery is useful as a syntactic fallback, but it should not 20 Model Steps C++ JSON SMILES U. C. − C. E. − E. U. C. − C. E. − E. U. C. − C. E. − E. Dream 16 10.4 11.6 11.6 11.6 11.6 13.2 18.0 23.7 18.0 23.7 0.6 0.6 0.6 0.6 0.6                                                                                                                                                                                                                                                                                              
+
+> 32 15.2 16.5 16.5 16.5 16.5 43.4 45.2 46.0 45.2 46.0 3.0 3.0 3.0 3.0 3.0
+> 64 18.1 18.5 18.5 18.9 18.9 53.7 54.8 54.8 54.8 54.8 3.0 3.6 3.6 3.6 3.6
+> 128 13.8 14.6 14.6 14.4 14.4 51.5 53.3 53.3 53.3 53.3 3.6 4.2 4.2 4.2 4.2
+> 256 12.8 13.4 13.4 14.0 14.0 51.8 53.7 53.7 53.7 53.7 3.0 4.2 4.2 4.2 4.2
+> DreamCoder 16 6.7 7.9 8.5 9.1 9.1 41.9 43.8 44.1 43.4 44.0 4.2 4.2 4.2 4.2 4.2
+> 32 19.5 20.1 20.7 20.7 21.3 52.2 52.6 53.3 52.6 53.3 3.6 4.2 4.2 4.2 4.2
+> 64 26.8 26.8 27.2 26.2 26.6 53.7 53.3 53.3 53.3 53.3 2.4 2.4 2.4 2.4 2.4
+> 128 28.0 28.7 28.7 28.7 28.7 55.9 56.6 56.6 56.6 56.6 2.4 2.4 2.4 2.4 2.4
+> 256 28.0 27.4 27.4 27.4 27.4 56.3 56.6 56.6 56.6 56.6 2.4 2.4 2.4 2.4 2.4
+> LLaDA 16 0.6 2.8 4.1 3.3 4.5 39.0 43.8 44.1 43.8 44.1 1.2 1.8 1.8 1.8 1.8
+> 32 3.0 5.1 5.3 5.5 6.3 44.1 49.6 50.0 49.6 50.0 0.6 1.2 1.2 1.2 1.2
+> 64 10.4 11.0 11.0 11.0 11.0 44.5 49.6 50.0 49.6 50.0 1.2 1.8 1.8 1.8 1.8
+> 128 15.9 15.9 15.9 15.9 15.9 48.2 52.9 52.9 52.9 52.9 1.8 1.8 1.8 1.8 1.8
+> 256 25.6 25.0 25.0 25.0 25.0 49.6 52.2 52.9 52.2 52.9 2.4 2.4 2.4 2.4 2.4
+> DiffuCoder 16 12.8 14.0 14.0 14.6 14.6 42.3 43.8 44.1 43.8 44.1 0.0 0.6 0.6 0.6 0.6
+> 32 15.2 18.3 18.3 17.7 17.7 47.8 48.9 49.6 48.5 49.3 0.0 0.0 0.0 0.0 0.0 64 17.7 18.3 18.3 18.3 18.3 45.2 47.1 47.4 47.1 47.4 0.6 0.6 0.6 0.6 0.6
+> 128 25.6 27.4 29.9 27.4 29.7 42.3 43.4 43.8 43.4 43.8 1.8 1.8 1.8 1.8 1.8
+> 256 43.9 44.3 45.5 44.5 45.7 41.9 43.4 43.4 43.4 43.4 2.4 2.4 2.4 2.4 2.4
+
+Table 7: Functional correctness across all models, denoising steps, and tasks. For C++, functional correctness is measured by passing the test cases. For JSON and SMILES, it is measured by task-specific normalized equivalence to the reference output. U. denotes unconstrained decoding, C. denotes the prior CFG-constrained baseline, and E. denotes EPIC. The superscript − reports results before witness-based recovery, while the version without −
+
+includes recovery. All values are percentages. 
+
+be expected to substantially improve semantic or functional quality. The gap between syntactic and functional cor-rectness is particularly visible on SMILES. Al-though the grammar can enforce the surface syntax of SMILES strings, it does not fully characterize task-level molecular correctness or equivalence to the target molecule. In addition, the underlying CFG is only an approximation to the full set of functionally valid molecular strings. As a result, syntactic correctness can approach 100% while functional correctness remains low. 
+
+F.3 Full Ablation Results 
+
+Table 8 reports the full ablation results at 32 de-noising steps. The table includes all individual components, all pairwise combinations, and the full EPIC configuration. Overall, the results show that the three components provide complementary sources of speedup. Lexing memoization mainly reduces repeated lexical analysis, DFA-free vali-dation removes the exact-checking dependence on repeated DFA construction, and relaxed compatible subset selection reduces the number of sequential exact checks by recovering parallel commitment. The effect of each component depends on the task and model. On C++, all three components are consistently useful because the grammar and lexical specification are more complex, making re-peated lexing, automaton construction, and CFG validation expensive. DFA-free validation is par-ticularly effective for DreamCoder and DiffuCoder on C++, while relaxed subset selection gives large gains for LLaDA, whose block-wise decoding schedule provides stable candidate batches. On JSON, lexing memoization and relaxed subset se-lection are generally more effective than DFA-free validation alone. This is consistent with the fact that JSON validation is relatively cheap once the partial-output representation has been constructed, so avoiding DFA construction alone does not al-ways compensate for the overhead of graph parsing. On SMILES, the differences are small because the baseline constraint overhead is already low. In some cases, the added component can slightly in-crease runtime. Pairwise combinations usually improve over the corresponding single-component variants, indicat-ing that the optimizations address different parts of the pipeline. For example, combining memoiza-tion with DFA-free validation substantially reduces C++ runtime, while combining memoization with 21 Model Method C++ JSON SMILES Dream Con. 900 1203 516                                                                                              
+
+> 1843 1095 541 2863 1237 540 3900 1162 545 1 + 2 758 1071 540 1 + 3 795 1043 545 2 + 3 844 1160 545 1 + 2 + 3 700 983 519 DreamCoder Con. 1582 1089 523
+> 11385 939 540 21261 1109 540 31378 986 543 1 + 2 1006 907 540 1 + 3 1056 774 543 2 + 3 1154 974 543 1 + 2 + 3 824 735 523
+> LLaDA Con. 791 1554 636 1772 1450 655 2738 1619 628 3601 1179 609 1 + 2 704 1442 627 1 + 3 577 1129 608 2 + 3 571 1176 595 1 + 2 + 3 531 1076 570
+> DiffuCoder Con. 1278 1314 584 11152 1172 598 21085 1307 582 31119 1195 601 1 + 2 918 1129 581 1 + 3 947 1054 599 2 + 3 996 1174 597 1 + 2 + 3 862 1005 576
+
+Table 8: Full ablation results for EPIC. Starting from the prior CFG-constrained decoder (C ON .), we separately add 1 lexing memoization, 2 DFA-free validation with Earley-style parsing, and 3 relaxed compatible subset selection for parallel commit. EPIC enables all three components. 
+
+relaxed subset selection is especially helpful on JSON. The full configuration, which enables all three components, gives the best runtime in most settings and is never substantially worse than the best ablation. These results support the design of EPIC as a combination of complementary optimiza-tions rather than a speedup from a single dominant component. 22
