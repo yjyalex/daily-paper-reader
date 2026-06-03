@@ -1,20 +1,20 @@
 ---
 title: "Reasoning Is Not a Race: When Stopping Early Beats Going Deeper"
-title_zh: 推理不是比赛：何时提前停止胜过深入
+title_zh: 推理不是赛跑：早停优于深入
 authors: "Mohan Zhang, Jiaxuan Gao, Shusheng Xu, Yi Wu"
 date: 2025-09-18
 pdf: "https://openreview.net/pdf?id=xoL5zo1O86"
 tags: ["query:rl-nlplr"]
-score: 8.0
-evidence: 用于长思维链推理的过程奖励模型
-tldr: 使用PRM与提前停止改进长思维链推理。
+score: 9.0
+evidence: 使用过程奖励模型指导长思维链推理
+tldr: 提出ZGES通过检测步骤质量峰值改进PRM引导的思维链推理
 source: NeurIPS-2025-Accepted
 selection_source: conference_retrieval
 figures_json: "[{\"url\": \"assets/figures/openreview/openreview-neurips-2025-xol5zo1o86/fig-001.webp\", \"caption\": \"\", \"page\": 2, \"index\": 1, \"width\": 3002, \"height\": 2381}, {\"url\": \"assets/figures/openreview/openreview-neurips-2025-xol5zo1o86/fig-002.webp\", \"caption\": \"\", \"page\": 2, \"index\": 2, \"width\": 4553, \"height\": 2581}, {\"url\": \"assets/figures/openreview/openreview-neurips-2025-xol5zo1o86/fig-003.webp\", \"caption\": \"\", \"page\": 4, \"index\": 3, \"width\": 2342, \"height\": 2158}, {\"url\": \"assets/figures/openreview/openreview-neurips-2025-xol5zo1o86/fig-004.webp\", \"caption\": \"\", \"page\": 4, \"index\": 4, \"width\": 2345, \"height\": 2158}, {\"url\": \"assets/figures/openreview/openreview-neurips-2025-xol5zo1o86/fig-005.webp\", \"caption\": \"\", \"page\": 4, \"index\": 5, \"width\": 2345, \"height\": 2158}, {\"url\": \"assets/figures/openreview/openreview-neurips-2025-xol5zo1o86/fig-006.webp\", \"caption\": \"\", \"page\": 8, \"index\": 6, \"width\": 912, \"height\": 807}, {\"url\": \"assets/figures/openreview/openreview-neurips-2025-xol5zo1o86/fig-007.webp\", \"caption\": \"\", \"page\": 8, \"index\": 7, \"width\": 873, \"height\": 807}, {\"url\": \"assets/figures/openreview/openreview-neurips-2025-xol5zo1o86/fig-008.webp\", \"caption\": \"\", \"page\": 8, \"index\": 8, \"width\": 873, \"height\": 807}, {\"url\": \"assets/figures/openreview/openreview-neurips-2025-xol5zo1o86/fig-009.webp\", \"caption\": \"\", \"page\": 8, \"index\": 9, \"width\": 873, \"height\": 807}, {\"url\": \"assets/figures/openreview/openreview-neurips-2025-xol5zo1o86/fig-010.webp\", \"caption\": \"\", \"page\": 8, \"index\": 10, \"width\": 873, \"height\": 807}, {\"url\": \"assets/figures/openreview/openreview-neurips-2025-xol5zo1o86/fig-011.webp\", \"caption\": \"\", \"page\": 8, \"index\": 11, \"width\": 873, \"height\": 807}, {\"url\": \"assets/figures/openreview/openreview-neurips-2025-xol5zo1o86/fig-012.webp\", \"caption\": \"\", \"page\": 16, \"index\": 12, \"width\": 1500, \"height\": 1050}, {\"url\": \"assets/figures/openreview/openreview-neurips-2025-xol5zo1o86/fig-013.webp\", \"caption\": \"\", \"page\": 16, \"index\": 13, \"width\": 1500, \"height\": 1050}]"
-motivation: 过程奖励模型在长CoT推理中表现不一致。
-method: 提出基于PRM z分数的提前停止策略ZGES。
-result: ZGES在多个数学基准上优于标准PRM和无PRM方法。
-conclusion: 提前停止可缓解步骤质量退化，提升推理效果。
+motivation: 过程奖励模型引导的长思维链推理中，步骤质量呈现递减趋势，导致标准PRM方法不如无PRM方法。
+method: 提出Z分数引导的早停（ZGES），利用局部PRM奖励的Z分数在质量峰值处停止搜索。
+result: 在多个数学基准和模型规模上，ZGES优于标准PRM引导束搜索和无PRM方法。
+conclusion: 合理利用PRM的早期步骤信号可以提升长思维链推理的效果和效率。
 ---
 
 ## Abstract
@@ -24,76 +24,79 @@ We study the use of Process Reward Models (PRMs) for guiding Long Chain-of-Thoug
 
 ## 论文详细总结（自动生成）
 
-好的，遵照您的要求，以下是对该论文《Reasoning Is Not a Race: When Stopping Early Beats Going Deeper》的详细中文总结。
+# 论文详细中文总结
 
-### 1. 论文的核心问题与整体含义（研究动机和背景）
-- **研究动机**：过程奖励模型（Process Reward Model, PRM）在短思维链（Short CoT）推理中能提供细粒度反馈，有效指导 LLM 进行 beam search 或重新排序。然而，在长思维链（Long CoT）推理任务中（如 OpenAI o1、DeepSeek R1），PRM 引导的 beam search 并未像预期那样一致优于无 PRM 的方法（如 Majority@N 多数投票）。
-- **核心问题**：
-    1. PRM 在长 CoT 模型的测试时搜索中表现如何？（表现不佳）
-    2. 如何增强 PRM 在长 CoT 设置下的有效性？
-- **整体含义**：本文揭示了长 CoT 推理中一个关键现象——“步骤质量退化”（step quality degradation），即 beam search 过程中候选推理步骤的期望质量呈单峰或单调递减趋势，这导致 PRM 的效用随搜索深入而下降。因此，**“深度”比“广度”更重要时，提前停止可能更好**。
+## 1. 论文的核心问题与整体含义（研究动机和背景）
 
-### 2. 论文提出的方法论：核心思想、关键技术细节
-- **核心思想**：在 beam search 过程中，利用 PRM 奖励的局部 z-score 作为信号，动态检测步骤质量的峰值。一旦检测到步骤质量出现下降趋势（z-score 低于阈值），立即停止 beam search，并从峰值步骤的前一步骤直接开始解码生成最终的答案轨迹。
+- **研究动机**：大语言模型（LLM）的长思维链（Long CoT）推理能力日益增强（如OpenAI o1、DeepSeek R1），但如何有效利用过程奖励模型（PRM）进行测试时搜索仍不明确。以往在短CoT任务中PRM引导的束搜索（Beam Search）优于无PRM方法（如多数投票），但在长CoT推理中，PRM引导的束搜索并未一致超越无PRM方法，甚至更差。
+- **核心问题**：为什么PRM在长CoT推理中效果不佳？如何提升其效果？
+- **整体含义**：论文发现束搜索过程中存在“步骤质量退化”（step quality degradation）——预期步骤质量呈现单峰或单调递减的趋势，并据此提出基于Z分数引导的早停策略（ZGES），在质量峰值处停止搜索，从而提升推理效果和效率。
+
+## 2. 论文提出的方法论：核心思想、关键技术细节
+
+- **核心思想**：在长CoT推理的束搜索过程中，步骤质量在早期达到峰值后开始退化，因此选择在质量峰值处提前停止搜索，让LLM直接生成剩余轨迹和最终答案。
 - **关键技术细节**：
-    1. **步骤质量退化分析与理论证明**：通过实验观察到 beam search 中步骤质量的期望值呈凹性（concave），并理论证明了这是因为 PRM 的重新排名能力随搜索深入而显著下降（Corollary 3.3），导致期望步骤质量的二阶差分为负（Proposition 3.8）。
-    2. **Z-score 一致性发现**：实验发现，PRM 奖励的平均值与真实步骤质量的均值之间存在强线性相关（Pearson 相关系数 > 0.91）。因此，二者的 z-score（标准化后的值）在搜索过程中一致（Lemma 4.1），使得可以通过 PRM 奖励的 z-score 间接反映步骤质量。
-    3. **Z-score 引导的提前停止（ZGES）**：
-        - 设置阈值 λ 和 beam search 配置 B×E。
-        - 执行 beam search，每一步记录所有候选的 PRM 平均奖励 xt。
-        - 计算 xt 在历史序列 {x1,...,xt} 中的局部 z-score x't。
-        - 如果 x't < λ，则停止 beam search，并从 t-1 步的候选开始直接解码；否则继续下一步。
-        - 最终的答案通过加权最佳 N（Weighted Best of N, WBoN）从收集到的轨迹中选择。
+  - 定义步骤质量 \(V^\pi(s)\) 为从当前状态正确完成推理的概率（等价于稀疏奖励强化学习中的状态价值函数）。
+  - 通过蒙特卡洛 rollout 估计步骤质量，并观察其趋势：呈单峰或单调递减。
+  - 理论上证明：由于PRM在束搜索后期重排序能力下降，步骤质量的期望呈凹性（第二阶差分为负）。
+  - 提出**ZGES**：在束搜索每一步计算所有候选步骤的平均PRM奖励，然后计算该序列的局部z-score（基于当前及之前步骤的均值和标准差）。当局部z-score低于阈值λ时，触发早停，并从当前步骤的前一步候选开始直接解码后续内容。
+- **流程描述**：
+  1. 设置阈值λ和束搜索配置（束宽B×扩展因子E）。
+  2. 运行束搜索，每一步记录平均PRM奖励 \(x_t\)。
+  3. 计算 \(x_t\) 的局部z-score \(x'_t\)。
+  4. 若 \(x'_t < λ\)，则停止搜索，从步骤 \(t-1\) 的候选直接解码；否则继续。
+- **关键理论**：证明了平均PRM奖励与平均步骤质量之间存在强线性关系，因此z-score一致，可以可靠地指示步骤质量的变化趋势。
 
-### 3. 实验设计：数据集、Benchmark 和对比方法
-- **数据集/Benchmark**：
-    - 数学推理基准：AMC2023、AIME2024、AIME2025。
-- **模型**：
-    - LLM 策略（Policy）：DeepSeek-R1-Distill-Qwen-1.5B 和 DeepSeek-R1-Distill-Qwen-7B 两种规模。
-    - PRM 训练：基于这两个模型的变体，训练了 Hard PRM 和 Soft PRM 两种类型。
+## 3. 实验设计
+
+- **数据集/基准**：三个数学竞赛基准：AMC2023、AIME2024、AIME2025。
+- **模型**：使用DeepSeek-R1-Distill-Qwen-1.5B和7B作为长CoT策略模型；PRM训练基于与策略模型一致的基座模型，采用Hard PRM和Soft PRM两种类型（论文主要报告Hard PRM的结果）。
 - **对比方法**：
-    - **无 PRM 方法**：Majority@N（多数投票）。
-    - **标准 PRM 引导搜索**：PRM-guided Beam Search (Hard PRM 和 Soft PRM)。
-    - **消融实验对比**：固定步停止（Fixed-step stopping）、不同 λ 值的 ZGES、以及标准 Beam Search 进行 PRM 调用次数和 token 使用效率对比。
+  - 无PRM基线：多数投票（Majority@N）。
+  - 标准PRM引导的束搜索（Hard PRM和Soft PRM），使用加权最佳N（WBoN）选择最终答案。
+  - 固定步数早停的束搜索。
+  - 本文方法ZGES。
+- **配置**：束搜索中扩展因子固定为2，束宽从4到64变化，控制总预算N=B×E与Majority@N的N相同。
 
-### 4. 资源与算力
-- **未明确说明**：论文在实验设置部分提供了 PRM 训练数据的生成细节（9K 道难题，每道题生成 16 个响应，每个步骤生成 8 个补全），但**未明确说明使用的 GPU 型号、数量或训练时长**。作者在局限性部分提到“由于计算资源有限”，但未给出具体指标。
+## 4. 资源与算力
 
-### 5. 实验数量与充分性
-- **实验数量**：实验设计较为全面，主要包含：
-    - **主实验**：在 3 个基准上，对 2 个模型，比较了 ZGES 与 Majority@N、Hard/Soft PRM Beam Search 在不同 beam size（4、8、16、32、64）下的表现（图 4，表格 1）。共约 3 × 2 × 5 = 30 组（不含扩展因子变化）。
-    - **超参数敏感性分析**：λ 取 -0.4、-0.6、-0.8、-1.0 四个值，在多个配置下评估，用箱线图展示（图 5）。
-    - **动态 vs 固定步停止比较**：将 ZGES 与在预定步骤停止的 beam search 进行对比（图 6）。
-    - **效率分析**：比较 ZGES 与标准 Beam Search 的 PRM 调用次数和 token 比率（表 3）。
-- **充分性与公平性**：
-    - **充分性**：实验覆盖了不同模型规模、不同基准、不同 beam size，并进行了充分的消融和效率分析，验证了方法的有效性和鲁棒性。
-    - **客观与公平**：对比方法包括 PRM-free 和 PRM-based 的主流方法，设置统一的总预算（N = B × E）作为公平比较的基数。消融实验也合理控制了变量。但未报告方差/统计显著性检验（作者在 checklist 中注明未报告误差条），但总体是客观的。
+- **文中未明确说明**使用的GPU型号、数量、训练时长等具体算力信息。仅在附录中提到训练PRM时收集了9K道难题的数据集，并生成16条回答用于标注。
+- **说明**：论文未提供详细的算力开销报告。
 
-### 6. 论文的主要结论与发现
-- **步骤质量退化**：在长 CoT 的 beam search 中，候选步骤的期望质量呈单峰或单调递减，这是 PRM 引导搜索失效的核心原因。
-- **ZGES 有效**：提出的 ZGES 方法在所有模型规模和基准上**一致优于**标准 PRM-guided beam search 和 PRM-free 方法。
-- **效率提升**：ZGES 在提升性能的同时，显著降低了 PRM 调用次数（减少 50%以上）和 token 消耗，实现了计算成本与效果的更优权衡。
-- **鲁棒性**：ZGES 对超参数 λ 不敏感，在较宽范围内表现稳定；动态停止优于固定的提前停止。
+## 5. 实验数量与充分性
 
-### 7. 优点：方法或实验设计上的亮点
-- **方法亮点**：
-    - **问题发现新颖**：首次系统性地识别并验证了长 CoT 推理中“步骤质量退化”这一现象，并给出了理论解释。
-    - **方法简单有效**：ZGES 仅需在标准 beam search 中加入一个基于 z-score 的动态停止判断，无需额外训练或复杂模块，实用性强。
-    - **理论支撑充分**：不仅通过实验观察，还给出了理论证明（凹性定理），解释了退化原因，并基于 PRM 奖励与步骤质量的线性关系推导出 z-score 一致性，为方法提供了扎实的理论基础。
-- **实验设计亮点**：
-    - **诊断分析深入**：不仅报告最终结果，还深入分析了 PRM 的重新排名精度随时间下降（附录 C.2），并通过蒙特卡洛 rollout 估计了步骤质量，验证了退化现象。
-    - **消融实验全面**：包含超参数鲁棒性、与固定步停止的比较、以及计算效率的量化分析，增强了结论的可信度。
+- **实验数量**：较为充分，包括：
+  - 在两个模型规模（1.5B、7B）上，针对三个基准进行主要对比实验（共6种模型-基准组合）。
+  - 对束宽（4,8,16,32,64）进行扩展实验。
+  - 消融实验：超参数λ的敏感性分析（4种取值：-0.4, -0.6, -0.8, -1.0），以及对比固定步数早停。
+  - 分析实验：PRM重排序能力随步骤下降（附录C.2），PRM奖励与步骤质量的相关性（表2、图3）。
+- **充分性评价**：实验覆盖了不同模型规模、不同难度基准、不同搜索配置，对比了多种基线，并进行了理论分析和消融，整体比较客观公平。但未报告多次运行的方差/置信区间，可能缺乏统计显著性信息。
 
-### 8. 不足与局限
-- **实验覆盖局限**：
-    - **算力限制**：作者承认由于计算资源有限，未探索更激进的 λ 值（如 λ ∈ [0, 1]），可能限制了方法潜力的完全发挥。
-    - **任务类型单一**：仅在数学推理（AMC、AIME）上验证，未在代码、科学推理等其他长 CoT 任务上测试，方法的泛化性有待进一步检验。
-    - **模型特定性**：实验仅基于 DeepSeek-R1-Distill 系列模型，对其它架构（如 Llama、DeepSeek-R1 本身）的表现未知。
-- **偏差风险**：
-    - **步骤分割依赖**：论文使用混合启发式方法进行步骤分割（基于符号和 token 长度）。这种分割方式可能引入噪声，且对不同模型需调整，影响了结果的稳定性和可复现性。
-    - **PRM 训练偏差**：PRM 基于自动标注训练，其质量受限于标注策略（Hard/Soft），自动标注本身的噪声可能传播到搜索过程中。
-- **应用限制**：
-    - 方法依赖于 PRM 奖励与步骤质量的线性相关性假设（Lemma 4.1），如果 PRM 与步骤质量的关系偏离线性，z-score 一致性可能不成立，方法可能失效。
-    - ZGES 的核心是“在质量峰值停止”，这在步骤质量呈单调递减时适用，但如果出现非凹性的复杂模式（如多峰），提前停止的时机可能不理想。
+## 6. 论文的主要结论与发现
+
+- PRM引导的束搜索在长CoT推理中不一定优于无PRM方法（如多数投票），原因在于步骤质量退化。
+- 步骤质量的预期值在束搜索过程中呈凹性，表现为单峰或单调递减。
+- 平均PRM奖励与平均步骤质量之间存在强线性关系，因此z-score可以反映步骤质量趋势。
+- 提出的ZGES方法在几乎所有实验设置中均优于标准PRM束搜索和多数投票，且具有更好的计算效率（更少的PRM调用和令牌生成）。
+- 动态早停优于固定步数早停。
+- ZGES对阈值λ的选取具有鲁棒性。
+
+## 7. 优点
+
+- **问题洞察深刻**：通过实证和理论揭示长CoT中PRM束搜索效果不佳的根本原因——步骤质量退化，而非简单归因于PRM质量。
+- **方法简洁有效**：ZGES仅需计算局部z-score，代码改动小，但效果提升显著，且降低计算开销。
+- **理论支撑**：从概率论和强化学习角度证明了步骤质量的凹性和z-score的一致性，增强了方法可信度。
+- **实验全面**：涵盖多个模型大小和难度基准，进行了消融和敏感性分析，验证鲁棒性。
+- **实际价值**：在AIME2024等高难度基准上，1.5B模型使用ZGES（16束）准确率从60.0%提升至66.7%，且减少PRM调用50%以上。
+
+## 8. 不足与局限
+
+- **资源限制**：论文自述因计算资源有限，未能探索更广的λ值（如更激进的早停λ∈[0,1]），可能错过更优配置。
+- **实验统计性**：未提供多次重复实验的误差棒或置信区间，无法判断结果是否显著。
+- **步骤分割依赖启发式**：实际中步骤分割（step segmentation）基于符号标记和令牌长度阈值（约2000 tokens），可能影响PRM评分和z-score计算。
+- **仅测试数学推理**：未在更广泛的推理任务（如代码合成、科学推理）中验证，泛化性未知。
+- **假设限制**：理论推导基于两个假设（推理策略正确步骤更可能导致正确，PRM重排序能力逐渐下降），虽然文中提供了经验证据，但假设的轻微违反可能影响结论。
+- **方法依赖PRM质量**：ZGES的有效性依赖于PRM奖励与步骤质量的强线性关系，若PRM训练不佳，可能失效。
+- **未探索其他早停信号**：仅使用了z-score，未比较其他异常检测或变化点检测方法。
 
 （完）

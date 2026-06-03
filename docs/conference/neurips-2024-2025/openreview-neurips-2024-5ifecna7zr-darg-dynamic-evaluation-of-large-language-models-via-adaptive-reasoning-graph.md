@@ -5,16 +5,16 @@ authors: "Zhehao Zhang, Jiaao Chen, Diyi Yang"
 date: 2024-09-25
 pdf: "https://openreview.net/pdf?id=5IFeCNA7zR"
 tags: ["query:cot-unfaith"]
-score: 8.0
-evidence: 通过推理图动态评估推理能力
-tldr: 提出DARG方法，通过扰动现有基准的推理图动态生成评估数据。
+score: 6.0
+evidence: 通过推理图扰动评估LLM推理能力
+tldr: DARG通过自适应推理图动态生成评估数据。
 source: NeurIPS-2024-Accepted
 selection_source: conference_retrieval
 figures_json: "[{\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-001.webp\", \"caption\": \"\", \"page\": 2, \"index\": 1, \"width\": 1054, \"height\": 1473}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-002.webp\", \"caption\": \"\", \"page\": 2, \"index\": 2, \"width\": 512, \"height\": 512}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-003.webp\", \"caption\": \"\", \"page\": 2, \"index\": 3, \"width\": 512, \"height\": 512}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-004.webp\", \"caption\": \"\", \"page\": 2, \"index\": 4, \"width\": 512, \"height\": 512}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-005.webp\", \"caption\": \"\", \"page\": 2, \"index\": 5, \"width\": 512, \"height\": 512}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-006.webp\", \"caption\": \"\", \"page\": 2, \"index\": 6, \"width\": 512, \"height\": 512}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-007.webp\", \"caption\": \"\", \"page\": 2, \"index\": 7, \"width\": 512, \"height\": 512}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-008.webp\", \"caption\": \"\", \"page\": 2, \"index\": 8, \"width\": 512, \"height\": 512}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-009.webp\", \"caption\": \"\", \"page\": 2, \"index\": 9, \"width\": 512, \"height\": 512}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-010.webp\", \"caption\": \"\", \"page\": 2, \"index\": 10, \"width\": 914, \"height\": 696}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-011.webp\", \"caption\": \"\", \"page\": 2, \"index\": 11, \"width\": 512, \"height\": 512}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-012.webp\", \"caption\": \"\", \"page\": 2, \"index\": 12, \"width\": 512, \"height\": 512}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-013.webp\", \"caption\": \"\", \"page\": 2, \"index\": 13, \"width\": 1869, \"height\": 2048}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-014.webp\", \"caption\": \"\", \"page\": 2, \"index\": 14, \"width\": 512, \"height\": 512}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-015.webp\", \"caption\": \"\", \"page\": 2, \"index\": 15, \"width\": 512, \"height\": 512}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-016.webp\", \"caption\": \"\", \"page\": 2, \"index\": 16, \"width\": 541, \"height\": 405}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-017.webp\", \"caption\": \"\", \"page\": 2, \"index\": 17, \"width\": 993, \"height\": 511}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-018.webp\", \"caption\": \"\", \"page\": 2, \"index\": 18, \"width\": 1009, \"height\": 511}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-019.webp\", \"caption\": \"\", \"page\": 2, \"index\": 19, \"width\": 1024, \"height\": 511}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-020.webp\", \"caption\": \"\", \"page\": 2, \"index\": 20, \"width\": 512, \"height\": 512}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-021.webp\", \"caption\": \"\", \"page\": 2, \"index\": 21, \"width\": 647, \"height\": 287}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-022.webp\", \"caption\": \"\", \"page\": 2, \"index\": 22, \"width\": 1170, \"height\": 1474}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-023.webp\", \"caption\": \"\", \"page\": 2, \"index\": 23, \"width\": 660, \"height\": 287}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-024.webp\", \"caption\": \"\", \"page\": 2, \"index\": 24, \"width\": 664, \"height\": 287}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-025.webp\", \"caption\": \"\", \"page\": 2, \"index\": 25, \"width\": 512, \"height\": 512}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-026.webp\", \"caption\": \"\", \"page\": 2, \"index\": 26, \"width\": 512, \"height\": 512}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-027.webp\", \"caption\": \"\", \"page\": 2, \"index\": 27, \"width\": 512, \"height\": 512}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-028.webp\", \"caption\": \"\", \"page\": 19, \"index\": 28, \"width\": 6400, \"height\": 4800}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-029.webp\", \"caption\": \"\", \"page\": 20, \"index\": 29, \"width\": 1000, \"height\": 1000}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-030.webp\", \"caption\": \"\", \"page\": 20, \"index\": 30, \"width\": 1000, \"height\": 640}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-031.webp\", \"caption\": \"\", \"page\": 20, \"index\": 31, \"width\": 3840, \"height\": 2160}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-032.webp\", \"caption\": \"\", \"page\": 20, \"index\": 32, \"width\": 400, \"height\": 400}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-033.webp\", \"caption\": \"\", \"page\": 20, \"index\": 33, \"width\": 400, \"height\": 400}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-034.webp\", \"caption\": \"\", \"page\": 20, \"index\": 34, \"width\": 2400, \"height\": 2456}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-035.webp\", \"caption\": \"\", \"page\": 20, \"index\": 35, \"width\": 2021, \"height\": 2048}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-036.webp\", \"caption\": \"\", \"page\": 20, \"index\": 36, \"width\": 500, \"height\": 500}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-037.webp\", \"caption\": \"\", \"page\": 25, \"index\": 37, \"width\": 1127, \"height\": 867}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-038.webp\", \"caption\": \"\", \"page\": 25, \"index\": 38, \"width\": 1065, \"height\": 330}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-039.webp\", \"caption\": \"\", \"page\": 25, \"index\": 39, \"width\": 1128, \"height\": 867}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-040.webp\", \"caption\": \"\", \"page\": 25, \"index\": 40, \"width\": 1128, \"height\": 957}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-041.webp\", \"caption\": \"\", \"page\": 25, \"index\": 41, \"width\": 1127, \"height\": 956}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-042.webp\", \"caption\": \"\", \"page\": 25, \"index\": 42, \"width\": 922, \"height\": 749}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-043.webp\", \"caption\": \"\", \"page\": 25, \"index\": 43, \"width\": 1066, \"height\": 600}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-044.webp\", \"caption\": \"\", \"page\": 25, \"index\": 44, \"width\": 1066, \"height\": 245}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-045.webp\", \"caption\": \"\", \"page\": 25, \"index\": 45, \"width\": 703, \"height\": 180}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-046.webp\", \"caption\": \"\", \"page\": 25, \"index\": 46, \"width\": 1307, \"height\": 943}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-047.webp\", \"caption\": \"\", \"page\": 25, \"index\": 47, \"width\": 1307, \"height\": 900}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-048.webp\", \"caption\": \"\", \"page\": 25, \"index\": 48, \"width\": 1112, \"height\": 854}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-049.webp\", \"caption\": \"\", \"page\": 25, \"index\": 49, \"width\": 1257, \"height\": 478}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-050.webp\", \"caption\": \"\", \"page\": 25, \"index\": 50, \"width\": 1258, \"height\": 258}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-051.webp\", \"caption\": \"\", \"page\": 25, \"index\": 51, \"width\": 1127, \"height\": 1048}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-052.webp\", \"caption\": \"\", \"page\": 25, \"index\": 52, \"width\": 1128, \"height\": 773}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-053.webp\", \"caption\": \"\", \"page\": 25, \"index\": 53, \"width\": 922, \"height\": 936}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-054.webp\", \"caption\": \"\", \"page\": 25, \"index\": 54, \"width\": 1065, \"height\": 391}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-055.webp\", \"caption\": \"\", \"page\": 25, \"index\": 55, \"width\": 1065, \"height\": 236}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-056.webp\", \"caption\": \"\", \"page\": 25, \"index\": 56, \"width\": 1000, \"height\": 640}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-057.webp\", \"caption\": \"\", \"page\": 25, \"index\": 57, \"width\": 921, \"height\": 749}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-058.webp\", \"caption\": \"\", \"page\": 25, \"index\": 58, \"width\": 1065, \"height\": 477}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-059.webp\", \"caption\": \"\", \"page\": 25, \"index\": 59, \"width\": 1240, \"height\": 468}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-060.webp\", \"caption\": \"\", \"page\": 25, \"index\": 60, \"width\": 921, \"height\": 350}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-061.webp\", \"caption\": \"\", \"page\": 25, \"index\": 61, \"width\": 1066, \"height\": 698}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-062.webp\", \"caption\": \"\", \"page\": 25, \"index\": 62, \"width\": 1066, \"height\": 441}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-063.webp\", \"caption\": \"\", \"page\": 25, \"index\": 63, \"width\": 1240, \"height\": 1336}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-064.webp\", \"caption\": \"\", \"page\": 25, \"index\": 64, \"width\": 1170, \"height\": 350}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-065.webp\", \"caption\": \"\", \"page\": 25, \"index\": 65, \"width\": 1134, \"height\": 468}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-066.webp\", \"caption\": \"\", \"page\": 25, \"index\": 66, \"width\": 1134, \"height\": 1337}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-067.webp\", \"caption\": \"\", \"page\": 25, \"index\": 67, \"width\": 1069, \"height\": 688}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-068.webp\", \"caption\": \"\", \"page\": 25, \"index\": 68, \"width\": 1128, \"height\": 467}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-069.webp\", \"caption\": \"\", \"page\": 25, \"index\": 69, \"width\": 1128, \"height\": 1336}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-070.webp\", \"caption\": \"\", \"page\": 25, \"index\": 70, \"width\": 922, \"height\": 350}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-071.webp\", \"caption\": \"\", \"page\": 25, \"index\": 71, \"width\": 1065, \"height\": 450}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-072.webp\", \"caption\": \"\", \"page\": 25, \"index\": 72, \"width\": 1065, \"height\": 724}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-073.webp\", \"caption\": \"\", \"page\": 25, \"index\": 73, \"width\": 1064, \"height\": 505}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-074.webp\", \"caption\": \"\", \"page\": 25, \"index\": 74, \"width\": 1176, \"height\": 828}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-075.webp\", \"caption\": \"\", \"page\": 25, \"index\": 75, \"width\": 1128, \"height\": 468}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-076.webp\", \"caption\": \"\", \"page\": 25, \"index\": 76, \"width\": 1128, \"height\": 1337}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-077.webp\", \"caption\": \"\", \"page\": 26, \"index\": 77, \"width\": 1336, \"height\": 1406}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-078.webp\", \"caption\": \"\", \"page\": 26, \"index\": 78, \"width\": 783, \"height\": 1049}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-079.webp\", \"caption\": \"\", \"page\": 26, \"index\": 79, \"width\": 3840, \"height\": 2160}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-080.webp\", \"caption\": \"\", \"page\": 26, \"index\": 80, \"width\": 1336, \"height\": 623}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-081.webp\", \"caption\": \"\", \"page\": 26, \"index\": 81, \"width\": 1144, \"height\": 1315}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-082.webp\", \"caption\": \"\", \"page\": 26, \"index\": 82, \"width\": 985, \"height\": 1298}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-083.webp\", \"caption\": \"\", \"page\": 26, \"index\": 83, \"width\": 985, \"height\": 688}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-084.webp\", \"caption\": \"\", \"page\": 26, \"index\": 84, \"width\": 1240, \"height\": 1166}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-085.webp\", \"caption\": \"\", \"page\": 26, \"index\": 85, \"width\": 921, \"height\": 1032}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-086.webp\", \"caption\": \"\", \"page\": 26, \"index\": 86, \"width\": 1066, \"height\": 450}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-087.webp\", \"caption\": \"\", \"page\": 26, \"index\": 87, \"width\": 1240, \"height\": 579}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-088.webp\", \"caption\": \"\", \"page\": 26, \"index\": 88, \"width\": 1000, \"height\": 1033}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-089.webp\", \"caption\": \"\", \"page\": 26, \"index\": 89, \"width\": 1176, \"height\": 440}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-090.webp\", \"caption\": \"\", \"page\": 26, \"index\": 90, \"width\": 1128, \"height\": 1162}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-091.webp\", \"caption\": \"\", \"page\": 26, \"index\": 91, \"width\": 1128, \"height\": 580}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-092.webp\", \"caption\": \"\", \"page\": 27, \"index\": 92, \"width\": 512, \"height\": 512}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-093.webp\", \"caption\": \"\", \"page\": 27, \"index\": 93, \"width\": 1062, \"height\": 423}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-094.webp\", \"caption\": \"\", \"page\": 27, \"index\": 94, \"width\": 512, \"height\": 512}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-095.webp\", \"caption\": \"\", \"page\": 27, \"index\": 95, \"width\": 512, \"height\": 512}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-096.webp\", \"caption\": \"\", \"page\": 27, \"index\": 96, \"width\": 512, \"height\": 512}, {\"url\": \"assets/figures/openreview/openreview-neurips-2024-5ifecna7zr/fig-097.webp\", \"caption\": \"\", \"page\": 27, \"index\": 97, \"width\": 1015, \"height\": 389}]"
-motivation: 静态基准测试存在数据污染和适应性不足的问题，需要动态评估方法。
-method: 提取现有基准的推理图，通过扰动生成新测试数据。
-result: 生成了复杂度可控的测试样本。
-conclusion: DARG方法能动态扩展基准，评估LLM推理能力。
+motivation: 静态基准测试易受数据污染且无法适应模型进化。
+method: 提取推理图并扰动生成新测试数据，控制复杂度。
+result: 生成的测试样本具有不同复杂度，能更好评估模型。
+conclusion: 动态推理图评估方法能持续量测LLM推理能力。
 ---
 
 ## Abstract
@@ -24,73 +24,83 @@ The current paradigm of evaluating Large Language Models (LLMs) through static b
 
 ## 论文详细总结（自动生成）
 
-### 1. 论文的核心问题与整体含义
+# 论文详细中文总结
 
-- **研究动机**：当前大语言模型（LLM）的评估主要依赖静态基准测试，例如GSM8K、BBQ等。这些基准存在两个突出问题：一是数据污染——训练数据与测试数据可能存在重叠，导致模型记忆而非真正推理；二是静态基准无法适应模型能力的快速提升，复杂度固定。因此需要一种能够动态生成评估数据、并且复杂度可控的方法。
-- **整体含义**：本文提出DARG框架，旨在通过扰动现有基准数据的推理图，生成复杂度可调节的新测试样本，从而更公平、更全面地评估LLM的真实推理能力，并揭示静态基准可能掩盖的性能下降与偏见。
+## 1. 论文的核心问题与整体含义（研究动机和背景）
 
-### 2. 论文提出的方法论
+- **问题**：当前大语言模型（LLM）评估主要依赖静态基准测试集，这些测试集存在两大缺陷：一是容易受到数据污染（训练集与测试集重叠），导致模型可能只是记忆而非真正推理；二是静态基准复杂度固定，无法适应LLM持续进化的能力，难以衡量其真实性能上限。
+- **动机**：需要一种能够动态生成评估数据、并精确控制复杂度的评估方法，从而更全面、可靠地衡量LLM的推理能力，同时规避数据污染问题。
+- **整体含义**：论文提出DARG框架，通过提取并扰动推理图来生成复杂度可变的测试数据，为LLM的动态、自适应评估提供新范式。
 
-- **核心思想**：将每个数据点（如数学题、社会偏见问题等）转化为有向无环的推理图，图中节点代表基础推理单元（如数字、人物属性），边代表操作或关系。通过规则化的图扰动（增加深度、宽度、节点数值复杂度）生成新图，再将图解码回自然语言文本，并用代码增强的LLM验证标签正确性。
+## 2. 论文提出的方法论：核心思想、关键技术细节
+
+- **核心思想**：将每个数据点背后的推理过程抽象为有向无环图（推理图），通过扰动图的结构（深度、宽度）和节点属性（数值复杂度等）来生成复杂度可控的新测试样本，并利用代码增强的LLM确保标签正确性。
 - **关键技术细节**：
-  - **推理图构建**：使用LLM（如GPT-4 Turbo）结合上下文示例，从原始数据中提取推理图。通过规则函数计算图对应的标签，与原始标签对比，若不一致则迭代生成直到匹配。
-  - **推理图扰动**：根据复杂度定义（如数值复杂度、图深度、图宽度），用规则函数修改节点或边的结构。例如，增加深度时，拆分最长路径上的起始节点；增加宽度时，分解非最长路径的起始节点；增加数值复杂度时，随机替换节点值为更大数字。
-  - **图到文本解码**：利用LLM与原始（图、文本）对作为示例，进行上下文学习以生成新的自然语言问题，保持语言风格一致。
-  - **数据验证**：使用代码增强的LLM agent（如GPT-4 + Code Interpreter）生成代码解题，将计算结果与推理图标签对比，不一致则迭代改进生成的文本。
-- **算法流程**（参见Algorithm 1）：
-  1. 用LLM构建推理图 \(G_0\)。
-  2. 用规则函数计算标签 \(\hat{l}\)，若与原始标签 \(y\) 不一致则重复步骤1。
-  3. 对图进行扰动得到 \(\hat{G}\)，计算新标签 \(\hat{y}\)。
-  4. 用LLM生成新文本 \(x^*\)，并用代码agent验证输出 \(y^*\) 是否等于 \(\hat{y}\)，否则循环改进文本。
+  - **推理图构建**：利用LLM（如GPT-4 Turbo）结合上下文示例，从原始数据中提取推理图，并通过规则函数计算标签与原标签比对，若不一致则迭代修正，直至正确。
+  - **图扰动**：基于定义的复杂度维度（如深度、宽度、数值复杂度），使用规则函数对图进行修改，无需LLM参与，保证确定性。
+  - **图到文本生成**：将扰动后的推理图通过LLM（同样使用上下文示例）转换为自然语言描述，保持语言风格与原始数据一致。
+  - **数据验证**：使用代码增强的LLM代理（例如GPT-4 + 代码解释器）生成代码求解新问题，将计算结果与推理图标签比对，若不匹配则迭代修正，确保生成数据正确。
+- **复杂度定义**：文中定义了四种任务的具体复杂度指标（详见表1），例如数学推理中数值复杂度指计算中数字的位数，宽度指并行变量数，深度指推理步骤数。
 
-### 3. 实验设计
+## 3. 实验设计
 
 - **数据集与场景**：
-  - **数学推理**：GSM8K（小学数学题）
-  - **社会推理**：BBQ（偏见与公平性QA）
-  - **空间推理**：BBH Navigate（导航方向判断）
-  - **符号推理**：BBH Dyck Language（括号匹配）
-- **基准与对比方法**：本文未对比其他动态评估方法（如DyVal, DyVal 2, Benchmark Self-Evolving），而是直接评估15个SOTA LLMs在DARG生成数据上的表现。LLMs包括开源（phi3-mini, Mistral-7B, Llama3-8B/70B, Command R+, Mixtral 8×7B/22B, WizardLM-2 8×22B, DeepSeekMath-7B）和闭源（GPT-4 Turbo, GPT-4o, Gemini-1.5-Pro/Flash, Claude-3-Opus）。
-- **提示策略**：Chain-of-Thought (CoT) 和 Least-to-Most (LtM)。
-- **评价指标**：Pass@1 accuracy；对社会推理额外使用bias score、overall avoidance rate；对数学推理提出Complexity-Induced Accuracy Retention Rate (CIARR)。
+  - 数学推理：GSM8K（小学算术应用题）
+  - 社会推理：BBQ（偏见评估，涉及九类受保护群体）
+  - 空间推理：BBH Navigate（判断是否返回起点）
+  - 符号推理：BBH Dyck Language（预测括号闭合序列）
+- **基准与对比方法**：
+  - 对比了15个SOTA LLM，包括开源模型（Phi-3-mini、Mistral-7B、Llama-3-8B/70B、DeepSeekMath-7B等）、MoE模型（Mixtral 8×7B/22B、WizardLM-2 8×22B）、闭源模型（GPT-4 Turbo、GPT-4o、Gemini-1.5 Pro/Flash、Claude-3 Opus等）。
+  - 使用两种主流提示策略：Chain-of-Thought (CoT) 和 Least-to-Most (LtM)。
+  - 未直接对比其他动态评估方法（如DyVal、Benchmark Self-Evolving），但在相关工作部分提及并指出了各自的局限性（模板化缺乏语言多样性、LLM直接扰动不稳定等），并在人类评估中与自修正方法进行了对比（仅37.5%正确率 vs DARG的92.5%）。
+- **评估指标**：除Pass@1准确率外，引入Complexity-Induced Accuracy Retention Rate (CIARR) 衡量模型对复杂度增加的鲁棒性。对BBQ还使用了偏见分数和回避率。
 
-### 4. 资源与算力
+## 4. 资源与算力
 
-- 文中明确指出：总成本约1000美元（使用Azure OpenAI API、Lepton AI API、groq API、Google API、Anthropic API等）。
-- 本地实验使用一台Nvidia A100 40G GPU和12核CPU。
-- 微调实验使用LitGPT框架和LoRA，训练5个epoch，具体训练时长未给出。
-- 评估推断时设temperature=0.1，top_p=0.95。
+- **算力信息**：
+  - 闭源模型通过API调用（Azure OpenAI、Lepton AI、groq、Google、Anthropic等）。
+  - 本地模型使用Nvidia A100 40G GPU（40G显存）和12核CPU。
+  - 总API调用成本约1000美元（文中明确说明）。
+  - 未详细说明训练/推理的总GPU小时数，但提及微调实验使用LitGPT和LoRA，支持16G显存。
 
-### 5. 实验数量与充分性
+## 5. 实验数量与充分性
 
-- **实验数量**：主实验在四个数据集上展开，每个数据集设置了多个复杂度级别（如GSM8K的数值复杂度+2/+4/+6/+8，深度/宽度+1/+2/+3/+4）。对于每个级别，采样了500或600个数据点（GSM8K 500个，BBQ 600个，BBH各250个）。总共测试了15个LLMs。此外，还进行了：
-  - 错误类型分析（采样20个失败案例，分类计算/推理/其他错误）
-  - 人类评估（92.5%的新数据标签正确）
-  - 微调实验（Mistral-7B和Llama2-7B，对比原始GSM8K训练数据与DARG生成数据）
-- **充分性与公平性**：实验覆盖了多种推理任务和模型规模，使用了两种提示策略，考虑到了模型大小、MoE结构等变量。但受限于资源，每个复杂度级别只采样了部分数据点；且仅使用GPT-4 Turbo进行图构建和文本生成，未充分探索其他LLM的适用性。总体而言，实验设计较为全面，结论可靠。
+- **实验数量**：进行了多维度实验，包括：
+  - 四个推理领域，每个领域一个数据集（共四个）。
+  - 15个LLM在数学推理上的三个复杂度维度（数值、宽度、深度）的完整评估，每个维度有4-5个复杂度级别，总共数百个测试点。
+  - BBQ和BBH任务各选取了代表性模型（每类一个或几个）进行评估。
+  - 消融实验：微调实验（使用DARG生成数据 vs 原始GSM8K训练数据），对比了Mistral-7B和Llama2-7B。
+  - 人类评估：对GSM8K和BBQ生成的样本进行了人工验证，确认数据质量（92.5%正确）。
+  - 错误分析：对GPT-4 Turbo的失败案例进行了分类统计（数值计算、推理、其他）。
+- **充分性与公平性**：
+  - 实验覆盖了多种模型类型（小/大、MoE/非MoE、开源/闭源、数学专用等），维度多样。
+  - 使用了两种常见提示策略，并报告了完整结果（附录中提供所有数据）。
+  - 统计显著性：微调实验中做了配对t检验（p=0.022），说明差异显著。
+  - 但局限：仅选择了每个领域一个数据集，可能不足以代表该领域的全部情况；未与其他动态评估方法（如DyVal 2）进行直接定量比较。
 
-### 6. 论文的主要结论与发现
+## 6. 论文的主要结论与发现
 
-- **性能普遍下降**：几乎所有LLM在DARG生成的更高复杂度数据上准确率下降，尤其是深度和宽度增加时，下降更显著（如Claude-3-Opus在深度+4时下降54.2%）。
-- **模型鲁棒性差异**：更大模型（如Llama3-70B vs 8B）和MoE模型（如Mixtral 8×22B vs Mistral-7B）对复杂度增加更具抵抗力。
-- **偏见加剧**：在社会推理（BBQ）中，随着属性对增加，模型偏见分数上升；GPT-4 Turbo和Gemini-1.5-Pro表现出过度敏感，频繁选择“无法确定”以回避保护群体。
-- **空间推理中的确认偏差**：在BBH Navigate中，模型对“是”类样本（返回起点）的准确率急剧下降，而对“否”类样本保持稳定，暗示存在确认偏差。
-- **符号推理中长上下文困难**：输入或输出括号数量增加时，所有模型性能下降，表明LLM仍不擅长处理长序列。
-- **微调提升**：用DARG生成数据微调Mistral-7B和Llama2-7B，效果优于用原始GSM8K训练数据微调。
+- **性能普遍下降**：所有15个LLM在DARG生成的复杂度增加的数据上，准确率均显著下降。例如，Claude-3 Opus在深度增加4时准确率下降54.2%。
+- **模型鲁棒性差异**：更大的模型和MoE结构对复杂度增加更鲁棒；数学专用模型（DeepSeekMath）表现优于同等规模的通用模型。
+- **偏见加剧**：在社会推理（BBQ）中，随着复杂度增加，偏见分数上升，尤其是资深模型（如GPT-4 Turbo、Gemini-1.5 Pro）在复杂场景下表现出过度的“回避”行为（倾向于选择“无法确定”），实际是过度敏感。
+- **错误类型分析**：数值复杂度增加主要导致计算错误；结构复杂度（深度/宽度）增加主要导致推理错误。
+- **微调潜力**：使用DARG生成的数据微调模型，在复杂度变化的测试集上优于使用等量原始数据微调，说明DARG生成的数据可提升模型对复杂度的适应能力。
 
-### 7. 优点
+## 7. 优点
 
-- **创新性**：通过推理图实现对复杂度的细粒度控制，同时保持语言多样性，显著优于模板方法（如DyVal）和纯提示扰动方法（如DyVal 2）。
-- **验证机制**：结合规则函数和代码增强LLM double-check标签正确性，确保生成数据的高质量（人类评估92.5%正确率）。
-- **通用性**：推理图定义可推广到各类推理任务（数学、社会、空间、符号），提供了灵活的动态评估框架。
-- **实践价值**：不仅用于评估，还可生成训练数据以增强模型能力，展示了弱到强泛化的潜力。
+- **可控性**：通过推理图扰动，可以精确控制复杂度的多个维度（深度、宽度、数值等），这是纯LLM扰动方法难以做到的。
+- **高正确率**：引入代码增强的LLM作为验证器，生成的测试数据正确率达92.5%，显著高于仅用LLM自修正的37.5%。
+- **保持语言多样性**：利用LLM进行图到文本生成，使得新问题的表述风格与原始数据集一致，避免了模板生成的刻板性。
+- **可迁移性**：推理图定义可泛化到多种推理任务，文中展示了数学、社会、空间、符号四种场景。
+- **实用价值**：不仅可用于动态评估，还能生成高质量训练数据进行微调，提升模型推理能力。
 
-### 8. 不足与局限
+## 8. 不足与局限
 
-- **任务覆盖有限**：仅选取了四个推理任务，每个任务只用一个代表性数据集，未涵盖自然语言理解等非推理任务。
-- **依赖闭源模型**：图构建和文本生成主要依赖GPT-4 Turbo，若无法访问则框架难以应用。附录E初步探索了开源LLM（LLaMA 3.1-70B/405B）但成功率和指令遵循能力仍有差距。
-- **复杂度维度固定**：当前只单独扰动一种维度（数值、深度、宽度），组合扰动未在实验中系统探索（尽管文中提到可组合）。
-- **资源开销**：需要多次调用LLM生成和验证，总成本约1000美元，可能限制大规模应用。
-- **潜在偏差**：DARG生成的数据可能引入新的偏差，尤其是在社会推理中，属性添加可能加剧模型偏见，但本文未深入分析生成数据本身的偏差。
+- **任务覆盖有限**：仅聚焦于推理任务，每个领域只选了一个数据集，未涵盖自然语言理解、生成等其他重要任务。
+- **依赖闭源LLM**：推理图构建和图到文本生成主要依赖GPT-4 Turbo，存在成本高、黑盒、可控性降低的问题。文中虽然尝试了开源模型（如LLaMA 3.1-70B/405B），但性能仍显著低于GPT-4 Turbo。
+- **复杂度维度定义可能不普适**：当前复杂度定义针对特定数据集设计，是否能扩展到更通用的推理结构尚需验证。
+- **未与现有动态评估方法（如DyVal 2）进行直接对比**：缺乏定量比较，难以量化DARG相比现有方法的优势幅度。
+- **计算成本较高**：生成数据需要多次调用LLM（图构建、图到文本、验证），且使用了高性能闭源模型，大规模应用可能受限。
+- **潜在偏差风险**：虽然DARG能暴露更多偏见，但生成数据的复杂度增加也可能引入非预期的偏见或错误模式，需要人工校验。
 
 （完）
