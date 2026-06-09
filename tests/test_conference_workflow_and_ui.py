@@ -17,6 +17,8 @@ class ConferenceWorkflowAndUiTest(unittest.TestCase):
         self.assertIn("RERANK_API_KEY", text)
         self.assertIn("SILICONFLOW_API_KEY", text)
         self.assertIn('default: "public-zwwen-rerank"', text)
+        self.assertIn("requirements-paper-media.txt", text)
+        self.assertIn("PaperCropper smoke OK", text)
 
     def test_conference_retrieval_workflow_dispatches_pipeline(self):
         root = pathlib.Path(__file__).resolve().parents[1]
@@ -40,6 +42,8 @@ class ConferenceWorkflowAndUiTest(unittest.TestCase):
         self.assertIn("RERANK_API_KEY", text)
         self.assertIn("SILICONFLOW_API_KEY", text)
         self.assertIn("DEEPSEEK_API_KEY", text)
+        self.assertIn("requirements-paper-media.txt", text)
+        self.assertIn("PaperCropper smoke OK", text)
         self.assertIn("python src/conference_pipeline.py", text)
         self.assertIn("--run-llm-refine", text)
         self.assertIn("--output-dir \"archive/${RUN_DATE}/filtered\"", text)
@@ -49,6 +53,7 @@ class ConferenceWorkflowAndUiTest(unittest.TestCase):
         root = pathlib.Path(__file__).resolve().parents[1]
         runner = (root / "app" / "workflows.runner.js").read_text(encoding="utf-8")
         manager = (root / "app" / "subscriptions.manager.js").read_text(encoding="utf-8")
+        css = (root / "app" / "app.css").read_text(encoding="utf-8")
 
         self.assertIn("conference-paper-retrieval.yml", runner)
         self.assertIn("runConferenceRetrieval", runner)
@@ -67,6 +72,15 @@ class ConferenceWorkflowAndUiTest(unittest.TestCase):
         self.assertTrue((root / "scripts" / "local_debug.sh").exists())
         self.assertTrue((root / "scripts" / "bootstrap_local.sh").exists())
         self.assertTrue((root / "requirements-cpu.txt").exists())
+        bootstrap = (root / "scripts" / "bootstrap_local.sh").read_text(encoding="utf-8")
+        requirements = (root / "requirements.txt").read_text(encoding="utf-8")
+        paper_media_requirements = (root / "requirements-paper-media.txt").read_text(encoding="utf-8")
+        self.assertIn('INSTALL_MODE="${DPR_INSTALL_MODE:-remote}"', bootstrap)
+        self.assertIn("python -m pip install -r requirements.txt", bootstrap)
+        self.assertIn("PyMuPDF", requirements)
+        self.assertIn("opencv-python-headless", requirements)
+        self.assertIn("albumentations", paper_media_requirements)
+        self.assertIn("thop", paper_media_requirements)
         server = (root / "src" / "local_debug_server.py").read_text(encoding="utf-8")
         self.assertIn("src/conference_pipeline.py", server)
         self.assertIn("src/conference_sidebar.py", server)
@@ -75,12 +89,18 @@ class ConferenceWorkflowAndUiTest(unittest.TestCase):
         self.assertIn("run_llm_refine: 'true'", runner)
         self.assertIn("reranker_profile: 'public-zwwen-rerank'", runner)
         self.assertIn("reranker_profile", runner)
-        self.assertIn("scrollWorkflowOutputToBottom", runner)
+        self.assertIn("isWorkflowLogNearBottom", runner)
+        self.assertIn("scrollWorkflowLogToBottom", runner)
         self.assertIn("data-dpr-workflow-log", runner)
         self.assertIn("logEl.scrollTop = logEl.scrollHeight", runner)
+        self.assertNotIn("bodyEl.scrollTop = bodyEl.scrollHeight", runner)
         self.assertIn("refreshLocalRun(r.runId)", runner)
-        self.assertIn("runConferenceRetrieval(conf, years)", manager)
+        self.assertIn("runConferenceRetrieval(conf, years, {", manager)
+        self.assertIn("profile_tag: profileTags.join(',')", manager)
         self.assertIn("会议论文检索", manager)
+        self.assertNotIn("showPrettyConfirm", manager)
+        self.assertNotIn("确认对 <strong>", manager)
+        self.assertNotIn("dpr-run-confirm", css)
         self.assertNotIn("runConferenceMaintain(conf, years)", manager)
 
     def test_local_debug_uses_browser_config_override(self):

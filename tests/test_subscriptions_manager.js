@@ -16,6 +16,10 @@ const {
   __setQuickRunMsgEl,
   __setQuickRunConferenceBtn,
   __setUnsavedChanges,
+  __setRunSelectionState,
+  __initializeConferenceChoices,
+  __getSelectedConferenceYearPairs,
+  runSelectedQuickFetch,
 } = global.window.SubscriptionsManager.__test;
 
 function buildBaseConfig() {
@@ -123,18 +127,19 @@ function testNormalizeSubscriptionsConvertsChineseTagToEnglishFallback() {
   ];
 
   const normalized = normalizeSubscriptions(config);
-  assert.equal(normalized.subscriptions.intent_profiles[0].tag, 'reinforcement-learning');
+  assert.equal(normalized.subscriptions.intent_profiles[0].tag, 'rl');
 }
 
-function testRunProfileQuickFetchPassesProfileTagToWorkflow() {
+async function testRunProfileQuickFetchPassesProfileTagToWorkflow() {
   const calls = [];
   global.window.DPRWorkflowRunner = {
     runQuickFetchByDays(days, options) {
       calls.push({ days, options });
     },
   };
+  global.window.confirm = () => true;
 
-  const ok = global.window.SubscriptionsManager.runProfileQuickFetch('GENE', 30, {
+  const ok = await global.window.SubscriptionsManager.runProfileQuickFetch('GENE', 30, {
     fetchMode: 'skims',
   });
 
@@ -149,10 +154,19 @@ function testConferenceCurrentYearDisabledForPendingSources() {
   const currentYear = String(new Date().getFullYear());
   const previousYear = String(new Date().getFullYear() - 1);
 
+  assert.equal(isConferenceYearSelectable('NeurIPS', currentYear), false);
   assert.equal(isConferenceYearSelectable('NIPS', currentYear), false);
   assert.equal(isConferenceYearSelectable('ICML', currentYear), false);
+  assert.equal(isConferenceYearSelectable('NeurIPS', previousYear), true);
   assert.equal(isConferenceYearSelectable('NIPS', previousYear), true);
   assert.equal(isConferenceYearSelectable('ICML', previousYear), true);
+}
+
+function testConferenceDefaultYearOnlySelects2025() {
+  __setRunSelectionState({ conferencePairs: [] });
+  __initializeConferenceChoices();
+  const pairs = __getSelectedConferenceYearPairs().sort();
+  assert.deepEqual(pairs, ['ICML:2025', 'NeurIPS:2025']);
 }
 
 function testQuickRunUnsavedMessageClearsAfterSave() {
@@ -165,7 +179,7 @@ function testQuickRunUnsavedMessageClearsAfterSave() {
   __setQuickRunMsgEl(msgEl);
   __setUnsavedChanges(true);
   refreshQuickRunButtons();
-  assert.equal(msgEl.textContent, '检测到未保存修改，请先保存后再发起快速抓取。');
+  assert.equal(msgEl.textContent, '有未保存修改，请先保存。');
   assert.equal(msgEl.style.color, '#c00');
 
   __setUnsavedChanges(false);
@@ -199,13 +213,19 @@ function buildMockButton() {
 
 function testConferenceRunDisabledWhenUnsaved() {
   const btn = buildMockButton();
+  global.window.SubscriptionsSmartQuery = {
+    getSelectedProfileTags() {
+      return ['GENE'];
+    },
+  };
   __setQuickRunConferenceBtn(btn);
+  __setRunSelectionState({ conference: true, conferencePairs: ['ICML:2025'] });
   __setUnsavedChanges(true);
   refreshQuickRunButtons();
 
   assert.equal(btn.disabled, true);
   assert.equal(btn.classList.contains('chat-quick-run-item--disabled'), true);
-  assert.equal(btn.title, '请先点击“保存”后再发起会议论文检索。');
+  assert.equal(btn.title, '请先保存后再检索会议论文。');
 
   __setUnsavedChanges(false);
   refreshQuickRunButtons();
@@ -214,14 +234,66 @@ function testConferenceRunDisabledWhenUnsaved() {
   assert.equal(btn.classList.contains('chat-quick-run-item--disabled'), false);
   assert.equal(btn.title, '一次性触发会议论文拉取任务');
   __setQuickRunConferenceBtn(null);
+  __setRunSelectionState({});
+  delete global.window.SubscriptionsSmartQuery;
 }
 
-testNormalizeSubscriptionsAddsBiorxivBackend();
-testNormalizeSubscriptionsPreservesCustomBiorxivBackendFields();
-testNormalizeSubscriptionsConvertsChineseTagToEnglishFallback();
-testRunProfileQuickFetchPassesProfileTagToWorkflow();
-testConferenceCurrentYearDisabledForPendingSources();
-testQuickRunUnsavedMessageClearsAfterSave();
-testConferenceRunDisabledWhenUnsaved();
+async function testQuickFetchIncludesAnySelectedProfile() {
+  const calls = [];
+  const msgEl = {
+    textContent: '',
+    style: {
+      color: '',
+    },
+  };
+  global.window.DPRWorkflowRunner = {
+    runQuickFetchByDays(days, options) {
+      calls.push({ days, options });
+    },
+  };
+  global.window.SubscriptionsSmartQuery = {
+    getSelectedProfilesForRun() {
+      return [
+        { tag: 'ACTIVE', temporary: false, paused: false },
+        { tag: 'PAUSED', temporary: false, paused: true },
+        { tag: 'CONF', temporary: true, paused: false },
+      ];
+    },
+  };
+  __setQuickRunMsgEl(msgEl);
+  __setUnsavedChanges(false);
 
-console.log('subscriptions manager tests passed');
+  assert.equal(await runSelectedQuickFetch(10), true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].options.dispatchInputs.profile_tag, 'ACTIVE,PAUSED,CONF');
+
+  global.window.SubscriptionsSmartQuery.getSelectedProfilesForRun = () => [
+    { tag: 'PAUSED', temporary: false, paused: true },
+    { tag: 'CONF', temporary: true, paused: false },
+  ];
+  assert.equal(await runSelectedQuickFetch(10), true);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1].options.dispatchInputs.profile_tag, 'PAUSED,CONF');
+
+  __setQuickRunMsgEl(null);
+  delete global.window.DPRWorkflowRunner;
+  delete global.window.SubscriptionsSmartQuery;
+  delete global.window.confirm;
+}
+
+(async () => {
+  testNormalizeSubscriptionsAddsBiorxivBackend();
+  testNormalizeSubscriptionsPreservesCustomBiorxivBackendFields();
+  testNormalizeSubscriptionsConvertsChineseTagToEnglishFallback();
+  await testRunProfileQuickFetchPassesProfileTagToWorkflow();
+  testConferenceCurrentYearDisabledForPendingSources();
+  testConferenceDefaultYearOnlySelects2025();
+  testQuickRunUnsavedMessageClearsAfterSave();
+  testConferenceRunDisabledWhenUnsaved();
+  await testQuickFetchIncludesAnySelectedProfile();
+
+  console.log('subscriptions manager tests passed');
+})().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
