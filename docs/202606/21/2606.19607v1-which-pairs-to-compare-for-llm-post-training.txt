@@ -1,0 +1,5167 @@
+Title: Which Pairs to Compare for LLM Post-Training?
+
+URL Source: https://arxiv.org/pdf/2606.19607v1
+
+Published Time: Fri, 19 Jun 2026 00:14:57 GMT
+
+Number of Pages: 51
+
+Markdown Content:
+# Which Pairs to Compare for LLM Post-Training? 
+
+Jiangze Han 
+
+Columbia University 
+
+jh5196@columbia.edu 
+
+Vineet Goyal 
+
+Columbia University 
+
+vgoyal@ieor.columbia.edu 
+
+Will Ma 
+
+Columbia University 
+
+wm2428@gsb.columbia.edu 
+
+## Abstract 
+
+Preference-based post-training has become a central paradigm for aligning lan-guage models. A common data-collection strategy is to generate a small set of completions for each prompt and label the resulting comparison pairs. However, human preference labels are often much more expensive than generating additional completions, suggesting a different use of the same labeling budget: generate a larger pool of completions, but label only the most informative comparison pairs. This paper studies which pairs should be compared in preference-based post-training. We formulate comparison curation as a sampling-design problem and evaluate designs by the quality of the final policy under the preference-based post-training objective. We instantiate this framework for Direct Preference Op-timization (DPO), analyzing how the choice of labeled pairs propagates through DPO training to downstream policy performance. Our main results provide match-ing upper and lower bounds on the post-training optimality gap of the DPO-trained policy. The bounds show that comparison selection affects downstream perfor-mance through a single design-dependent information matrix, which links label allocation to parameter estimation error and policy suboptimality. This yields an explicit optimization criterion for budgeted comparison curation and motivates practical sampling designs for selecting informative pairs from large generated completion pools. Experiments on synthetic settings and language-model post-training benchmarks show that the proposed designs consistently improve sample efficiency over common comparison-selection heuristics. 
+
+## 1 Introduction 
+
+Preference-based post-training has become a central paradigm for aligning large language models with human intent. Early Reinforcement Learning for Human Feedback (RLHF) pipelines follow a two-stage procedure: starting from a reference policy π0, typically a supervised fine-tuned model, they collect human preference labels over pairs of model-generated completions, fit a reward model from these comparisons, and then optimize the policy against this learned reward under a KL regularization constraint, often using policy-gradient methods such as PPO [Christiano et al., 2017, Ouyang et al., 2022]. This framework has been highly influential, but it also introduces a complex intermediate reward-modeling stage and a computationally expensive reinforcement-learning step. More recent methods, most notably Direct Preference Optimization (DPO), bypass explicit reward modeling and instead train the policy directly from pairwise preference data through a logistic objective, while retaining an implicit-reward interpretation under the same KL-regularized RLHF framework [Rafailov et al., 2023]. Subsequent variants of preference optimization further simplify or modify this post-
+
+> Preprint.
+> arXiv:2606.19607v1 [cs.AI] 17 Jun 2026
+
+training pipeline, but they continue to rely on pairwise preference comparisons as the fundamental supervision signal. Across these post-training methods, the collection of human preference labels remains a key bottle-neck. A common data-collection strategy is mechanical: for each prompt, generate a small number of completions from the reference policy and label either one pair or all within-prompt pairs. This strategy treats the generated comparison set as fixed, even though generation is relatively cheap while human labeling is expensive. In practice, preference datasets are also often assembled in batches before annotation, since coordinating human labeling is costly and logistically easier when comparisons are selected in advance. This motivates an offline curation question: rather than labeling all available comparisons or selecting them uniformly, can we generate a larger candidate pool first and then choose which pairs are most worth sending to annotators? This paper studies this comparison-selection problem: which pairs should be compared for preference-based post-training? For each prompt, we first generate a larger set of completions from the initial reference policy, and then choose an informative portfolio of within-prompt comparison pairs, optimized jointly across all prompts and generated completions. The objective is to allocate the labeling budget to comparisons that are most useful for improving the final post-trained policy under the KL-regularized RLHF objective. Formally, we model comparison curation as a sampling-design problem. After completions are gener-ated for each prompt, a design specifies a sampling distribution over all within-prompt completion pairs. Given a labeling budget n, we sample n pairs from this design and query their preference labels. In this paper, we instantiate the post-training step with DPO: the sampled labeled comparisons are used to train a DPO policy ˆπn. The design goal is to produce a policy with high value under the KL-regularized RLHF objective J. Thus, the central question is not merely how to estimate preferences accurately in isolation, but how to allocate comparison labels so as to improve the final policy under the RLHF objective. 
+
+Contributions. We make three main contributions. First, we show that the effect of comparison curation on RLHF is captured by a single design-dependent information matrix, which measures how well the labeled comparisons identify the parameter directions that matter for downstream RLHF performance. Second, we prove matching finite-sample upper bounds and information-theoretic lower bounds for the RLHF optimality gap, showing that a trace-form surrogate characterizes both the achievable performance of RLHF and the unavoidable statistical difficulty of the problem. These bounds yield an explicit optimization criterion for selecting informative comparison pairs, along with a practical sampling policy. Third, we validate the design criterion empirically on synthetic tabular and contextual experiments, as well as IMDb and Anthropic-HH DPO experiments, showing that the proposed designs consistently improve sample efficiency over other approaches in the literature. 
+
+1.1 Literature Review 
+
+To our knowledge, this is the first work to apply offline experimental design to comparison curation for RLHF post-training, with a criterion directly tied to downstream policy performance. 
+
+RLHF uses preference data to guide policy optimization, often by learning a reward model from pairwise comparisons and then optimizing a KL-regularized objective. Early work by Christiano et al. [2017] formalizes learning from human preferences using trajectory comparisons, while large-scale alignment pipelines such as InstructGPT [Ouyang et al., 2022] popularized preference-based RL for language models. DPO [Rafailov et al., 2023] provides a widely used alternative that directly fits a classification-style objective on pairwise preference data, avoiding explicit reward modeling and on-policy RL while retaining an implicit-reward interpretation. Our work takes the KL-regularized objective as given and studies the orthogonal problem of curating comparison data under a fixed labeling budget. A standard statistical model for preference labels is the Bradley–Terry model 
+
+[Bradley and Terry, 1952], where the probability that one item is preferred to another is a logistic function of a latent score difference. This model underlies much of ranking and preference learning, and it naturally appears in RLHF/DPO when pairwise labels are viewed as noisy comparisons induced by an explicit or implicit reward signal. A related literature studies adaptive preference-query selection to reduce RLHF/DPO data-collection costs. For example, Das et al. [2025] propose active preference optimization for sample-efficient RLHF; Ji et al. [2024] develop query-efficient RLHF methods inspired by active learning; 2and Muldrew et al. [2024] study acquisition strategies for active preference learning in LLMs under DPO-style objectives. Xie et al. [2025] propose an exploration-augmented online DPO method for sample-efficient preference-data collection in RLHF. Lin et al. [2025] propose an online DPO method which selects preference queries using an estimated reward model induced by the current LLM. Kveton et al. [2025] study active learning for DPO and also consider an offline subset-selection setting, but their offline setting selects an informative subset from already labeled preference data for computational efficiency. Closest to our work, Feng et al. [2025] propose PILAF, which changes the response-generation distribution in iterative and online RLHF/DPO so that the preference-loss gradient is aligned with the oracle RLHF objective gradient. In contrast, our focus is offline first-round comparison curation: when completions are generated from the reference/SFT model before any pref-erence feedback is observed, we optimize which within-prompt pairs from the fixed generated pool should be labeled, with finite-sample guarantees for the final RLHF policy. This offline formulation is motivated by practical annotation workflows, where comparison datasets are often constructed in advance and then sent for batch human labeling. Recent work studies how preference-data properties affect post-training behavior. Kim et al. [2025] analyze how the data-generating distribution influences DPO optimization and gradient dynamics, including likelihood displacement and iterative DPO. Pan et al. [2025] emphasize the importance of the quality and coverage of preferred responses, while Chowdhury et al. [2024] study DPO under random label flips and propose robust/debiased objectives with finite-sample guarantees. Our work is complementary: rather than focusing on response quality, training dynamics, or label noise, we study pairwise comparison curation and show how budget allocation across candidate pairs controls downstream performance through an information-design criterion. Methodologically, our approach builds on offline optimal experimental design , which studies how to allocate a limited measurement budget to optimize a statistical information criterion. In the paired-comparison setting, this amounts to deciding which pairs should be compared, and with what frequencies. Classical work has studied locally optimal designs for the Bradley–Terry model, showing that the optimal comparison structure can depend strongly on the unknown utility parameters [Graßhoff and Schwabe, 2008]. Complementary minimax analyses relate the difficulty of estimating item utilities to the topology of the comparison graph through its Laplacian spectrum [Shah et al., 2016]. Other lines of work develop adaptive or Bayesian designs for tournaments and paired comparisons [Glickman and Jensen, 2005], as well as fixed-budget allocation rules for expert comparisons in machine learning [Guo et al., 2018]. More recently, optimal design ideas have been used for preference-data collection in learning systems, but the design objectives are primarily tied to learning preferences or reward models. For example, Mukherjee et al. [2024] use optimal design to learn item rankings, with an objective based on ranking accuracy. Scheid et al. [2024] study optimal design for learning a contextual linear reward model, with an objective formulated in terms of bandit regret. Our setting shares the view of pair selection as a budget-allocation problem, but differs in the downstream objective: we connect comparison allocation directly to the suboptimality of the final post-trained policy under a KL-regularized RLHF objective, rather than only to parameter-estimation accuracy or reward-model learning. 
+
+## 2 Problem definition 
+
+Reinforcement Learning for Human Feedback (RLHF) Let x denote a prompt, and let A(x)
+
+denote the set of candidate completions available for prompt x. We write y ∈ A (x) for a completion. A language model induces a conditional distribution over completions given each prompt. Following the RLHF literature, we refer to this conditional distribution as a policy and denote it by π(· | x).Thus, π(y | x) is the probability that the model generates completion y given prompt x.RLHF aims to align a reference policy π0(· | x), often obtained through supervised fine-tuning (SFT), with human preferences. The standard RLHF formulation assumes that each prompt–completion pair (x, y ) has an underlying human-preference reward r⋆(x, y ), which is fixed but unknown to the learner, with larger values corresponding to completions that are more preferred by humans. The goal is then to learn a policy that assigns higher probability to high-reward completions while remaining close to the reference policy. This trade-off is captured by the KL-regularized RLHF objective 
+
+J(π) .
+
+= Ex
+
+Ey∼π(·| x)[r⋆(x, y )] − β KL  π(· | x) ∥ π0(· | x) . (1) 3The first term measures the expected human-preference reward of the post-trained policy, while the KL term measures its deviation from the reference policy. The parameter β > 0 controls the strength of this regularization. Let π⋆ ∈ arg max π J(π) denote the RLHF-optimal policy. For each prompt, the maximizer balances reward improvement against deviation from the reference policy. This optimizer is jointly determined by the reference policy π0 and the reward function r⋆. In particular, it admits the closed form [Rafailov et al., 2023] 
+
+π⋆(y | x) = π0(y | x) exp( r⋆(x, y )/β )
+
+Z(x) , Z(x) = X
+
+> y′∈A (x)
+
+π0(y′ | x) exp( r⋆(x, y ′)/β ). (2) Thus, high-reward completions receive larger probability, but only relative to their probability under the reference policy. The normalizing constant Z(x) ensures that π⋆(· | x) is a valid distribution and depends only on the prompt. In practice, r⋆ is unknown, and information about r⋆ is collected through pairwise preference labels. 
+
+Preference data generation. The standard RLHF data-collection pipeline proceeds as follows. Given a prompt dataset {xi}mi=1 , one first generates a finite candidate pool for each prompt: 
+
+Yxi = {yi, 1, . . . , y i,d }, yi,k 
+
+> i.i.d.
+
+∼ π0(· | xi), k = 1 , . . . , d. 
+
+Human experts then provide within-prompt pairwise preferences between two candidates, yielding labeled comparisons of the form (xi, y + 
+
+> i
+
+, y − 
+
+> i
+
+, a i), and ai ∈ { 0, 1}, where ai = 1 indicates that y+ 
+
+> i
+
+is preferred to y− 
+
+> i
+
+, and ai = 0 indicates otherwise. In RLHF, the pairwise human preferences data generation is commonly modeled by a Bradley–Terry model: for a comparison pair e = ( x, y +, y −), the preference label satisfies 
+
+a | e ∼ Bernoulli  σ(r⋆(x, y +) − r⋆(x, y −))  ,
+
+where σ(u) = (1 + e−u)−1 is the logistic function. 
+
+Direct Preference Optimization. In the classical RLHF pipeline [Christiano et al., 2017, Stiennon et al., 2020, Ouyang et al., 2022], the labeled comparisons are first used to fit an explicit reward model, typically by maximizing the Bradley–Terry likelihood induced by the observed preferences. The learned reward model is then used as a surrogate for the unknown human reward r⋆ in the KL-regularized RLHF objective (1), which is optimized to obtain the final policy. While conceptually natural, this two-stage procedure separates reward estimation from policy optimization and requires an additional reinforcement-learning step, such as PPO, to obtain the final policy [Christiano et al., 2017, Stiennon et al., 2020, Ouyang et al., 2022]. DPO was introduced to simplify this pipeline by directly training the policy from pairwise preference data, using the closed-form structure (2) of the KL-regularized RLHF optimizer [Rafailov et al., 2023]. The closed-form optimizer in (2) motivates the central idea of DPO: instead of explicitly learning a reward model and then optimizing a policy against it, one can express the reward differences 
+
+r⋆(x, y +) − r⋆(x, y −) needed for preference learning directly through the policy’s log-ratio relative to the reference model (see (3)). Indeed, if a policy π is optimal for the KL-regularized RLHF objective under some reward function r, then rearranging (2) gives 
+
+r(x, y ) = β log π(y | x)
+
+π0(y | x) + β log Z(x),
+
+where Z(x) depends only on the prompt. Therefore, although the absolute reward is identifiable only up to a prompt-dependent additive term, reward differences between completions for the same prompt are identifiable. Indeed, the prompt-dependent term cancels when we compare two completions y
+
+and y′ under the same prompt x, so these differences can be expressed through the corresponding policy ratios: 
+
+r(x, y +) − r(x, y −) = β log π(y+ | x)π0(y− | x)
+
+π(y− | x)π0(y+ | x) . (3) DPO uses this observation to avoid fitting a separate reward model. For a parameterized policy πθ ,DPO interprets its log-ratio against the reference policy as an implicit reward, 
+
+rθ (x, y ) .
+
+= β log πθ (y | x)
+
+π0(y | x) .
+
+4For a comparison pair e = ( x, y +, y −), the corresponding implicit reward difference is 
+
+uθ (e) .
+
+= rθ (x, y +) − rθ (x, y −) = β log πθ (y+ | x)π0(y− | x)
+
+πθ (y− | x)π0(y+ | x) . (4) Under the Bradley–Terry model, a larger value of uθ (e) means that the policy-implied reward ranks 
+
+y+ above y− more strongly. Thus, DPO estimates θ by maximum likelihood: it chooses θ to maximize the likelihood of the observed preference labels under the Bradley–Terry logistic model parameterized by uθ (e).Given a labeled comparison dataset Dn = {(ei, a i)}ni=1 , where ai = 1 indicates that the first completion y+ 
+
+> i
+
+in ei = ( xi, y + 
+
+> i
+
+, y − 
+
+> i
+
+) is preferred and ai = 0 otherwise, define 
+
+ℓ(ai, u θ (ei)) .
+
+= −ai log σ(uθ (ei)) − (1 − ai) log(1 − σ(uθ (ei))) .
+
+The empirical DPO risk is 
+
+Ln(θ) .
+
+= 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+ℓ(ai, u θ (ei)) . (5) For a policy class {πθ : θ ∈ Θ}, the DPO estimator ˆπn is 
+
+ˆθn ∈ arg min  
+
+> θ∈Θ
+
+Ln(θ), ˆπn
+
+.
+
+= πˆθn .
+
+Experiment design problem. We study comparison-data curation for preference-based post-training. Given a limited labeling budget, the learner must decide which comparison pairs e = ( x, y +, y −) to label so as to most effectively improve the downstream RLHF performance of the final post-trained policy. We develop our theoretical analysis for the DPO policy. A common way to construct a human preference dataset is to generate a small number d of completions for each prompt and then label either a single pair (e.g., d = 2 ) or all  d
+
+> 2
+
+ within-prompt pairs. However, in practice, generating additional completions is relatively cheap, whereas eliciting human preference labels is costly. This motivates us to consider an alternative pipeline: generate a larger candidate pool for each prompt, and then select a budgeted subset of informative comparison pairs to label. Formally, for each prompt x, the candidate completions in Yx induce a complete comparison graph: each completion y is a vertex, and each unordered edge {y+, y −} represents a possible pairwise comparison. After the candidate pools {Y x} are generated, define the admissible unordered edge set 
+
+Ex
+
+.
+
+= {y+, y −} ∈ Y x × Y x : y+̸ = y− , E .
+
+= [
+
+> x
+
+{x} × E x.
+
+A sampling design is a distribution D ∈ ∆( E) over admissible within-prompt edges. For mathe-matical convenience, we analyze randomized designs: given a budget n, the pairwise comparisons 
+
+e1, . . . , e n are drawn i.i.d. from D, and each selected edge is labeled according to the Bradley–Terry model above. This formulation casts comparison curation as an optimization problem over proba-bility distributions, rather than as direct combinatorial subset selection. After optimizing the design distribution, we construct the DPO training dataset by sampling n comparison pairs from it. For a given sampling design D, let ˆπn(D) denote the DPO policy obtained by first sampling n
+
+comparison edges ei from D, querying their preference labels ai, and then minimizing the empirical DPO risk (5) on the resulting labeled dataset Dn = {(ei, a i)}ni=1 . The design problem is 
+
+max  
+
+> D∈∆( E)
+
+E[J(ˆ πn(D))] ,
+
+where the expectation is over the sampled comparison edges and labels. The rest of the paper develops upper and lower bounds for this objective and derives computable surrogates for selecting informative comparison portfolios. 
+
+Parametric policy class. For the theoretical analysis, we work with a softmax policy class. Each prompt–completion pair (x, y ) is represented by an embedding ϕ(x, y ) ∈ Rp, and any policy πθ with 
+
+θ ∈ Θ has the form 
+
+πθ (y | x) = exp( fθ (ϕ(x, y ))) 
+
+P 
+
+> y′∈A (x)
+
+exp( fθ (ϕ(x, y ′))) , y ∈ A (x), (6) 5where fθ : Rp → R is smooth in θ. This formulation includes linear contextual policies and tabular softmax policies as special cases. In the linear contextual case, fθ (ϕ) = ⟨θ, ϕ ⟩, with θ ∈ Rp. In the tabular case, ϕ(x, y ) = 1(x,y ) ∈ Rp is a one-hot vector over all prompt–completion pairs, and 
+
+fθ (ϕ(x, y )) = θ(x,y ), where θ ∈ Rp. For detailed explanations, see Remark 1. 
+
+Notation. For a symmetric positive semidefinite matrix A, A† denotes the Moore–Penrose pseudoin-verse, obtained by inverting the positive eigenvalues of A and leaving the zero eigenvalues unchanged. We write A†/2 for the symmetric square root of A†. When A is positive definite on a subspace H, A†
+
+acts as the usual inverse on H.
+
+2.1 Regularity assumptions 
+
+We collect the main assumptions used in the analysis. Detailed interpretations, examples, and primitive sufficient conditions are presented in Appendix A.2. 
+
+Identifiability and realizability. Recall that each comparison edge e = ( x, y +, y −) enters the DPO loss through the scalar logit difference uθ (e). Define the pairwise sensitivity vector 
+
+g(e; θ) .
+
+= ∇θ uθ (e).
+
+Because softmax probabilities depend only on within-prompt logit differences, directions that shift all logits for a prompt by the same amount are unidentifiable. We restrict attention to the identifiable tangent space 
+
+H .
+
+= span g(e; θ⋆) : e = ( x, y +, y −) ∈ E ⊆ Rp.
+
+Assumption 1 (Identifiability and realizability) . The parameter set Θ is convex, compact, and satisfies 
+
+Θ ⊆ θ⋆ + H. 
+
+This assumption generalizes the standard normalization used when estimating a Bradley–Terry model in a tabular setting. In the tabular case, the assumption amounts to requiring that, within each prompt, the rewards of all completions sum to zero; see Remark 3. This normalization is commonly used to make the tabular Bradley–Terry rewards uniquely identifiable [Shah et al., 2016]. 
+
+Boundedness and smoothness. We impose standard boundedness and smoothness conditions on the feature map and the score model. Similar regularity conditions are commonly used in the analysis of DPO; see, e.g., Chowdhury et al. [2024]. 
+
+Assumption 2 (Boundedness and smoothness) . There exist constants Rϕ, α 0, α 1, α 2, α 3 < ∞ such that for all θ ∈ Θ and all admissible (x, y ),
+
+∥ϕ(x, y )∥2 ≤ Rϕ, |fθ (ϕ(x, y )) | ≤ α0,
+
+∥∇ θ fθ (ϕ(x, y )) ∥2 ≤ α1, ∥∇ 2 
+
+> θ
+
+fθ (ϕ(x, y )) ∥op ≤ α2, ∥∇ 3 
+
+> θ
+
+fθ (ϕ(x, y )) ∥op ≤ α3.
+
+Moreover, for each fixed (x, y ), the map θ 7 → fθ (ϕ(x, y )) is three times continuously differentiable on Θ.
+
+Feature separation. To obtain meaningful learning guarantees from pairwise comparisons, namely that the DPO solution achieves a vanishing RLHF optimality gap as the comparison budget n grows, we need the candidate completion set A(x) to be sufficiently informative. Intuitively, if for a given prompt x the candidate pool contains only near-duplicate completions (or completions that are indistinguishable under the model features), then comparing them provides little information about how the policy should change, and certain parameter directions cannot be learned no matter how many comparisons we collect. To rule out such degenerate cases, we impose a mild diversity condition on the candidate set: for each prompt, A(x) should contain at least two completions that are sufficiently different in their model-induced features (in every identifiable direction). This is formalized by the following feature-separation assumption. 
+
+Assumption 3 (Feature separation on H). There exists ∆g > 0 such that for every θ ∈ Θ, every prompt x, and every unit vector v ∈ H, there exist two candidates y1, y 2 ∈ A (x) satisfying 
+
+v⊤ ∇θ fθ (ϕ(x, y 1)) − ∇ θ fθ (ϕ(x, y 2))  ≥ ∆g .
+
+6Consider the tabular setting with d items and reward vector r = ( r1, . . . , r d). The feature vectors are one-hot vectors, and the identifiable subspace is 
+
+H =
+
+(
+
+v ∈ Rd :
+
+> d
+
+X
+
+> i=1
+
+vi = 0 
+
+)
+
+.
+
+In this case, Assumption 3 reduces to the requirement that every unit vector v ∈ H separates some pair of items: there exists ∆g > 0 such that for every v ∈ H
+
+max  
+
+> i,j ∈[d]
+
+|vi − vj | ≥ ∆g .
+
+This holds automatically, since a unit zero-mean vector cannot have all coordinates equal. 
+
+Design coverage. Even with a diverse candidate pool, a meaningful guarantee further requires that the sampling design D does not ignore informative pairs. We therefore impose the following coverage assumption, which is standard in the estimation of Bradley–Terry models; see, e.g., Shah et al. [2016], Chowdhury et al. [2024]. 
+
+Definition 1 (Design covariance matrix) . A sampling design D over comparison edges induces the design covariance matrix 
+
+ΣD (θ) .
+
+= Ee∼D
+
+g(e; θ)g(e; θ)⊤ .
+
+Our guarantees require that the sampling design D places sufficient mass on informative comparisons. 
+
+Assumption 4(a) (Design coverage at the truth) . There exists μ⋆ > 0 such that 
+
+v⊤ΣD (θ⋆)v ≥ μ⋆∥v∥22, ∀v ∈ H. 
+
+In some arguments, we require the above assumption to hold uniformly over a neighborhood of θ⋆.Accordingly, we introduce the following localized version. Whenever invoked, the region R ⊆ Θ
+
+will be specified, typically chosen as a neighborhood of θ⋆.
+
+Assumption 4(b) (Uniform design coverage) . For a specified region R ⊆ Θ, there exists μR > 0
+
+such that 
+
+v⊤ΣD (θ)v ≥ μR∥v∥22, ∀v ∈ H, ∀θ ∈ R .
+
+Optimization landscape. Let L(θ) .
+
+= E(e,a )[ℓ(a, u θ (e))] denote the population DPO risk under the sampling design D and label (BT) model. For general nonlinear score models, L(θ) may be nonconvex and may have multiple minimizers, so we assume the target parameter is unambiguous (Remark 6). 
+
+Assumption 5 (Unique population minimizer) . The population DPO risk L(θ) has a unique global minimizer over Θ.Such uniqueness assumption is standard in the analysis of extremum estimators, where consistency typically requires the limiting population risk to have a unique optimizer [Newey and McFadden, 1994, Section 2.1][Van der Vaart, 2000, Theorem 5.7]. 
+
+Prior regularity for the lower bound. Our final assumption introduces a Bayesian formulation for the optimal parameter θ⋆. When prior information about θ⋆ is available, our analysis yields an information-theoretic (Bayesian) lower bound on the RLHF optimality gap under an arbitrary sampling design D. Detailed explanation is provided in Remark 7. 
+
+Assumption 6 (Prior regularity) . Suppose θ⋆ ∼ ρ, where ρ is supported on Θ. The density ρ satisfies: (i) ρ ∈ C1(Θ) and ρ(θ) > 0 for all θ ∈ int(Θ) ; (ii) ρ(θ) = 0 for all θ ∈ ∂Θ; (iii) the prior Fisher information is finite: R 
+
+> Θ
+
+∥∇ log ρ(θ)∥22 ρ(θ) dθ < ∞.
+
+Assumption 6 is a standard regularity condition on the prior density. It ensures that the quantity R 
+
+> Θ
+
+∥∇ log ρ(θ)∥22 ρ(θ) dθ is finite and that the integration-by-parts steps required by the Bayesian information inequality (Van Trees) in our lower-bound argument are valid. 
+
+## 3 Main results 
+
+Following the literature, we refer to the gradient of the log-likelihood as the score function . The second moment of the score function is the Fisher information matrix . In our contextual policy model, the Fisher information are defined as follows. Detailed interpretations are presented in Appendix B. 7Definition 2 (Fisher information matrix for the policy family) . For each parameter θ ∈ Θ, define the score vector 
+
+sθ (x, y ) .
+
+= ∇θ log πθ (y | x).
+
+The Fisher information matrix is 
+
+I(θ) .
+
+= Ex Ey∼πθ (·| x)
+
+sθ (x, y )sθ (x, y )⊤
+
+= Ex Ey∼πθ (·| x)
+
+∇θ log πθ (y | x) ∇θ log πθ (y | x)⊤ . (7) 
+
+Theorem 1 (Informal) . Consider a sampling design D over within-prompt pairs, and n i.i.d. compar-isons drawn from D. Let I(θ) and ΣD (θ) be as defined in Definitions 1 and 2. Under Assumptions 1 to 3, we have the following. 
+
+(i) Upper bound. Let ˆθn ∈ arg min θ∈Θ Ln(θ) with ˆπn = πˆθn . If Assumptions 4(a) and 5 hold in addition, then for any δ ∈ (0 , 1) , there exists n0(δ) such that for all n ≥ n0(δ), with probability at least 1 − δ,
+
+J(π⋆) − J(ˆ πn) ≤ Cub (δ)
+
+n tr 
+
+
+
+I(θ⋆)Σ † 
+
+> D
+
+(θ⋆)
+
+
+
+,
+
+where Cub (δ) depends only on the fixed constants in the assumptions and δ. Moreover, 
+
+n0(δ) = eO Cloc p + CHess dH + ( Cloc + CHess ) log(1 /δ ),
+
+where p is the ambient dimension, dH = dim( H), Cloc is a localization complexity param-eter, and CHess is a local curvature/concentration parameter. 
+
+(ii) Lower bound. Let 
+
+nlb := 
+
+ R  
+
+> Θ
+
+∥∇ log ρ(θ)∥22 ρ(θ) dθ μR
+
+
+
+.
+
+If Assumptions 4(b) and 6 hold in addition with R = supp( ρ), then there exists Clb > 0
+
+(depending only on the fixed constants in the assumptions), such that for any induced policy estimator ˜πn = π˜θn and all n ≥ nlb ,
+
+Eθ⋆∼ρEDn|θ⋆ [J(πθ⋆ ) − J(˜ πn)] ≥ Clb 
+
+n Eθ⋆∼ρ
+
+h
+
+tr 
+
+
+
+I(θ⋆)Σ † 
+
+> D
+
+(θ⋆)
+
+i 
+
+.
+
+We present the proof in Appendix C. 
+
+3.1 Sampling policy design 
+
+From Theorem 1, both the upper and lower bounds on the RLHF optimality gap are governed (up to constants) by the same trace criterion: tr 
+
+
+
+I(θ⋆)Σ † 
+
+> D
+
+(θ⋆)
+
+
+
+. Motivated by this characterization, we define the oracle sampling design as the solution to the following trace minimization problem: 
+
+D⋆(θ⋆) ∈ arg min  
+
+> D∈∆( E)
+
+tr  I(θ⋆) Σ † 
+
+> D
+
+(θ⋆), (8) where E is the admissible within-prompt edge set. The oracle design D⋆(θ⋆), however, is not directly implementable because it depends on the unknown target parameter θ⋆. Before collecting preference labels, the only policy parameter available to the designer is the reference parameter θ0 associated with reference policy π0. Moreover, RLHF starts from π0 and optimizes a KL-regularized objective (1) that keeps the learned policy π⋆ close to this reference model π0. It is therefore natural to use θ0
+
+as a plug-in proxy for θ⋆ when constructing the sampling design. We next show that the resulting plug-in design still enjoys a controlled performance guarantee. 
+
+Theorem 2 (Implementable trace design) . Let θ0 ∈ Θ be a fixed reference parameter, and r0
+
+.
+
+=
+
+∥θ⋆ − θ0∥2. Under the assumptions in Theorem 1, there exists a constant Cplug (r0) ≥ 1, depending only on model primitive constants and r0, such that for every sampling design D ∈ ∆( E),
+
+Cplug (r0)−1 tr 
+
+
+
+I(θ0)Σ † 
+
+> D
+
+(θ0)
+
+
+
+≤ tr 
+
+
+
+I(θ⋆)Σ † 
+
+> D
+
+(θ⋆)
+
+
+
+≤ Cplug (r0) tr 
+
+
+
+I(θ0)Σ † 
+
+> D
+
+(θ0)
+
+
+
+. (9) 8Moreover, for 
+
+Dθ0 ∈ arg min  
+
+> D∈∆( E)
+
+tr 
+
+
+
+I(θ0)Σ † 
+
+> D
+
+(θ0)
+
+
+
+, (10) we have tr 
+
+
+
+I(θ⋆)Σ †
+
+> Dθ0
+
+(θ⋆)
+
+
+
+≤ Cplug (r0)2 inf  
+
+> D∈∆( E)
+
+tr 
+
+
+
+I(θ⋆)Σ † 
+
+> D
+
+(θ⋆)
+
+
+
+. (11) We present a detailed proof in Appendix D. 
+
+3.2 Road map for proving Theorem 1 
+
+Here we present a high level sketch for the proof of Theorem 1. The main idea is to reduce downstream policy suboptimality to a weighted parameter-estimation error, and then control this error from above for DPO and from below for any estimator. 
+
+Step 1: RLHF gap as a weighted parameter error. We first show that the RLHF optimality gap is locally equivalent to a quadratic form in the parameter error. Specifically, under the regularity assumptions, for all θ ∈ Θ,
+
+c− (θ − θ⋆)⊤I(θ⋆)( θ − θ⋆) ≤ J(π⋆) − J(πθ ) ≤ c+ (θ − θ⋆)⊤I(θ⋆)( θ − θ⋆),
+
+where I(θ⋆) is the curvature/Fisher matrix of the policy around the RLHF optimum. Thus, controlling the downstream RLHF gap is equivalent, up to constants, to controlling the estimation error in the 
+
+I(θ⋆)-weighted norm: 
+
+E[J(π⋆) − J(π˜θn )] ≍ E
+
+h
+
+(˜θn − θ⋆)⊤I(θ⋆)( ˜θn − θ⋆)
+
+i
+
+.
+
+We present a detailed proof in Appendix C.1. 
+
+Step 2: Upper bound for DPO. Let ˆθn be the empirical DPO minimizer and ∆ = ˆθn − θ⋆. The main challenge is that, in the nonlinear case, the empirical Hessian varies with θ. We handle this by showing that the average Hessian along the path from θ⋆ to ˆθn, Hn
+
+.
+
+= R 10 ∇2Ln(θ⋆ + t∆) dt, 
+
+is uniformly lower bounded on H by the design covariance: Hn ⪰ c ΣD (θ⋆). Combined with first-order optimality, this controls the DPO estimation error in the ΣD -norm by the score noise at θ⋆.Since the score covariance is of order ΣD (θ⋆)/n , we obtain 
+
+E∆⊤I(θ⋆)∆  ≲ 1
+
+n tr  I(θ⋆)Σ D (θ⋆)†.
+
+Step 1 then gives the stated RLHF-gap upper bound. See Appendix C.2 for the full proof. 
+
+Step 3: Lower bound for any estimator. For the converse, we apply the Van Trees inequality to the pairwise comparison model. Since the Fisher information contributed by n comparisons under design D is controlled by nΣD (θ), any estimator ˜θn must incur Bayes risk at least of order 
+
+1
+
+n Eθ⋆∼ρ
+
+tr  I(θ⋆)Σ D (θ⋆)† .
+
+Combining this with the quadratic lower bound from Step 1 yields 
+
+inf 
+
+> ˜πn
+
+Eθ⋆∼ρEDn|θ⋆ [J(πθ⋆ ) − J(˜ πn)] ≥ Clb 
+
+n Eθ⋆∼ρ
+
+tr  I(θ⋆)Σ D (θ⋆)† .
+
+Thus the same trace functional controls both the achievable DPO guarantee and the information-theoretic limit, identifying it as the natural design criterion for comparison curation. We present a detailed proof in Appendix C.3. 
+
+## 4 Numerical experiments 
+
+Our experiments proceed from controlled model-based settings to realistic language-model post-training benchmarks. The synthetic experiments isolate the theoretical mechanism in realizable tabular and contextual models. The IMDb experiment introduces real LLM fine-tuning while retaining a scalar proxy reward, allowing us to evaluate the reward–KL trade-off under model mismatch. The 9(a) Tabular setting (b) Linear contextual setting 
+
+Figure 1: Synthetic experiments Anthropic-HH experiment further evaluates preference quality without relying on an explicit reward function, using GPT-4.1 as an automatic judge. 
+
+Synthetic setting. The synthetic experiments test the method in settings that exactly follow the theoretical model. Here the ground-truth reward is known to the experimenter, allowing us to directly evaluate whether the proposed design learns the unknown reward and the corresponding RLHF-optimal policy more efficiently. In the tabular setting, each item corresponds to a candidate completion, so a policy is simply a probability distribution over the d items. We generate a non-uniform reference policy π0 ∈ ∆d by applying a softmax transformation to Gaussian logits, mimicking the highly non-uniform output distribution of a pre-trained or supervised-fine-tuned language model. The true reward vector r⋆ ∈ Rd
+
+is generated independently with small variance, creating a low-signal regime in which item rewards are relatively close. We compare four pairwise-comparison designs under a fixed sample budget n:the oracle design D⋆(θ⋆), the plug-in design D⋆(θ0), uniform sampling over all item pairs, and a heuristic that samples pairs by drawing two items without replacement according to π0. For each design, we collect n noisy Bradley–Terry comparisons between item pairs and solve the empirical DPO objective in the tabular policy class. This produces an estimated tabular policy ˆπn ∈ ∆d, which we evaluate by the RLHF optimality gap J(π⋆) − J(ˆ πn). The results in Figure 1a show that D⋆(θ⋆)
+
+and D⋆(θ0) achieve nearly identical and consistently small gaps, substantially outperforming both baselines. Uniform sampling improves as the budget grows but remains less sample-efficient, while the π0-based heuristic performs poorly and shows little improvement. These results suggest that, when the reference policy is highly non-uniform and reward differences are weak, concentrating comparisons on high-π0 items is ineffective; instead, information-guided comparison design yields much better downstream policy quality. Next, we study offline comparison curation in a linear contextual setting . Each prompt x ∈ Rp has a finite candidate set A(x) = {y1, . . . , y d}, and each candidate has an action embedding a ∈ Rp. We use the softmax policy class 
+
+πθ (y | x) ∝ exp  θ⊤ϕ(x, y ), ϕ(x, y ) = [ x; a; x ⊙ a] ∈ R3p,
+
+where ⊙ denotes elementwise multiplication. We generate a concentrated reference policy π0 = πθ0
+
+using a large ∥θ0∥, and define a latent linear reward r⋆(x, y ) = η⊤ϕ(x, y ) + C(x), where the prompt-only term C(x) cancels in within-prompt comparisons. Preference labels are generated from the Bradley–Terry model induced by θ⋆. For each labeling budget n, we sample n comparison pairs using one of four rules: the oracle design D⋆(θ⋆), the plug-in design D⋆(θ0), uniform sampling over candidate pairs, and a π0-weighted heuristic that samples candidates according to the reference policy. We fit the DPO estimator and evaluate the held-out RLHF optimality gap J(π⋆) − J(ˆ πn), reporting mean and variability over Monte Carlo repetitions. Figure 1b shows that the plug-in design D⋆(θ0)
+
+closely tracks the oracle design and achieves small RLHF gaps across budgets. Uniform sampling is less sample-efficient at small budgets, while the π0-weighted heuristic performs poorly and has larger variance. This indicates that high-probability candidates under the reference policy are not necessarily the most informative comparisons; explicitly optimizing the comparison design better targets the directions that matter for downstream RLHF performance. 10 (a) Response selection task (b) Prompt selection task 
+
+Figure 2: IMDb experiments with GPT2-Large 
+
+IMDb experiment. The IMDb experiment provides a more realistic language-model post-training testbed while retaining a well-defined proxy reward given by a sentiment classifier. This setting allows us to examine whether the design remains effective when the theoretical model is only an approximation of the actual LLM training process, and whether it improves the reward–KL trade-off relative to baseline comparison-selection rules. In IMDb experiment, we follow the DPO pipeline in Rafailov et al. [2023]. We fine-tune GPT-2-large on the IMDb training split using SFT, and then use the resulting SFT model as the reference policy for DPO. We compare preference datasets constructed by our D∗-based method with benchmark selection rules in two curation tasks. These two tasks capture two natural decisions in preference-data collection: which prompts should be annotated, and, given a prompt, which candidate responses should be compared. In the prompt selection task, we generate two responses for each prompt in a candidate pool of 1,000 prompts and select n = 175 prompt-level comparisons for DPO training. The small budget n = 175 places the experiment in a low-annotation regime, where the value of selecting informative comparisons is most pronounced. The benchmark selects the first 175 
+
+comparisons, whereas D∗ computes design weights over all candidate comparisons and samples without replacement. In the response selection task, we consider a candidate pool of 175 prompts. We generate d = 8 candidate responses for each prompt and select one within-prompt response pair. The benchmark compares two arbitrary responses, whereas D∗ samples a pair according to the normalized within-prompt design weights. We evaluate the trained policies using the reward–KL frontier as in Rafailov et al. [2023]. Each point corresponds to the final checkpoint of a DPO run under a specific value of β, and error bars report Monte Carlo standard errors. As shown in Figures 2a and 2b, D∗-curated data consistently improves the reward–KL tradeoff relative to the benchmark in both curation tasks. 
+
+Anthropic HH experiment. The Anthropic-HH experiment further removes the availability of a clear scalar reward function. Instead of evaluating against an explicit reward model, we use GPT-4.1 as an automatic judge to compare model outputs and report pairwise win rates. This setting tests whether, under the same labeling budget, the proposed comparison design leads to responses that are more often preferred in a direct preference evaluation. In this Anthropic HH experiment, we follow the DPO pipeline of Rafailov et al. [2023]. We use the default Anthropic-HH train/test splits and first train a Pythia-2.8B SFT model on the chosen responses in the training split. Starting from this SFT model, we train DPO models using preference datasets constructed either by our D∗-based method or by a benchmark rule. The candidate pool consists of 160 ,800 preference pairs from the HH training split. For each budget n, the benchmark uses the n arbitrary preference pairs, while our method samples n pairs without replacement from the optimized D∗ design distribution. Details on feature construction, the trace-design optimization, and hyperparameters are provided in Appendix F.2. We evaluate the trained policies on prompts from the Anthropic-HH test split. Following the evaluation setup of Rafailov et al. [2023], we generate responses at sampling temperatures 0.25 , 0.7, and 1.0, and use GPT-4.1 to compare each generated response against the corresponding HH chosen response. Figure 3 reports the win rate for two representative budgets, n = 80 ,400 and n = 96 ,480 , corresponding to 50% and 60% of the candidate 11 (a) Sample budget N = 80 , 400 (b) Sample budget N = 96 , 480 
+
+Figure 3: Anthropic HH experiment pool. Across these budgets and all sampling temperatures, the D∗-curated datasets outperform the benchmark. Similar improvements are observed across the other budgets we tested. 
+
+## 5 Discussion and Limitations 
+
+In this paper, we study offline comparison curation for DPO under a fixed labeling budget. Our analysis characterizes the effect of curation on downstream RLHF performance through a single design-dependent information object, yielding an explicit optimization criterion for selecting infor-mative comparisons. We prove finite-sample upper bounds and complementary information-theoretic lower bounds, and our synthetic and LLM experiments show that the resulting plug-in designs improve sample efficiency over common heuristics. Our work has several limitations. The theory relies on realizability, regularity, and coverage assumptions that may only hold approximately for large neural policies. We also focus on offline randomized designs, where candidate completions are generated before labeling and the design does not adapt to observed feedback. 12 References 
+
+Ralph Allan Bradley and Milton E. Terry. Rank analysis of incomplete block designs: I. the method of paired comparisons. Biometrika , 39(3–4):324–345, 1952. Sayak Ray Chowdhury, Anush Kini, and Nagarajan Natarajan. Provably robust dpo: Aligning language models with noisy feedback. arXiv preprint arXiv:2403.00409 , 2024. Paul F. Christiano, Jan Leike, Tom B. Brown, Miljan Martic, Shane Legg, and Dario Amodei. Deep reinforcement learning from human preferences. In Advances in Neural Information Processing Systems , 2017. Nirjhar Das, Souradip Chakraborty, Aldo Pacchiano, and Sayak Ray Chowdhury. Active preference optimization for sample efficient rlhf. In Joint European Conference on Machine Learning and Knowledge Discovery in Databases , pages 96–112. Springer, 2025. Yunzhen Feng, Ariel Kwiatkowski, Kunhao Zheng, Julia Kempe, and Yaqi Duan. Pilaf: Optimal human preference sampling for reward modeling. arXiv preprint arXiv:2502.04270 , 2025. Mark E Glickman and Shane T Jensen. Adaptive paired comparison design. Journal of statistical planning and inference , 127(1-2):279–293, 2005. Ulrike Graßhoff and Rainer Schwabe. Optimal design for the Bradley–Terry paired comparison model. 
+
+Statistical Methods & Applications , 17(3):275–289, 2008. doi: 10.1007/s10260-007-0058-4. Yuan Guo, Peng Tian, Jayashree Kalpathy-Cramer, Susan Ostmo, J. Peter Campbell, Michael F. Chiang, Deniz Erdogmus, Jennifer Dy, and Stratis Ioannidis. Experimental design under the Bradley-Terry model. In Proceedings of the Twenty-Seventh International Joint Conference on Artificial Intelligence (IJCAI-18) , pages 2198–2204, 7 2018. doi: 10.24963/ijcai.2018/304. Kaixuan Ji, Jiafan He, and Quanquan Gu. Reinforcement learning from human feedback with active queries. arXiv preprint arXiv:2402.09401 , 2024. Kyung Rok Kim, Yumo Bai, Chonghuan Wang, and Guanting Chen. Understanding the impact of sampling quality in direct preference optimization. arXiv preprint arXiv:2506.04272 , 2025. Branislav Kveton, Xintong Li, Julian McAuley, Ryan Rossi, Jingbo Shang, Junda Wu, and Tong Yu. Active learning for direct preference optimization. arXiv preprint arXiv:2503.01076 , 2025. Xiaoqiang Lin, Arun Verma, Zhongxiang Dai, Daniela Rus, See-Kiong Ng, and Bryan Kian Hsiang Low. Activedpo: Active direct preference optimization for sample-efficient alignment. arXiv preprint arXiv:2505.19241 , 2025. Subhojyoti Mukherjee, Anusha Lalitha, Kousha Kalantari, Aniket Deshmukh, Ge Liu, Yifei Ma, and Branislav Kveton. Optimal design for human preference elicitation. Advances in Neural Information Processing Systems , 37:90132–90159, 2024. William Muldrew, Peter Hayes, Mingtian Zhang, and David Barber. Active preference learning for large language models. arXiv preprint arXiv:2402.08114 , 2024. Whitney K Newey and Daniel McFadden. Large sample estimation and hypothesis testing. Handbook of econometrics , 4:2111–2245, 1994. Long Ouyang, Jeffrey Wu, Xu Jiang, Diogo Almeida, Carroll Wainwright, Pamela Mishkin, Chong Zhang, Sandhini Agarwal, Katarina Slama, Alex Ray, et al. Training language models to follow instructions with human feedback. Advances in neural information processing systems , 35:27730– 27744, 2022. Yu Pan, Zhongze Cai, Guanting Chen, Huaiyang Zhong, and Chonghuan Wang. What matters in data for dpo? arXiv preprint arXiv:2508.18312 , 2025. Rafael Rafailov, Archit Sharma, Eric Mitchell, Christopher D Manning, Stefano Ermon, and Chelsea Finn. Direct preference optimization: Your language model is secretly a reward model. Advances in neural information processing systems , 36:53728–53741, 2023. 13 Antoine Scheid, Etienne Boursier, Alain Durmus, Michael I Jordan, Pierre M ´enard, Eric Moulines, and Michal Valko. Optimal design for reward modeling in rlhf. arXiv preprint arXiv:2410.17055 ,2024. Nihar B Shah, Sivaraman Balakrishnan, Joseph Bradley, Abhay Parekh, Kannan Ramchandran, and Martin J Wainwright. Estimation from pairwise comparisons: Sharp minimax bounds with topology dependence. Journal of Machine Learning Research , 17(58):1–47, 2016. Nisan Stiennon, Long Ouyang, Jeff Wu, Daniel M. Ziegler, Ryan Lowe, Chelsea Voss, Alec Radford, Dario Amodei, and Paul Christiano. Learning to summarize from human feedback. Advances in Neural Information Processing Systems , 2020. Joel A. Tropp. User-friendly tail bounds for sums of random matrices. Foundations of Computational Mathematics , 12(4):389–434, 2012. Aad W Van der Vaart. Asymptotic statistics , volume 3. Cambridge university press, 2000. Tengyang Xie, Dylan Foster, Akshay Krishnamurthy, Corby Rosset, Ahmed H Awadallah, and Alexander Rakhlin. Exploratory preference optimization: Harnessing implicit q*-approximation for sample-efficient rlhf. In International Conference on Learning Representations , volume 2025, pages 43632–43669, 2025. 14 A Technical appendices and supplementary material 
+
+A.1 Motivation and interpretation for Section 2 Remark 1 (Special cases: linear contextual and tabular policies) . The parametric policy class given in equation (6) covers two important special cases: (i) Linear contextual policy. Suppose fθ is a linear function of the embedding vector ϕ:
+
+fθ (ϕ(x, y )) = ⟨θ, ϕ (x, y )⟩, θ ∈ Rp.
+
+Then equation (6) becomes the standard softmax policy with linear logits. (ii) Tabular policy over prompt–completion pairs. Consider a finite collection of prompt– completion pairs 
+
+U .
+
+= {(x, y ) : x ∈ X , y ∈ A (x)}, |U| = d, 
+
+and let the embedding be one-hot over pairs: 
+
+ϕ(x, y ) = 1(x,y ) ∈ Rd.
+
+If fθ is linear in ϕ, then 
+
+fθ (ϕ(x, y )) = ⟨θ, e (x,y )⟩ = θ(x,y ), θ ∈ Rd,
+
+so each prompt–completion pair (x, y ) has its own tabular logit parameter. Substituting into equation (6) yields the tabular softmax policy: for each prompt x,
+
+πθ (y | x) = exp( θ(x,y ))
+
+P 
+
+> y′∈A (x)
+
+exp( θ(x,y ′)) , y ∈ A (x).
+
+A.2 Motivation and interpretation of regularity assumptions 
+
+In this subsection, we list all necessary assumptions in our analysis. 
+
+Identifiability and realizability. Our first assumption concerns identifiability of the optimal policy parameter θ⋆ from pairwise comparison data. In our softmax parameterization (6), the map θ 7 → πθ
+
+is not necessarily injective: different parameter vectors may induce the same policy. For example, adding a prompt-dependent constant to all logits {fθ (ϕ(x, y )) }y∈A (x) leaves πθ (· | x) unchanged, so directions that only shift logits uniformly within each prompt are intrinsically unidentifiable. More generally, each labeled edge e = ( x, y +, y −) enters DPO only through the scalar logit uθ (e),i.e., the implicit-reward difference between y+ and y−. This motivates the pairwise sensitivity vector 
+
+g(e; θ) .
+
+= ∇θ uθ (e),
+
+which captures how a comparison changes under infinitesimal perturbations of θ. If a direction v
+
+satisfies v⊤g(e; θ⋆) = 0 for all queried edges e, then perturbing θ along v does not change any logit difference that appears in the data (to first order). Since the DPO objective depends on θ only through these logit differences, pairwise comparisons cannot identify such directions. To focus on directions that are learnable from comparisons, we restrict our analysis to the identifiable subspace H spanned by {g(e; θ⋆)} (defined formally in Definition 3), where the queried comparisons are informative. 
+
+Remark 2. This pairwise sensitivity vector g(e; θ) has a natural form in the linear contextual setting, where 
+
+fθ (ϕ(x, y )) = ⟨θ, ϕ (x, y )⟩, θ ∈ Rp.
+
+In this case, ∇θ fθ (ϕ(x, y )) = ϕ(x, y ), and the softmax-score identity yields 
+
+∇θ log πθ (y | x) = ϕ(x, y ) − Ey′∼πθ (·| x)[ϕ(x, y ′)] .
+
+Hence, for an edge e = ( x, y +, y −),
+
+g(e; θ) = β
+
+
+
+ϕ(x, y +) − ϕ(x, y −)
+
+
+
+,
+
+15 since the within-prompt centering terms cancel in the difference. Thus in the linear contextual case, 
+
+g(e; θ) is (up to β) the difference of the two completion embeddings being compared. Particularly, in the tabular setting where ϕ(x, y ) is a one-hot vector 1(x,y ) of the pair (x, y ) and 
+
+fθ (ϕ(x, y )) = ⟨θ, 1(x,y )⟩. Therefore, for an edge e = ( x, y +, y −),
+
+g(e; θ) = β (1(x,y +) − 1(x,y −)),
+
+i.e., g(e; θ) is (up to the factor β) the signed incidence vector of the compared within-prompt pair, embedded in the global tabular parameterization. 
+
+Definition 3 (Identifiable tangent space H). We define the identifiable tangent space at θ⋆ by 
+
+H .
+
+= span g(e; θ⋆) : e = ( x, y +, y −) ∈ E ⊆ Rp.
+
+Remark 3 (Tabular special case: sum-to-zero reward subspace) . In the tabular setting, 
+
+fθ (ϕ(x, y )) = θ(x,y ), πθ (y | x) = exp( β θ (x,y ))
+
+P 
+
+> y′∈Y x
+
+exp( β θ (x,y ′)) .
+
+For each fixed context x, adding a constant cx to all {θ(x,y ) : y ∈ Y x} does not change πθ (· | x),hence does not change uθ (e). Thus the identifiable directions are exactly those that are orthogonal to these “all-ones” shifts within each context. In this case the tangent space H in Definition 3 coincides with the within-context sum-to-zero subspace 
+
+H =
+
+n
+
+v : X
+
+> y∈Y x
+
+v(x,y ) = 0 for every x ∈ X 
+
+o
+
+.
+
+Throughout the analysis, we restrict attention to the identifiable subspace H. We also assume optimal realizability: there exists θ⋆ ∈ Θ such that πθ⋆ = π⋆. Under realizability, the implicit reward rθ⋆
+
+induced by the optimal policy π⋆ matches the true reward up to a prompt-only offset. That is, there exists a function c : X → R such that 
+
+rθ⋆ (x, y ) = r⋆(x, y ) + c(x), ∀(x, y ).
+
+Consequently, under realizability, in the BT model, using the implicit reward rθ⋆ to generate pairwise preference labels is equivalent to using the true reward r⋆: for any within-prompt comparison 
+
+e = ( x, y +, y −),
+
+uθ⋆ (e) = rθ⋆ (x, y +) − rθ⋆ (x, y −) = r⋆(x, y +) − r⋆(x, y −),
+
+since the prompt-only offset c(x) cancels in the difference. We summarize our requirements about the parameter set Θ in the following assumption. 
+
+Assumption 1 (Identifiability and realizability) . Suppose Θ is convex, compact, and satisfies 
+
+Θ ⊆ θ⋆ + H. 
+
+Boundedness and smoothness. As for the embedding vector ϕ and feature function fθ , we impose the following boundedness and smoothness assumption. 
+
+Assumption 2 (Boundedness and smoothness) . There exist constants Rϕ, α 0, α 1, α 2, α 3 < ∞ such that for all θ ∈ Θ and all admissible (x, y ),
+
+∥ϕ(x, y )∥2 ≤ Rϕ, |fθ (ϕ(x, y )) | ≤ α0,
+
+∥∇ θ fθ (ϕ(x, y )) ∥2 ≤ α1, ∥∇ 2 
+
+> θ
+
+fθ (ϕ(x, y )) ∥op ≤ α2, ∥∇ 3 
+
+> θ
+
+fθ (ϕ(x, y )) ∥op ≤ α3.
+
+Moreover, for each fixed (x, y ), the map θ 7 → fθ (ϕ(x, y )) is three times continuously differentiable on Θ.16 Feature separation. To obtain meaningful learning guarantees from pairwise comparisons, namely that the DPO solution achieves a vanishing RLHF optimality gap as the comparison budget n grows, we need the candidate completion set A(x) to be sufficiently informative. Intuitively, if for a given prompt x the candidate pool contains only near-duplicate completions (or completions that are indistinguishable under the model features), then comparing them provides little information about how the policy should change, and certain parameter directions cannot be learned no matter how many comparisons we collect. To rule out such degenerate cases, we impose a mild diversity condition on the candidate set: for each prompt, A(x) should contain at least two completions that are sufficiently different in their model-induced features (in every identifiable direction). This is formalized by the following feature-separation assumption. 
+
+Assumption 3 (Feature separation on H). There exists ∆g > 0 such that for every θ ∈ Θ, every prompt x, and every unit vector v ∈ H, there exist two candidates y1, y 2 ∈ A (x) satisfying 
+
+v⊤ ∇θ fθ (ϕ(x, y 1)) − ∇ θ fθ (ϕ(x, y 2))  ≥ ∆g .
+
+Remark 4 (Feature separation in linear contextual and tabular settings) . If fθ (ϕ) = ⟨θ, ϕ ⟩, then 
+
+∇θ fθ (ϕ(x, y )) = ϕ(x, y ) and Assumption 3 reduces to a separation condition on the embeddings: for every prompt x and every unit v ∈ H, there exist y1, y 2 ∈ A (x) such that 
+
+v⊤(ϕ(x, y 1) − ϕ(x, y 2)) ≥ ∆g .
+
+Intuitively, this means the candidate pool A(x) contains at least two completions that are well separated in embedding space (in every identifiable direction), so within-prompt comparisons are informative. In particular, if ϕ(x, y ) = 1(x,y ) and fθ (ϕ(x, y )) = θ(x,y ), then ∇θ fθ (ϕ(x, y )) = 1(x,y ). Hence for any two distinct candidates y1̸ = y2 in the same prompt, 
+
+v⊤ ∇θ fθ (ϕ(x, y 1)) − ∇ θ fθ (ϕ(x, y 2))  = v(x,y 1) − v(x,y 2).
+
+Therefore, Assumption 3 holds (with a constant of order one) as soon as, for each prompt, the candidate set A(x) contains at least two distinct completions and the identifiable space H includes the corresponding pair-difference directions. In this sense, feature separation is automatic in the tabular model: distinct candidates correspond to orthogonal one-hot features, so any nontrivial comparison produces a nonzero feature difference. 
+
+Coverage condition. Even with a diverse candidate pool, a meaningful guarantee further requires that the sampling design D does not ignore informative pairs. Intuitively, if D concentrates on only a small subset of within-prompt pairs (or repeatedly compares near-duplicate completions), then the resulting data provide little information about some identifiable directions, and the optimality gap cannot be driven down no matter how large n is. Once each comparison edge e is mapped to a pairwise sensitivity vector g(e; θ), a sampling design D
+
+over edges naturally induces a second-moment matrix that summarizes how informative the chosen comparisons are about the parameter. In particular, the outer product g(e; θ)g(e; θ)⊤ captures the rank-one curvature/information contribution of a single queried pair, and averaging this contribution over the edge distribution D yields the design covariance matrix. We define, at the any θ ∈ Θ,
+
+ΣD (θ) .
+
+= Ee∼D
+
+g(e; θ) g(e; θ)⊤ ,
+
+which will be the key object connecting pair selection to estimation error and ultimately to our design objective. 
+
+Assumption 4(a) (Design coverage at the truth) . We assume that ΣD (θ⋆) has a spectral gap on the identifiable subspace H, i.e., there exists μ⋆ > 0 such that 
+
+v⊤ΣD (θ⋆)v ≥ μ⋆ ∥v∥22, ∀ v ∈ H. 
+
+In some arguments, we require the above assumption to hold uniformly over a neighborhood of θ⋆.Accordingly, we introduce the following localized version. Whenever invoked, the region R ⊆ Θ
+
+will be specified (and may depend on the application), typically chosen as a neighborhood of θ⋆.
+
+Assumption 4(b) (Uniform design coverage) . Fix a region R ⊆ Θ. We assume that ΣD (θ) has a uniform spectral gap on H over R, i.e., there exists μR > 0 such that 
+
+v⊤ΣD (θ)v ≥ μR ∥v∥22, ∀ v ∈ H, ∀ θ ∈ R .
+
+17 Remark 5. For any direction v ∈ Rp,
+
+v⊤ΣD (θ) v = Ee∼D
+
+(v⊤g(e; θ)) 2,
+
+so ΣD (θ) summarizes the second-moment geometry of the pairwise sensitivity vectors under the sampling design D.In the linear contextual setting, g(e; θ) = β(ϕ(x, y +) − ϕ(x, y −)) does not depend on θ, so ΣD (θ) is independent of θ and the coverage condition reduces to a standard full-rank/nondegeneracy condition on the second moment of feature differences under the design D. Concretely, for v ∈ H,
+
+v⊤ΣD v = β2 Ee∼D
+
+h
+
+(v⊤(ϕ(x, y +) − ϕ(x, y −))) 2i
+
+.
+
+Thus coverage holds whenever, under the sampling design D, the pairwise feature differences 
+
+ϕ(x, y +)−ϕ(x, y −) span the identifiable subspace H and are not concentrated in a lower-dimensional subspace. For example, it suffices that for every unit direction v ∈ H there is a non-negligible probability of drawing an edge e such that |v⊤(ϕ(x, y +) − ϕ(x, y −)) | is bounded away from zero; in this case the second moment above is uniformly positive and ΣD is positive definite on H.In the tabular setting over prompt–completion pairs, g(e; θ) = β(1(x,y +) − 1(x,y −)) and ΣD (θ) = 
+
+β2LD is (up to β2) the weighted graph Laplacian induced by the edge distribution D. Thus As-sumption 4(a) requires that the Laplacian has a positive spectral gap on the identifiable subspace, i.e., its second-smallest eigenvalue satisfies λ2(LD ) > 0, equivalently, the comparison graph is connected (within each connected component determined by the prompt structure). This is a common assumption needed for estimating a BT model in the tabular setting [Shah et al., 2016]. Assumptions 4(a) and 4(b) are two versions of the same requirement, but at different levels of uniformity. Assumption 4(a) only requires a spectral gap at the truth θ⋆; this is sufficient for our upper bound, since the trace criterion and estimation error control are evaluated at θ⋆. Assumption 4(b) strengthens this to a uniform spectral gap over a region R (e.g., supp( ρ)); this is needed for the Bayesian/Van Trees lower bound, where we average over θ ∼ ρ and therefore must rule out degeneracy throughout the relevant parameter region. 
+
+Optimization landscape. Our next assumption concerns the optimization landscape of the DPO risk. When fθ is linear in the embedding (e.g., the linear contextual case), the DPO objective is convex in θ; moreover, under standard design coverage conditions the population and empirical risks are strongly convex on the identifiable space and admit a unique minimizer. In contrast, for general nonlinear fθ (e.g., a neural network score model), both the population risk L(θ) and the empirical risk Ln(θ) can be nonconvex, and multiple global minimizers may exist. In our setting, the target parameter θ⋆ is defined a priori by the RLHF objective via realizability, i.e., πθ⋆ = π⋆ where π⋆ ∈ arg max π J(π). In later analysis we show that, under realizability and well-specified preference labels, this same θ⋆ is also a global minimizer of the population DPO risk. To avoid ambiguity when the population DPO risk admits multiple minimizers, we impose the following uniqueness assumption. 
+
+Assumption 5 (Unique population minimizer) . The population DPO risk L(θ) has a unique global minimizer over Θ.
+
+Remark 6. When L(θ) has multiple global minimizers, the empirical DPO estimator ˆθn may converge to different minimizers depending on optimization and initialization, while all such limits induce the same minimum population risk. Since our performance bounds are stated in terms of the estimation error relative to the RLHF target θ⋆, we impose Assumption 5 to ensure that the population DPO minimizer coincides with the RLHF-optimal parameter and to eliminate ambiguity in the definition of the target. 
+
+Prior regularity. Our final assumption introduces a Bayesian formulation for the optimal parameter 
+
+θ⋆. When prior information about θ⋆ is available, our analysis yields an information-theoretic (Bayesian) lower bound on the RLHF optimality gap under an arbitrary sampling design D.
+
+Assumption 6 (Prior regularity) . Suppose the optimal parameter θ⋆ follows a prior density ρ
+
+supported on Θ. Moreover, ρ satisfies: 1. ρ ∈ C1(Θ) and ρ(θ) > 0 for all θ ∈ int(Θ) ;18 2. ρ(θ) = 0 for all θ ∈ ∂Θ;3. The prior Fisher information is finite: 
+
+Z
+
+> Θ
+
+∥∇ log ρ(θ)∥22 ρ(θ) dθ < ∞.
+
+Remark 7. Assumption 6 is a standard regularity condition on the prior density. It ensures that the quantity R 
+
+> Θ
+
+∥∇ log ρ(θ)∥22 ρ(θ) dθ is finite and that the integration-by-parts steps required by the Bayesian information inequality (Van Trees) in our lower-bound argument are valid. Recall that under realizability, θ⋆ parameterizes the RLHF-optimal policy π⋆. Moreover, by the Gibbs closed form (2), π⋆ is uniquely determined by the reference policy π0 and the reward function 
+
+r⋆. Hence one may equivalently place a prior on r⋆ and view the resulting distribution as an induced (push-forward) prior on θ⋆; our analysis only uses the prior on θ⋆ itself. 
+
+## B Preliminary on information theory 
+
+In this section, we provide more interpretations for Definition 2. 
+
+Remark 8 (Fisher information under the softmax policy parameterization) . Under the softmax policy (6), the score ∇θ log πθ (y | x) can be written explicitly in terms of fθ and its gradient: 
+
+∇θ log πθ (y | x) = ∇θ fθ (ϕ(x, y )) − Ey′∼πθ (·| x)
+
+∇θ fθ (ϕ(x, y ′)) . (12) Therefore, the Fisher information matrix admits the covariance form 
+
+I(θ) = Ex
+
+Cov y∼πθ (·| x)
+
+ ∇θ fθ (ϕ(x, y ))  . (13) If fθ (ϕ) = ⟨θ, ϕ ⟩, then ψθ (x, y ) = ϕ(x, y ) and I(θ) is the covariance matrix of the embedding vector 
+
+ϕ(x, y )
+
+I(θ) = Ex
+
+Cov y∼πθ (·| x)
+
+ ϕ(x, y ) .
+
+In particular, in the tabular setting where ϕ(x, y ) = e(x,y ) is an one-hot vector, 
+
+I(θ) = Ex
+
+Cov y∼πθ (·| x)
+
+ e(x,y )
+
+ = Ex
+
+diag  πθ (· | x) − πθ (· | x)πθ (· | x)⊤ .
+
+Remark 9 (Interpretation of Fisher information in our setting) . The Fisher information matrix I(θ)
+
+measures how sensitively the policy distribution πθ (· | x) changes with the parameter θ. The score 
+
+sθ (x, y ) = ∇θ log πθ (y | x) is the infinitesimal change of the log-probability of outcome y under a perturbation of θ; taking the second moment and averaging over (x, y ) therefore quantifies the amount of “statistical signal” carried by a single draw y ∼ πθ (· | x) about the parameter. In particular, for any direction v ∈ Rp,
+
+v⊤I(θ)v = Ex Ey∼πθ (·| x)
+
+(v⊤sθ (x, y )) 2
+
+is the expected squared sensitivity of log πθ (y | x) along v. Equivalently, under standard regular-ity conditions, I(θ) coincides with the local curvature of the KL divergence: for small ∆ in the identifiable directions, 
+
+Ex KL  πθ+∆ (· | x) ∥ πθ (· | x) = 12 ∆⊤I(θ)∆ + o(∥∆∥22).
+
+Thus, in our analysis, I(θ⋆) plays the role of a local geometry/curvature matrix around the optimal policy: it specifies which parameter directions change the policy the most, and it is the natural weight matrix that appears in the trace-form bounds and the resulting sampling-design objective. 
+
+Remark 10 (Equivalent curvature parametrizations) . Define 
+
+W (θ⋆) .
+
+= Ex
+
+Cov y∼πθ⋆ (·| x)
+
+ ∇θ rθ⋆ (x, y ) . (14) For statistical clarity, we express our main results using the policy Fisher information I(θ⋆). Under the softmax policy parametrization considered in this work, the implicit reward is aligned with the policy log-likelihood gradient in the sense that 
+
+∇θ rθ⋆ (x, y ) = β ∇θ log πθ⋆ (y | x), for all x, y. 
+
+19 Consequently, 
+
+W (θ⋆) = β2 I(θ⋆).
+
+The matrix W (θ⋆) quantifies how the implicit reward changes with the policy parameter along different directions: for any direction v, the quadratic form v⊤W (θ⋆)v equals the expected (over prompts x) variance, under y ∼ πθ⋆ (· | x), of the directional derivative ⟨v, ∇θ rθ⋆ (x, y )⟩. In this sense, I(θ⋆) (and W (θ⋆)) captures the sensitivity of the implicit reward to perturbations of θ,measured under the on-policy distribution. 
+
+## C Proofs of Theorem 1 
+
+In this section, we prove our main result Theorem 1 following the road map in Section 3.2. Specifically, the statement (i) in Theorem 1 is proved in Theorem 3, and the statement (ii) in Theorem 1 is proved in Theorem 4. 
+
+C.1 Step 1: Quadratic sandwich of the RLHF optimality gap 
+
+We first express the RLHF optimality gap exactly as a reverse KL divergence to the optimal policy. 
+
+Lemma 1 (RLHF gap as reverse KL) . Under Assumption 1, for any policy π,
+
+J(π⋆) − J(π) = β Ex
+
+KL  π(· | x) ∥ π⋆(· | x) .
+
+Proof of Lemma 1. Fix x. By (2), 
+
+log π⋆(y | x) = log π0(y | x) + r⋆(x, y )
+
+β − log Z(x).
+
+Hence KL  π(· | x) ∥ π⋆(· | x) = X
+
+> y
+
+π(y | x) log π(y | x)
+
+π⋆(y | x)= X
+
+> y
+
+π(y | x) log π(y | x)
+
+π0(y | x) − 1
+
+β
+
+X
+
+> y
+
+π(y | x)r⋆(x, y ) + log Z(x)= KL  π(· | x) ∥ π0(· | x) − 1
+
+β Ey∼π(·| x)[r⋆(x, y )] + log Z(x).
+
+Rearranging gives 
+
+Ey∼π(·| x)[r⋆(x, y )] − β KL  π(· | x) ∥ π0(· | x) = β log Z(x) − β KL  π(· | x) ∥ π⋆(· | x).
+
+Now take expectation over x:
+
+J(π) = β Ex[log Z(x)] − β Ex
+
+KL  π(· | x) ∥ π⋆(· | x) .
+
+Setting π = π⋆ yields 
+
+J(π⋆) = β Ex[log Z(x)] .
+
+Subtracting gives 
+
+J(π⋆) − J(π) = β Ex
+
+KL  π(· | x) ∥ π⋆(· | x) .
+
+Hence, bounding the optimality gap reduces to bounding a KL divergence. Define 
+
+F (θ) .
+
+= β Ex
+
+KL  πθ (· | x) ∥ πθ⋆ (· | x) . (15) 
+
+Lemma 2 (Smoothness and Hessian identity) . Suppose Assumption 2 holds. Then F ∈ C2(Θ) ,
+
+∇F (θ⋆) = 0 , and 
+
+∇2F (θ) = βI (θ), ∀θ ∈ Θ. (16) In particular, 
+
+∇2F (θ⋆) = βI (θ⋆).
+
+20 Proof of Lemma 2. Since Y(x) is finite and fθ has bounded first/second derivatives in θ (Assump-tion 2), log πθ (y|x) is twice differentiable and differentiation can be interchanged with the finite sums defining πθ and with Ex. A standard score-trick argument yields ∇F (θ∗) = 0 and the Fisher representation ∇2F (θ∗) = βI (θ∗).By Lemmas 1 and 2, the RLHF optimality gap can be written as F (θ), a (scaled) reverse-KL divergence to πθ⋆ , whose curvature is governed by the policy Fisher information: 
+
+∇2F (θ) = βI (θ), ∀θ ∈ Θ.
+
+In particular, in a neighborhood of θ⋆, changes in the gap are controlled by the quadratic form induced by I(θ⋆).
+
+Lemma 3 (Global Fisher sandwich) . Suppose Assumptions 1 to 3 hold. Then there exists a constant 
+
+μ > 0, depending only on the fixed constants in the standing assumptions, such that for all θ ∈ Θ,
+
+μ ⪯ I(θ) ⪯ 4α21 . (17) Moreover, with mI
+
+.
+
+= μ
+
+> 4α21
+
+and MI
+
+.
+
+= 4α21 
+
+> μ
+
+, we have 
+
+mI I(θ⋆) ⪯ I(θ) ⪯ MI I(θ⋆), ∀θ ∈ Θ. (18) Equivalently, by (16), 
+
+mI ∇2F (θ⋆) ⪯ ∇ 2F (θ) ⪯ MI ∇2F (θ⋆), ∀θ ∈ Θ. (19) 
+
+Proof of Lemma 3. Fix (x, θ ). Write 
+
+gθ (x, y ) .
+
+= ∇θ fθ (ϕ(x, y )) , ¯gθ (x) .
+
+= Ey′∼πθ (·| x)[gθ (x, y ′)] .
+
+By softmax calculus, 
+
+sθ (y | x) = ∇θ log πθ (y | x) = gθ (x, y ) − ¯gθ (x).
+
+Hence 
+
+∥sθ (y | x)∥2 ≤ ∥ gθ (x, y )∥2 + ∥¯gθ (x)∥2 ≤ α1 + α1 = 2 α1,
+
+where Assumption 2 was used. Therefore, for any v ∈ H with ∥v∥2 = 1 ,
+
+v⊤I(θ)v = ExEy∼πθ [( v⊤sθ (y | x)) 2] ≤ ExEy [∥sθ (y | x)∥22] ≤ 4α21.
+
+So 
+
+I(θ) ⪯ 4α21I, ∀θ ∈ Θ.
+
+By Lemma 14, which relies on Assumptions 2 and 3, 
+
+I(θ) ⪰ μI, ∀θ ∈ Θ.
+
+Thus, we prove equation (17). In particular, at θ⋆,
+
+μ I ⪯ I(θ⋆) ⪯ 4α21 I. 
+
+For any u ∈ H,
+
+u⊤I(θ)u ≥ μ ∥u∥22, u⊤I(θ⋆)u ≤ 4α21 ∥u∥22.
+
+Hence 
+
+u⊤I(θ)u ≥ μ
+
+4α21
+
+u⊤I(θ⋆)u =: mI u⊤I(θ⋆)u. 
+
+Similarly, 
+
+u⊤I(θ)u ≤ 4α21 ∥u∥22, u⊤I(θ⋆)u ≥ μ ∥u∥22,
+
+so 
+
+u⊤I(θ)u ≤ 4α21
+
+μ u⊤I(θ⋆)u =: MI u⊤I(θ⋆)u. 
+
+Therefore, for all θ ∈ Θ,
+
+mI I(θ⋆) ⪯ I(θ) ⪯ MI I(θ⋆),
+
+with 
+
+mI = μ
+
+4α21
+
+, MI = 4α21
+
+μ .
+
+Since ∇2F (θ) = βI (θ), (18) is equivalent (up to the common factor β) to equation (19). 21 We now show that the KL divergence (hence the RLHF gap) is globally equivalent to a weighted quadratic form of the estimation error. 
+
+Proposition 1 (Global quadratic sandwich for the optimality gap) . Under Assumptions 1 to 3, for all 
+
+θ ∈ Θ, letting ∆ = θ − θ⋆, we have: 
+
+βm I
+
+2 ∆⊤I(θ⋆)∆ ≤ β ExKL  πθ (· | x) ∥ πθ⋆ (· | x) ≤ βM I
+
+2 ∆⊤I(θ⋆)∆ . (20) Equivalently, by Lemma 1, 
+
+βm I
+
+2 ∆⊤I(θ⋆)∆ ≤ J(π⋆) − J(πθ ) ≤ βM I
+
+2 ∆⊤I(θ⋆)∆ .
+
+Proof of Proposition 1. By Lemma 2, F ∈ C2(Θ) and ∇F (θ⋆) = 0 . Hence, for ∆ = θ − θ⋆,
+
+F (θ) = 
+
+Z 10
+
+(1 − t) ∆ ⊤∇2F (θ⋆ + t∆) ∆ dt. 
+
+Using (16), 
+
+F (θ) = β
+
+Z 10
+
+(1 − t) ∆ ⊤I(θ⋆ + t∆) ∆ dt. 
+
+Since Θ is convex, θ⋆ + t∆ ∈ Θ for all t ∈ [0 , 1] . Applying Lemma 3 along the segment gives 
+
+mI ∆⊤I(θ⋆)∆ ≤ ∆⊤I(θ⋆ + t∆)∆ ≤ MI ∆⊤I(θ⋆)∆ .
+
+Multiply by β(1 − t) and integrate over t ∈ [0 , 1] ; using R 10 (1 − t) dt = 12 , we obtain (20). 
+
+C.2 Step 2: upper bound for the DPO minimizer 
+
+Given a sampling design D, suppose we collect n samples ei = ( xi, y + 
+
+> i
+
+, y − 
+
+> i
+
+) i.i.d. 
+
+∼ D. We can approximate the design covariance matrix ΣD (θ) by the following sample covariance matrix 
+
+bΣn(θ) .
+
+= 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+g(ei; θ)g(ei; θ)⊤.
+
+We start with some useful concentration result, which lower bound the empirical covariance matrix by the sample covariance matrix. 
+
+Proposition 2 (Empirical covariance concentration) . Suppose Assumptions 1, 2 and 4(a) hold. Assume ei = ( xi, y + 
+
+> i
+
+, y − 
+
+> i
+
+) i.i.d. 
+
+∼ D. Then for any δ ∈ (0 , 1) , if 
+
+n ≥ 8 G2
+
+λH
+
+> min
+
+(Σ D (θ⋆)) log dim( H)
+
+δ ,
+
+we have with probability at least 1 − δ:
+
+bΣn(θ⋆) ⪰ 12 ΣD (θ⋆).
+
+Consequently, on this event, 
+
+bΣ†
+
+> n
+
+(θ⋆) ⪯ 2 Σ † 
+
+> D
+
+(θ⋆).
+
+For any δ ∈ (0 , 1) , define nΣ(δ) := 8 G2  
+
+> λH
+> min (Σ D)
+
+log dim( H) 
+
+> δ
+
+.
+
+Proof of Proposition 2. To simplify notation, write 
+
+bΣn := 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+Yi, ΣD := E[Yi], Yi := g(ei; θ⋆)g(ei; θ⋆)⊤.
+
+By construction, each Yi ⪰ 0. Moreover, since ∥g(e; θ⋆)∥2 ≤ G, we have 
+
+0 ⪯ Yi ⪯ ∥ g(ei; θ⋆)∥22 I ⪯ G2I (on H).
+
+22 Let λD := λH
+
+> min
+
+(Σ D ) > 0. Consider the sum Sn := Pni=1 Yi. Then E[Sn] = nΣD , hence 
+
+λH
+
+> min
+
+(E[Sn]) = n λ D .
+
+We apply the matrix Chernoff inequality for the minimum eigenvalue [Tropp, 2012, e.g., Theorem 5.1, Corollary 5.2, Remark 5.3] to the independent PSD matrices {Yi}: for any ε ∈ (0 , 1) ,
+
+Pr  λH
+
+> min
+
+(Sn) ≤ (1 − ε) λH
+
+> min
+
+(E[Sn])  ≤ dim( H) · exp 
+
+
+
+− ε2 λH
+
+> min
+
+(E[Sn]) 2 G2
+
+
+
+.
+
+Setting ε = 12 yields 
+
+Pr 
+
+
+
+λH
+
+> min
+
+(Sn) ≤ 12 nλ D
+
+
+
+≤ dim( H) · exp 
+
+
+
+− nλ D
+
+8G2
+
+
+
+.
+
+Therefore, if 
+
+n ≥ 8 G2
+
+λD
+
+log dim( H)
+
+δ ,
+
+then with probability at least 1 − δ,
+
+λH
+
+> min
+
+(Sn) ≥ 12 nλ D , equivalently bΣn ⪰ 12 ΣD on H. 
+
+Finally, since both matrices are positive definite on H, pseudoinverse monotonicity on H gives 
+
+bΣ† 
+
+> n
+
+⪯ 2 Σ † 
+
+> D
+
+on H, 
+
+which concludes the proof. 
+
+Corollary 1. Under the condition of Proposition 2, if n ≥ nΣ(δ), we have with probability at least 
+
+1 − δ:
+
+bΣn(θ⋆) ⪰ 12 λH
+
+> min
+
+(Σ D (θ⋆)) I, 
+
+where λH
+
+> min
+
+(Σ D (θ⋆)) > 0 by Assumption 4(a). 
+
+Proof of Corollary 1. Let H be the identifiable subspace and note that, by construction, bΣn(θ⋆) and 
+
+ΣD (θ⋆) act on H. By Proposition 2, if n ≥ nΣ(δ), where 
+
+nΣ(δ) := 8 G2
+
+λH
+
+> min
+
+(Σ D (θ⋆)) log dim( H)
+
+δ ,
+
+then with probability at least 1 − δ,
+
+bΣn(θ⋆) ⪰ 12 ΣD (θ⋆).
+
+Since Assumption 4(a) ensures λH
+
+> min
+
+(Σ D (θ⋆)) > 0, we further have, when restricting to H,
+
+ΣD (θ⋆) ⪰ λH
+
+> min
+
+(Σ D (θ⋆)) I. 
+
+Combining the two displays yields, on the same event, 
+
+bΣn(θ⋆) ⪰ 12 λH
+
+> min
+
+(Σ D (θ⋆)) I. 
+
+This proves the claim. 
+
+Remark 11 (Tabular setting) . Consider the tabular model with d items, parameter θ ∈ Rd, and identifiable subspace 
+
+H =
+
+n
+
+v ∈ Rd : 1⊤v = 0 
+
+o
+
+.
+
+For a comparison sample i with queried pair (ai, b i),
+
+g(ei; θ⋆) = ∇θ ui(θ⋆) = β (eai − ebi ).
+
+23 Therefore, 
+
+bΣn = 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+g(ei)g(ei)⊤ = β2 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+(eai − ebi )( eai − ebi )⊤ = β2 bL, 
+
+where bL is the (weighted) empirical graph Laplacian of the sampled comparison graph. Hence Corollary 1, 
+
+bΣn ⪰ λH
+
+> min
+
+(Σ D )I, 
+
+is exactly a spectral-connectivity condition on the empirical comparison graph: 
+
+λ2(bL) ≥ λH
+
+> min
+
+(Σ D )/β 2,
+
+where λ2(bL) is the second-smallest eigenvalue of bL. Intuitively, this means the sampled compar-isons are sufficiently informative in all identifiable directions (no near-disconnected bottleneck), so estimation on H is well-conditioned. To prove the upper bound of optimality gap given the DPO minimizer, we need to bound the curvature of empirical DPO loss Ln. The curvature of Ln is captured by the Hessian matrix below. 
+
+Lemma 4 (Hessian decomposition) . For any θ ∈ Θ,
+
+∇2Ln(θ) = An(θ) + Rn(θ), (21) where 
+
+An(θ) .
+
+= 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+σ′ uθ (ei) g(ei; θ)g(ei; θ)⊤, Rn(θ) .
+
+= 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+ σ(uθ (ei)) −σ(uθ⋆ (ei))  ∇2 
+
+> θ
+
+uθ (ei).
+
+Proof of Lemma 4. Differentiate ∇Ln(θ) = 1
+
+> n
+
+P 
+
+> i
+
+ℓ′(ai, u i(θ)) gi(θ). Using chain rule: 
+
+∇2Ln(θ) = 1
+
+n
+
+X
+
+> i
+
+ℓ′′ (ai, u i(θ)) gi(θ)gi(θ)⊤ + 1
+
+n
+
+X
+
+> i
+
+ℓ′(ai, u i(θ)) ∇2 
+
+> θ
+
+ui(θ).
+
+Substitute ℓ′′ = σ′ and ℓ′ = σ − a.We note that the remainder term Rn(θ) does not exist when the policy is log-linear policy, and it requires more detailed analysis to bound this remainder term. 
+
+C.2.1 Log-linear policy 
+
+We first consider the log-linear policy class fθ (ϕ(x, y )) = θ⊤ϕ(x, y ), which is easier to analyze. Note that the tabular setting is a special case of the log-linear policy when the embedding ϕ is a one-hot vector. The log-linear family is more tractable for three reasons: (i) The function g(ei; θ) is independent of θ:
+
+g(ei; θ) = β ϕ(xi, y + 
+
+> i
+
+) − ϕ(xi, y − 
+
+> i
+
+).
+
+(ii) The Hessian of the DPO loss Ln(θ) has no remainder term: 
+
+∇2Ln(θ) = 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+σ′ uθ (ei) g(ei; θ)g(ei; θ)⊤.
+
+(iii) The DPO loss Ln(θ) is strongly convex on Θ.These three facts yield a direct lower bound on ∇2Ln(θ), as we show next. 
+
+Lemma 5. Suppose Assumptions 1 and 2 holds. Then for any θ ∈ Θ,
+
+∇2Ln(θ) ⪰ α bΣn,
+
+for some α > 0.24 Proof of Lemma 5. By Lemma 10, σ′(uθ (e)) ≥ κ0 > 0 for all θ ∈ Θ and for all e. Hence, 
+
+∇2Ln(θ) = 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+σ′ uθ (ei) g(ei; θ)g(ei; θ)⊤ ⪰ κ0
+
+1
+
+n
+
+> n
+
+X
+
+> i=1
+
+g(ei; θ)g(ei; θ)⊤ = κ0 bΣn(θ).
+
+Using this lower bound, we prove the following upper bound for the DPO minimizer. 
+
+Proposition 3 (Upper bounds for log-linear policy) . Suppose Assumptions 1 to 4(a) hold. Fix any sampling design D, and let n i.i.d. comparisons be drawn from D. Let ˆθn ∈ arg min θ∈Θ Ln(θ) be the DPO estimator (defined in (5) ), and ˆπn
+
+.
+
+= πˆθn . For any δ ∈ (0 , 1) , when n > n Σ(δ), there exist constants Cub > 0 (depending only on fixed constants in assumptions and β) such that: 
+
+J(π⋆) − J(ˆ πn) ≤ Cub 
+
+n tr  I(θ⋆)Σ †
+
+> D
+
+. (22) 
+
+Proof of Proposition 3. Let ∆ = ˆθn − θ⋆. By Lemma 1 and the upper side of Proposition 1, 
+
+J(πθ⋆ ) − J(πˆθn ) ≤ βM I
+
+2 ∆⊤I(θ⋆)∆ = βM I
+
+2 tr  I(θ⋆) ∆∆ ⊤. (23) 
+
+(i) We apply the mean-value theorem and first order optimality condition. Define 
+
+Hn
+
+.
+
+=
+
+Z 10
+
+∇2Ln(θ⋆ + t∆) dt. 
+
+Then 
+
+∇Ln(ˆθ) − ∇ Ln(θ⋆) = Hn∆.
+
+Since ˆθ is a stationary point of Ln, i.e. ∇Ln(ˆθ) = 0 ,
+
+∆ = − H†
+
+> n
+
+∇Ln(θ⋆),
+
+hence 
+
+∆∆ ⊤ = H† 
+
+> n
+
+∇Ln(θ⋆)∇Ln(θ⋆)⊤ (H†
+
+> n
+
+)⊤. (24) 
+
+(ii) We lower bound Hn by bΣn. By Lemma 5, for all t ∈ [0 , 1] ,
+
+∇2Ln(θ⋆ + t∆) ⪰ α bΣn,
+
+therefore 
+
+Hn ⪰ α bΣn =⇒ H† 
+
+> n
+
+⪯ α−1 bΣ†
+
+> n
+
+.
+
+Let EΣ be the event in Proposition 2. On event EΣ, by Proposition 2, bΣn ⪰ 12 ΣD , so by pseudoinverse monotonicity on H,
+
+bΣ† 
+
+> n
+
+⪯ 2 Σ † 
+
+> D
+
+, H† 
+
+> n
+
+⪯ 2
+
+α Σ† 
+
+> D
+
+.
+
+(iii) We bound the score covariance at θ⋆. Write 
+
+∇Ln(θ⋆) = − 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+ ai − σ(ui(θ⋆))  gi(θ⋆).
+
+Conditional on sampled edges, terms are independent, mean-zero, and Var (ai | · ) = σ′(ui(θ⋆)) ≤ 14 .
+
+Hence 
+
+E∇Ln(θ⋆)∇Ln(θ⋆)⊤ | { gi(θ⋆)} ⪯ 14n bΣn.
+
+25 (iv) Take conditional expectation in (24) and use steps (ii) and (iii): 
+
+E[∆∆ ⊤ | E Σ] ⪯ 14n H† 
+
+> n
+
+bΣn(H†
+
+> n
+
+)⊤
+
+⪯ 14n · 1
+
+α2 bΣ† 
+
+> n
+
+⪯ 12α2n Σ† 
+
+> D
+
+.
+
+Substitute into (23): 
+
+EJ(πθ⋆ ) − J(πˆθ ) | E Σ
+
+ ≤ βM I
+
+2 · 12α2n tr  I(θ⋆)Σ †
+
+> D
+
+.
+
+Therefore 
+
+EJ(πθ⋆ ) − J(πˆθ ) | E Σ
+
+ ≤ Cub 
+
+n tr  I(θ⋆)Σ †
+
+> D
+
+, Cub = βM I
+
+4α2 . (25) Absorbing constants into Cub gives the claimed upper bound. Moreover, by Proposition 2, the event 
+
+EΣ happens with probability at least 1 − δ if 
+
+n ≥ 8 G2
+
+λH
+
+> min
+
+(Σ D ) log dim( H)
+
+δ .
+
+C.2.2 General policy 
+
+When the policy is not log-linear, the analysis becomes more involved because the three simplifying features of the log-linear case no longer hold. In particular, when fθ (ϕ(x, y )) is not linear in ϕ(x, y ),(i) the score function g(ei; θ) depends on θ:
+
+g(ei; θ) = β ∇θ fθ (ϕ(xi, y + 
+
+> i
+
+)) − ∇ θ fθ (ϕ(xi, y − 
+
+> i
+
+)) ;
+
+(ii) the Hessian of the DPO loss Ln(θ) includes an additional remainder term: 
+
+∇2Ln(θ) = 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+σ′ uθ (ei) g(ei; θ)g(ei; θ)⊤+ 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+ σ(uθ (ei)) −σ(uθ⋆ (ei))  ∇2 
+
+> θ
+
+uθ (ei); 
+
+(iii) the DPO loss Ln(θ) is non-convex in general. As a result, we cannot expect the lower bound in Lemma 5 applies universally in Θ, and a more careful analysis is required. Our analysis resolves these issues in three layers. 
+
+(I) local geometry of population loss We first prove that with general policy, the desired lower bound in Lemma 5 holds locally for the population DPO risk L(θ). Given the sampling policy D and a policy πθ , the population DPO risk L(θ) is defind as 
+
+L(θ) .
+
+= E(e,a )[ℓ(a, u θ (e))] .
+
+Proposition 4 (Local identifiability on H). Suppose Assumptions 1, 2 and 4(a) hold. Then there exist constants rloc > 0 and cloc > 0, depending only on the fixed constants in the standing assumptions, such that for all θ ∈ Θ with ∥θ − θ⋆∥2 ≤ rloc ,
+
+∇2L(θ) ⪰ cloc ΣD (θ⋆) ⪰ cloc μ⋆I. 
+
+Proof of Proposition 4. First, we prove a lower bound for A(θ). Using ∇2L(θ) = A(θ) + R(θ) and global σ′(uθ (e)) ≥ κ0 by Lemma 10, 
+
+A(θ) = Eσ′(uθ ) g(θ)g(θ)⊤ ⪰ κ0 E[g(θ)g(θ)⊤] .
+
+By the Gram perturbation bound with Lipschitz constant Hu and Gu (Lemmas 9 and 13), 
+
+E[g(θ)g(θ)⊤] − ΣD (θ⋆) op ≤ 2Gu Hu∥θ − θ⋆∥2 + H2
+
+> u
+
+∥θ − θ⋆∥22.
+
+Together with ΣD (θ⋆) ⪰ μ⋆ by Assumption 4(a), 
+
+E[g(θ)g(θ)⊤] ⪰  1 − η(θ) ΣD (θ⋆),
+
+26 where 
+
+η(θ) .
+
+= 2Gu Hu∥θ − θ⋆∥2 + H2
+
+> u
+
+∥θ − θ⋆∥22
+
+μ⋆
+
+.
+
+Hence 
+
+A(θ) ⪰ κ0(1 − η(θ)) Σ D (θ⋆).
+
+Second, we provide a bound for R(θ). Let δ(θ) denote the norm ∥R(θ)∥op . Then, 
+
+R(θ) ⪰ − δ(θ)I. 
+
+Since ΣD (θ⋆) ⪰ μ⋆I, I ⪯ μ−1 
+
+> ⋆
+
+ΣD (θ⋆), thus 
+
+R(θ) ⪰ − δ(θ)
+
+μ⋆
+
+ΣD (θ⋆).
+
+Using the bound of A(θ) and R(θ),
+
+∇2L(θ) = A(θ) + R(θ) ⪰
+
+
+
+κ0(1 − η(θ)) − δ(θ)
+
+μ⋆
+
+
+
+ΣD (θ⋆) = α(θ) Σ D (θ⋆),
+
+where 
+
+α(θ) .
+
+= κ0(1 − η(θ)) − δ(θ)
+
+μ⋆
+
+.
+
+Third, we provide a bound for δ(θ). Using |σ(a) − σ(b)| ≤ 14 |a − b|,
+
+δ(θ) ≤ E|σ(uθ ) − σ(uθ⋆ )| ∥∇ 2 
+
+> θ
+
+uθ ∥op 
+
+ ≤ 14 Hu E|uθ − uθ⋆ |.
+
+By Lipschitzness of uθ (Lemma 9), 
+
+|uθ (e) − uθ⋆ (e)| ≤ Gu∥θ − θ⋆∥2,
+
+hence 
+
+δ(θ) ≤ 14 HuGu∥θ − θ⋆∥2.
+
+Substituting gives the following lower bound on α(θ):
+
+α(θ) ≥ κ0(1 − η(θ)) − HuGu
+
+4μ⋆
+
+∥θ − θ⋆∥2.
+
+Finally, define 
+
+rloc := min {ρg , ρ R}, ρg := 
+
+pG2 
+
+> u
+
++ μ⋆/2 − Gu
+
+Hu
+
+, ρR := κ0μ⋆
+
+2HuGu
+
+.
+
+If ∥θ − θ⋆∥2 ≤ rloc , then by the definitions of ρg , ρ R:
+
+η(θ) ≤ 12 , δ(θ)
+
+μ⋆
+
+≤ HuGu
+
+4μ⋆
+
+∥θ − θ⋆∥2 ≤ κ0
+
+8 .
+
+Therefore 
+
+α(θ) ≥ κ0(1 − 12 ) − κ0 
+
+> 8
+
+= 3κ0
+
+8 ≥ κ0
+
+4 .
+
+So 
+
+∇2L(θ) ⪰ κ0
+
+4 ΣD (θ⋆) ⪰ κ0μ⋆
+
+4 I. 
+
+Therefore, for θ close enough to θ⋆ (i.e., ∥θ − θ∗∥ ≤ rloc ), the desired lower bound holds. 27 (II) high-probability local geometry of empirical loss Next, we translate the local bound from the population DPO risk to the empirical DPO risk. On the same ball Brloc (θ⋆), we establish a high-probability uniform Hessian concentration bound 
+
+sup 
+
+> θ∈Brloc
+
+∥∇ 2Ln(θ) − ∇ 2L(θ)∥op ≤ εHess  
+
+> n
+
+,
+
+where εHess  
+
+> n
+
+is decreasing in n.
+
+Lemma 6 (Uniform Hessian concentration on Bloc ). Suppose Assumptions 1 and 2 hold, and define 
+
+Bloc := {θ ∈ Θ : ∥θ − θ⋆∥2 ≤ rloc }.
+
+Then for any δ ∈ (0 , 1) , with probability at least 1 − δ,
+
+sup 
+
+> θ∈B loc
+
+∇2Ln(θ) − ∇ 2L(θ) op ≤ εHess  
+
+> n
+
+(δ),
+
+where εHess  
+
+> n
+
+(δ) depends only on n, δ , the radius rloc , the identifiable dimension dH , and the fixed constants in Assumption 2, and satisfies 
+
+εHess  
+
+> n
+
+(δ) = O
+
+r dH log n + log(1 /δ )
+
+n + dH log n + log(1 /δ )
+
+n
+
+!
+
+.
+
+Proof of Lemma 6. First, we create a covering net on Bloc . Because Θ ⊂ θ⋆ + H and dim( H) = dH ,the local ball 
+
+Bloc = {θ ∈ Θ : ∥θ − θ⋆∥2 ≤ rloc }
+
+is a dH -dimensional Euclidean ball in the affine subspace θ⋆ + H. Fix the net radius ρn
+
+.
+
+= 1 
+
+> n
+
+, and let Nρn be a ρn-net of Bloc in ∥ · ∥ 2. Then the standard volumetric bound gives 
+
+log |N ρn | ≤ dH log 
+
+ 3rloc 
+
+ρn
+
+
+
+= dH log  3rloc n.
+
+Second, we apply matrix concentration on net points. For fixed θ ∈ N ρn , define 
+
+Yi(θ) := ∇2ℓθ (ei) − Ee∼D [∇2ℓθ (e)] .
+
+By Lemma 12, uniformly over θ ∈ Θ,
+
+∥Yi(θ)∥op ≤ 2MH , EYi(θ)2
+
+> op
+
+≤ VH ,
+
+and each Yi(θ) lives in the dH -dimensional subspace H. Applying a matrix Bernstein inequality [Tropp, 2012, Theorem 1.6] on H at each net point and taking a union bound over Nρn , we obtain that with probability at least 1 − δ,
+
+max 
+
+> θ∈N ρn
+
+∇2Ln(θ) − ∇ 2L(θ) op ≤ C1
+
+r VH ΛH (δ)
+
+n + C2
+
+MH ΛH (δ)
+
+n ,
+
+where 
+
+ΛH (δ) = log |N ρn | + log 2dH
+
+δ ≤ dH log  3rloc n + log 2dH
+
+δ .
+
+Finally, we extend the bound to off-net points in the ball via Hessian Lipschitzness. Take any θ ∈ B loc ,and choose θ♯ ∈ N ρn with ∥θ − θ♯∥2 ≤ ρn. By global Hessian Lipschitzness (which in particular holds on Bloc ), 
+
+∇2Ln(θ) − ∇ 2Ln(θ♯) op ≤ LH ∥θ − θ♯∥2 ≤ LH ρn = LH
+
+n ,
+
+and similarly 
+
+∇2L(θ) − ∇ 2L(θ♯) op ≤ LH
+
+n .
+
+Therefore, 
+
+∇2Ln(θ) − ∇ 2L(θ) op ≤ ∇2Ln(θ♯) − ∇ 2L(θ♯) op + 2LH
+
+n .
+
+28 Taking the supremum over θ ∈ B loc and combining with the net bound from above yields, on the same event of probability at least 1 − δ,
+
+sup 
+
+> θ∈B loc
+
+∇2Ln(θ) − ∇ 2L(θ) op ≤ C1
+
+r VH ΛH (δ)
+
+n + C2
+
+MH ΛH (δ)
+
+n + 2LH
+
+n .
+
+This is exactly the claimed uniform Hessian concentration on Bloc , with an explicit choice ρn = 1 /n 
+
+and ΛH (δ) ≲ dH log n + log(1 /δ ).Therefore, for n large enough so that εHess  
+
+> n
+
+≤ 18 κ0μ⋆, this yields a uniform empirical curvature lower bound on that ball. 
+
+Proposition 5 (Uniform empirical Hessian lower bound on the local ball) . Suppose Assumptions 1, 2 and 4(a) hold. Then there exist constants cemp , C Hess > 0, depending only on the fixed constants in the standing assumptions, such that for any δ ∈ (0 , 1) , if 
+
+n ≥ nhess (δ) .
+
+= CHess 
+
+dH log   1
+
+> μ⋆
+
+ + log(1 /δ )
+
+μ2
+
+> ⋆
+
+,
+
+then, with probability at least 1 − δ, for all θ ∈ B loc ,
+
+∇2Ln(θ) ⪰ cemp ΣD (θ⋆) ⪰ cemp μ⋆I. 
+
+In particular, for any ∆ such that θ⋆ + t∆ ∈ B loc for all t ∈ [0 , 1] ,
+
+¯Hn(∆) ⪰ cemp ΣD (θ⋆), ¯Hn(∆) := 
+
+Z 10
+
+∇2Ln(θ⋆ + t∆) dt. 
+
+Proof of Proposition 5. Fix θ ∈ B loc . Decompose 
+
+∇2Ln(θ) = ∇2L(θ) +  ∇2Ln(θ) − ∇ 2L(θ).
+
+On the Hessian concentration event, 
+
+∇2Ln(θ) − ∇ 2L(θ) ⪰ − εHess  
+
+> n
+
+(δ) I. 
+
+By Proposition 4, for all θ ∈ B loc ,
+
+∇2L(θ) ⪰ κ0
+
+4 ΣD (θ⋆),
+
+where κ0 is from Lemma 10. Hence 
+
+∇2Ln(θ) ⪰ κ0
+
+4 ΣD (θ⋆) − εHess  
+
+> n
+
+(δ) I. 
+
+By Assumption 4(a) we have 
+
+I ⪯ 1
+
+μ⋆
+
+ΣD (θ⋆).
+
+Therefore 
+
+−εHess  
+
+> n
+
+(δ) I ⪰ − εHess  
+
+> n
+
+(δ)
+
+μ⋆
+
+ΣD (θ⋆),
+
+and thus 
+
+∇2Ln(θ) ⪰
+
+ κ0
+
+4 − εHess  
+
+> n
+
+(δ)
+
+μ⋆
+
+
+
+ΣD (θ⋆).
+
+If εHess  
+
+> n
+
+(δ) ≤ κ0μ⋆/8, then 
+
+∇2Ln(θ) ⪰ κ0
+
+8 ΣD (θ⋆) ⪰ κ0μ⋆
+
+8 I. 
+
+This lower bound holds simultaneously for all θ ∈ B loc on the same event. For the segment claim, if θ⋆ + t∆ ∈ B loc for all t ∈ [0 , 1] , then pointwise in t,
+
+∇2Ln(θ⋆ + t∆) ⪰ κ0
+
+8 ΣD (θ⋆).
+
+29 Integrating over t ∈ [0 , 1] gives 
+
+¯Hn(∆) := 
+
+Z 10
+
+∇2Ln(θ⋆ + t∆) dt ⪰ κ0
+
+8 ΣD (θ⋆).
+
+By Lemma 6, there exists a constant CH > 0, depending only on the fixed constants in the standing assumptions, such that 
+
+εHess  
+
+> n
+
+(δ) ≤ CH
+
+r dH log n + log(1 /δ )
+
+n + dH log n + log(1 /δ )
+
+n
+
+!
+
+.
+
+Thus, to guarantee εHess  
+
+> n
+
+(δ) ≤ cemp μ⋆, it suffices to impose 
+
+dH log n + log(1 /δ ) ≲ μ2
+
+> ⋆
+
+n. 
+
+A standard inversion argument yields that there exists a constant CHess > 0, depending only on the fixed constants in the standing assumptions, such that 
+
+n ≥ CHess 
+
+dH log   1
+
+> μ⋆
+
+ + log(1 /δ )
+
+μ2
+
+> ⋆
+
+implies 
+
+dH log n + log(1 /δ ) ≤ c μ 2
+
+> ⋆
+
+n
+
+for a sufficiently small absolute constant c > 0. Therefore 
+
+εHess  
+
+> n
+
+(δ) ≤ cemp μ⋆.
+
+Hence, if ˆθn exists in the local ball Brloc (θ⋆), we can prove the desired lower bound for any θ on the line segment between θ⋆ and ˆθn.
+
+Corollary 2 (Empirical segment curvature along the estimator path) . Under the condition of Lemma 6, if additionally 
+
+Pr 
+
+
+
+∥ˆθn − θ⋆∥2 ≤ rloc 
+
+
+
+≥ 1 − δloc ,
+
+then with probability at least 1 − δ − δloc ,
+
+¯Hn(ˆθn − θ⋆) ⪰ cemp ΣD (θ⋆) ⪰ cemp μ⋆I. 
+
+Proof of Corollary 2. Define 
+
+Ehess := 
+
+
+
+sup 
+
+> θ∈B loc
+
+∥∇ 2Ln(θ) − ∇ 2L(θ)∥op ≤ εHess  
+
+> n
+
+(δ)
+
+
+
+, Eloc := {∥ ˆθn − θ⋆∥2 ≤ rloc }.
+
+By Lemma 6, Pr( Ehess ) ≥ 1 − δ. On Eloc , the entire segment 
+
+{θ⋆ + t∆n : t ∈ [0 , 1] } ⊆ B loc .
+
+Hence on Ehess ∩ E loc , for all t ∈ [0 , 1] ,
+
+∇2Ln(θ⋆ + t∆n) ⪰ κ0
+
+8 ΣD (θ⋆),
+
+where κ0 is defined in Lemma 10. Integrating in t gives 
+
+¯Hn(∆ n) ⪰ κ0
+
+8 ΣD (θ⋆).
+
+Finally, union bound implies 
+
+Pr( Ehess ∩ E loc ) ≥ 1 − δ − δloc .
+
+Next, we show that ˆθn converges to θ⋆ with high probability, and hence, when n is large enough, ˆθn
+
+will be in the local ball Brloc (θ⋆).30 (III) asymptotical consistency of the DPO minimizer Because the curvature result is local, we next show that the DPO minimizer ˆθn enters this local ball with high probability. However, since the empirical DPO risk Ln(θ) is not convex in general, ˆθn need not converge to θ⋆. For example, if both 
+
+θ⋆ and some θ′ minimize the population DPO risk L(θ), it is not clear that ˆθn will converge to θ⋆. In the statistics literature, a standard way to address this issue is to assume the population risk has a unique minimizer. We first show that θ⋆ is indeed a minimizer of the population DPO risk. 
+
+Lemma 7. Suppose Assumption 1 holds. Then, θ⋆ is a minimizer of L(θ), i.e., θ⋆ ∈
+
+arg min θ∈Θ L(θ).
+
+Proof of Lemma 7. For each fixed edge e, define 
+
+p⋆(e) := Pr( a = 1 | e) = σ uθ⋆ (e), qθ (e) := σ uθ (e).
+
+Conditioning on e, the conditional population loss is 
+
+φe(θ) := Eℓ a, u θ (e) | e
+
+= −p⋆(e) log qθ (e) −  1 − p⋆(e) log  1 − qθ (e).
+
+At θ⋆:
+
+φe(θ⋆) = −p⋆(e) log p⋆(e) −  1 − p⋆(e) log  1 − p⋆(e).
+
+Therefore 
+
+φe(θ) − φe(θ⋆) = p⋆(e) log p⋆(e)
+
+qθ (e) +  1 − p⋆(e) log 1 − p⋆(e)1 − qθ (e)=: KL(Bern( p⋆(e)) ∥ Bern( qθ (e))) ≥ 0.
+
+Now take expectation over e:
+
+L(θ) − L(θ⋆) = Ee[φe(θ) − φe(θ⋆)] = Ee[KL(Bern( p⋆(e)) ∥ Bern( qθ (e)))] ≥ 0.
+
+Hence L(θ) ≥ L(θ⋆) for all θ ∈ Θ, i.e., θ⋆ is a minimizer of L.
+
+Proposition 6 (Uniform law of large numbers) . Suppose Assumptions 1 and 2 hold. Then 
+
+sup 
+
+> θ∈Θ
+
+Ln(θ) − L(θ) p
+
+−→ 0.
+
+Moreover, for any δ ∈ (0 , 1) , with probability at least 1 − δ,
+
+sup 
+
+> θ∈Θ
+
+Ln(θ) − L(θ) ≤ εULLN  
+
+> n
+
+(δ),
+
+where εULLN  
+
+> n
+
+(δ) depends only on n, δ , the diameter of Θ, and the fixed constants in Assumption 2, and satisfies 
+
+εULLN  
+
+> n
+
+(δ) = O
+
+r p log n + log(1 /δ )
+
+n
+
+!
+
+.
+
+Proof of Proposition 6. Fix ε > 0, and choose δ := ε 
+
+> 4Gu
+
+, where Gu is from Lemma 9. Let 
+
+{θ1, . . . , θ N } be a finite δ-net of Θ in ∥ · ∥ 2, with 
+
+N = N  Θ, ∥ · ∥ 2, δ ,
+
+where N (Θ , ∥ · ∥ 2, δ ) is the δ–covering number of Θ in ∥ · ∥ 2.For any θ ∈ Θ, pick j(θ) such that ∥θ − θj(θ)∥2 ≤ δ. By Lemma 11(ii), 
+
+|Ln(θ) − Ln(θj(θ))| ≤ Guδ, |L(θ) − L(θj(θ))| ≤ Guδ. 
+
+Hence 
+
+|Ln(θ) − L(θ)| ≤ | Ln(θj(θ)) − L(θj(θ))| + 2 Guδ ≤ max  
+
+> 1≤j≤N
+
+|Ln(θj ) − L(θj )| + ε
+
+2 .
+
+31 Therefore n
+
+sup 
+
+> θ∈Θ
+
+|Ln(θ) − L(θ)| > ε 
+
+o
+
+⊆
+
+n
+
+max  
+
+> 1≤j≤N
+
+|Ln(θj ) − L(θj )| > ε
+
+2
+
+o
+
+.
+
+Define Bℓ
+
+.
+
+= log  1 + eUmax 
+
+, where Umax is from Lemma 9. For each fixed j, ℓθj (zi) ∈ [0 , B ℓ] are i.i.d., so Hoeffding gives 
+
+Pr 
+
+
+
+|Ln(θj ) − L(θj )| > ε
+
+2
+
+
+
+≤ 2 exp 
+
+
+
+− nε 2
+
+2B2
+
+> ℓ
+
+
+
+.
+
+By a union bound over j = 1 , . . . , N ,
+
+Pr 
+
+
+
+sup 
+
+> θ∈Θ
+
+|Ln(θ) − L(θ)| > ε 
+
+
+
+≤ 2N exp 
+
+
+
+− nε 2
+
+2B2
+
+> ℓ
+
+
+
+. (26) It remains to bound N explicitly. Since Θ ⊂ Rp is compact, its Euclidean diameter 
+
+diam(Θ) := sup 
+
+> θ,θ ′∈Θ
+
+∥θ − θ′∥2
+
+is finite. A standard covering-number bound for subsets of Rp yields 
+
+N  Θ, ∥ · ∥ 2, δ  ≤
+
+ 3 diam(Θ) 
+
+δ
+
+p
+
+=
+
+ 12 diam(Θ) Gu
+
+ε
+
+p
+
+.
+
+Plugging this into (26) gives 
+
+Pr 
+
+
+
+sup 
+
+> θ∈Θ
+
+|Ln(θ) − L(θ)| > ε 
+
+
+
+≤ 2
+
+ 12 diam(Θ) Gu
+
+ε
+
+p
+
+exp 
+
+
+
+− nε 2
+
+2B2
+
+> ℓ
+
+
+
+.
+
+For fixed ε > 0, the prefactor is independent of n, while the exponential term decays like exp( −cn ),so the RHS → 0 as n → ∞ . Therefore 
+
+sup 
+
+> θ∈Θ
+
+|Ln(θ) − L(θ)| p
+
+−→ 0.
+
+To derive an explicit bound, recall 
+
+Pr 
+
+
+
+sup 
+
+> θ∈Θ
+
+|Ln(θ) − L(θ)| > ε 
+
+
+
+≤ 2 exp 
+
+
+
+p log 
+
+ 12 diam(Θ) Gu
+
+ε
+
+
+
+− nε 2
+
+2B2
+
+> ℓ
+
+
+
+.
+
+Define εULLN  
+
+> n
+
+(δ) as any value satisfying 
+
+p log 
+
+ 12 diam(Θ) Gu
+
+εULLN  
+
+> n
+
+(δ)
+
+
+
++ log 2
+
+δ ≤ n εULLN  
+
+> n
+
+(δ)2
+
+2B2
+
+> ℓ
+
+.
+
+Then the RHS above is at most δ, and hence with probability at least 1 − δ,
+
+sup 
+
+> θ∈Θ
+
+|Ln(θ) − L(θ)| ≤ εULLN  
+
+> n
+
+(δ).
+
+Since log( c/ε ) ≲ log n when ε is chosen of order n−1/2, the inequality above admits a solution of the form 
+
+εULLN  
+
+> n
+
+(δ) = O
+
+r p log n + log(1 /δ )
+
+n
+
+!
+
+,
+
+where the implied constant depends only on Bℓ, Gu, and diam(Θ) .Even though Ln converges to L, ˆθn may not converge to θ⋆. To have the convergence of ˆθn to θ∗, we need to assume θ⋆ is the only minimizer of the population DPO risk (Assumption 5). 32 Proposition 7 (Global ERM localization) . Suppose Assumptions 1, 2 and 5 hold, and let 
+
+RΘ
+
+.
+
+= sup 
+
+> θ∈Θ
+
+∥θ − θ⋆∥2 < ∞.
+
+Fix rloc > 0, and define the population separation outside the ball 
+
+∆sep (rloc ) := inf 
+
+> θ∈Θ
+> ∥θ−θ⋆∥2≥rloc
+
+ L(θ) − L(θ⋆).
+
+Then ∆sep (rloc ) > 0. Moreover, there exists a constant Cloc > 0, depending only on the fixed constants in the standing assumptions, such that the following holds: for any δ ∈ (0 , 1) , if 
+
+n ≥ nloc (δ) .
+
+= Cloc 
+
+p log 
+
+ RΘ
+
+∆sep (rloc )
+
+
+
++ log   1
+
+δ
+
+
+
+∆sep (rloc )2 , (27) then every empirical risk minimizer ˆθn ∈ arg min θ∈Θ Ln(θ) satisfies 
+
+Pr  ∥ˆθn − θ⋆∥2 ≤ rloc 
+
+ ≥ 1 − δ. 
+
+Proof of Proposition 7. Let 
+
+RΘ
+
+.
+
+= sup 
+
+> θ∈Θ
+
+∥θ − θ⋆∥2 < ∞.
+
+Fix a localization radius rloc > 0 and define the population separation outside the ball 
+
+∆sep (rloc ) .
+
+= inf 
+
+> θ∈Θ
+> ∥θ−θ⋆∥2≥rloc
+
+ L(θ) − L(θ⋆).
+
+By continuity of L and uniqueness of its minimizer θ⋆ (Assumption 5), the infimum is attained and 
+
+∆sep (rloc ) > 0. Set 
+
+εloc 
+
+.
+
+= ∆sep (rloc )3 .
+
+By Proposition 6, for any ε > 0 and any δ ∈ (0 , 1) ,
+
+Pr 
+
+
+
+sup 
+
+> θ∈Θ
+
+Ln(θ) − L(θ) > ε 
+
+
+
+≤ 2
+
+ 12 GuRΘ
+
+ε
+
+p
+
+exp 
+
+
+
+− nε 2
+
+2B2
+
+> ℓ
+
+
+
+.
+
+We set ε = εloc and require the right-hand side to be at most δ. Equivalently, it suffices that 
+
+p log 
+
+ 12 GuRΘ
+
+εloc 
+
+
+
++ log 
+
+ 2
+
+δ
+
+
+
+≤ nε 2loc 
+
+2B2
+
+> ℓ
+
+.
+
+Thus, one may take 
+
+nloc (δ) .
+
+= 2B2
+
+> ℓ
+
+ε2loc 
+
+
+
+p log 
+
+ 12 GuRΘ
+
+εloc 
+
+
+
++ log 
+
+ 2
+
+δ
+
+ 
+
+. (28) When n ≥ nloc (δ), we have with probability at least 1 − δ,
+
+sup 
+
+> θ∈Θ
+
+Ln(θ) − L(θ) ≤ εloc . (29) Denote this event by EULLN .On EULLN , for any θ ∈ Θ,
+
+Ln(θ) − Ln(θ⋆) ≥  L(θ) − εloc 
+
+ −  L(θ⋆) + εloc 
+
+ =  L(θ) − L(θ⋆) − 2εloc .
+
+If ∥θ − θ⋆∥2 ≥ rloc , then by definition of ∆sep (rloc ),
+
+L(θ) − L(θ⋆) ≥ ∆sep (rloc ),
+
+and hence on EULLN ,
+
+Ln(θ) − Ln(θ⋆) ≥ ∆sep (rloc ) − 2εloc = ∆ sep (rloc ) − 23 ∆sep (rloc ) = 13 ∆sep (rloc ) > 0.
+
+33 Therefore, on EULLN , no θ with ∥θ − θ⋆∥2 ≥ rloc can minimize Ln globally over Θ. Consequently, every global empirical minimizer ˆθn ∈ arg min θ∈Θ Ln(θ) satisfies 
+
+∥ˆθn − θ⋆∥2 < r loc on EULLN .
+
+Since Pr( EULLN ) ≥ 1 − δ whenever n ≥ nloc (δ), we obtain 
+
+Pr  ∥ˆθn − θ⋆∥2 ≤ rloc 
+
+ ≥ 1 − δ. 
+
+Therefore, by Proposition 7, when n is large enough, ˆθn will be in the local ball with high probability. As a result, by Corollary 2, with high probability, the curvature of Ln on the line segment between 
+
+ˆθn and θ⋆ is lower bounded by ΣD (θ⋆). This gives us the upper bound for the DPO minimizer. 
+
+Upper bound for general policy Putting everything together, we can prove the following upper bound for the DPO minimizer in the general fθ case. 
+
+Theorem 3 (DPO upper bound in the general fθ case) . Suppose Assumptions 1, 2, 4(a) and 5 hold, and let ˆθn ∈ arg min θ∈Θ Ln(θ) and ˆπn := πˆθn . Fix δ ∈ (0 , 1) and define 
+
+n0(δ) .
+
+= max 
+
+n
+
+nloc (δ/ 3) , n hess (δ/ 3) 
+
+o
+
+.
+
+Then for all n ≥ n0(δ), with probability at least 1 − δ,
+
+J(π⋆) − J(ˆ πn) ≤ Cub (δ)
+
+n tr  I(θ⋆)Σ † 
+
+> D
+
+(θ∗)) , (30) where 
+
+Cub (δ) = C dim( H)
+
+δ ,
+
+for some constant C > 0 depending only on the fixed constants in standing assumptions. 
+
+Proof of Theorem 3. Set ∆ := ˆθn − θ⋆. By the upper side of Proposition 1, there exists c+ > 0 such that for all θ ∈ Θ,
+
+J(π⋆) − J(πθ ) ≤ c+ (θ − θ⋆)⊤I(θ⋆)( θ − θ⋆).
+
+In particular, 
+
+J(π⋆) − J(ˆ πn) ≤ c+ ∆⊤I(θ⋆)∆ . (31) First, we apply mean-value theorem and optimality condition. Define the segment Hessian 
+
+Hn
+
+.
+
+=
+
+Z 10
+
+∇2Ln(θ⋆ + t∆) dt. 
+
+By the integral form of Taylor’s theorem, 
+
+∇Ln(ˆθn) − ∇ Ln(θ⋆) = Hn∆.
+
+Since ˆθn is a (global) minimizer of Ln over Θ ⊆ θ⋆ + H, it is stationary on H, hence 
+
+∇Ln(ˆθn) = 0 , so Hn∆ = − ∇ Ln(θ⋆).
+
+Therefore, 
+
+∆ = − H†
+
+> n
+
+∇Ln(θ⋆) on H. (32) Second, we consider the following good events to bound the average curvature of Ln on the segment 
+
+[ˆθn, θ ⋆]. Fix δ ∈ (0 , 1) and choose δloc , δ hess , δ G ∈ (0 , 1) such that 
+
+δloc + δhess + δG ≤ δ. 
+
+Let Eloc be the localization event from Proposition 7: 
+
+Eloc := {∥ ˆθn − θ⋆∥2 ≤ rloc }.
+
+34 By Proposition 7, for 
+
+εloc 
+
+.
+
+= ∆sep (rloc )3 , Bℓ
+
+.
+
+= log(1 + eumax ),
+
+and 
+
+nloc (δ) .
+
+= 2B2
+
+> ℓ
+
+ε2loc 
+
+
+
+p log 
+
+ 12 GuRΘ
+
+εloc 
+
+
+
++ log 
+
+ 2
+
+δ
+
+ 
+
+, (33) we have, for all n ≥ nloc (δloc ),
+
+Pr( Eloc ) ≥ 1 − δloc .
+
+Let Ehess be the Hessian concentration event from Lemma 6: 
+
+Ehess := 
+
+
+
+sup 
+
+> θ∈B loc
+
+∥∇ 2Ln(θ) − ∇ 2L(θ)∥op ≤ εHess  
+
+> n
+
+(δhess )
+
+
+
+, Bloc := {θ ∈ Θ : ∥θ−θ⋆∥2 ≤ rloc }.
+
+By Lemma 6, for all n ≥ nhess (δhess ),
+
+Pr( Ehess ) ≥ 1 − δhess ,
+
+where nhess (δhess ) is chosen exactly as in Lemma 6 so that on Eloc ∩ E hess we can invoke Corollary 2 and obtain the segment curvature bound 
+
+Hn =
+
+Z 10
+
+∇2Ln(θ⋆ + t∆) dt ⪰ α ΣD (θ∗) on H, (34) with α = κ0 
+
+> 8
+
+. Since ΣD (θ⋆) is invertible on H by Assumption 4(a), pseudoinverse monotonicity on 
+
+H gives 
+
+H† 
+
+> n
+
+⪯ α−1ΣD (θ⋆)†. (35) Third, we bound the weighted error ∆⊤ΣD (θ⋆)∆ . From Hn∆ = −∇ Ln(θ⋆),
+
+∆⊤Hn∆ = − ∆⊤∇Ln(θ⋆).
+
+On Eloc ∩ E hess , using (34), 
+
+α ∆⊤ΣD (θ⋆)∆ ≤ ∆⊤Hn∆ = −∆⊤∇Ln(θ⋆).
+
+Applying Cauchy–Schwarz in the ΣD (θ⋆)-geometry, 
+
+|∆⊤∇Ln(θ⋆)| = ⟨ΣD (θ⋆)1/2∆, ΣD (θ⋆)†/2∇Ln(θ⋆)⟩ ≤ ∥ ΣD (θ⋆)1/2∆∥2 ∥ΣD (θ⋆)†/2∇Ln(θ⋆)∥2.
+
+Hence 
+
+α ∥ΣD (θ⋆)1/2∆∥22 ≤ ∥ ΣD (θ⋆)1/2∆∥2 ∥ΣD (θ⋆)†/2∇Ln(θ⋆)∥2.
+
+If ∥ΣD (θ⋆)1/2∆∥2 = 0 , then ∆⊤ΣD (θ⋆)∆ = 0 and there is nothing to prove. Otherwise divide both sides by ∥ΣD (θ⋆)1/2∆∥2 and square: 
+
+∆⊤ΣD (θ⋆)∆ ≤ 1
+
+α2 ∥ΣD (θ⋆)†/2∇Ln(θ⋆)∥22. (36) Next, we bound ∇Ln(θ⋆). By Lemma 15, 
+
+E
+
+h
+
+∥ΣD (θ⋆)†/2∇Ln(θ⋆)∥22
+
+i
+
+≤ dim( H)4n .
+
+Let 
+
+CG
+
+.
+
+= dim( H)4 .
+
+By Markov’s inequality, for any δG ∈ (0 , 1) , the event 
+
+Escore := 
+
+
+
+∥ΣD (θ⋆)†/2∇Ln(θ⋆)∥22 ≤ CG
+
+nδ G
+
+
+
+satisfies 
+
+Pr( Escore ) ≥ 1 − δG.
+
+35 Combining with (36), on 
+
+Etot := Eloc ∩ E hess ∩ E score ,
+
+we obtain 
+
+∆⊤ΣD (θ⋆)∆ ≤ CG
+
+α2
+
+1
+
+nδ G
+
+. (37) Next, we convert design-weighted error to RLHF-weighted error. Since ∆ ∈ H and I(θ⋆) is supported on H,
+
+∆⊤I(θ⋆)∆ ≤ λmax 
+
+ ΣD (θ⋆)†/2I(θ⋆)Σ D (θ⋆)†/2 ∆⊤ΣD (θ⋆)∆ .
+
+Using λmax (A) ≤ tr (A) for PSD A,
+
+∆⊤I(θ⋆)∆ ≤ tr  I(θ⋆)Σ D (θ⋆)† ∆⊤ΣD (θ⋆)∆ .
+
+Hence, on Etot , by (37), 
+
+∆⊤I(θ⋆)∆ ≤ CG
+
+α2
+
+1
+
+nδ G
+
+tr  I(θ⋆)Σ D (θ⋆)†.
+
+Plugging into (31), 
+
+J(π⋆) − J(ˆ πn) ≤ c+CG
+
+α2δG
+
+· 1
+
+n tr  I(θ⋆)Σ D (θ⋆)†.
+
+Define 
+
+Cub 
+
+.
+
+= c+CG
+
+α2δG
+
+.
+
+Then on Etot ,
+
+J(π⋆) − J(ˆ πn) ≤ Cub 
+
+n tr  I(θ⋆)Σ D (θ⋆)†. (38) Finally, we bound the probability of the good event. Set 
+
+n0(δ) .
+
+= max {nloc (δloc ), n hess (δhess )}.
+
+Then for all n ≥ n0(δ),
+
+Pr( Eloc ) ≥ 1 − δloc , Pr( Ehess ) ≥ 1 − δhess , Pr( Escore ) ≥ 1 − δG.
+
+Therefore, by the union bound, 
+
+Pr( Etot ) ≥ 1 − δloc − δhess − δG ≥ 1 − δ. 
+
+Since (38) holds on Etot , the claimed high-probability upper bound follows. 
+
+C.3 Step 3: lower bound via information inequality 
+
+In this section, we consider the Bayesian setting by assuming Assumption 6. In the Bayesian setting, the critical step to prove the lower bound in Theorem 1 is to prove the following lower bound for the quadratic sandwich by applying the Van Trees inequality. 
+
+Lemma 8. Suppose Assumptions 1 to 4(b) and 6 hold with R = supp ( ρ). The Fisher information of ρ is given by 
+
+J(ρ) .
+
+=
+
+Z
+
+> Θ
+
+∇ log ρ(θ)∇ log ρ(θ)⊤ ρ(θ) dθ. (39) Let 
+
+¯Σρ
+
+.
+
+= Eθ∼ρ[Σ D (θ)] , ¯Iρ
+
+.
+
+= Eθ∼ρ[I(θ)] , nprior 
+
+.
+
+=
+
+ 4 λmax (J(ρ)) 
+
+μR
+
+
+
+.
+
+Then for any estimator ˜θn measurable with respect to the n pairwise comparisons, and for all 
+
+n ≥ nprior , there exists a constant clb > 0 (depending only on the constants appearing in assumptions and the prior ρ) such that 
+
+Eθ∼ρEDn|θ
+
+h
+
+(˜θn − θ)⊤I(θ)( ˜θn − θ)
+
+i
+
+≥ clb 
+
+n Eθ∼ρ
+
+h
+
+tr  I(θ)Σ † 
+
+> D
+
+(θ)i
+
+. (40) 36 Proof of Lemma 8. Fix any estimator ˜θn. We first compute the Fisher information of one comparison and of n comparisons. For one queried edge e = ( x, y +, y −), the label satisfies 
+
+a | (e, θ ) ∼ Bernoulli  σ(uθ (e)) , uθ (e) = β
+
+
+
+log πθ (y+ | x)
+
+π0(y+ | x) − log πθ (y− | x)
+
+π0(y− | x)
+
+
+
+,
+
+with gradient feature 
+
+g(e; θ) = ∇θ uθ (e).
+
+Hence the one-sample Fisher information is 
+
+ID (θ) .
+
+= Ee∼D
+
+σ′(uθ (e)) g(e; θ)g(e; θ)⊤. (41) Since σ′(u) ≤ 1/4 for all u, we have 
+
+ID (θ) ⪯ 14 ΣD (θ). (42) For n i.i.d. queried comparisons under the same design, Fisher information adds: 
+
+In(θ) = n ID (θ) ⪯ n
+
+4 ΣD (θ). (43) Second, the Van Trees inequality gives the matrix lower bound 
+
+EρEDn|θ
+
+h
+
+(˜θn − θ)( ˜θn − θ)⊤i
+
+⪰  Eρ[In(θ)] + J(ρ)−1. (44) Let 
+
+Mn
+
+.
+
+= EρEDn|θ
+
+h
+
+(˜θn − θ)( ˜θn − θ)⊤i
+
+, Bn
+
+.
+
+=  Eρ[In(θ)] + J(ρ)−1.
+
+Define the prior-averaged Fisher matrix 
+
+¯Iρ
+
+.
+
+= Eρ[I(θ)] .
+
+Since ¯Iρ ⪰ 0, multiplying (44) by ¯Iρ and taking trace preserves the inequality: tr   ¯IρMn
+
+ ≥ tr   ¯IρBn
+
+.
+
+Indeed, this follows from tr   ¯Iρ(Mn − Bn) ≥ 0 whenever ¯Iρ ⪰ 0, M n − Bn ⪰ 0.
+
+For the left-hand side, use linearity of trace and expectation: tr   ¯IρMn
+
+ = EρEDn|θ
+
+h
+
+tr 
+
+ ¯Iρ(˜θn − θ)( ˜θn − θ)⊤i 
+
+.
+
+Applying the identity tr (Axx ⊤) = x⊤Ax (with A = ¯Iρ, x = ˜θn − θ) yields tr   ¯IρMn
+
+ = EρEDn|θ
+
+h
+
+(˜θn − θ)⊤ ¯Iρ(˜θn − θ)
+
+i
+
+.
+
+Substituting this and Bn = ( Eρ[In(θ)] + J(ρ)) −1 gives 
+
+EρEDn|θ
+
+h
+
+(˜θn − θ)⊤ ¯Iρ(˜θn − θ)
+
+i
+
+≥ tr 
+
+ ¯Iρ (Eρ[In(θ)] + J(ρ)) −1
+
+. (45) Third, we absorb the prior information J(ρ) into the sample information and lower bound (Eρ[In(θ)]+ 
+
+J(ρ)) −1 by a multiple of 1 
+
+> n
+
+¯Σ−1 
+
+> D
+
+. Recall from (43) that 
+
+Eρ[In(θ)] ⪯ n
+
+4 Eρ[Σ D (θ)] .
+
+Therefore, 
+
+Eρ[In(θ)] + J(ρ) ⪯ n
+
+4 Eρ[Σ D (θ)] + J(ρ).
+
+37 Since matrix inversion reverses the Loewner order on positive definite matrices, 
+
+(Eρ[In(θ)] + J(ρ)) −1 ⪰
+
+ n
+
+4 Eρ[Σ D (θ)] + J(ρ)
+
+−1
+
+.
+
+Thus it remains to lower bound the right-hand side by a multiple of 1 
+
+> n
+
+Eρ[Σ D (θ)] †.Define 
+
+nprior 
+
+.
+
+=
+
+ 8 Tρ
+
+λD
+
+
+
+. (46) Then, by Lemma 17, for all n ≥ nprior ,
+
+J(ρ) ⪯ n
+
+8 ¯ΣD .
+
+Hence n
+
+4 ¯ΣD + J(ρ) ⪯ n
+
+4 ¯ΣD + n
+
+8 ¯ΣD = 3n
+
+8 ¯ΣD .
+
+Applying inverse monotonicity again, 
+
+ n
+
+4 ¯ΣD + J(ρ)
+
+−1
+
+⪰
+
+ 3n
+
+8 ¯ΣD
+
+−1
+
+= 83n ¯Σ−1 
+
+> D
+
+.
+
+Therefore, for all n ≥ nprior ,
+
+ n
+
+4 Eρ[Σ D (θ)] + J(ρ)
+
+−1
+
+⪰ 83n Eρ[Σ D (θ)] −1. (47) Substituting (47) into (45), we obtain 
+
+EρEDn|θ
+
+h
+
+(˜θn − θ)⊤ ¯Iρ(˜θn − θ)
+
+i
+
+≥ 83n tr 
+
+ ¯Iρ Eρ[Σ D (θ)] −1
+
+, ∀n ≥ nprior . (48) Finally, we replace the averaged matrices by the actual matrices at θ. By Assumption 4(b), there exists μρ > 0 such that 
+
+ΣD (θ) ⪰ μρI, ∀θ ∈ supp ( ρ).
+
+Moreover, by the uniform boundedness of the pair-feature map g(e; θ) (Lemma 9), there exists 
+
+G < ∞ such that 
+
+∥g(e; θ)∥2 ≤ G ∀e, ∀θ ∈ Θ.
+
+Hence 
+
+ΣD (θ) = Ee∼D [g(e; θ)g(e; θ)⊤] ⪯ G2I, ∀θ ∈ Θ.
+
+Therefore, with MΣ := G2, we have 
+
+μρI ⪯ ΣD (θ) ⪯ MΣI, ∀θ ∈ supp ( ρ).
+
+Taking expectation gives 
+
+μρI ⪯ ¯ΣD ⪯ MΣI. 
+
+Moreover, for each θ,
+
+¯ΣD ⪯ MΣI ⪯ MΣ
+
+μρ
+
+ΣD (θ),
+
+and thus, by inverse monotonicity, 
+
+¯Σ−1 
+
+> D
+
+⪰ μρ
+
+MΣ
+
+ΣD (θ)−1.
+
+Since I(θ) ⪰ 0, we obtain tr  I(θ) ¯Σ−1
+
+> D
+
+ ≥ μρ
+
+MΣ
+
+tr  I(θ)Σ D (θ)−1.
+
+Taking expectation over θ ∼ ρ and using linearity of trace, tr   ¯Iρ ¯Σ−1
+
+> D
+
+ = Eρ
+
+tr  I(θ) ¯Σ−1
+
+> D
+
+ ≥ μρ
+
+MΣ
+
+Eρ
+
+tr  I(θ)Σ D (θ)−1 . (49) 38 Therefore we may take 
+
+c1
+
+.
+
+= μρ
+
+MΣ
+
+.
+
+Combining (48) and (49), we get 
+
+EρEDn|θ
+
+h
+
+(˜θn − θ)⊤ ¯Iρ(˜θn − θ)
+
+i
+
+≥ c0c1
+
+n Eρ
+
+tr  I(θ)Σ D (θ)† .
+
+Finally, by Lemma 16, there exist constants 0 < c − ≤ c+ < ∞ such that for all θ ∈ Θ and all 
+
+v ∈ H,
+
+c− v⊤I(θ)v ≤ v⊤ ¯Iρv ≤ c+ v⊤I(θ)v, ¯Iρ := Eρ[I(θ)] .
+
+Therefore, 
+
+EρEDn|θ
+
+h
+
+(˜θn − θ)⊤ ¯Iρ(˜θn − θ)
+
+i
+
+≍ EρEDn|θ
+
+h
+
+(˜θn − θ)⊤I(θ)( ˜θn − θ)
+
+i
+
+,
+
+where the comparability constants depend only on primitive constants. This proves (40). As a result of Proposition 1 and Lemma 8, we prove the lower bound as follows. 
+
+Theorem 4 (Van Trees lower bound under a smooth prior) . Suppose Assumptions 1 to 4(b) and 6 hold with R = supp ( ρ). Then for any induced policy estimator ˜πn = π˜θn and all n ≥ nprior ,
+
+Eθ⋆∼ρEDn|θ⋆
+
+h
+
+J(πθ⋆ ) − J(˜ πn)
+
+i
+
+≥ Clb 
+
+n Eθ⋆∼ρ
+
+h
+
+tr  I(θ⋆)Σ † 
+
+> D
+
+(θ⋆)i
+
+, (50) for a constant Clb > 0 depending only on constants appearing in assumptions, the prior ρ, and the sandwich constant. 
+
+Proof of Theorem 4. By the lower side of Proposition 1, there exists c− > 0 such that for every estimator output ˜θn,
+
+J(πθ∗ ) − J(π˜θn ) ≥ c− (˜θn − θ∗)⊤I(θ∗)( ˜θn − θ∗).
+
+Taking EρEDn|θ∗ and combining with (40) gives (50). 
+
+## D Proof of Theorem 2 
+
+Proof of Theorem 2. Let 
+
+Rr0
+
+.
+
+= Θ ∩ B(θ0, r 0), r0 = ∥θ⋆ − θ0∥2.
+
+Since Θ is convex and compact by Assumption 1, the set Rr0 is compact, contains both θ0 and θ⋆,and lies in the identifiable affine space θ⋆ + H.For each design D ∈ ∆( E), define 
+
+T ⋆(D) .
+
+= tr 
+
+
+
+I(θ⋆)Σ D (θ⋆)†
+
+, T 0(D) .
+
+= tr 
+
+
+
+I(θ0)Σ D (θ0)†
+
+.
+
+First, we prove a sandwich bound for I(θ⋆). By Lemma 3, for all θ ∈ Θ,
+
+mI I(θ⋆) ⪯ I(θ) ⪯ MI I(θ⋆).
+
+Applying this at θ = θ0 and rearranging gives 
+
+M −1 
+
+> I
+
+I(θ0) ⪯ I(θ⋆) ⪯ m−1 
+
+> I
+
+I(θ0).
+
+Define CI
+
+.
+
+= max {MI , m −1 
+
+> I
+
+}. Then 
+
+C−1 
+
+> I
+
+I(θ0) ⪯ I(θ⋆) ⪯ CI I(θ0). (51) Second, we prove a sandwich bound for Σ† 
+
+> D
+
+(θ⋆). Fix D ∈ ∆( E). By Assumption 2, the map 
+
+θ 7 → g(e; θ)
+
+39 is continuous for every edge e, and since the admissible edge set is finite, the map 
+
+(θ, D ) 7 → ΣD (θ) = Ee∼D [g(e; θ)g(e; θ)⊤]
+
+is continuous on Rr0 × ∆( E).Moreover, by Assumption 4(b) applied on Rr0 , there exists μr0 > 0 such that 
+
+v⊤ΣD (θ)v ≥ μr0 ∥v∥22, ∀v ∈ H, ∀θ ∈ R r0 , ∀D ∈ ∆( E).
+
+Hence, restricted to H, every matrix ΣD (θ) is positive definite on Rr0 × ∆( E).Consider the compact set 
+
+Kr0
+
+.
+
+=
+
+n
+
+(θ, D ) : θ ∈ R r0 , D ∈ ∆( E)
+
+o
+
+.
+
+On Kr0 , define 
+
+Λ+(θ, D ) .
+
+= λmax 
+
+
+
+ΣD (θ0)−1/2ΣD (θ)Σ D (θ0)−1/2
+
+,
+
+Λ−(θ, D ) .
+
+= λmax 
+
+
+
+ΣD (θ)−1/2ΣD (θ0)Σ D (θ)−1/2
+
+,
+
+where all matrices are understood as operators on H. Because ΣD (θ) is continuous and positive definite on H, both Λ+ and Λ− are continuous on the compact set Kr0 and therefore attain finite maxima. Let 
+
+CΣ(r0) .
+
+= max 
+
+n
+
+sup 
+
+> (θ,D )∈K r0
+
+Λ+(θ, D ), sup 
+
+> (θ,D )∈K r0
+
+Λ−(θ, D )
+
+o
+
+< ∞.
+
+Then for every θ ∈ R r0 and every D ∈ ∆( E),
+
+CΣ(r0)−1 ΣD (θ0) ⪯ ΣD (θ) ⪯ CΣ(r0) Σ D (θ0) on H. 
+
+Applying this at θ = θ⋆ yields 
+
+CΣ(r0)−1 ΣD (θ0) ⪯ ΣD (θ⋆) ⪯ CΣ(r0) Σ D (θ0) on H. (52) Since both matrices are positive definite on H, pseudoinverse monotonicity on H gives 
+
+CΣ(r0)−1 ΣD (θ0)† ⪯ ΣD (θ⋆)† ⪯ CΣ(r0) Σ D (θ0)† on H. (53) Next, we prove the trace bound (9). Using (51) and (53) , together with monotonicity of the trace against PSD matrices, we obtain 
+
+T ⋆(D) = tr 
+
+
+
+I(θ⋆)Σ D (θ⋆)†
+
+≤ CI CΣ(r0) tr 
+
+
+
+I(θ0)Σ D (θ0)†
+
+= CI CΣ(r0) T 0(D).
+
+Similarly, 
+
+T ⋆(D) = tr 
+
+
+
+I(θ⋆)Σ D (θ⋆)†
+
+≥ C−1 
+
+> I
+
+CΣ(r0)−1 tr 
+
+
+
+I(θ0)Σ D (θ0)†
+
+= C−1 
+
+> I
+
+CΣ(r0)−1 T 0(D).
+
+Define 
+
+Cplug (r0) .
+
+= CI CΣ(r0).
+
+Then for every D ∈ ∆( E),
+
+Cplug (r0)−1 T 0(D) ≤ T ⋆(D) ≤ Cplug (r0) T 0(D),
+
+which is exactly (9). Finally, we prove the oracle comparison (11). Since Dθ0 minimizes the plug-in criterion, 
+
+T 0(Dθ0 ) = inf  
+
+> D∈∆( E)
+
+T 0(D).
+
+Applying the upper side of (9) to Dθ0 gives 
+
+T ⋆(Dθ0 ) ≤ Cplug (r0) T 0(Dθ0 ) = Cplug (r0) inf  
+
+> D∈∆( E)
+
+T 0(D).
+
+40 On the other hand, for every D ∈ ∆( E), the lower side of (9) implies 
+
+T 0(D) ≤ Cplug (r0) T ⋆(D).
+
+Taking the infimum over D yields 
+
+inf  
+
+> D∈∆( E)
+
+T 0(D) ≤ Cplug (r0) inf  
+
+> D∈∆( E)
+
+T ⋆(D).
+
+Combining the last two displays, we obtain 
+
+T ⋆(Dθ0 ) ≤ Cplug (r0)2 inf  
+
+> D∈∆( E)
+
+T ⋆(D),
+
+that is, tr 
+
+
+
+I(θ⋆)Σ Dθ0 (θ⋆)†
+
+≤ Cplug (r0)2 inf  
+
+> D∈∆( E)
+
+tr 
+
+
+
+I(θ⋆)Σ D (θ⋆)†
+
+.
+
+This proves (11). 
+
+## E Technical lemmas 
+
+In this appendix, we list several useful technical lemmas, which are applied throughout the whole paper. 
+
+Lemma 9 (Uniform properties of the DPO logit uθ ). Suppose Assumption 2 holds. Define, for 
+
+e = ( x, y +, y −),
+
+uθ (e) := β log πθ (y+ | x) − log πθ (y− | x) − log π0(y+ | x) + log π0(y− | x) .
+
+Then the following hold uniformly over θ ∈ Θ and admissible e:(i) Uniform boundedness of uθ :
+
+|uθ (e)| ≤ Umax .
+
+(ii) Uniform boundedness of gradient: 
+
+∥∇ θ uθ (e)∥2 ≤ Gu.
+
+(iii) Uniform boundedness of Hessian: 
+
+∥∇ 2 
+
+> θ
+
+uθ (e)∥op ≤ Hu.
+
+(iv) Lipschitz continuity in θ: for any θ, θ ′ ∈ Θ,
+
+|uθ (e) − uθ′ (e)| ≤ Gu∥θ − θ′∥2, ∥∇ θ uθ (e) − ∇ θ uθ′ (e)∥2 ≤ Hu∥θ − θ′∥2.
+
+A valid choice of constants is 
+
+Gu = 4 βα 1, Hu = 2 β(2 α2 + 4 α21),
+
+and, if there exists p > 0 such that πθ (y | x) ≥ p and π0(y | x) ≥ p for all (x, y ), θ , then 
+
+Umax = 2 β log(1 /p 2).
+
+Proof of Lemma 9. Write 
+
+log πθ (y | x) = fθ (ϕ(x, y )) − log X
+
+> y′
+
+exp( fθ (ϕ(x, y ′))) .
+
+Hence 
+
+∇θ log πθ (y | x) = ∇θ fθ (ϕ(x, y )) − Ey′∼πθ (·| x)
+
+∇θ fθ (ϕ(x, y ′)) .
+
+So, by Assumption 1 ( ∥∇ θ fθ ∥2 ≤ α1), 
+
+∥∇ θ log πθ (y | x)∥2 ≤ 2α1.
+
+41 Therefore 
+
+∇θ uθ (e) = β ∇θ log πθ (y+ | x) − ∇ θ log πθ (y− | x) ,
+
+and 
+
+∥∇ θ uθ (e)∥2 ≤ β(2 α1 + 2 α1) = 4 βα 1 =: Gu.
+
+This proves (ii). For the Hessian, use the standard softmax identity: 
+
+∇2 
+
+> θ
+
+log πθ (y | x) = ∇2 
+
+> θ
+
+fθ (ϕ(x, y )) − Ey′ [∇2 
+
+> θ
+
+fθ (ϕ(x, y ′))] − Cov y′∼πθ (·| x)
+
+ ∇θ fθ (ϕ(x, y ′)) .
+
+Hence 
+
+∥∇ 2 
+
+> θ
+
+log πθ (y | x)∥op ≤ α2 + α2 + ∥Cov (∇θ f )∥op 
+
+| {z }
+
+> ≤4α21
+
+≤ 2α2 + 4 α21.
+
+Thus 
+
+∥∇ 2 
+
+> θ
+
+uθ (e)∥op ≤ β
+
+
+
+∥∇ 2 
+
+> θ
+
+log πθ (y+ | x)∥op + ∥∇ 2 
+
+> θ
+
+log πθ (y− | x)∥op 
+
+
+
+≤ 2β(2 α2 + 4 α21) =: Hu,
+
+proving (iii). For Lipschitzness in (iv), apply mean value theorem in θ:
+
+|uθ (e) − uθ′ (e)| ≤ sup 
+
+> ˜θ
+
+∥∇ θ u˜θ (e)∥2 ∥θ − θ′∥2 ≤ Gu∥θ − θ′∥2,
+
+∥∇ θ uθ (e) − ∇ θ uθ′ (e)∥2 ≤ sup 
+
+> ˜θ
+
+∥∇ 2 
+
+> θ
+
+u˜θ (e)∥op ∥θ − θ′∥2 ≤ Hu∥θ − θ′∥2.
+
+Finally, for (i), if πθ , π 0 ≥ p > 0, then 
+
+log πθ (y+ | x) − log πθ (y− | x) ≤ 2 log(1 /p ),
+
+and similarly for π0, hence 
+
+|uθ (e)| ≤ 2β log(1 /p 2) = Umax .
+
+Lemma 10 (Global lower bound on logistic curvature from uniform logit bound) . Suppose Assump-tion 2 holds. Define 
+
+κ0 := σ(Umax ) 1 − σ(Umax ).
+
+Then 
+
+σ′ uθ (e) ≥ κ0 > 0, ∀ θ ∈ Θ, ∀ e. 
+
+Proof of Lemma 10. For logistic sigmoid σ(t) = 1 /(1 + e−t),
+
+σ′(t) = σ(t) 1 − σ(t) = e−t
+
+(1 + e−t)2 = 12 + et + e−t .
+
+Hence σ′(t) is an even function of t, and decreases as |t| increases. Therefore, on the interval 
+
+[−Umax , U max ],
+
+inf 
+
+> |t|≤ Umax
+
+σ′(t) = σ′(Umax ) = σ(Umax ) 1 − σ(Umax ) = κ0.
+
+Since |uθ (e)| ≤ Umax uniformly over (θ, e ), we have 
+
+σ′ uθ (e) ≥ inf 
+
+> |t|≤ Umax
+
+σ′(t) = κ0,
+
+for all θ ∈ Θ and all admissible e. Also σ(Umax ) ∈ (0 , 1) , so κ0 > 0.
+
+Lemma 11 (Uniform boundedness and Lipschitzness of the DPO loss class) . Suppose Assumption 2 holds, and Lemma 9 gives 
+
+|uθ (e)| ≤ Umax , ∥∇ θ uθ (e)∥2 ≤ Gu, ∀θ ∈ Θ, ∀e. 
+
+For z = ( e, a ), a ∈ { 0, 1}, define 
+
+ℓθ (z) := ℓ(a, u θ (e)) , ℓ(a, u ) := −a log σ(u) − (1 − a) log(1 − σ(u)) .
+
+Then: 42 (i) (Uniform envelope) for all θ ∈ Θ, z,
+
+0 ≤ ℓθ (z) ≤ Bℓ, Bℓ := log(1 + eUmax ).
+
+(ii) (Uniform Lipschitz in θ) for all θ, θ ′ ∈ Θ, z,
+
+|ℓθ (z) − ℓθ′ (z)| ≤ Lℓ∥θ − θ′∥2, Lℓ := Gu.
+
+Proof. Use the equivalent form 
+
+ℓ(a, u ) = log(1 + eu) − au. 
+
+Hence, if |u| ≤ Umax ,
+
+0 ≤ ℓ(a, u ) ≤ log(1 + eUmax ) = Bℓ,
+
+which proves (i) since |uθ (e)| ≤ Umax uniformly. Next, 
+
+∂uℓ(a, u ) = σ(u) − a, |∂uℓ(a, u )| ≤ 1,
+
+so for any u, u ′ ∈ R,
+
+|ℓ(a, u ) − ℓ(a, u ′)| ≤ | u − u′|.
+
+Therefore 
+
+|ℓθ (z) − ℓθ′ (z)| ≤ | uθ (e) − uθ′ (e)|.
+
+By mean-value theorem in parameter space, 
+
+|uθ (e) − uθ′ (e)| ≤ sup 
+
+> ˜θ∈Θ
+
+∥∇ θ u˜θ (e)∥2 ∥θ − θ′∥2 ≤ Gu∥θ − θ′∥2.
+
+So (ii) holds with Lℓ = Gu.
+
+Lemma 12 (Hessian regularity of the DPO loss) . Suppose Assumptions 1 and 2 hold. Let 
+
+Umax , G u, H u be the constants from Lemma 9 such that for all θ ∈ Θ and all admissible e,
+
+|uθ (e)| ≤ Umax , ∥∇ θ uθ (e)∥2 ≤ Gu, ∥∇ 2 
+
+> θ
+
+uθ (e)∥op ≤ Hu.
+
+For z = ( e, a ) with a ∈ { 0, 1}, define 
+
+ℓθ (z) := ℓ(a, u θ (e)) , ℓ(a, u ) = −a log σ(u) − (1 − a) log(1 − σ(u)) .
+
+Let PH denote the orthogonal projector onto H. Then the following hold uniformly over Θ:(i) (Per-sample projected Hessian envelope). 
+
+sup 
+
+> θ∈Θ, z
+
+∥PH ∇2 
+
+> θ
+
+ℓθ (z)PH ∥op ≤ MH , MH := G2 
+
+> u
+
++ Hu.
+
+(ii) (Per-sample projected Hessian Lipschitzness). There exists a constant LH < ∞, depending only on the fixed constants in the standing assumptions, such that for all θ, θ ′ ∈ Θ,
+
+sup 
+
+> z
+
+∥PH (∇2 
+
+> θ
+
+ℓθ (z) − ∇ 2 
+
+> θ′
+
+ℓθ′ (z)) PH ∥op ≤ LH ∥θ − θ′∥2.
+
+In particular, one may take 
+
+LH := 14 G3 
+
+> u
+
++ 34 GuHu + Γ u,
+
+where 
+
+Γu
+
+.
+
+= sup 
+
+> θ∈Θ
+
+sup 
+
+> e
+
+∥∇ 3 
+
+> θ
+
+uθ (e)∥op ,
+
+which is finite under Assumption 2. (iii) (Uniform variance proxy). 
+
+sup 
+
+> θ∈Θ
+
+E
+
+h PH ∇2 
+
+> θ
+
+ℓθ (z)PH − E[PH ∇2 
+
+> θ
+
+ℓθ (z)PH ]2i
+
+> op
+
+≤ VH , VH := 4 M 2 
+
+> H
+
+.
+
+43 Proof of Lemma 12. Fix z = ( e, a ) with a ∈ { 0, 1} and θ ∈ Θ. Write 
+
+u := uθ (e), g := ∇θ uθ (e), U := ∇2 
+
+> θ
+
+uθ (e).
+
+For logistic cross-entropy, 
+
+∇2 
+
+> θ
+
+ℓθ (z) = σ′(u) gg ⊤ + ( σ(u) − a) U. (54) 
+
+(i) Since 0 ≤ σ′(u) ≤ 1/4 ≤ 1 and |σ(u) − a| ≤ 1,
+
+∥∇ 2 
+
+> θ
+
+ℓθ (z)∥op ≤ ∥ gg ⊤∥op + ∥U ∥op .
+
+Moreover ∥gg ⊤∥op = ∥g∥22 ≤ G2 
+
+> u
+
+and ∥U ∥op ≤ Hu, hence 
+
+∥∇ 2 
+
+> θ
+
+ℓθ (z)∥op ≤ G2 
+
+> u
+
++ Hu = MH .
+
+Finally, ∥PH AP H ∥op ≤ ∥ A∥op for any matrix A, so ∥PH ∇2 
+
+> θ
+
+ℓθ (z)PH ∥op ≤ MH .
+
+(ii) Let (u, g, U ) and (u′, g ′, U ′) correspond to θ and θ′, respectively. Subtracting (54) at θ and θ′
+
+and regrouping yields 
+
+∇2 
+
+> θ
+
+ℓθ (z)−∇ 2 
+
+> θ′
+
+ℓθ′ (z) = ( σ′(u)−σ′(u′)) gg ⊤+σ′(u′)( gg ⊤−g′g′⊤ )+( σ(u)−σ(u′)) U +( σ(u′)−a)( U −U ′).
+
+Using |σ′(u) − σ′(u′)| ≤ 14 |u − u′|, |σ(u) − σ(u′)| ≤ 14 |u − u′|, and |u − u′| ≤ Gu∥θ − θ′∥2, we obtain 
+
+∥(σ′(u) − σ′(u′)) gg ⊤∥op ≤ 14 G3
+
+> u
+
+∥θ − θ′∥2, ∥(σ(u) − σ(u′)) U ∥op ≤ 14 GuHu∥θ − θ′∥2.
+
+Next, since gg ⊤ − g′g′⊤ = ( g − g′)g⊤ + g′(g − g′)⊤,
+
+∥gg ⊤ − g′g′⊤ ∥op ≤ ∥ g − g′∥2 ∥g∥2 + ∥g′∥2 ∥g − g′∥2 ≤ 2Gu ∥g − g′∥2.
+
+Because ∥g − g′∥2 ≤ Hu∥θ − θ′∥2, it follows that 
+
+∥σ′(u′)( gg ⊤ − g′g′⊤ )∥op ≤ 14 · 2GuHu∥θ − θ′∥2 = 12 GuHu∥θ − θ′∥2.
+
+Finally, |σ(u′) − a| ≤ 1 and the mean-value theorem gives 
+
+∥U − U ′∥op = ∥∇ 2 
+
+> θ
+
+uθ (e) − ∇ 2 
+
+> θ′
+
+uθ′ (e)∥op ≤ Γu∥θ − θ′∥2.
+
+Therefore ∥(σ(u′) − a)( U − U ′)∥op ≤ Γu∥θ − θ′∥2. Summing the four bounds yields 
+
+∥∇ 2 
+
+> θ
+
+ℓθ (z) − ∇ 2 
+
+> θ′
+
+ℓθ′ (z)∥op ≤
+
+ 14 G3 
+
+> u
+
++ 34 GuHu + Γ u
+
+
+
+∥θ − θ′∥2,
+
+and projecting by PH does not increase the operator norm, proving (ii). 
+
+(iii) Define the centered matrix 
+
+Xθ := PH ∇2 
+
+> θ
+
+ℓθ (z)PH − E[PH ∇2 
+
+> θ
+
+ℓθ (z)PH ].
+
+By (i), ∥PH ∇2 
+
+> θ
+
+ℓθ (z)PH ∥op ≤ MH , hence ∥Xθ ∥op ≤ 2MH . Therefore, 
+
+E[X2 
+
+> θ
+
+] op ≤ E∥X2 
+
+> θ
+
+∥op ≤ E∥Xθ ∥2 
+
+> op
+
+≤ 4M 2 
+
+> H
+
+= VH ,
+
+uniformly in θ ∈ Θ.
+
+Lemma 13 (Gram perturbation bound for ΣD (θ⋆)). Let g(e; θ) = ∇θ uθ (e) and 
+
+ΣD (θ) .
+
+= Ee∼D
+
+g(e; θ)g(e; θ)⊤.
+
+Suppose that for all e and all θ, θ ′ ∈ Θ,
+
+∥g(e; θ)∥2 ≤ G, ∥g(e; θ) − g(e; θ′)∥2 ≤ Hu∥θ − θ′∥2
+
+for some constants G, H u > 0. Then for every θ ∈ Θ,
+
+ΣD (θ) − ΣD (θ⋆) op ≤ 2GH u∥θ − θ⋆∥2 + H2
+
+> u
+
+∥θ − θ⋆∥22. (55) 44 Proof of Lemma 13. Write ∆θ = θ − θ⋆ and ∆g(e) = g(e; θ) − g(e; θ⋆). Using g(e; θ) = g(e; θ⋆) + ∆g(e), we have the identity 
+
+g(e; θ)g(e; θ)⊤ − g(e; θ⋆)g(e; θ⋆)⊤ = ∆ g(e) g(e; θ⋆)⊤ + g(e; θ⋆)∆ g(e)⊤ + ∆ g(e) ∆ g(e)⊤.
+
+Taking expectation and applying ∥E[M ]∥op ≤ E∥M ∥op yields 
+
+ΣD (θ) − ΣD (θ⋆) op ≤ 2 E∥∆g(e)∥2 ∥g(e; θ⋆)∥2
+
+ + E∥∆g(e)∥22.
+
+By ∥g(e; θ⋆)∥2 ≤ G and ∥∆g(e)∥2 ≤ Hu∥∆θ∥2 for all e,
+
+E∥∆g(e)∥2 ∥g(e; θ⋆)∥2
+
+ ≤ G E∥∆g(e)∥2 ≤ GH u∥∆θ∥2, E∥∆g(e)∥22 ≤ H2
+
+> u
+
+∥∆θ∥22.
+
+Combining the above inequalities gives (55). 
+
+Lemma 14 (Fisher non-degeneracy) . Suppose Assumptions 1 to 3 hold. In particular, assume 
+
+|fθ (ϕ(x, y )) | ≤ α0, ∀θ ∈ Θ, ∀x, ∀y ∈ A (x),
+
+and that |A (x)| ≤ dmax for all x. Then the Fisher information is uniformly non-degenerate on the identifiable subspace H:
+
+v⊤I(θ)v ≥ μ ∥v∥22, ∀v ∈ H, 
+
+where μ =
+
+ e−2α0
+
+> dmax
+
+2
+
+∆2 
+
+> g
+
+.
+
+Proof of Lemma 14. Fix θ ∈ Θ and a prompt x. Let 
+
+ψθ (x, y ) .
+
+= ∇θ fθ (ϕ(x, y )) , Z .
+
+= v⊤ψθ (x, Y ), Y ∼ πθ (· | x),
+
+for an arbitrary unit vector v ∈ H. Under the softmax model, 
+
+v⊤I(θ)v = Ex
+
+Var y∼πθ (·| x)
+
+ v⊤ψθ (x, y ) .
+
+First, we show that the softmax probabilities are bounded away from 0. Since |fθ (ϕ(x, y )) | ≤ α0,we have exp( fθ (ϕ(x, y ))) ∈ [e−α0 , e α0 ]. Hence 
+
+X
+
+> y′∈A (x)
+
+exp( fθ (ϕ(x, y ′))) ≤ |A (x)| eα0 ≤ dmax eα0 ,
+
+and therefore for every y ∈ A (x),
+
+πθ (y | x) = exp( fθ (ϕ(x, y ))) 
+
+P 
+
+> y′
+
+exp( fθ (ϕ(x, y ′))) ≥ e−α0
+
+dmax eα0 = e−2α0
+
+dmax 
+
+.
+
+= pmin .
+
+Second, we show the variance lower bound from two separated atoms. For any random variable Z
+
+supported on discrete values {zy } with probabilities {py }, we have Var (Z) = 12
+
+X
+
+> i,j
+
+pipj (zi − zj )2 ≥ py1 py2 (zy1 − zy2 )2,
+
+for any two indices y1, y 2. By Assumption 3, there exist y1, y 2 ∈ A (x) such that 
+
+|zy1 − zy2 | = v⊤(ψθ (x, y 1) − ψθ (x, y 2)) ≥ ∆g .
+
+Combining with py1 , p y2 ≥ pmin yields Var Y ∼πθ (·| x)
+
+ v⊤ψθ (x, Y ) ≥ p2min ∆2 
+
+> g
+
+.
+
+Using the bound above for each x gives 
+
+v⊤I(θ)v ≥ p2min ∆2 
+
+> g
+
+=
+
+ e−2α0
+
+dmax 
+
+2
+
+∆2 
+
+> g
+
+,
+
+for all θ ∈ Θ and all unit v ∈ H.45 Lemma 15 (Covariance bound for ∇Ln(θ⋆)). Suppose Assumptions 1 and 2 hold, and the pairwise labels are well-specified: 
+
+ai | ei ∼ Bernoulli  σ(ui(θ⋆)) , i = 1 , . . . , n, 
+
+with conditional independence across i given {ei}ni=1 . Then 
+
+E[∇Ln(θ⋆) | { ei}ni=1 ] = 0 , (56) and 
+
+E∇Ln(θ⋆)∇Ln(θ⋆)⊤ {ei}ni=1 
+
+ ⪯ 14n bΣn(θ⋆). (57) Moreover, we have 
+
+E
+
+h
+
+ΣD (θ⋆)†/2∇Ln(θ⋆) 22
+
+i
+
+≤ dim( H)4n . (58) 
+
+Proof of Lemma 15. For logistic loss, ∂ℓ (a, u )/∂u = σ(u) − a. Hence for any θ ∈ Θ,
+
+∇Ln(θ) = 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+ σ(uθ (ei)) − ai
+
+ gθ (ei).
+
+In particular, at θ⋆,
+
+∇Ln(θ⋆) = 1
+
+n
+
+> n
+
+X
+
+> i=1
+
+ σ(uθ⋆ (ei)) − ai
+
+ gθ⋆ (ei).
+
+Condition on {ei}ni=1 . By realizability, 
+
+E[ai | ei] = σ uθ⋆ (ei),
+
+so each summand has conditional mean zero, which implies (56) . Moreover, by conditional indepen-dence across i, for i̸ = j,
+
+E  σ(uθ⋆ (ei)) − ai
+
+  σ(uθ⋆ (ej )) − aj
+
+ {ek}nk=1 
+
+ = 0 .
+
+Therefore, 
+
+E∇Ln(θ⋆)∇Ln(θ⋆)⊤ {ei}ni=1 
+
+ = 1
+
+n2
+
+> n
+
+X
+
+> i=1
+
+Var (ai | ei) gθ⋆ (ei) gθ⋆ (ei)⊤.
+
+For a Bernoulli random variable with success probability σ(u),Var (a | e) = σ(u)(1 − σ(u)) = σ′(u) ≤ 14 .
+
+Hence, 
+
+E∇Ln(θ⋆)∇Ln(θ⋆)⊤ {ei}ni=1 
+
+ ⪯ 14n2
+
+> n
+
+X
+
+> i=1
+
+gθ⋆ (ei) gθ⋆ (ei)⊤ = 14n bΣn(θ⋆),
+
+which proves (57). Let Σ⋆
+
+.
+
+= Σ D (θ⋆) = Ee∼D [gθ⋆ (e) gθ⋆ (e)⊤]. Note that 
+
+Σ†/2 
+
+> ⋆
+
+∇Ln(θ⋆) 22 = tr 
+
+
+
+Σ†/2 
+
+> ⋆
+
+∇Ln(θ⋆)∇Ln(θ⋆)⊤ Σ†/2
+
+> ⋆
+
+
+
+.
+
+Taking expectation and using (57), 
+
+E
+
+h
+
+Σ†/2 
+
+> ⋆
+
+∇Ln(θ⋆) 22
+
+i
+
+≤ 14n E
+
+h
+
+tr  Σ†/2 
+
+> ⋆
+
+bΣn(θ⋆)Σ †/2
+
+> ⋆
+
+i
+
+.
+
+Since E[bΣn(θ⋆)] = Σ ⋆, we obtain 
+
+E
+
+h
+
+Σ†/2 
+
+> ⋆
+
+∇Ln(θ⋆) 22
+
+i
+
+≤ 14n tr  Σ†/2 
+
+> ⋆
+
+Σ⋆Σ†/2
+
+> ⋆
+
+.
+
+The matrix Σ†/2 
+
+> ⋆
+
+Σ⋆Σ†/2 
+
+> ⋆
+
+is the orthogonal projector onto Range(Σ ⋆), hence its trace equals rank(Σ ⋆).Under Assumption 1, Range(Σ ⋆) = H, so rank(Σ ⋆) = dim( H). Therefore, 
+
+E
+
+h
+
+Σ†/2 
+
+> ⋆
+
+∇Ln(θ⋆) 22
+
+i
+
+≤ dim( H)4n .
+
+46 To prove Lemma 8, we first show the following two useful technical lemmas. 
+
+Lemma 16 (Uniform bounds for the Fisher matrix on Θ). Suppose Assumptions 1 to 3 hold. Then there exist constants 
+
+0 < m I ≤ MI < ∞
+
+depending only on primitive constants such that for all θ ∈ Θ,
+
+mI IH ⪯ I(θ) ⪯ MI IH on H, (59) where IH denotes the identity operator on the identifiable space H. Equivalently, for every v ∈ H,
+
+mI ∥v∥22 ≤ v⊤I(θ)v ≤ MI ∥v∥22. (60) In particular, for the prior-averaged Fisher matrix 
+
+¯Iρ
+
+.
+
+= Eθ∼ρ[I(θ)] ,
+
+we have 
+
+mI IH ⪯ ¯Iρ ⪯ MI IH . (61) Consequently, for all θ ∈ Θ and all v ∈ H,
+
+mI
+
+MI
+
+v⊤I(θ)v ≤ v⊤ ¯Iρv ≤ MI
+
+mI
+
+v⊤I(θ)v. (62) 
+
+Proof of Lemma 16. The lower bound in (59) is exactly the uniform nondegeneracy on H proved in Lemma 14, so we may take mI = μ.For the upper bound, recall 
+
+I(θ) = ExEy∼πθ (·| x)
+
+sθ (x, y )sθ (x, y )⊤, sθ (x, y ) = ∇θ log πθ (y | x).
+
+By the softmax form and Assumption 2, the score is uniformly bounded on H: for all (x, y ) and all 
+
+θ ∈ Θ, ∥sθ (x, y )∥2 ≤ 2α1, (here α1 is the uniform bound on ∥∇ θ fθ (ϕ(x, y )) ∥2). Therefore, for any 
+
+v ∈ H,
+
+v⊤I(θ)v = ExEy∼πθ (·| x)
+
+(v⊤sθ (x, y )) 2 ≤ ExEy∼πθ (·| x)
+
+∥v∥22∥sθ (x, y )∥22
+
+ ≤ 4α21∥v∥22.
+
+Hence (59) holds with MI = 4 α21.Now average (59) with respect to ρ. Since Loewner order is preserved under expectation, 
+
+mI IH ⪯ Eρ[I(θ)] = ¯Iρ ⪯ MI IH ,
+
+which proves (61). Finally, for any v ∈ H and any θ ∈ Θ,
+
+v⊤ ¯Iρv ≤ MI ∥v∥22 ≤ MI
+
+mI
+
+v⊤I(θ)v, 
+
+and similarly 
+
+v⊤ ¯Iρv ≥ mI ∥v∥22 ≥ mI
+
+MI
+
+v⊤I(θ)v. 
+
+This proves (62). 
+
+Lemma 17. Suppose Assumptions 4(b) and 6 holds with R = supp ( ρ), and define 
+
+J(ρ) .
+
+=
+
+Z
+
+> Θ
+
+∇ log ρ(θ) ∇ log ρ(θ)⊤ ρ(θ) dθ, ¯ΣD
+
+.
+
+= Eθ∼ρ
+
+ΣD (θ).
+
+Let 
+
+Tρ
+
+.
+
+= tr  J(ρ) =
+
+Z
+
+> Θ
+
+∥∇ log ρ(θ)∥22 ρ(θ) dθ < ∞.
+
+As in (46), let 
+
+nprior 
+
+.
+
+=
+
+ 8 Tρ
+
+λD
+
+
+
+.
+
+Then for all n ≥ nprior ,
+
+J(ρ) ⪯ n
+
+8 ¯ΣD . (63) 47 Proof of Lemma 17. By Assumption 6(3), 
+
+Tρ = tr (J(ρ)) = 
+
+Z
+
+> Θ
+
+∥∇ log ρ(θ)∥22 ρ(θ) dθ < ∞.
+
+Since J(ρ) ⪰ 0, its largest eigenvalue is bounded by its trace, hence 
+
+J(ρ) ⪯ tr (J(ρ)) I = TρI. (64) Next, by Assumption 4(b), for all θ ∈ supp ( ρ),
+
+ΣD (θ) ⪰ μρI. 
+
+Taking expectation with respect to ρ yields 
+
+¯ΣD = Eθ∼ρ[Σ D (θ)] ⪰ μρI. (65) Now let n ≥ nprior , where nprior =
+
+l 8Tρ
+
+> μρ
+
+m
+
+. Then n 
+
+> 8
+
+μρ ≥ Tρ. Combining this with (64) and (65), 
+
+J(ρ) ⪯ TρI ⪯ n
+
+8 μρI ⪯ n
+
+8 ¯ΣD .
+
+## F Experiment implementation details and hyperparameters 
+
+F.1 Implementation Details for the IMDb Experiment 
+
+The IMDb experiments were run on GPU workers equipped with H100-class GPUs. Depending on the curation setting and dataset size, each DPO fine-tuning run took from several minutes to roughly one hour, while the D∗ construction and evaluation steps were substantially lighter. 
+
+SFT model and reference policy. We follow the IMDb setup in Rafailov et al. [2023]. We first fine-tune GPT-2-large on reviews from the training split of the IMDb dataset using supervised fine-tuning (SFT). The resulting SFT model is used as the reference policy π0 for all subsequent DPO experiments. In all DPO runs, the policy is initialized from this SFT model, and the reference policy is fixed to the same SFT model. 
+
+DPO training configuration. For each curated preference dataset, we run full-parameter DPO training. We use RMSprop as the optimizer, with learning rate 10 −5. The per-device training batch size is 16 , and we use gradient accumulation of 2, giving an effective batch size of 32 . We use a cosine learning-rate scheduler with warmup ratio 0.1. The maximum sequence length is set to 256 .For the reward–KL frontier experiments, each point in the frontier corresponds to the final checkpoint of one DPO training run under a specific DPO regularization parameter β. We sweep 
+
+β ∈ { 0.05 , 0.1, 0.2, 0.5, 1, 2, 5}.
+
+For evaluation, we generate responses from the trained policy and compute both the reward and the KL divergence relative to the SFT reference policy. Following Rafailov et al. [2023], we use the sentiment classifier siebert/sentiment-roberta-large-english as the reward model. The KL is estimated on generated responses as the sequence-level log-probability difference between the trained policy and the reference policy, 
+
+log ˆ π(y | x) − log π0(y | x) = 
+
+> |y|
+
+X
+
+> t=1
+
+[log ˆ π(yt | x, y <t ) − log π0(yt | x, y <t )] .
+
+This sequence-level empirical KL estimate follows the evaluation protocol used in Rafailov et al. [2023]. 
+
+Candidate generation. For prompt selection, we sample a candidate pool of 1,000 prompts and generate two responses for each prompt from the SFT reference model. This gives one candidate comparison per prompt. We then select N = 175 comparisons for DPO training. For response selection, we generate D = 8 candidate responses for each prompt. This gives  82
+
+ candidate response pairs within each prompt. We select one response pair per prompt for DPO training. 48 Feature representation. To compute the D∗-based design, we represent each prompt–response pair (x, y ) using the last-token hidden representation from the SFT model. Let 
+
+ϕ(x, y ) ∈ Rd
+
+denote this last-token representation. For a candidate comparison 
+
+e = ( x, y a, y b),
+
+we define the feature difference 
+
+ge = βD (ϕ(x, y a) − ϕ(x, y b)) ,
+
+where βD is the DPO scaling parameter used in the design computation. This feature difference is used as a low-dimensional proxy for the pairwise sensitivity vector of the DPO logit. 
+
+Estimating the design weight matrix I(θ0). The design objective uses a feature-space approxima-tion to I(θ0). We first fit a linear approximation to the SFT log-probabilities. Specifically, for each prompt xi and candidate response yik , we compute the SFT log-probability 
+
+ℓik = log π0(yik | xi).
+
+Since only within-prompt comparisons are relevant, we remove a prompt-specific mean and fit a ridge regression: 
+
+bθ0 ∈ arg min 
+
+> θ
+
+X
+
+> i,k
+
+ϕ(xi, y ik )⊤θ − ℓik − 1
+
+KiKiX
+
+> ℓ=1
+
+ℓiℓ 
+
+!! 2
+
++ α∥θ∥22.
+
+This gives a feature-space approximation to the SFT policy. We then define a softmax distribution over the candidate responses for each prompt: 
+
+bπθ0 (yik | xi) = exp 
+
+
+
+ϕ(xi, y ik )⊤ bθ0
+
+PKi 
+
+> ℓ=1
+
+exp 
+
+
+
+ϕ(xi, y iℓ )⊤ bθ0
+
+ .
+
+The matrix I(θ0) is estimated by the average within-prompt feature covariance: 
+
+bI(θ0) = 1
+
+M
+
+> M
+
+X
+
+> i=1
+> Ki
+
+X
+
+> k=1
+
+bπθ0 (yik | xi) ( ϕ(xi, y ik ) − bμi) ( ϕ(xi, y ik ) − bμi)⊤ ,
+
+where 
+
+bμi =
+
+> Ki
+
+X
+
+> k=1
+
+bπθ0 (yik | xi)ϕ(xi, y ik ).D∗ design computation. Given candidate comparisons e ∈ E , we compute design weights over the corresponding feature differences ge. For a nonnegative weight vector w over candidate comparisons, define the regularized information matrix 
+
+A(w) = λI + X
+
+> e∈E
+
+wegeg⊤ 
+
+> e
+
+.
+
+The implemented D∗ design minimizes the feature-space I-optimal objective 
+
+Φ( w) = tr 
+
+bI(θ0)A(w)−1
+
+.
+
+We solve this continuous design problem approximately using a Frank-Wolfe procedure. 
+
+Sampling from the design. In the prompt selection experiment, we first compute D∗ weights over all 1,000 candidate prompt-level comparisons. We then sample N = 175 comparisons without replacement according to the normalized D∗ weights. The benchmark selects the first 175 prompt-level comparisons. In the response selection experiment, we compute D∗ weights over all within-prompt candidate response pairs. For each prompt, we normalize the weights over its  82
+
+ candidate response pairs and sample one pair without replacement from this within-prompt distribution. The benchmark always compares the first two generated responses for each prompt. 49 Monte Carlo replications and error bars. For each dataset-generation seed, we independently resample the candidate pool, regenerate candidate responses, recompute the D∗ design weights, reconstruct the curated preference training set, and retrain the DPO policy from the same SFT reference model. Error bars in the reward–KL frontier plots report Monte Carlo standard errors across these independent runs. In the prompt selection experiment, error bars are computed over 30 
+
+independent runs; in the response selection experiment, error bars are computed over 80 independent runs. 
+
+F.2 Implementation Details for the Anthropic-HH Experiment 
+
+The Anthropic-HH experiments were run on H100-class GPU workers. The trace-design construction and response generation used one GPU, while each Pythia-2.8B DPO fine-tuning run used four GPUs. Across the Anthropic-HH budgets considered, each DPO fine-tuning run took about one hour. GPT-based evaluation was performed through API calls and did not require GPU computation. 
+
+Dataset and reference policy. We further evaluate our dataset curation method on the Anthropic Helpful–Harmless (HH) preference dataset. We use the default train/test splits of the Anthropic HH-RLHF dataset, which contain preference comparisons from both helpfulness and harmlessness data. Each example consists of a prompt, a chosen response, and a rejected response. Following the DPO pipeline in Rafailov et al. [2023], we first perform supervised fine-tuning (SFT) on Pythia-2.8B using the chosen responses in the HH training split. The resulting SFT model is used as both the initialization of the DPO policy and the fixed reference policy π0. Each HH training example consists of a prompt x, a chosen response y+, and a rejected response y−, which directly defines one candidate preference comparison. 
+
+Candidate pool and benchmark. We construct a candidate pool from the HH training split. In the full-pool experiment, the candidate pool contains M = 160 ,800 preference comparisons. Given a training budget N , the benchmark dataset consists of the first N comparisons in this candidate pool. The D∗-curated dataset uses the same budget N , but selects comparisons according to the optimized 
+
+D∗ design weights. Both methods therefore use the same number of preference comparisons for DPO training. 
+
+Feature construction. For each candidate comparison ei = ( xi, y + 
+
+> i
+
+, y − 
+
+> i
+
+), we use the SFT model to extract hidden representations. Specifically, we feed the full sequences xi ◦ y+ 
+
+> i
+
+and xi ◦ y− 
+
+> i
+
+into the SFT model and take the last-token hidden states. We denote the resulting representations by ϕ+ 
+
+> i
+
+and 
+
+ϕ− 
+
+> i
+
+. We then use the difference 
+
+gi = β(ϕ+ 
+
+> i
+
+− ϕ− 
+
+> i
+
+)
+
+as the design vector for this comparison, where β = 0 .1 matches the DPO regularization parameter used in training. To make the design computation numerically tractable, we standardize the hidden representations and apply PCA to obtain a 128 -dimensional feature representation. 
+
+D∗ design computation. The D∗-based design is computed using the same feature-space approxi-mation procedure as in the IMDb experiment. We first fit a local parameter θ0 by ridge regression from the feature representations to the centered SFT log-likelihoods of the chosen and rejected responses. Using this fitted θ0, we compute a Fisher-type matrix I(θ0) over the candidate pool. We then solve the trace-design problem 
+
+min 
+
+> q∈∆M
+
+tr 
+
+ λI +
+
+> M
+
+X
+
+> i=1
+
+qigig⊤
+
+> i
+
+!−1
+
+I(θ0)
+
+ ,
+
+where q is a distribution over candidate comparisons and λ = 10 −3 is a ridge parameter. We solve this optimization problem using Frank–Wolfe. The resulting optimized design weights are used as sampling probabilities. For a fixed budget N , we sample N comparisons without replacement 
+
+according to these weights. 
+
+DPO training configuration. For each curated HH preference dataset, we perform DPO starting from the SFT Pythia-2.8B model, with the same SFT model fixed as the reference policy. We use 50 the same DPO training configuration for the D∗-curated dataset and the benchmark dataset. In the reported runs, we use β = 0 .1, batch size 64 , RMSprop optimizer with learning rate 10 −6, and a linear learning-rate warmup over the first 150 optimization steps. Each model is trained for one epoch. This ensures that differences in downstream performance are attributable to the curated preference data rather than to training hyperparameters. 
+
+Evaluation protocol. To evaluate the trained policies, we generate responses on prompts from the HH test split. For each test prompt, we compare the generated response with the corresponding HH chosen response. We use sampling temperatures 0.25 , 0.7, and 1.0, and evaluate 500 test prompts for each method-temperature pair. GPT-4.1 is used as an automatic judge. The judge compares the model-generated response against the HH chosen response and returns whether the model response is better, worse, or tied. We report the win rate of the trained policy’s generated response against the HH chosen response, counting a tie as 0.5. For all methods, we use the same test prompts and the same judging protocol. 51
