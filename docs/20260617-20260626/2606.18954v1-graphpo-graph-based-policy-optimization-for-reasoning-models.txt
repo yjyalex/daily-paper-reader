@@ -1,0 +1,1266 @@
+Title: GraphPO: Graph-based Policy Optimization for Reasoning Models
+
+URL Source: https://arxiv.org/pdf/2606.18954v1
+
+Published Time: Thu, 18 Jun 2026 00:49:22 GMT
+
+Number of Pages: 25
+
+Markdown Content:
+# GraphPO: Graph-based Policy Optimization for Reasoning Models 
+
+Yuliang Zhan 1,∗ Xinyu Tang 1,∗ Jian Li 1 Dandan Zheng 2 Weilong Chai 2
+
+Jingdong Chen 2 Jun Zhou 2 Ge Wu 2 Wenyue Tang 2 Hao Sun 11 Gaoling School of Artificial Intelligence, Renmin University of China 2 Ant Group 
+
+# Abstract 
+
+Reinforcement Learning with Verifiable Rewards (RLVR) has become a standard paradigm for enhancing the capability of large reasoning models. RLVR typically samples responses independently and optimizes the policy using from final answers. This paradigm has two limitations. First, independently responses often contain similar intermediate reasoning steps, causing redundant exploration and wasted computation. Second, sparse final-answer rewards make it hard to identify useful steps. Tree-based methods partly address this problem by sharing prefixes and comparing branches from the same prefix to provide fine-grained signals. However, tree branches are still expanded independently. When different branches reach sim-ilar reasoning states, they cannot share information and repeat similar exploration. Moreover, tree-based methods ignore such dispersion and only perform local com-parisons within separate branches, which can lead to higher variance in advantage estimation. To address this challenge, we propose GraphPO (Graph -based Policy 
+
+Optimization), a novel RL framework that represents rollouts as a directed acyclic graph, with reasoning steps as edges and semantic states summarized from the rea-soning paths as nodes. GraphPO merges semantically equivalent reasoning paths into equivalence classes, allowing them to share suffixes and reallocating budget away from redundant expansions to diverse exploration. Furthermore, we assign efficiency advantages to incoming edges and correctness advantages to outgoing edges, thereby improving inference efficiency while deriving process supervision from outcome. Theory shows that GraphPO reduces advantage-estimation variance and enhances reasoning efficiency. Experiments on three LLMs across reasoning and agentic search benchmarks show that GraphPO consistently outperforms chain-and tree-based baselines with the same token budgets or response budgets. The code will be released soon. 
+
+# 1 Introduction 
+
+Recently, Large Reasoning Models (LRMs) have achieved milestone progress in agentic, coding, and mathematical reasoning tasks [ 1– 3]. They typically adopt reinforcement learning with verifiable rewards (RLVR), where the correctness of the final answer is used as a binary reward to optimize the policy [ 4– 6]. Effective RL requires both accurate reward credit assignment for policy updates and diverse exploration during sampling. However, current RLVR methods still struggle with both. First, outcome rewards are inherently sparse, which hinders credit assignment to intermediate reasoning steps that contribute to the final answer [ 7, 8]. Second, RLVR methods typically sample response independently, where different responses often contain repeated intermediate reasoning steps. This leads to substantial sampling redundancy and limits exploration diversity [9, 10]. 
+
+> *Equal contribution.
+> †Corresponding author. Preprint.
+> arXiv:2606.18954v1 [cs.CL] 17 Jun 2026
+
+For accurate reward credit assignment, existing methods introduce step-level signals. Process Reward Models (PRMs) [ 11 –13 ] reward intermediate reasoning steps, helping the policy identify steps that contribute to the final answer. However, they usually require costly step-level annotations and often generalize poorly across domains. Furthermore, recent methods avoid explicit PRMs by estimating intermediate-state values, such as search-based estimation [ 14 , 15 ] and extraction of process signals from outcome rewards [ 16 , 17 ]. Although these methods alleviate reward sparsity by providing denser supervision signal, they still rely on chain-based rollouts and cannot capture similarity between independent rollouts(Figure 1a), which limits both credit assignment and exploration efficiency. To address this challenge, tree-based RL methods organize rollouts as trees [ 9, 10 , 18 –22 ], where shared prefixes avoid repeated reasoning and branching points provide fine-grained supervision (Figure 1b). Despite their benefits, tree-structured rollouts still have three limitations. First, deeper trees give uncertain intermediate states more chances to reach correct answers, but this optimization may encourage redundant reasoning steps and reduce inference efficiency . Second, early-stopped path provide limited training signals, reducing exploitation efficiency . Third, tree only share early prefixes. After branches diverge, they may still reach similar intermediate states and expand them independently, causing redundant exploration and limiting exploration efficiency , as analyzed in Section 3. These limitations arise from the same structural constraint: trees treat branches as independent paths. Therefore, they cannot represent equivalent states reached by different paths, compare the efficiency of these paths, or reuse subsequent reasoning after these states. Based on this observation, we model rollout as a directed acyclic graph, which explicitly aggregates equivalent reasoning states. Prompt  
+
+> Prompt Prompt
+> Reasoning Step
+> Reasoning State
+> Equivalence Classes
+> Correct Answer Inccorrect Answer
+> abc
+
+Figure 1: Comparison of rollout strategies. (a) 
+
+Chain rollouts sample independent trajectories. (b) 
+
+Tree rollouts share prefixes. (c) Graph rollouts merge semantically similar states. Based on this insight, we propose GraphPO 
+
+(Graph -based Policy Optimization), a novel RL framework that represents reasoning rollouts as an RL graph, where edges denote generated rea-soning steps and nodes denote the intermedi-ate semantic states summarized from the rea-soning path from the initial prompt (Figure 1c). During graph-based rollout, GraphPO incremen-tally constructs the RL graph by detecting se-mantically similar states across paths and vir-tually merging similar reasonings into equiva-lence classes. These equivalence classes allow GraphPO to improve inference , exploitation , and 
+
+exploration efficiency through path comparison, signal sharing, and redundancy reduction. First, paths reaching the equivalence class solve the similar sub-problem. GraphPO therefore introduces a path-level efficiency advantage that rewards shorter paths within each class, steering the learned policy toward more efficient reasoning. Second, reasoning in the same equivalence class share the same semantic state, so their subsequent correctness samples can be shared. GraphPO therefore improves exploitation efficiency by sharing subsequent correctness signals among similar reasonings, which produces denser step level rewards. Even early-stopped branches can receive credit from equivalent partners, improving rollout utilization and stabilizing policy updates. Third, when a path reaches an already discovered equivalence class, further expansion is likely redundant. GraphPO reduces its next-layer budget and reallocates the saved computation to novel frontier states, encouraging broader exploration under the same token budget. As analyzed in Section 3, this effectively improves exploration efficiency. 
+
+• We introduce GraphPO, a graph-based RL framework that merges semantically similar reasoning to reduce redundant exploration, improve rollout utilization and get step-level rewards. 
+
+• We propose a dual-group graph advantage estimation method that improves reasoning efficiency by comparing incoming paths within each equivalence class and improves reasoning performance by comparing outgoing steps at each node. 
+
+• Extensive experiments and theoretical analyses demonstrate that GraphPO achieves better perfor-mance with the same rollout budgets or response budgets. 2b caFigure 2: Empirical study of semantic redundancy and exploration efficiency. (a) Pairwise normalized edit similarity across prefix window sizes. (b) Semantic similarity across prefix window sizes. (c) 
+
+Exploration efficiency across different sampling strategies. For (a) and (b), wider regions in each violin indicate denser pairwise score distributions. 
+
+# 2 Related Work 
+
+Reinforcement Learning with Sparse Supervision. RLVR drives post-training of large reasoning models with a binary outcome reward [ 1, 2, 6 ], but this signal is too sparse for critical reasoning step of credit assignment [ 7, 23 ]. A common remedy is to densify supervision with process reward models [ 11 – 13 , 24 ], but they require costly annotations and transfer poorly across domains. Recent work reduces this dependence by deriving process signals from outcomes through value estimation [ 14 ,15 ], implicit rewards [ 16 , 25 , 26 ], or segment-level credit assignment [ 8, 17 , 22 ]. These methods estimate supervision from independent rollouts. Thus, outcomes from semantically equivalent states cannot support each other. GraphPO merges such states into equivalence classes, enabling suffix sharing that provides denser, lower-variance samples for credit assignment. 
+
+Tree Search for Reinforcement Learning. Tree-structured rollouts share prefixes across expansions, allowing them to generate more trajectories than conventional RLVR methods under the same token budget. The branching points in these trajectories naturally provide step-level comparisons. [ 9, 18 ,19 , 21 ]. Recent variants further improve efficiency by reusing common prefixes, scheduling branch expansion toward informative states, or extending frontier branches through lookahead [ 10 , 20 , 27 –29 ]. These methods share prefixes, but their tree topology still treats diverged branches independently, even when they later reach semantically equivalent states. GraphPO instead merges such states into a DAG, enabling length comparison, signal sharing, and budget reallocation within each equivalence class to improve reward exploitation and exploration efficiency. 
+
+# 3 Empirical Study 
+
+In this section, we analyze reasoning redundancy and exploration efficiency of rollout strategies. 
+
+Experimental Setup. Following PROS [ 10 ], we sample 64 reasoning trajectories for each prompt. To reduce expressive variation and better capture underlying semantics, we summarize intermediate rea-soning states with Qwen2.5-7B-Instruct [ 30 ] and measure summary similarity using SFR-Embedding-2-R [ 31 ], following MIRB [ 32 ]. We use MATH500 [ 33 ] and compare independent chain-based, tree-based, and graph-based sampling strategies, using Qwen2.5-7B-Math [34] for sampling. 
+
+Chain and Tree Structured Sampling Contain Substantial Semantic Redundancy. To show the redundancy produced by different sampling strategies, we extract rollout prefixes under different window sizes for each prompt. For each prefix, we compute its semantic similarity and Rouge-L [ 35 ]score with shorter prefixes from other trajectories. Figures 2a and 2b show the distributions of pairwise semantic similarity and Rouge-L scores under different prefix window sizes, where many prefixes are highly similar to prefixes from other paths (similarity > 0.9). This suggests that rollouts based on chains and trees both often revisit similar intermediate reasoning states. Specifically, Figure 2a shows that chain sampling produces highly similar shorter prefixes, indicating substantial redundancy in early reasoning steps. Tree-based sampling reduces this early redundancy by sharing prefixes, thus improving exploration diversity under the same token budget. However, Figure 2b shows that tree prefixes still have high semantic similarity, with similarity scores close to chain sampling. This suggests that the tree structure reduces part of the repeated computation by 3Prompt RL Graph    
+
+> Graph Reward
+> Graph Advantage
+> Policy Update
+> Graph Construction
+> Graph Construction RL Graph Graph Reward Graph Advantage
+> Step-wise Rollout
+> Reasoning Summery
+> Node Embedding
+> Node Merging
+> A cubic sequence is ... What is the possible values? Prompt
+> Edge Node
+> Embedding Prompt
+> 1-Layer 2-Layer 3-Layer
+
+## ... Prompt 
+
+> Merge
+> Prompt
+
+a
+
+b c de... 
+
+> Merge
+
+## ... ... 
+
+## ...    
+
+> Efficiency Group
+> Step Corectness Group
+
+## ... ... 
+
+## ... Figure 3: Overview of GraphPO. (a) Overall model architecture. (b) Graph Construction via Step-Level Expansion. (c) The resulting RL graph shares downstream successors among merged states. 
+
+(d) Scoring Nodes and Deriving Graph Step Rewards. (e) Dual-Group Graph Advantage. sharing ancestors, but it still independently reach and expand semantically similar reasoning, causing redundant exploration. In particular, when two branches have reached semantically similar states, the tree structure still treats them as independent nodes and continues to expand them separately. These observations motivate a graph-based rollout structure. Instead of only sharing exact prefixes, Graph can connect semantically similar intermediate states across different branches. In this way, later rollouts can reuse information from related states and adaptively reallocate rollout budgets, rather than expanding each similar state in isolation. This graph structure reduces redundant exploration and provides a more fine-grained basis for credit assignment across reasoning steps. 
+
+Graph Structured Turns Semantic Redundancy into Exploration Efficiency. To examine whether graph structured sampling converts redundancy into useful exploration, we measure exploration effi-ciency under different token budgets. As the budget increases, chain sampling adds more independent rollouts, whereas tree and graph sampling increase the branching factor and depth. For the current n
+
+rollouts, let Sn denote all reasoning steps, and let |s| be the token cost of step s. For tree and graph rollouts, a step is correct if it can lead to a correct final answer. For chain rollouts, each full trajectory is treated as one step. We define exploration efficiency as: 
+
+Eff( n) = 
+
+P 
+
+> s∈S n
+
+1[s is correct ] |s|
+
+P 
+
+> s∈S n
+
+|s| . (1) A higher value indicates that more computation is allocated to useful reasoning progress rather than redundant expansions. Figure 2c shows that chain-based sampling remains inefficient as token consumption grows, since independent chains repeatedly explore overlapping or unproductive states. Tree-based sampling improves efficiency at small budgets through prefix sharing, but its advantage decreases with larger budgets. This suggests that later branches still expand semantically similar states independently. In contrast, graph-based sampling achieves substantially higher efficiency across token budgets. Its efficiency rises quickly after the initial rollout stage and remains consistently above chain- and tree-based sampling. This supports our motivation that detecting and merging semantically similar states redirects rollout budget from redundant reasoning to more useful exploration. 44 Method 
+
+In this section, we describe Graph-based Policy Optimization. We first delineate the overall method-ology, then detail graph construction, graph reward, graph advantage and policy optimization. 
+
+4.1 Overview 
+
+Based on the above analysis, we propose GraphPO, a novel reinforcement learning framework with graph-based sampling. GraphPO incrementally constructs a directed acyclic graph G = ( V, E) step by step, with sampled reasoning steps as edges and nodes represent intermediate semantic states summarized from the reasoning path starting at initial prompt and ending at current step. GraphPO then embeds these node states for equivalence detection. GrphPO then compares node embeddings across paths and layers, and merges semantically similar states into equivalence classes, yielding a graph with both direct and shared edges (Section 4.2). Equivalence classes reduce redundant exploration by reallocating rollout budgets among semantically equivalent paths. Based on this graph, equivalence classes also enable reuse of reasoning suffixes across similar states, converting sparse outcome rewards into dense step-level edge rewards for credit assignment (Section 4.3). We further introduce a dual-group graph advantage for credit assignment and efficiency learning (Section 4.4). The correctness group compares direct edges and shared steps from similar state, and the efficiency group compares paths that reach the same merged state. An overview is depicted in Figure 3. The algorithm is presented in Appendix A. 
+
+4.2 Graph Construction 
+
+Tree rollouts can reduce repeated prefixes. Howerer, The empirical study shows that when different branches reach similar reasoning states, they still explore independently and cause redundant explo-ration. GraphPO therefore builds a rollout graph, where edges are generated reasoning steps and nodes are the semantic states summarized from the reasoning path starting at the initial prompt. As shown in Figure 3b, GraphPO initializes the prompt as the root v0 and expands the graph layer by layer. Each step u → v is added as a direct edge e(u, v ), where u, v ∈ V . Following Section 3, we use the policy model itself to summarize the entire edge path from v0 to v, and node v stores the summarize as semantic state sv . We embed each semantic state sv as zv and use cosine similarity for equivalence detection. To preserve acyclicity, GraphPO only compares node pairs that are not in an ancestor–descendant relation. Two comparable nodes u and v are grouped into the same equivalence class when sim( u, v ) = z⊤   
+
+> uzv
+> ∥zu∥∥ zv∥
+
+≥ κ. Merged nodes form an equivalence class Q(v). Appendix G theoretically proves that GraphPO remains robust under imperfect equivalence detection. Equivalent nodes keep their own direct context, but share suffix from other members of the same class. Let C(u)
+
+be the direct suffix of u. The graph suffix Cg (u) is: 
+
+Cg (u) = C(u) ∪ { c | q ∈ Q (u) \ { u}, c ∈ C (q)}. (2) As shown in Figure 3c, when a path reaches an existing equivalence class, further expansion is likely redundant. GraphPO halves its next-layer budget while keeping at least one continuation and reallocates the saved budget to other paths. Thus, graph construction reduces redundant exploration and improves exploration efficiency. Appendix F.3 formalizes that this improves expected correct-token efficiency and discovers more distinct semantic states than tree rollouts under the same budget. 
+
+4.3 Graph Reward 
+
+To turn sparse outcome rewards into process supervision, GraphPO builds the graph reward that shares node score in the same equivalent class. As shown in Figure 3d, it first estimates a state score for each node from verified answers, and then uses the value difference along each direct edge as the step reward. For node v, its own score comes from terminal states reachable through direct edges. If node v belongs to an equivalence class, GraphPO pools the score of equivalent nodes because they represent similar reasoning states: 
+
+S(v) = cown  
+
+> v
+
++ w P 
+
+> q∈Q (v)\{ v}
+
+cown 
+
+> q
+
+town  
+
+> v
+
++ w P 
+
+> q∈Q (v)\{ v}
+
+town 
+
+> q
+
+, (3) 5where w ∈ [0 , 1] is a pooling coefficient that controls the contribution of downstream samples from equivalent nodes, Q(v) denotes the equivalence class containing v, cown  
+
+> q
+
+= P 
+
+> z∈Z (q)
+
+R(z), and 
+
+town  
+
+> q
+
+= |Z (q)|. Here, R(z) ∈ { 0, 1} is the verifier reward and Z(v) denotes the terminal states reachable from v through original direct edges. When Q(v) = v, Eq. 3 is the the score of a non-merged node. To obtain a step-level reward, GraphPO computes the score gain on each direct edge 
+
+e(u, v ) and discounts repetitive steps by endpoint similarity: 
+
+rstep (u, v ) =  S(v) − S(u)  1 − η(u, v ), (4) where η(u, v ) = max(0 , sim( u, v )) . A step receives positive credit when it improves downstream correctness and adds new semantic content. Early-stopped branches can also receive evidence from equivalent partners. Appendix F.2 shows that pooling equivalent nodes yields a more accurate edge reward, and Appendix F.4 proves that rstep matches the expected policy-gradient direction of an oracle PRM. Thus, GraphPO obtains step-level process supervision from outcome rewards without annotated step labels. 
+
+4.4 Dual-Group Graph Advantage 
+
+To improve reasoning efficiency and provide fine-grained credit assignment, we propose Dual-Group Graph Advantage estimation, which compares reasoning paths reaching the same equivalence class to encourage efficient reasoning, and compares subsequent steps from the same state to assign step-level credit (Figure 3e). The step correctness group compares steps that leave the same semantic state . For source node u,
+
+Ecor (u) = {(p(v), v ) | v ∈ C g (u)}, where p(v) indicates the predecessor node of v. For a shared node v, GraphPO computes the reward on its actual generated edge (p(v), v ), rather than on the virtual shared edge from u to v. This keeps the reward tied to the real generation context. For each edge e(p(v), v ) ∈ E cor (u), the correctness advantage is: 
+
+Acor (e) = rstep (e) − mean( {rstep (ˆ e) | ˆe ∈ E cor (u)})std( {rstep (ˆ e) | ˆe ∈ E cor (u)}) , (5) The efficiency group compares paths that reach the same semantic state . For an equivalence class 
+
+Q, let aQ be the deepest shared predecessor, ℓv is the number of direct edges from aQ to v, and 
+
+¯SQ = P 
+
+> v∈Q
+
+S(v)/|Q|. The path-level efficiency advantage is: 
+
+Aeff (v) = ¯SQ
+
+−ℓv − mean( {− ℓq | q ∈ Q})std( {− ℓq | q ∈ Q}) , (6) and it is uniformly assigned to the edges on the path from aQ to v. The gate ¯SQ keeps this signal active only when the shared state has correctness support, so GraphPO prefers shorter paths only when they reach a useful semantic state. Pooling descendants from semantically equivalent paths into a single advantage group lowers the variance of Acor (Appendix F.2). Appendix F.5 also proves that this increases probability toward the shortest correct path and reduces expected token cost. 
+
+4.5 Policy Optimization 
+
+Finally, GraphPO trains the policy with a PPO-style objective. It combines correctness and efficiency into the dual-group graph advantage: 
+
+Adual (e) = Acor (e) + λeff Aeff (e), (7) where λeff ≥ 0 controls the efficiency signal, and Aeff (e) denotes the path-level efficiency advantage distributed onto edges along the path from aQ to v. Our method builds on DAPO [6] with: 
+
+JGraphPO (θ) = E (q,a )∼D T ∼ πθold (·| q)
+
+"
+
+1
+
+|E| 
+
+X
+
+> e∈E
+
+1
+
+|e|
+
+> |e|
+
+X
+
+> t=1
+
+
+
+min 
+
+
+
+re,t (θ) Adual (e),
+
+clip  re,t (θ), 1 − ε, 1 + ε Adual (e)
+
+
+
+− β D KL (πθ ∥ πref )
+
+#
+
+,
+
+(8) 6Table 1: Performance comparison of different methods on various reasoning benchmarks. We report Accuracy (%) for each benchmark. The best performance for each benchmark is highlighted in bold .                                                                                                                                                                         
+
+> Model Method AIME24 AIME25 MATH500 GPQA LiveCodeBench Average Qwen2.5-7B-Math
+> Base 13.6 6.3 54.8 28.5 5.7 21.8 GRPO 23.3 15.5 79.5 31.8 11.4 32.3 DAPO 25.7 17.2 82.6 32.3 12.6 34.1 TreeRL 26.1 18.9 84.2 33.6 12.5 35.1 SPO 28.5 20.4 87.5 35.5 13.6 37.1 TREE-GRPO 27.2 20.3 86.6 34.8 13.4 36.5 PROS 29.1 21.0 88.1 36.6 13.5 37.7 TreePO 26.8 19.0 85.5 34.0 13.0 35.7 GraphPO 32.1 24.5 91.6 39.6 16.9 40.9 Qwen3-8B-Base
+> Base 29.3 20.8 79.7 39.1 22.9 38.4 GRPO 30.3 21.3 80.0 43.4 27.2 40.4 DAPO 32.3 23.8 82.7 44.0 27.6 42.1 TreeRL 32.3 25.1 83.4 44.4 28.1 42.7 SPO 34.1 27.1 86.4 46.5 30.8 45.0 TREE-GRPO 33.2 26.7 85.5 45.9 30.4 44.3 PROS 34.3 27.5 86.9 47.6 31.1 45.5 TreePO 33.1 25.4 84.7 45.0 29.4 43.5 GraphPO 38.2 30.9 90.2 50.6 34.5 48.9 Deepseek-R1-Distill-Qwen-7B
+> Base 51.7 38.4 91.0 46.1 36.8 52.8 GRPO 57.2 47.4 93.5 46.2 40.7 57.0 DAPO 59.0 48.6 93.3 48.4 41.4 58.1 TreeRL 60.7 49.5 91.2 49.2 42.5 58.6 SPO 62.6 50.7 92.8 50.5 44.7 60.3 TREE-GRPO 61.7 50.5 92.3 49.9 44.1 59.7 PROS 63.2 51.4 93.0 51.5 44.8 60.8 TreePO 61.6 49.6 91.7 49.7 43.5 59.2 GraphPO 66.2 54.7 96.3 54.5 48.3 64.0
+
+where re,t (θ) = πθ (oe,t |q,o e,<t )  
+
+> πθold (oe,t |q,o e,<t )
+
+is the token-level importance ratio, E is the set of direct edges, and 
+
+|e| is the number of tokens on edge e. Each token on the same edge uses the same graph advantage, preserving the token-level PPO form. 
+
+# 5 Experiment 
+
+In this section, we first describe the experimental setup, then we present the main results, and finally we conduct detailed analysis and ablation study. 
+
+5.1 Experimental Setup Datasets. To evaluate reasoning ability, we conduct experiments on three mathematical reasoning benchmarks, including AIME24, AIME25, and MATH500 [ 36 ]. We also evaluate the models on two additional reasoning benchmarks, GPQA [ 37 ] and LiveCodeBench [ 38 ]. To evaluate the effectiveness in LLM agentic RL, we test model on deep search tasks including General AI Assistant [ 39 ], WebWalker [40], BrowseComp [41] and XBench [42]. 
+
+Baselines. We conduct experiments on four LLMs, including Qwen2.5-7B-Instruct [ 30 ], Qwen2.5-7B-Math [ 34 ], Qwen3-8B-Base [ 3], and Deepseek-R1-Distill-Qwen-7B [ 1]. For comparison, we eval-uate GraphPO against standard outcome-reward RLVR methods, including GRPO [ 1] and DAPO [ 6]. We also compare with tree-structured reasoning methods, including TreeRL [ 21 ], SPO [ 22 ], TREE-GRPO [ 19 ], PROS [ 10 ], and TreePO [ 18 ]. Detailed descriptions of these baselines are provided in Appendix B. For GraphPO, we set the merging threshold κ to 0.92 and set pooling coefficient w to 0.7. Train detail can be found in Appendix C. 7b caFigure 4: Training dynamics of Qwen2.5-7B-Math. (a) Accuracy. (b) Entropy. (c) Response length. Table 2: Performance on deep search tasks for Qwen2.5-7B. The best results are indicated in bold .                                                                     
+
+> Method General AI Assistant WebWalkerQA BrowseComp XBench Overall Lv.1 Lv.2 Lv.3 Avg. Easy Med. Hard Avg. Avg. Avg.
+> ReAct 6.4 3.4 1.1 4.2 7.7 9.4 5.5 7.8 1.4 9.3 5.7 + GRPO 17.2 14.2 4.3 14.1 8.7 11.5 10.7 10.6 2.3 10.5 9.4 + DAPO 17.9 15.1 4.6 14.9 9.5 11.7 11.4 11.3 2.4 10.7 9.8 + Tree-GRPO 18.9 17.3 5.5 15.7 10.7 12.3 11.6 11.7 2.5 11.4 10.3 + GraphPO 20.1 18.5 6.3 17.7 11.5 13.7 12.3 12.7 3.7 13.1 11.8
+
+5.2 Main Results GraphPO Outperforms the Baseline Under the Same Token Budget. Table 1 reports model performance under the same token budget. Figure 4a shows the change in model performance during training. These results show that structure-based methods consistently outperform sparse outcome-reward baselines, confirming the effectiveness of outcome-derived process signals for reasoning. This improvement also comes from the fact that tree based and graph based methods can explore more reasoning paths under a same token budget, thereby collecting more trajectories. We can also see that GraphPO outperforms tree-based methods across all models and datasets. This indicates that, compared with the tree structure, the graph structure can use process signals more effectively to improve reasoning performance. This improvement mainly comes from better rollout utilization and lower-variance advantage estimation, achieved by sharing suffixes across equivalent nodes. 
+
+GraphPO Preserves Strong Exploration. Figure 4b shows the change of entropy during training. We observe that tree-based methods show the fastest entropy decay, chain-based methods are in the middle, and GraphPO decays the slowest. This is beacuse tree compare many local suffix from shared prefixes, which quickly amplifies high-reward branches and drives the policy toward a small set of reasoning patterns. In contrast, GraphPO pools downstream evidence across semantically equivalent states, allowing different paths to share support instead of competing independently. This reduces noisy over-amplification and preserves more semantically valid reasoning paths. 
+
+GraphPO Is Effective on Agent Tasks. Agent tasks are naturally sequential decision making processes. They can be naturally decomposed into multiple complete decision steps. Therefore, tree and graph structures are well suited for reinforcement learning in agent tasks. To evaluate the effectiveness of GraphPO in agent scenarios, we use ReAct [ 43 ] as the agent framework. The results are shown in Table 2. GraphPO outperforms the baselines across all datasets, demonstrating its effectiveness in agent scenarios. 
+
+5.3 Detailed Analysis GraphPO Improves Reasoning Efficiency by Reducing Redundant Paths. Figure 4c shows the response length during training. Tree-GRPO shows a non-monotonic trend, where response length first decreases and then increases. The initial decrease suggests that step-level comparisons reduce unnecessary exploration. The later increase occurs because deeper tree expansion creates more branching opportunities, which raises the probability of finding correct answers but also introduces redundant intermediate reasoning. Since the tree cannot detect or merge such redundancy, it cannot optimize repeated reasoning step, reducing inference efficiency. In contrast, GraphPO produces the 8b caFigure 5: (a) PRM methods vs. GraphPO. (b) Training Performance and Training Time. (c) Trajectory generation efficiency. The bubble size represents the number of trajectories generated per second. shortest responses by merging semantically equivalent states and using an efficiency advantage to assign higher credit to shorter paths that reach the same state. 
+
+GraphPO Outperforms PRM Methods Without Annotated Process Data. In the previous section, we have shown that the policy-gradient direction of GraphPO is close to that of PRM methods. In this section, we further compare GraphPO with PRM methods. Specifically, we follow ReasonFlux-PRM [ 24 ] and conduct experiments based on Qwen2.5-7B-Instruct. The results are shown in Figure 5a. We can see that GraphPO still outperforms PRM methods without using additional annotated data. This shows that deriving process supervision from the graph structure is effective. 
+
+GraphPO Outperforms the Baseline Under the Same Trajectory Budget. Under the same token budget, Tree and Graph structures can generate more responses than independent sampling by sharing prefixes. We further compare different methods under the same number of trajectories, where each method generates 64 rollouts per prompt. As shown in Figure 5b, GraphPO still outperforms the baselines, suggesting that its advantage comes not only from producing more trajectories, but also from deriving more effective process supervision. GraphPO also substantially reduces training time under the same trajectory count, indicating that merging equivalent nodes improves rollout utilization, reduces redundant exploration, and enhances training efficiency. 
+
+GraphPO Maintains Efficient Trajectory Generation. We further compare the trajectory gener-ation efficiency. All experiments are conducted on H20 GPUs without parallelization. As shown in Figure 5c, GraphPO achieves trajectory generation efficiency comparable to tree-based methods, even though it uses an embedding model during rollout. This efficiency mainly comes from merging equivalent nodes, which reduces redundant exploration and encourages shorter reasoning paths. 
+
+5.4 Ablation Study 0.7 0.8 0.9 1.0 
+
+> Merging Threshold
+> 32
+> 36
+> 40
+> Accuracy (%)
+
+Figure 6: Performance under Dif-ferent Merging Thresholds. 
+
+Moderate Merging Thresholds Yield the Best GraphPO Performance. The merging threshold κ controls how strictly nodes are merged. In this section, we conduct ablation studies to analyze the impact of the merging threshold. Figure 6 shows the performance under different merging thresholds. We can see that the performance of GraphPO first increases and then decreases as the merging threshold becomes larger. This is because a lower merging threshold leads to excessive merg-ing. It suppresses reasonable exploration and thus reduces performance. In contrast, a higher merging threshold leads to too few merges. It prevents semantically equivalent reasoning paths from sharing their reasoning suffixes. When the merging threshold is 1, graph structure degenerates into a tree structure, leading to degraded performance. 
+
+# 6 Conclusion 
+
+In this work, we propose GraphPO, a graph-based reinforcement learning framework for improving the capability of large reasoning models under verifiable outcome. Motivated by the semantic redundancy observed in chain- and tree-based rollouts, GraphPO represents rollouts as directed acyclic graph, where generated reasoning steps are edges and path-defined semantic states are nodes. 9By detecting and virtually merging semantically similar intermediate states, GraphPO reuses suffixes, reduces redundant expansions, and converts sparse outcome rewards into dense step-level process supervision. We further introduce a dual-group graph advantage in which the correctness group compares shared outgoing steps, while the efficiency group compares different incoming paths that reach the same semantic state, encouraging the policy to favor shorter paths toward useful reasoning states. Theoretical analysis shows that next-step sharing reduces advantage-estimation variance and the efficiency advantage favors shorter correct reasoning. Experiments across three large reasoning models, standard reasoning benchmarks, and agentic search tasks demonstrate that GraphPO consistently outperforms outcome-only and tree-based RL baselines under matched budgets, while maintaining efficient trajectory generation and improving response efficiency. These results suggest that graph-structured rollouts provide a practical way to obtain self-emergent process supervision from outcome rewards alone. 
+
+# References 
+
+[1] Daya Guo, Dejian Yang, Haowei Zhang, Junxiao Song, Peiyi Wang, Qihao Zhu, Runxin Xu, Ruoyu Zhang, Shirong Ma, Xiao Bi, et al. Deepseek-r1 incentivizes reasoning in llms through reinforcement learning. Nature , 645(8081):633–638, 2025. [2] Kimi Team, Yifan Bai, Yiping Bao, Y Charles, Cheng Chen, Guanduo Chen, Haiting Chen, Huarong Chen, Jiahao Chen, Ningxin Chen, et al. Kimi k2: Open agentic intelligence. arXiv preprint arXiv:2507.20534 , 2025. [3] An Yang, Anfeng Li, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chang Gao, Chengen Huang, Chenxu Lv, et al. Qwen3 technical report. arXiv preprint arXiv:2505.09388 , 2025. [4] Philipp Becker, Niklas Freymuth, Serge Thilges, Fabian Otto, and Gerhard Neumann. Troll: Trust regions improve reinforcement learning for large language models. The Fourteenth International Conference on Learning Representations , 2026. [5] Yuzhong Zhao, Yue Liu, Junpeng Liu, Jingye Chen, Xun Wu, Yaru Hao, Tengchao Lv, Shaohan Huang, Lei Cui, Qixiang Ye, et al. Geometric-mean policy optimization. The Fourteenth International Conference on Learning Representations , 2026. [6] Qiying Yu, Zheng Zhang, Ruofei Zhu, Yufeng Yuan, Xiaochen Zuo, Yu Yue, Weinan Dai, Tiantian Fan, Gaohong Liu, Lingjun Liu, et al. Dapo: An open-source llm reinforcement learning system at scale. The Thirty-Ninth Annual Conference on Neural Information Processing Systems , 2025. [7] Amirhossein Kazemnejad, Milad Aghajohari, Eva Portelance, Alessandro Sordoni, Siva Reddy, Aaron Courville, and Nicolas Le Roux. Vineppo: Refining credit assignment in rl training of llms. Forty-Second International Conference on Machine Learning , 2025. [8] Amrith Setlur, Chirag Nagpal, Adam Fisch, Xinyang Geng, Jacob Eisenstein, Rishabh Agarwal, Alekh Agarwal, Jonathan Berant, and Aviral Kumar. Rewarding progress: Scaling automated process verifiers for llm reasoning. In The Thirteenth International Conference on Learning Representations , 2025. [9] Zhicheng Yang, Zhijiang Guo, Yinya Huang, Xiaodan Liang, Yiwei Wang, and Jing Tang. Treerpo: Tree relative policy optimization. arXiv preprint arXiv:2506.05183 , 2025. [10] Baizhou Huang and Xiaojun Wan. Pros: Towards compute-efficient rlvr via rollout prefix reuse. In The Fourteenth International Conference on Learning Representations , 2026. [11] Chengyu Shen, Zhen Hao Wong, Runming He, Hao Liang, Meiyi Qiang, Zimo Meng, Zhengyang Zhao, Bohan Zeng, Zhengzhou Zhu, Bin Cui, et al. Let’s verify math questions step by step. In Proceedings of the 32nd ACM SIGKDD Conference on Knowledge Discovery and Data Mining V. 1 , pages 2770–2781, 2026. 10 [12] Peiyi Wang, Lei Li, Zhihong Shao, Runxin Xu, Damai Dai, Yifei Li, Deli Chen, Yu Wu, and Zhifang Sui. Math-shepherd: Verify and reinforce llms step-by-step without human annotations. In Proceedings of the 62nd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 9426–9439, 2024. [13] Zhenru Zhang, Chujie Zheng, Yangzhen Wu, Beichen Zhang, Runji Lin, Bowen Yu, Dayiheng Liu, Jingren Zhou, and Junyang Lin. The lessons of developing process reward models in mathematical reasoning. In Findings of the Association for Computational Linguistics: ACL 2025 , pages 10495–10516, 2025. [14] Guoxin Chen, Minpeng Liao, Chengxi Li, and Kai Fan. Alphamath almost zero: process supervision without process. Advances in Neural Information Processing Systems , 37:27689– 27724, 2024. [15] Zhenting Qi, MA Mingyuan, Jiahang Xu, Li Lyna Zhang, Fan Yang, and Mao Yang. Mutual rea-soning makes smaller llms stronger problem-solver. In The Thirteenth International Conference on Learning Representations , 2025. [16] Ganqu Cui, Lifan Yuan, Zefan Wang, Hanbin Wang, Yuchen Zhang, Jiacheng Chen, Wendi Li, Bingxiang He, Yuchen Fan, Tianyu Yu, et al. Process reinforcement through implicit rewards. 
+
+The Fourteenth International Conference on Learning Representations , 2026. [17] Lang Feng, Zhenghai Xue, Tingcong Liu, and Bo An. Group-in-group policy optimization for llm agent training. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. [18] LI Yizhi, Qingshui Gu, Zhoufutu Wen, Ziniu Li, Ruibin Yuan, Tianshun Xing, Shuyue Guo, Tianyu Zheng, Xingwei Qu, Wangchunshu Zhou, et al. Treepo: Enhancing policy efficacy and inference efficiency with tree modeling. OpenReview preprint , 2025. [19] Yuxiang Ji, Ziyu Ma, Yong Wang, Guanhua Chen, Xiangxiang Chu, and Liaoni Wu. Tree search for llm agent reinforcement learning. The Fourteenth International Conference on Learning Representations , 2026. [20] Hong Wang, Zhezheng Hao, Jian Luo, Chenxing Wei, Yao Shu, Lei Liu, Qiang Lin, Hande Dong, and Jiawei Chen. Scheduling your llm reinforcement learning with reasoning trees. The Fourteenth International Conference on Learning Representations , 2026. [21] Zhenyu Hou, Ziniu Hu, Yujiang Li, Rui Lu, Jie Tang, and Yuxiao Dong. Treerl: Llm reinforce-ment learning with on-policy tree search. In Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 12355–12369, 2025. [22] Yiran Guo, Lijie Xu, Jie Liu, Ye Dan, and Shuang Qiu. Segment policy optimization: Effective segment-level credit assignment in rl for large language models. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. [23] Xumeng Wen, Zihan Liu, Shun Zheng, Shengyu Ye, Zhirong Wu, Yang Wang, Zhijian Xu, Xiao Liang, Junjie Li, Ziming Miao, Jiang Bian, and Mao Yang. Reinforcement Learning with Verifiable Rewards Implicitly Incentivizes Correct Reasoning in Base LLMs. In The Fourteenth International Conference on Learning Representations , 2026. [24] Jiaru Zou, Ling Yang, Jingwen Gu, Jiahao Qiu, Ke Shen, Jingrui He, and Mengdi Wang. Reasonflux-prm: Trajectory-aware prms for long chain-of-thought reasoning in llms. In The Thirty-Ninth Annual Conference on Neural Information Processing Systems , 2025. [25] Xiaoyuan Liu, Tian Liang, Zhiwei He, Jiahao Xu, Wenxuan Wang, Pinjia He, Zhaopeng Tu, Haitao Mi, and Dong Yu. Trust, but verify: A self-verification approach to reinforcement learning with verifiable rewards. In The Thirty-ninth Annual Conference on Neural Information Processing Systems , 2025. [26] Peixuan Han, Adit Krishnan, Gerald Friedland, Jiaxuan You, and Luyang Kong. Self-aligned reward: Towards effective and efficient reasoners. In The Fourteenth International Conference on Learning Representations , 2026. 11 [27] Shangyu Xing, Siyuan Wang, Chenyuan Yang, Xinyu Dai, and Xiang Ren. Lookahead Tree-Based Rollouts for Enhanced Trajectory-Level Exploration in Reinforcement Learning with Verifiable Rewards. In The Fourteenth International Conference on Learning Representations ,2026. [28] Zijing Shi, Meng Fang, and Ling Chen. Monte carlo planning with large language model for text-based game agents. In The Thirteenth International Conference on Learning Representations ,2025. [29] Bingning Huang, Tu Nguyen, and Matthieu Zimmer. Tree-opo: Off-policy monte carlo tree-guided advantage optimization for multistep reasoning. In MATH-AI: The 5th Workshop on Mathematical Reasoning and AI at NeurIPS , 2025. [30] Qwen An Yang, Baosong Yang, Beichen Zhang, Binyuan Hui, Bo Zheng, Bowen Yu, Chengyuan Li, Dayiheng Liu, Fei Huang, Guanting Dong, Haoran Wei, Huan Lin, Jian Yang, Jianhong Tu, Jianwei Zhang, Jianxin Yang, Jiaxin Yang, Jingren Zhou, Junyang Lin, Kai Dang, Keming Lu, Keqin Bao, Kexin Yang, Le Yu, Mei Li, Mingfeng Xue, Pei Zhang, Qin Zhu, Rui Men, Runji Lin, Tianhao Li, Tingyu Xia, Xingzhang Ren, Xuancheng Ren, Yang Fan, Yang Su, Yi-Chao Zhang, Yunyang Wan, Yuqi Liu, Zeyu Cui, Zhenru Zhang, Zihan Qiu, Shanghaoran Quan, and Zekun Wang. Qwen2.5 technical report. ArXiv , abs/2412.15115, 2024. [31] Rui Meng, Ye Liu, Shafiq Rayhan Joty, Caiming Xiong, Yingbo Zhou, and Semih Yavuz. Sfr-embedding-2: Advanced text embedding with multi-stage training, 2024. URL https://huggingface. co/Salesforce/SFR-Embedding-2_R , 2024. [32] Haocheng Ju and Bin Dong. Mirb: Mathematical information retrieval benchmark. In 2nd AI for Math Workshop@ ICML 2025 , 2025. [33] Dan Hendrycks, Collin Burns, Saurav Kadavath, Akul Arora, Steven Basart, Eric Tang, Dawn Song, and Jacob Steinhardt. Measuring mathematical problem solving with the math dataset. 
+
+NeurIPS , 2021. [34] An Yang, Beichen Zhang, Binyuan Hui, Bofei Gao, Bowen Yu, Chengpeng Li, Dayiheng Liu, Jianhong Tu, Jingren Zhou, Junyang Lin, et al. Qwen2.5-math technical report: Toward mathematical expert model via self-improvement. arXiv preprint arXiv:2409.12122 , 2024. [35] Chin-Yew Lin. Rouge: A package for automatic evaluation of summaries. In Text summarization branches out , pages 74–81, 2004. [36] Dan Hendrycks, Collin Burns, Saurav Kadavath, Akul Arora, Steven Basart, Eric Tang, Dawn Song, and Jacob Steinhardt. Measuring mathematical problem solving with the math dataset. 
+
+arXiv preprint arXiv:2103.03874 , 2021. [37] David Rein, Betty Li Hou, Asa Cooper Stickland, Jackson Petty, Richard Yuanzhe Pang, Julien Dirani, Julian Michael, and Samuel R Bowman. Gpqa: A graduate-level google-proof q&a benchmark. arXiv preprint arXiv:2311.12022 , 2023. [38] Naman Jain, King Han, Alex Gu, Wen-Ding Li, Fanjia Yan, Tianjun Zhang, Sida Wang, Ar-mando Solar-Lezama, Koushik Sen, and Ion Stoica. Livecodebench: Holistic and contamination free evaluation of large language models for code. In The Thirteenth International Conference on Learning Representations , 2025. [39] Grégoire Mialon, Clémentine Fourrier, Thomas Wolf, Yann LeCun, and Thomas Scialom. Gaia: a benchmark for general ai assistants. In The Twelfth International Conference on Learning Representations , 2024. [40] Jialong Wu, Wenbiao Yin, Yong Jiang, Zhenglin Wang, Zekun Xi, Runnan Fang, Linhai Zhang, Yulan He, Deyu Zhou, Pengjun Xie, et al. Webwalker: Benchmarking llms in web traversal. In Proceedings of the 63rd Annual Meeting of the Association for Computational Linguistics (Volume 1: Long Papers) , pages 10290–10305, 2025. [41] Jason Wei, Zhiqing Sun, Spencer Papay, Scott McKinney, Jeffrey Han, Isa Fulford, Hyung Won Chung, Alex Tachard Passos, William Fedus, and Amelia Glaese. Browsecomp: A simple yet challenging benchmark for browsing agents. arXiv preprint arXiv:2504.12516 , 2025. 12 [42] Kaiyuan Chen, Yixin Ren, Yang Liu, Xiaobo Hu, Haotong Tian, Tianbao Xie, Fangfu Liu, Haoye Zhang, Hongzhang Liu, Yuan Gong, et al. xbench: Tracking agents productivity scaling with profession-aligned real-world evaluations. arXiv preprint arXiv:2506.13651 , 2025. [43] Shunyu Yao, Jeffrey Zhao, Dian Yu, Nan Du, Izhak Shafran, Karthik Narasimhan, and Yuan Cao. React: Synergizing reasoning and acting in language models. arXiv preprint arXiv:2210.03629 ,2022. [44] Guangming Sheng, Chi Zhang, Zilingfeng Ye, Xibin Wu, Wang Zhang, Ru Zhang, Yanghua Peng, Haibin Lin, and Chuan Wu. Hybridflow: A flexible and efficient rlhf framework. arXiv preprint arXiv: 2409.19256 , 2024. [45] Woosuk Kwon, Zhuohan Li, Siyuan Zhuang, Ying Sheng, Lianmin Zheng, Cody Hao Yu, Joseph E. Gonzalez, Hao Zhang, and Ion Stoica. Efficient memory management for large lan-guage model serving with pagedattention. In Proceedings of the ACM SIGOPS 29th Symposium on Operating Systems Principles , 2023. [46] Bowen Jin, Hansi Zeng, Zhenrui Yue, Jinsung Yoon, Sercan Arik, Dong Wang, Hamed Za-mani, and Jiawei Han. Search-r1: Training llms to reason and leverage search engines with reinforcement learning. arXiv preprint arXiv:2503.09516 , 2025. [47] Jiaxuan Gao, Wei Fu, Minyang Xie, Shusheng Xu, Chuyi He, Zhiyu Mei, Banghua Zhu, and Yi Wu. Beyond ten turns: Unlocking long-horizon agentic search with large-scale asynchronous rl. arXiv preprint arXiv:2508.07976 , 2025. [48] Jialong Wu, Baixuan Li, Runnan Fang, Wenbiao Yin, Liwen Zhang, Zhengwei Tao, Dingchu Zhang, Zekun Xi, Gang Fu, Yong Jiang, et al. Webdancer: Towards autonomous information seeking agency. arXiv preprint arXiv:2505.22648 , 2025. 13 APPENDIX 
+
+# A Algorithm 
+
+We present the complete procedure of GraphPO in Algorithm S.1, which integrates the three stages introduced in the main text into a unified training loop. 
+
+Algorithm S.1 GraphPO Graph-based Policy Optimization 
+
+Input: Policy πθ , prompts D, segment length L, max layers H, samples per state b, convergence threshold κ, evidence-pooling weight w, efficiency coefficient λeff  
+
+> 1:
+
+for each training iteration do  
+
+> 2:
+
+Sample prompt x ∼ D ; initialize root semantic state with x▷ Stage 1 Graph Construction (Section 3.2)  
+
+> 3:
+
+for layer h = 1 , . . . , H do  
+
+> 4:
+
+for each active semantic state u at layer h − 1 do  
+
+> 5:
+
+Sample bu continuations from πθ (· | prefix( u)) ; split them into segment-level transi-tions  
+
+> 6:
+
+Register each new state v with generation predecessor p(v) = u 
+
+> 7:
+
+Extract structured summary and compute embedding zv for each new state v 
+
+> 8:
+
+end for  
+
+> 9:
+
+for each non-causal state pair (u, v ) do  
+
+> 10:
+
+if sim( u, v ) ≥ κ then  
+
+> 11:
+
+Union-Find links u and v into the same semantic equivalence class  
+
+> 12:
+
+end if  
+
+> 13:
+
+end for  
+
+> 14:
+
+Build graph successors Cg (v) from direct successors and convergent-state successor sharing  
+
+> 15:
+
+Reallocate the saved budget from longer routes to active non-redundant frontier states  
+
+> 16:
+
+end for 
+
+▷ Stage 2 Graph Reward (Section 3.3)  
+
+> 17:
+
+Evaluate terminal states with verifier and obtain R(z) ∈ { 0, 1} 
+
+> 18:
+
+Propagate cown  
+
+> v
+
+, t own  
+
+> v
+
+bottom-up along direct generation-provenance successors  
+
+> 19:
+
+Compute node scores S(v) ←  cown  
+
+> v
+
++w P 
+
+> q∈Q (v)\{ v}
+
+cown 
+
+> q
+
+/ town  
+
+> v
+
++w P 
+
+> q∈Q (v)\{ v}
+
+town 
+
+> q
+
+
+
+when the denominator is positive  
+
+> 20:
+
+Compute edge rewards rstep (p(v), v ) ← (S(v) − S(p(v))) · (1 − η(p(v), v )) 
+
+▷ Stage 3 Dual-Group Graph Advantage (Section 3.4)  
+
+> 21:
+
+for each semantic state u with |C g (u)| > 1 do  
+
+> 22:
+
+Acor (e) ← (rstep (e) − mean( {rstep (ˆ e) | ˆe ∈ Ecor (u)})) /(std( {rstep (ˆ e) | ˆe ∈Ecor (u)})) for each e ∈ E cor (u) 
+
+> 23:
+
+end for  
+
+> 24:
+
+for each equivalence class Q with |Q| ≥ 2 do  
+
+> 25:
+
+Find deepest common generation predecessor aQ; compute ℓv = d(v) − d(aQ), ¯SQ =mean( {S(v) | v ∈ Q}) 
+
+> 26:
+
+Aeff (v) ← ¯SQ · (−ℓv − mean( {− ℓq | q ∈ Q})) /(std( {− ℓq | q ∈ Q})) ; distribute uniformly to generated transitions on the route to v 
+
+> 27:
+
+end for 
+
+▷ Stage 4 Policy Update  
+
+> 28:
+
+Update θ by minimizing Lppo (Acor , m resp ) + λeff Lppo (Aeff , m eff ) + βKL LKL − cH H(πθ ) 
+
+> 29:
+
+end for 
+
+# B Detailed Description of Baselines 
+
+GRPO [ 1]: GRPO aims to remove the learned critic from PPO-style RLVR. It samples multiple complete responses for each prompt and normalizes verifier rewards within the group to obtain response-level advantages. 1DAPO [ 6]: DAPO aims to stabilize and scale GRPO for long-CoT reasoning. It keeps group-relative advantage estimation and improves training with decoupled clipping, dynamic sampling, token-level policy-gradient normalization, and overlong reward shaping. 
+
+TreeRL [ 21 ]: TreeRL aims to improve exploration and credit assignment beyond independent response sampling. It builds an entropy-guided on-policy reasoning tree and estimates step values from the correctness ratio of descendant leaf responses. 
+
+SPO [ 22 ]: SPO aims to reduce the sparsity of response-level rewards. It partitions responses into segments, estimates segment-level advantages with Monte Carlo rollouts, and optimizes tokens using a probability-mask strategy. 
+
+TREE-GRPO [ 19 ]: TREE-GRPO aims to reuse shared prefixes and improve advantage estimation in tree-search RL. It was originally designed for agent trajectories; we adapt it to LLM reasoning by replacing agent interaction steps with reasoning segments while keeping its intra-tree and inter-tree grouped relative advantages. 
+
+PROS [ 10 ]: PROS aims to reduce redundant generation in RLVR by reusing rollout prefixes. It selects valuable historical prefixes, appends them to the original query as augmented prompts, and trains only on newly generated continuations. 
+
+TreePO [ 18 ]: TreePO aims to improve rollout efficiency with tree modeling. It decodes responses in fixed-length segments, reuses shared prefixes through dynamic tree sampling, prunes low-value paths, and estimates segment advantages from global and local tree subgroups. 
+
+# C Detailed Experimental Setup 
+
+Framework and Hardware. For reasoning tasks, Our GraphPO is built on the Verl framework [ 44 ]. During the rollout stage, we use the vLLM framework for efficient batched inference [ 45 ]. In agentic RL, Our implementation is built upon Search-R1 [ 46 ]. Our experiments are conducted on 16 ×H20 GPUs. 
+
+Training Data. For training data in reasoning tasks, we use the DAPO-Math dataset [ 6] for rein-forcement learning. For agent tasks, we adopt the experimental setup of Tree-GRPO [ 19 ], using ASearcher-35K [47] and WebDancer [48] as training data. 
+
+Rollout Budget. In reasoning tasks, chain methods, including GRPO and DAPO, generate 64 trajectories for each prompt. In deep search task, we use group size 8 for all chain-based RL For tree-based methods, including TreeRL, SPO, TREE-GRPO, PROS, and TreePO, as well as GraphPO, we fix the length of each step and use a token budget close to that of chain methods for rollout. Taking a ternary tree as an example, the calculation is as follows. Assume that the tree has n
+
+layers and each branch step contains s tokens. Then each complete root-to-leaf trajectory has length 
+
+ns , and the token budget of chain sampling with 64 trajectories is Bchain = 64 ns. For the ternary tree, the number of generated branches at layer i is 3i. Therefore, the total rollout cost of constructing the tree is Btree = s Pni=1 3i.
+
+Context Length and Step Size. For reasoning tasks, we set the context length to 16,384 tokens for DeepSeek-R1-Distill-Qwen-7B [ 1] and Qwen3-8B-Base [ 3 ]. For Qwen2.5-Math-7B [ 34 ], we use its maximum supported context length of 4,096 tokens. For tree based methods and GraphPO, we set the length of each step from 512 to 2048 tokens. For deep search task, The max response length of Qwen2.5-7B-Instruct [30] is set to 8000 tokens. 
+
+Optimization. We train the models under an off policy RL setting. For reasoning tasks, the batch size is set to 512, and the minibatch size is set to 32. In the main text, each training step corresponds to one batch. We train all models for 350 steps. For deep search task, we train 40 steps. The batch size is set to 128, and the minibatch size is set to 64. We use the AdamW optimizer with a learning rate of 1 × 10 −6, betas of (0 .9, 0.999) , and a weight decay of 0.01. We use no learning rate warmup. For PPO, we set the clip ratio to 0.2 and the gradient clipping threshold to 1.0. The actor module is trained efficiently with Fully Sharded Data Parallel. 2Table S.1: Performance comparison of different branching schemes on various reasoning benchmarks with Qwen2.5-7B-Math. We report Accuracy (%) for each benchmark. The best performance for each benchmark is highlighted in bold .                                                                                    
+
+> Method AIME24 AIME25 MATH500 GPQA LiveCodeBench Average
+> Base 13.6 6.3 54.8 28.5 5.7 21.8 GRPO 23.3 15.5 79.5 31.8 11.4 32.3 DAPO 25.7 17.2 82.6 32.3 12.6 34.1 GraphPO ( T={4,5,3,2})29.4 21.4 87.8 36.5 15.1 38.0 GraphPO ( T={7,6,5,4,3})31.0 23.2 90.0 38.3 16.1 39.7 GraphPO ( T={5,4,2,2,2})31.6 24.0 90.9 39.1 16.6 40.4 GraphPO ( T={2,4,3,2,2,2})30.2 22.3 89.0 37.4 15.6 38.9 GraphPO ( T={2,5,4,2,2})32.1 24.5 91.6 39.6 16.9 40.9
+
+# D GraphPO Remains Effective Across Diverse Branching Strategies 
+
+The number of steps generated by each reasoning path at each layer is a critical parameter when constructing the RL graph. According to Figure 2a and b, different reasoning paths tend to show high similarity at the early stage of reasoning. In the later stage, these reasoning paths gradually become more different. Therefore, in our experiments, we adopt a branching strategy that gradually reduces the number of branches across layers. In this section, we analyze model performance under different settings. The results are shown in Table S.1. Here, T = {b1, b 2, . . . , b H } denotes the per-layer branching schedule of the reasoning graph: H is the total number of layers, and bh specifies the number of child continuations sampled from each active state at layer h. For example, T = {4, 5, 3, 2} corresponds to a 4-layer graph in which each root state expands 4 children at the first layer, every layer-1 state expands 5 children at the second layer, and so on, with the branching factor decreasing toward deeper layers. We can see that the strategy with gradually decreasing branches achieves better performance. This is because more branches in the early reasoning stage can encourage more diverse exploration. In contrast, fewer branches in the later reasoning stage can reduce redundant exploration and improve reasoning efficiency. At the same time, all branching strategies outperform independent sampling. This shows that introducing branches during reasoning can encourage more diverse exploration and improve reasoning performance. We can also see that using more branches is not always better. Under the same token budget, too many branches reduce the exploration depth. As a result, the model has less reasoning time and may fail to find better reasoning paths. Moreover, the comparison between T = {4, 5, 3, 2}
+
+and the uniform schedule T = {4, 4, 4, 4} further confirms that allocating more capacity to mid-stage branching, where reasoning paths begin to diverge, is more beneficial than spreading branches uniformly across all layers. This observation aligns with our empirical study in Section 3, where the divergence of reasoning trajectories peaks in the middle stage rather than at the very beginning or the very end. 
+
+# E Ablation Study 0 100 200 300 
+
+> Step
+> 800
+> 1200
+> 1600
+> 2000
+> Response Length
+> Tree-GRPO
+> GraphPO w/o Efficiency Advantage
+> GraphPO
+
+Figure S.1: Impact of efficiency ad-vantage on response length. 
+
+Efficiency advantage improves reasoning efficiency. To show that the efficiency advantage improves reasoning efficiency, we further analyze its effect on response length. The results are shown in Figure S.1. We can see that, without the efficiency advantage, the response length first decreases and then increases during training, similar to tree based methods. This is mainly because longer responses create more branching opportunities. As a result, the model may learn redundant exploration patterns, which reduces reasoning efficiency. We can also observe that even without the efficiency advantage, GraphPO still produces shorter responses than tree based methods overall. This is because node merging reduces the sampling budget of longer 3reasoning paths. Therefore, much of the learned downstream information comes from shorter paths. As a result, the final model tends to learn response patterns based on shorter reasoning paths. 0.0 0.3 0.6 0.9 
+
+> Pooling Coefficient
+> 36.0
+> 37.5
+> 39.0
+> 40.5
+> Accuracy (%)
+
+Figure S.2: Impact of pooling coef-ficient. 
+
+Moderate Pooling Coefficients Strike the Best Bias-Variance Balance. The pooling coefficient w ∈ [0 , 1] controls how strongly the suffixes shared from equivalent nodes contribute to a node’s value estimate. In this section, we conduct abla-tion studies to analyze the impact of the pooling coefficient. Figure S.2 shows the performance of GraphPO under differ-ent pooling coefficients. We can see that the performance first increases and then decreases as w becomes larger. This is because a small pooling coefficient prevents the graph from sharing suffixes across equivalent states, so the advantage es-timator inherits the high variance of tree-based estimators with few terminal samples per node and yields noisy gradients that slow convergence. In contrast, a large pooling coefficient forces the value estimate to rely heavily on suffixes from semantically similar but not identical nodes. The residual semantic heterogeneity is amplified into a non-negligible merging bias, which distorts the process reward and hurts policy optimization. When w = 0 , the equivalence-class suffix sharing is disabled and GraphPO degenerates to a tree-based estimator, and the performance drops clearly. A moderate value around w = 0 .7 best balances the variance reduction obtained from shared suffixes and the semantic-merging bias, which is consistent with the theoretical analysis in Lemma 2. 
+
+# F Theoretical Analysis 
+
+In this section we provide formal theoretical justification for the four claims made in the main text: (i) compared with tree-based methods that cannot reuse nodes, equivalence-class suffix sharing pools downstream evidence from all semantically equivalent paths into a single advantage-estimation group, which yields lower-variance node-score and advantage estimates at the cost of a controllable O(1 −κ)
+
+semantic-merging bias (Section F.2); (ii) GraphPO improves expected exploration efficiency under a fixed token budget when budget saved from redundant continuations is redirected to novel frontiers (Section F.3); (iii) in expectation, the GraphPO surrogate trained with rstep has the same first-order update direction as a novelty-gated oracle PRM surrogate, and thus yields self-emergent process supervision purely from outcome rewards (Section F.4); and (iv) the dual-group graph advantage breaks outcome-objective ties in favor of shorter semantically equivalent correct reasoning paths (Section F.5). 
+
+F.1 Notation and Assumptions 
+
+Let x denote a prompt, πθ the policy, and τ = ( s0, e 1, s 1, . . . , e T , s T ) a reasoning trajectory with reasoning steps et as edges and semantic states st as nodes. Let V ⋆(s) = Eτ ∼πθ |s0=s[R(τ )] be the true value function under the verifier reward R ∈ { 0, 1}. Let ϕ : Σ ∗ → Rd denote the embedder, with semantic similarity sim( u, v ) = ⟨ϕ(u), ϕ (v)⟩/(∥ϕ(u)∥∥ ϕ(v)∥) and κ ∈ (0 , 1) the merging threshold. 
+
+Assumption 1 (Value-stable detected equivalence classes) . There exists a class-stability radius 
+
+δκ = O(1 − κ) such that for any two states u, v in the same detected equivalence class, 
+
+|V ⋆(u) − V ⋆(v)| ≤ δκ. (S.1) 
+
+This is the class-level version of a Lipschitz semantic-equivalence condition. It avoids treating a union-find transitive closure as automatically pairwise close unless the detected class itself has small semantic diameter. 
+
+Assumption 2 (Bounded rewards and i.i.d. rollouts inside a group) . Verifier rewards are bounded in [0 , 1] . Conditional on a parent state u, the children generated by πθ (· | u) are i.i.d., and their downstream completions are independent given the children. The own-subtree terminal samples used in a pooled score are sampled independently and are disjoint across equivalence-class members. 
+
+Assumption 3 (No-cycle merging) . Equivalence classes Q(v) are formed only between non-causal pairs, so the merged structure remains a DAG and the bottom-up propagation in Section 4.3 is well-defined. 
+
+4These assumptions are consistent with standard analysis of RLVR/GRPO-style estimators [7, 8, 16] and with the structural constraints of GraphPO described in Section 4.2. Throughout the analysis, variances are conditional on the sampled graph structure and on the observed terminal rollout counts. 
+
+F.2 Lower-Variance Advantage Estimation via Shared Suffixes 
+
+We first analyze the estimation variance of the advantage estimators used by GRPO, TreeRPO, and GraphPO. Trees expand semantically equivalent states as independent nodes, so each state’s score is estimated only from its own subtree. GraphPO instead merges these states into an equivalence class and pools their terminal samples, which enlarges the effective sample size of each node-score estimate and of the standardization group used to form the advantage. Both effects reduce the variance of the resulting advantage estimate. 
+
+Estimators. For a state u with K children, let ˆVi be the empirical correctness rate of the i-th child obtained from m terminal rollouts. Define: 
+
+ˆAGRPO  
+
+> i
+
+= ˆRi − 1
+
+> K
+
+PKj=1 ˆRj ,
+
+ˆATree  
+
+> i
+
+= ˆVi − 1
+
+> K
+
+PKj=1 ˆVj ,
+
+ˆAGraph  
+
+> i
+
+= ˆV Qi − 1
+
+> K
+
+PKj=1 ˆV Qj , ˆV Qi = cown     
+
+> i+wP
+> q∈Q (i)\{ i}cown
+> q
+> town
+> i+wP
+> q∈Q (i)\{ i}town
+> q
+
+.
+
+(S.2) GRPO uses raw outcome rewards on full trajectories. TreeRPO uses Monte-Carlo correctness of each child computed only from its own subtree. GraphPO additionally pools terminal evidence across the equivalence class Q(i). These are the raw pre-normalization estimators; the standardization in Section 4.4 rescales the signal after the sampling estimate is formed. 
+
+Lemma 1 (Per-child variance) . Under Assumptions 1–2, with m Monte-Carlo terminal rollouts per child, 
+
+Var   ˆVi
+
+ = V ⋆(i)(1 − V ⋆(i)) 
+
+m . (S.3) 
+
+Proof. ˆVi is the empirical mean of m i.i.d. Bernoulli( V ⋆(i)) terminal indicators by Assumption 2. The variance of a Bernoulli mean is p(1 − p)/m .
+
+Lemma 2 (Variance with equivalence-class pooling) . Let |Q (i)| = ki ≥ 1 and suppose each member of Q(i) has m own terminal rollouts. Define 
+
+ρi = 1 + ( ki − 1) w2
+
+(1 + w(ki − 1)) 2 ≤ 11 + w(ki − 1) . (S.4) 
+
+Then 
+
+Var( ˆV Qi ) ≤ ρi
+
+max q∈Q (i) V ⋆(q)(1 − V ⋆(q)) 
+
+m , (S.5) 
+
+and, since p(1 − p) is 1-Lipschitz on [0 , 1] ,
+
+Var( ˆV Qi ) ≤ ρi
+
+V ⋆(i)(1 − V ⋆(i)) + δκ
+
+m , (S.6) 
+
+and its semantic-merging bias satisfies 
+
+E[ ˆV Qi ] − V ⋆(i) ≤ δκ. (S.7) 
+
+Consequently, the mean-squared error relative to V ⋆(i) is bounded by the variance term above plus 
+
+δ2
+
+> κ
+
+.Proof. For balanced groups, write ˆV Qi = P 
+
+> q∈Q (i)
+
+αq ˆVq , where αi = 1 /(1 + w(ki − 1)) , αq =
+
+w/ (1 + w(ki − 1)) for q̸ = i, and P 
+
+> q
+
+αq = 1 . By Assumption 2, the ˆVq are mutually independent, so 
+
+Var( ˆV Qi ) = X
+
+> q∈Q (i)
+
+α2 
+
+> q
+
+Var( ˆVq ). (S.8) 5Using Lemma 1 gives the variance bound because P 
+
+> q
+
+α2 
+
+> q
+
+= ρi. The second inequality in the definition of ρi follows from w2 ≤ w for w ∈ [0 , 1] . The alternative variance bound follows from Assumption 1 and the fact that p(1 − p) is 1-Lipschitz on [0 , 1] . For the bias, 
+
+E[ ˆV Qi ] − V ⋆(i) ≤ X
+
+> q∈Q (i)
+
+αq |V ⋆(q) − V ⋆(i)| ≤ δκ (S.9) by Assumption 1. 
+
+Theorem 1 (GraphPO yields lower-variance advantage estimates via shared suffixes) . Under As-sumptions 1–3, suppose the K child-score estimates used in the group baseline are conditionally independent and have balanced own terminal rollouts. Let ρmax (u) = max i≤K ρi. Then 
+
+Var   ˆAGraph 
+
+> i
+
+ ≤ ρmax (u) Var   ˆATree 
+
+> i
+
+ + O
+
+ ρmax (u)δκ
+
+m
+
+
+
+≤ ρmax (u) Var   ˆAGRPO 
+
+> i
+
+ + O
+
+ ρmax (u)δκ
+
+m
+
+
+
+,
+
+(S.10) 
+
+where the second inequality compares to a GRPO estimator that uses a single terminal outcome per child. The estimator’s bias relative to the oracle advantage is O(δκ), and its MSE has an additional 
+
+O(δ2
+
+> κ
+
+) term. If every child in the comparison group has ki > 1 and w > 0, then ρmax (u) < 1, so the variance reduction from suffix sharing is strict whenever the semantic-heterogeneity term is smaller than the saved sampling variance, i.e. GraphPO returns a lower-variance advantage estimate than tree-based baselines that cannot reuse nodes. Proof. For independent child-score estimates X1, . . . , X K ,
+
+Var 
+
+Xi − 1
+
+K
+
+> K
+
+X
+
+> j=1
+
+Xj
+
+ =
+
+
+
+1 − 1
+
+K
+
+2
+
+Var( Xi) + 1
+
+K2
+
+X 
+
+> j̸=i
+
+Var( Xj ). (S.11) All coefficients are nonnegative. Lemma 2 contracts each child-score variance by at most ρmax (u)
+
+relative to the non-pooled Tree estimator, up to the O(ρmax (u)δκ/m ) heterogeneity term induced by imperfect semantic merging. The same bound therefore applies after subtracting the group baseline. A Tree estimator averages m terminal Bernoulli outcomes per child, while the corresponding GRPO estimator uses one terminal outcome per child; the law of total variance therefore gives Var( ˆATree  
+
+> i
+
+) ≤
+
+Var( ˆAGRPO  
+
+> i
+
+). The bias and MSE statements follow from the bias part of Lemma 2. 
+
+Corollary 1 (More accurate edge rewards via aggregation over equivalent partners) . The step-level edge reward rstep (u, v ) = ( S(v)−S(u))(1 −η(u, v )) inherits the estimation accuracy of its endpoint scores. Define the oracle edge reward r⋆
+
+> step
+
+(u, v ) = ( V ⋆(v) − V ⋆(u))(1 − η(u, v )) and the empirical plug-in ˆrGraph step (u, v ) obtained by replacing S with the pooled estimator ˆV Q from Lemma 2, and analogously ˆrTree step from the non-pooled tree estimator. Let ΓGraph  
+
+> uv
+
+= Cov( ˆV Q(u), ˆV Q(v)) and 
+
+ΓTree  
+
+> uv
+
+= Cov( ˆV Tree (u), ˆV Tree (v)) . Then the mean-squared error of the GraphPO edge reward to the oracle satisfies 
+
+MSE  ˆrGraph step (u, v ) ≤ (1 − η(u, v )) 2
+
+ρu Var( ˆV Tree (u)) + ρv Var( ˆV Tree (v)) − 2Γ Graph 
+
+> uv
+
+
+
++ (1 − η(u, v )) 2 (2 δκ)2 + O
+
+ (ρu + ρv )δκ
+
+m
+
+
+
+.
+
+(S.12) 
+
+Here ρu, ρ v ∈ (0 , 1] are the endpoint pooling factors from Lemma 2, the first line bounds the variance contributed by the two endpoint estimators (which is strictly reduced by aggregating own-subtree evidence with that of equivalent partners), and the (2 δκ)2 term bounds the squared bias induced by imperfect semantic merging. Compared with the tree edge reward, which uses no information from equivalent partners, the GraphPO edge reward is strictly more accurate (in MSE) whenever the variance saving from shared evidence dominates the residual semantic-heterogeneity bias: 
+
+(1 − η(u, v )) 2
+
+(1 − ρu) Var( ˆV Tree (u)) + (1 − ρv ) Var( ˆV Tree (v)) − 2(Γ Tree  
+
+> uv
+
+− ΓGraph  
+
+> uv
+
+)
+
+
+
+> (1 − η(u, v )) 2(2 δκ)2 + O
+
+ (ρu + ρv )δκ
+
+m
+
+
+
+.
+
+(S.13) 6In the conditionally independent endpoint case the covariance term vanishes and the condition reduces to nontrivial pooling ( w > 0, |Q| > 1) with small semantic heterogeneity ( δκ small). Proof. Decompose MSE into variance and squared bias. The reward is a deterministic linear transformation of the two endpoint score estimates: ˆrstep − r⋆ 
+
+> step
+
+= (1 − η) ( ˆS(v) − V ⋆(v)) −
+
+( ˆS(u) − V ⋆(u)) , hence 
+
+MSE(ˆ rstep ) = (1 − η)2
+
+Var( ˆS(v)) + Var( ˆS(u)) − 2 Cov( ˆS(u), ˆS(v)) 
+
+
+
++ (1 − η)2 E ˆS(v) − V ⋆(v) − (E ˆS(u) − V ⋆(u)) 2.
+
+(S.14) For the GraphPO estimator, applying the variance bound of Lemma 2 to each endpoint variance gives the first line of the bound; applying the bias bound |E ˆV Q(·) − V ⋆(·)| ≤ δκ at both endpoints and the triangle inequality gives the (2 δκ)2 squared-bias term. The tree estimator is unbiased (zero bias term) but cannot pool over equivalent partners, so its variance term uses ρ = 1 . Subtracting the two MSE expressions yields the stated comparison condition: GraphPO trades a small O(δ2
+
+> κ
+
+) bias for an 
+
+Ω(1 − ρ) variance reduction, and is strictly more accurate whenever the latter dominates. 
+
+Dual-group variance reduction. The dual-group graph advantage further benefits from equivalence-class pooling because the standardization group itself is enlarged. In a tree estima-tor that cannot reuse nodes, the group used to standardize the correctness advantage at state u contains only the direct children C(u). In GraphPO, paths reaching equivalent states are merged, so the group becomes Ecor (u) = {(p(v), v ) | v ∈ C g (u)} with |C g (u)| = P 
+
+> q∈Q (u)
+
+|C (q)|.
+
+Proposition 1 (Lower correctness-advantage variance via equivalence-class grouping) . Fix a source state u and let KT = |C (u)| and KG = |C g (u)| ≥ KT be the tree- and graph-group sizes. Assume the per-edge step-reward estimates {ˆrstep (ˆ e)} are conditionally independent within the group with a common variance bound σ2 
+
+> r
+
+. Let ˆATree cor and ˆAGraph cor be the pre-standardization centered advantages 
+
+ˆrstep (e) − mean( ·) computed on the tree and graph groups, respectively. Then 
+
+Var   ˆAGraph cor 
+
+ ≤
+
+
+
+1 − 1
+
+> KG
+
+
+
+σ2 
+
+> r
+
+≤
+
+
+
+1 − 1
+
+> KT
+
+
+
+σ2 
+
+> r
+
+= Var   ˆATree cor 
+
+, (S.15) 
+
+with strict inequality whenever KG > K T (i.e. at least one non-trivial equivalence-class member contributes shared descendants). Proof. For independent variates X1, . . . , X K with common variance σ2,
+
+Var  Xi − 1
+
+> K
+
+PKj=1 Xj
+
+ =  1 − 1
+
+> K
+
+2σ2 + K−1 
+
+> K2
+
+σ2 =  1 − 1
+
+> K
+
+σ2, (S.16) which decreases monotonically in K. Applying this with K ∈ { KT , K G} and using KG ≥ KT
+
+yields the inequality. Proposition 1 formalizes the dual-group claim of Section 4.4: by aggregating semantically equivalent paths into one correctness-advantage group, GraphPO obtains a more concentrated baseline and standard deviation than tree-based estimators that cannot reuse nodes, which directly lowers the variance of Acor .
+
+F.3 Improved Exploration Efficiency 
+
+We now formalize the exploration-efficiency claim of Section 3. Let the rollout budget be B tokens and let SB be the sampled reasoning steps. Define the cumulative useful exploration as 
+
+G(B) = X
+
+> s∈S B
+
+|s|1[s correct ], (S.17) so ¯Eff( B) = E[G(B)] /B is the expected per-budget version of Eq. (1) when the consumed budget is 
+
+B. Let pred be the fraction of rollout budget spent on states that are both redundant and detected as semantically equivalent to a previously sampled state in the same layer. 7Proposition 2 (Budget reallocation gain) . Suppose that, under tree-based sampling, a fraction 
+
+pred of the rollout budget is spent on frontier states that are identified as redundant by GraphPO’s equivalence detector. Assume that the average marginal gain per unit budget on these redundant states is at most ∆r , while the average marginal gain per unit budget on novel frontier states receiving the reallocated budget is at least ∆n. Suppose also that GraphPO redirects the budget saved by its halved-budget rule to novel frontiers. If ∆n > ∆r , then, ignoring integer rounding, 
+
+¯Eff Graph (B) − ¯Eff Tree (B) ≥ 12 pred (∆ n − ∆r ) > 0.
+
+Proof. Under tree-based sampling, a fraction pred of the budget is spent on redundant frontier states. By assumption, the average marginal gain of this budget is at most ∆r . The remaining budget is spent on non-redundant frontier states. GraphPO applies the halved-budget rule to detected redundant states. Therefore, ignoring integer rounding, it saves a budget fraction 12 pred from redundant expansions. This saved budget is redirected to novel frontier states, whose average marginal gain is at least ∆n by assumption. Compared with tree-based sampling, GraphPO replaces a budget fraction 12 pred whose marginal gain is at most ∆r with the same budget fraction whose marginal gain is at least ∆n. Hence the expected gain per unit budget improves by at least 
+
+12 pred ∆n − 12 pred ∆r = 12 pred (∆ n − ∆r ).
+
+The improvement is strictly positive whenever pred > 0 and ∆n > ∆r .
+
+Theorem 2 (Exploration coverage) . Let Ncov (B) be the number of distinct semantic states discovered with budget B. Assume an average expansion cost ¯c, and assume each expansion from a novel frontier discovers a new semantic state with probability at least μ > 0. Under the same detected-redundancy and saved-budget reallocation conditions as Proposition 2, 
+
+EN Graph cov (B) ≥ EN Tree cov (B) + μp red B
+
+2¯ c . (S.18) 
+
+In the uniform-yield case where E[N Tree cov (B)] = μ(1 − pred )B/ ¯c and pred < 1, this implies the multiplicative gain 
+
+E[N Graph cov (B)] 
+
+E[N Tree cov (B)] ≥ 1 + pred 
+
+2(1 − pred ) . (S.19) 
+
+Proof. Each token a tree spends inside an already-discovered equivalence class produces no new state. GraphPO detects such tokens via sim ≥ κ and reallocates half of the remaining budget to active novel frontiers. The reallocated budget is pred B/ 2, which corresponds to pred B/ (2¯ c) additional frontier expansions in expectation. Since each such expansion discovers a new state with probability at least μ, the additive bound follows. Dividing this bound by the uniform tree coverage expression gives the stated multiplicative form. 
+
+F.4 Self-Emergent Process Supervision (PRM-like signal) 
+
+We now show that the objective optimized with GraphPO’s edge reward has the same first-order policy-update direction as a novelty-gated oracle PRM surrogate, up to a controllable O(1 − κ)
+
+semantic-merging bias. The novelty factor 1 − η(u, v ) is a non-negative reweighting: it preserves the sign of the oracle advantage on informative steps and attenuates credit on semantically redundant ones (where the oracle advantage is itself near zero by Assumption 1). Thus rstep is not aiming at a different target than PRM; it is a sample-efficient, novelty-gated estimator of the same per-edge improvement signal. 
+
+Lemma 3 (Bias of node score) . Under Assumptions 1–2, |E[S(v)] − V ⋆(v)| ≤ δκ for every node v
+
+with positive pooled terminal count. Proof. Conditional on the rollout counts, S(v) is a convex combination P 
+
+> q∈Q (v)
+
+βq ˆVq with weights 
+
+βq = wq town  
+
+> q
+
+/(town  
+
+> v
+
++ w P  
+
+> q′̸=v
+
+town  
+
+> q′
+
+) (wv = 1 , wq = w for q̸ = v), so P 
+
+> q
+
+βq = 1 . E ˆVq = V ⋆(q)
+
+and Assumption 1 give |V ⋆(q)−V ⋆(v)| ≤ δκ. Hence |E[S(v)] −V ⋆(v)| ≤ P 
+
+> q
+
+βq |V ⋆(q)−V ⋆(v)| ≤ 
+
+δκ.8Theorem 3 (GraphPO matches the novelty-gated PRM surrogate gradient) . Let A⋆
+
+> step
+
+(u, v ) = 
+
+V ⋆(v)−V ⋆(u) denote the oracle process advantage an idealized PRM would assign to the step u → v,and let ω(u, v ) = 1 −η(u, v ) ∈ [0 , 1] denote the novelty factor. Let ρθ (u, v ) = πθ (v | u)/π θold (v | u)
+
+be the edge-level shorthand for the token-level importance ratios in Section 4.5. Define the novelty-gated oracle PRM surrogate and the GraphPO step-reward surrogate as 
+
+J ω⋆ 
+
+> PRM
+
+(θ) = Eτ, G∼ πθold 
+
+h X
+
+> (u,v )∈τ
+
+ρθ (u, v ) ω(u, v )A⋆
+
+> step
+
+(u, v )
+
+i
+
+,
+
+Jstep (θ) = Eτ, G∼ πθold 
+
+h X
+
+> (u,v )∈τ
+
+ρθ (u, v ) rstep (u, v )
+
+i
+
+.
+
+(S.20) 
+
+Here G determines S(·) and therefore rstep , and all rewards are detached during the policy update. Under Assumptions 1–2, at θ = θold ,
+
+∇θ Jstep (θ) θold 
+
+= ∇θ J ω⋆ 
+
+> PRM
+
+(θ) θold 
+
++ O(δκ) b(θold ), (S.21) 
+
+with ∥b(θold )∥ ≤ Eτ
+
+ P  
+
+> (u,v )∈τ
+
+∥∇ θ log πθ (v | u)∥. Two consequences follow. (a) Objective-level alignment. The GraphPO objective trained with rstep has the same first-order update direction as the novelty-gated oracle PRM surrogate, up to the O(δκ) merging bias. Compared with the ungated oracle PRM surrogate, each edge contribution is multiplied by the non-negative scalar ω(u, v ), so the update remains sign-consistent with the oracle PRM while suppressing redundant steps. (b) Novelty-gated denoising. For semantically equivalent endpoints ( η → 1, ω → 0), Assumption 1 already bounds |A⋆
+
+> step
+
+(u, v )| ≤ δκ, so ω attenuates edges on which the oracle credit is itself O(δκ);for novel steps ( η ≈ 0, ω ≈ 1), the per-edge surrogate gradient coincides with the PRM gradient up to O(δκ). Finally, with m terminal rollouts per descendant the MSE of rstep as an estimator of 
+
+ω(u, v )A⋆
+
+> step
+
+(u, v ) satisfies O(( ρu + ρv )/m ) + O(δ2
+
+> κ
+
+).Proof. The proof follows the objective used in Section 4.5. In one PPO/DAPO update, sampled graphs and their rewards are fixed, so differentiating the unclipped surrogate gives 
+
+∇θ Jstep (θ) θold 
+
+= Eτ, G∼ πθold 
+
+ X
+
+> (u,v )∈τ
+
+rstep (u, v )∇θ log πθ (v | u) θold 
+
+ , (S.22) because ρθold (u, v ) = 1 and ∇θ ρθ (u, v )|θold = ∇θ log πθ (v | u)|θold . Conditioning on an edge’s endpoints marginalizes over the downstream rollout graph used to compute S(u) and S(v). Because 
+
+ω(u, v ) is a deterministic function of the endpoint embeddings and E[S(w) | w] = V ⋆(w) + O(δκ)
+
+by Lemma 3, 
+
+Erstep (u, v ) u, v  = ω(u, v ) E[S(v) | v] − E[S(u) | u] = ω(u, v ) A⋆
+
+> step
+
+(u, v ) + O(δκ). (S.23) Substituting this conditional expectation into the surrogate gradient gives Eq. (S.21) ; the bound on 
+
+b(θold ) follows from the triangle inequality applied to the O(δκ) residual. Claim (a) is immediate by comparing Eq. (S.21) with ∇θ J ω⋆ 
+
+> PRM
+
+(θ)|θold . For (b), Assumption 1 gives the stated bound on the oracle advantage inside any detected equivalence class, and the MSE bound follows from Lemma 2 applied to the two endpoint scores together with ω(u, v ) ≤ 1.Theorem 3 formalizes the “self-emergent process supervision” claim: GraphPO recovers, in expecta-tion, the first-order update direction of a novelty-gated oracle PRM surrogate solely from outcome rewards R(z) ∈ { 0, 1}, without any annotated step labels or auxiliary value model. The factor ω(u, v )
+
+is not a deviation from the PRM target but a principled non-negative reweighting that suppresses noise on semantically redundant steps where the oracle credit vanishes. 
+
+F.5 Inference Efficiency 
+
+Finally, we analyze the effect of the efficiency advantage Aeff on the length of correct reasoning paths produced by the trained policy. 9Lemma 4 (Path-length gradient) . Let ℓv be the number of generated edges from the deepest common predecessor aQ to v ∈ Q, and let ˜σQ = std( {ℓq | q ∈ Q}). The dual-group gradient contribution of the efficiency term is 
+
+∇θ J eff (θ) = E
+
+X
+
+> v∈Q
+
+¯SQ
+
+¯ℓQ − ℓv
+
+˜σQ
+
+∇θ log πθ (path v )
+
+ , (S.24) 
+
+with ¯ℓQ the mean of {ℓq }q∈Q.Proof. Differentiating JGraphPO w.r.t. θ on the efficiency term and applying the policy-gradient identity to each edge e ∈ path v yields the above; the uniform allocation of Aeff (v) across edges of 
+
+path v collects into a single log πθ (path v ) term. 
+
+Theorem 4 (Efficiency term selects shorter equivalent paths) . Consider an equivalence class Q
+
+whose members are reached by correct paths of different lengths from the shared predecessor aQ,with ¯SQ > 0. Let π⋆ 
+
+> out
+
+be any policy that maximizes the outcome-only objective ( λeff = 0 ), and let 
+
+π⋆ 
+
+> eff
+
+be any maximizer after adding the efficiency term with a small λeff > 0 that does not change which paths are outcome-optimal. Then π⋆ 
+
+> eff
+
+places all outcome-optimal probability on the shortest paths in Q, and whenever π⋆ 
+
+> out
+
+keeps positive mass on a longer path in Q,
+
+Eτ ∼π⋆ 
+
+> eff
+
+[T (τ ) | R(τ ) = 1 , τ reaches Q] < Eτ ∼π⋆ 
+
+> out
+
+[T (τ ) | R(τ ) = 1 , τ reaches Q], (S.25) 
+
+where T (τ ) counts reasoning steps. Proof. All paths in Q have the same outcome reward, so π⋆ 
+
+> out
+
+is free to spread mass across them. The efficiency advantage Aeff (v) = ¯SQ(¯ℓQ − ℓv )/˜σQ is strictly larger for shorter paths when ¯SQ > 0,so maximizing it within the outcome-optimal set selects the shortest paths only. By Lemma 4, the policy gradient drives probability from longer paths ( ℓv > ¯ℓQ) to shorter ones ( ℓv < ¯ℓQ). Any π⋆
+
+> out
+
+that keeps mass on a longer path therefore has strictly larger conditional expected length on Q.This theorem characterizes the optimal-policy limit. During finite-sample optimization, the efficiency term should be interpreted as concentrating probability toward shorter equivalent correct paths rather than guaranteeing all mass on them at every update. 
+
+Corollary 2 (Lower expected token cost) . If the expected token count of a path is monotone in its number of reasoning steps and strictly increasing for the longer paths in Theorem 4, then π⋆ 
+
+> eff
+
+uses no more expected tokens than π⋆
+
+> out
+
+, and strictly fewer whenever π⋆ 
+
+> out
+
+assigns positive mass to one of those longer correct paths. 
+
+Discussion. Theorems 1, 2, 3, and 4 together support the four claims of the main paper: GraphPO (i) yields lower-variance node-score and advantage estimates than tree-based baselines that cannot reuse nodes, by pooling downstream evidence from all members of each equivalence class into a single advantage-estimation group, with a controllable semantic-merging bias; (ii) improves expected exploration efficiency under a fixed budget when detected redundant-budget savings are redirected to novel frontiers; (iii) induces, in expectation, the same first-order update direction as a novelty-gated oracle PRM surrogate—equivalently, an oracle PRM update non-negatively reweighted by the novelty factor—yielding self-emergent process supervision purely from outcome rewards; and (iv) uses the efficiency term to select shorter equivalent correct reasoning paths, thereby improving inference efficiency under the stated tie-breaking and token-cost conditions. 
+
+# G Robustness of Equivalence Detection 
+
+The graph construction of GraphPO relies on two components that are in principle noisy: (i) structured summaries produced by a frozen extractor, and (ii) cosine similarity between embeddings under a threshold κ. Detection errors split into false positives (FP, merging non-equivalent states) and false negatives (FN, missing a true equivalence). This section shows that GraphPO’s advantage estimator, edge reward, and policy gradient are robust to both, formalizes the asymmetric degradation of the two error modes, and connects the bounds to the empirical ablations already reported in the paper. 10 G.1 False Positives are Bounded by the Merging Threshold 
+
+Assumption 1 is a class-level stability condition on whatever classes the detector actually returns: whenever cosine similarity above κ implies that members of a detected class share values up to 
+
+δκ = O(1 − κ), every bias term in our analysis reduces to an O(δκ) residual. Concretely: • Node score bias. Lemma 3 gives |E[S(v)] − V ⋆(v)| ≤ δκ.• Edge-reward bias. Corollary 1 bounds the squared bias of ˆrstep by (1 − η(u, v )) 2(2 δκ)2.• Gradient alignment. Theorem 3 shows the GraphPO surrogate has the same first-order update direction as the novelty-gated oracle PRM up to an O(δκ) residual. The threshold κ is therefore a direct knob that monotonically shrinks the worst-case false-positive bias: raising κ by ϵ shrinks δκ by O(ϵ) and every bias term above by the same factor. 
+
+Self-correcting novelty gate. The edge reward carries a multiplicative novelty factor ω(u, v ) = 1 − η(u, v ) that measures semantic change along the step. A false-positive merge inflates η(u, v )
+
+toward 1, so ω(u, v ) → 0 on exactly those edges the detector has spuriously treated as equivalent. The incorrect credit is attenuated at the same gate that caused the mistake , without requiring the training loop to detect the error. Assumption 1 further guarantees that the oracle advantage on any over-merged edge is itself O(δκ), so the attenuated edge would not contribute meaningful gradient signal in the first place. 
+
+G.2 False Negatives Degrade Gracefully to the Tree Baseline 
+
+Missed equivalences are even easier to control: when two truly equivalent states are kept as separate nodes, the pooling weight vector collapses to a single non-zero entry and the GraphPO estimator reduces exactly to its tree counterpart at that node. 
+
+Proposition 3 (False negatives are strictly safe) . Under Assumptions 1–3, suppose the detector returns singleton classes Q(v) = {v} for a subset F of nodes, regardless of the true semantics of those nodes. Then for every v ∈ F : (i) ˆV Qv = ˆVv is unbiased for V ⋆(v); (ii) Var( ˆV Qv ) = Var( ˆV Tree  
+
+> v
+
+); (iii) the downstream quantities rstep , Acor , and Aeff at v coincide with the tree baseline. Consequently, false negatives never introduce bias and never increase variance beyond the tree baseline; they only forfeit the variance reduction that Theorem 1 would have delivered under correct detection. Proof. Setting kv = 1 in Lemma 2 gives ρv = 1 and ˆV Qv = ˆVv , which is unbiased by Lemma 1 and has variance V ⋆(v)(1 − V ⋆(v)) /m . All downstream quantities are deterministic functions of S(·),so they inherit the tree semantics at v ∈ F .Proposition 3 formalizes the asymmetry that makes GraphPO robust in practice: false negatives degrade gracefully to tree-level estimates, while false-positive damage is controlled by the same δκ
+
+that the threshold κ directly tunes. No combination of detection errors can push GraphPO below the tree baseline by more than an O(δ2
+
+> κ
+
+) bias term, which disappears as κ → 1.
+
+G.3 Empirical Robustness 
+
+The theoretical bounds are validated by two complementary ablations already included in the paper. First, Figure 6 shows that GraphPO’s accuracy is stable across a wide range of merging thresholds, with a broad optimum near κ = 0 .92 and a monotone fallback to tree performance as κ → 1
+
+(no merges). This matches Proposition 3: the high-κ limit recovers the tree estimator rather than degrading below it. Second, Figure S.2 shows that the pooling coefficient w yields a smooth curve with a plateau around w = 0 .7; w = 0 (no pooling) again recovers tree performance, confirming that equivalence detection affects the estimator only through the two tunable knobs (w, κ ), both of which admit safe defaults. The absence of a cliff in either ablation confirms that the method does not rely on near-perfect detection; it only requires the detector to be asymmetrically tuned for precision (large 
+
+κ), which is exactly the regime Proposition 3 identifies as optimal. 11 Engineering safeguards. Three design choices further harden detection against noisy summaries or embeddings. (1) Structured summaries. Nodes are embedded from structured summaries of the full edge path produced by a frozen extractor (Section 4.2), rather than raw token strings. This removes surface variation (ordering, wording, formatting) before similarity is computed, tightening 
+
+δκ at any fixed κ. (2) Non-causal restriction. Merges are only formed between non-causal pairs (Assumption 3), which eliminates ancestor-descendant collapse by construction and preserves the DAG needed for bottom-up propagation. (3) Class-level stability. Assumption 1 is stated at the class level rather than the pairwise level, so transitive closures of high-similarity edges do not implicitly claim pairwise closeness beyond what the detected class itself satisfies. Taken together with the novelty gate ω(u, v ), these safeguards ensure that the dependence on summaries and embeddings translates into at most an O(1 − κ) bias term, which the ablation in Figure 6 shows is empirically benign at the recommended threshold. 
+
+# H Limitations and Future Work 
+
+Our experiments mainly focus on reasoning and agent tasks. Although the graph formulation is gen-eral, we have not yet systematically studied its effectiveness in broader settings, such as multimodal reasoning, code generation with execution feedback, and long-horizon interactive environments. 
+
+# I Broader Impacts 
+
+GraphPO is a reinforcement learning method for improving reasoning models under verifiable rewards. Its main positive impact is to improve rollout utilization and reduce redundant reasoning, which can lower the amount of computation and process-level annotation needed for training strong reasoning models. We focus exclusively on reinforcement learning, presenting no potential ethical risks. 12
